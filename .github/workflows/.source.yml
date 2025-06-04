@@ -1,0 +1,29 @@
+#
+# GitHub Actions workflow configuration.
+#
+# https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions
+#
+
+name: Source
+on:
+  workflow_call:
+defaults:
+  run:
+    shell: nix develop --command bash -e {0}
+jobs:
+  build:
+    name: Build
+    strategy:
+      matrix:
+        python-binary:
+          - python3.9
+          - python3.10
+          - python3.11
+          - python3.12
+    runs-on: ubuntu-latest
+    steps:
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: actions/checkout@v4
+      - run: |
+          just python-binary=${{ matrix.python-binary }} build
+          just python-binary=${{ matrix.python-binary }} run-minimal-verification

@@ -1,0 +1,15 @@
+#
+# GitHub Actions workflow configuration.
+#
+# https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions
+#
+
+name: Check
+on:
+  pull_request:
+    types:
+      - synchronize
+jobs:
+  source:
+    name: Source
+    uses: ./.github/workflows/.source.yml
