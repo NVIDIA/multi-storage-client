@@ -748,7 +748,8 @@ class S3StorageProvider(BaseStorageProvider):
 
         if isinstance(f, str):
             bucket, key = split_path(remote_path)
-            os.makedirs(os.path.dirname(f), exist_ok=True)
+            if os.path.dirname(f):
+                os.makedirs(os.path.dirname(f), exist_ok=True)
 
             # Download small files
             if metadata.content_length <= self._transfer_config.multipart_threshold:

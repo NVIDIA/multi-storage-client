@@ -357,7 +357,8 @@ class AIStoreStorageProvider(BaseStorageProvider):
             metadata = self._get_object_metadata(remote_path)
 
         if isinstance(f, str):
-            os.makedirs(os.path.dirname(f), exist_ok=True)
+            if os.path.dirname(f):
+                os.makedirs(os.path.dirname(f), exist_ok=True)
             with open(f, "wb") as fp:
                 fp.write(self._get_object(remote_path))
         else:

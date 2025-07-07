@@ -481,7 +481,8 @@ class AzureBlobStorageProvider(BaseStorageProvider):
         self._refresh_blob_service_client_if_needed()
 
         if isinstance(f, str):
-            os.makedirs(os.path.dirname(f), exist_ok=True)
+            if os.path.dirname(f):
+                os.makedirs(os.path.dirname(f), exist_ok=True)
 
             def _invoke_api() -> int:
                 blob_client = self._blob_service_client.get_blob_client(container=container_name, blob=blob_name)
