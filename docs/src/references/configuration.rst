@@ -169,6 +169,24 @@ Options: See parameters in :py:class:`multistorageclient.providers.s8k.S8KStorag
            region_name: us-east-1
            endpoint_url: https://s8k.example.com
 
+``minio``
+----------
+
+Minio provider.
+
+Options: See parameters in :py:class:`multistorageclient.providers.minio.MinioStorageProvider`.
+
+.. code-block:: yaml
+   :caption: Example configuration.
+
+   profiles:
+     my-profile:
+       storage_provider:
+         type: minio
+         options:
+           base_path: my-bucket
+           endpoint_url: https://play.min.io
+
 ``azure``
 ---------
 

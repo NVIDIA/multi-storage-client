@@ -50,6 +50,8 @@ def __getattr__(name: str) -> Any:
         # AIS
         "AIStoreStorageProvider": ".ais",
         "StaticAISCredentialProvider": ".ais",
+        # MinIO
+        "MinioStorageProvider": ".minio",
     }
 
     if name in module_map:
@@ -69,6 +71,7 @@ def __getattr__(name: str) -> Any:
                 ".s3": "boto3",
                 ".s8k": "boto3",
                 ".ais": "aistore",
+                ".minio": "boto3",
             }
 
             required_package = package_map.get(module_name, module_name.lstrip("."))

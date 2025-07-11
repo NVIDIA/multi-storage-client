@@ -76,6 +76,10 @@ Providers
    :members:
    :undoc-members:
 
+.. automodule:: multistorageclient.providers.minio
+   :members:
+   :undoc-members:
+
 *********
 Telemetry
 *********

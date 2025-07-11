@@ -97,6 +97,7 @@ STORAGE_PROVIDER_MAPPING = {
     "ais": "AIStoreStorageProvider",
     "s8k": "S8KStorageProvider",
     "gcs_s3": "GoogleS3StorageProvider",
+    "minio": "MinioStorageProvider",
 }
 
 CREDENTIALS_PROVIDER_MAPPING = {

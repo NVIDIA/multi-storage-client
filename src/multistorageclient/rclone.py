@@ -210,7 +210,7 @@ def _parse_config_section(section: configparser.SectionProxy) -> dict[str, Any]:
     #   - rclone default storage type key (e.g. azureblob)
     #
     # Then, convert to storage type to MSC configuration storage key (e.g. azure).
-    if storage_type == "s3" or storage_type == "s8k":
+    if storage_type == "s3" or storage_type == "s8k" or storage_type == "minio":
         storage_provider_options, credentials_provider = _parse_s3_storage_provider_config(section)
     elif storage_type == "azure" or storage_type == "azureblob":
         storage_provider_options, credentials_provider = _parse_azure_storage_provider_config(section)

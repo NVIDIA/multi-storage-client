@@ -271,3 +271,15 @@ class TemporarySwiftStackBucket(TemporaryAWSS3Bucket):
     def __init__(self, enable_rust_client: bool = False):
         super().__init__(enable_rust_client=enable_rust_client)
         self._profile_config_dict["storage_provider"]["type"] = "s8k"
+
+
+class TemporaryMinioBucket(TemporaryAWSS3Bucket):
+    """
+    This class creates a temporary Minio bucket. The resulting object can be used as a context manager.
+    On completion of the context or destruction of the temporary data store object,
+    the newly created temporary data store and all its contents are removed.
+    """
+
+    def __init__(self, enable_rust_client: bool = False):
+        super().__init__(enable_rust_client=enable_rust_client)
+        self._profile_config_dict["storage_provider"]["type"] = "minio"

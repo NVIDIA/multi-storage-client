@@ -238,6 +238,28 @@ def test_swiftstack_storage_provider() -> None:
     assert isinstance(config.storage_provider, S3StorageProvider)
 
 
+def test_minio_storage_provider() -> None:
+    config = StorageClientConfig.from_json(
+        """{
+        "profiles": {
+            "minio_profile": {
+                "storage_provider": {
+                    "type": "minio",
+                    "options": {
+                        "base_path": "bucket",
+                        "endpoint_url": "https://play.min.io",
+                        "region_name": "us-east-1"
+                    }
+                }
+            }
+        }
+    }""",
+        profile="minio_profile",
+    )
+
+    assert isinstance(config.storage_provider, S3StorageProvider)
+
+
 def test_manifest_provider_bundle() -> None:
     sys.path.append(os.path.dirname(__file__))
 
@@ -681,6 +703,37 @@ def test_s8k_storage_provider_passthrough_options() -> None:
                                 # Passthrough options.
                                 "request_checksum_calculation": "when_required",
                                 "response_checksum_validation": "when_required",
+                                "max_pool_connections": 1,
+                                "connect_timeout": 1,
+                                "read_timeout": 1,
+                                "retries": {
+                                    "total_max_attempts": 2,
+                                    "max_attempts": 1,
+                                    "mode": "adaptive",
+                                },
+                            },
+                        }
+                    }
+                }
+            },
+            profile=profile,
+        )
+    )
+
+
+def test_minio_storage_provider_passthrough_options() -> None:
+    profile = "data"
+    StorageClient(
+        config=StorageClientConfig.from_dict(
+            config_dict={
+                "profiles": {
+                    profile: {
+                        "storage_provider": {
+                            "type": "minio",
+                            "options": {
+                                "base_path": "bucket",
+                                "endpoint_url": "https://play.min.io",
+                                # Passthrough options.
                                 "max_pool_connections": 1,
                                 "connect_timeout": 1,
                                 "read_timeout": 1,

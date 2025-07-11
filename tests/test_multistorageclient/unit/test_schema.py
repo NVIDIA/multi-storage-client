@@ -56,7 +56,7 @@ def test_validate_profiles():
         )
 
     # Valid configurations for s3 and swiftstack with Rust client options
-    for provider in ("s3", "s8k"):
+    for provider in ("s3", "s8k", "minio"):
         validate_config(
             {
                 "profiles": {

@@ -123,6 +123,21 @@ profiles:
         multipart_threshold: 16777216 # 16MB
         multipart_chunksize: 4194304 # 4MB
         io_chunksize: 4194304 # 4MB
+  test-minio-play:
+    credentials_provider:
+      type: S3Credentials
+      options:
+        access_key: "*****"
+        secret_key: "*****"
+    storage_provider:
+      type: minio
+      options:
+        base_path: msc-integration-test-0001
+        endpoint_url: http://play.min.io
+        region_name: us-east-1
+        multipart_threshold: 16777216 # 16MB
+        multipart_chunksize: 4194304 # 4MB
+        io_chunksize: 4194304 # 4MB
   test-swift-pdx-rust:
     credentials_provider:
       type: S3Credentials
