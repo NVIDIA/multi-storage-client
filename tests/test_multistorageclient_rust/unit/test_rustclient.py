@@ -22,6 +22,7 @@ import pytest
 import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
 
 from multistorageclient import StorageClient, StorageClientConfig
+from multistorageclient.constants import MEMORY_LOAD_LIMIT
 from multistorageclient_rust import RustClient  # pyright: ignore[reportAttributeAccessIssue]
 
 
@@ -45,6 +46,8 @@ async def test_rustclient_basic_operations(temp_data_store_type: Type[tempdatast
                 "aws_access_key_id": config_dict["credentials_provider"]["options"]["access_key"],
                 "aws_secret_access_key": config_dict["credentials_provider"]["options"]["secret_key"],
                 "allow_http": config_dict["storage_provider"]["options"]["endpoint_url"].startswith("http://"),
+                "max_concurrency": 16,
+                "multipart_chunksize": 10 * 1024 * 1024,
             },
         )
 
@@ -86,6 +89,48 @@ async def test_rustclient_basic_operations(temp_data_store_type: Type[tempdatast
             storage_client.download_file(remote_path=file_path, local_path=temp_file.name)
             with open(temp_file.name, "rb") as f:
                 assert f.read() == file_body_bytes
+
+        # Test upload_multipart with a large file
+        large_file_size = MEMORY_LOAD_LIMIT + 1
+        large_file_body = os.urandom(large_file_size)
+        large_file_path_fragments = [f"{uuid.uuid4().hex}-prefix", "infix", f"multipart_suffix{file_extension}"]
+        large_file_path = os.path.join(*large_file_path_fragments)
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            temp_file.write(large_file_body)
+            temp_file.close()
+            await rust_client.upload_multipart(temp_file.name, large_file_path)
+
+        # Verify the large file was uploaded successfully using multi-storage client
+        assert storage_client.is_file(path=large_file_path)
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            temp_file.close()
+            storage_client.download_file(remote_path=large_file_path, local_path=temp_file.name)
+            assert os.path.getsize(temp_file.name) == large_file_size
+            # Assert file content is the same
+            with open(temp_file.name, "rb") as f:
+                downloaded = f.read()
+            assert downloaded == large_file_body
+
+        # Test upload_multipart with a large file
+        large_file_size = MEMORY_LOAD_LIMIT + 1
+        large_file_body = os.urandom(large_file_size)
+        large_file_path_fragments = [f"{uuid.uuid4().hex}-prefix", "infix", f"multipart_suffix{file_extension}"]
+        large_file_path = os.path.join(*large_file_path_fragments)
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            temp_file.write(large_file_body)
+            temp_file.close()
+            await rust_client.upload_multipart(temp_file.name, large_file_path)
+
+        # Verify the large file was uploaded successfully using multi-storage client
+        assert storage_client.is_file(path=large_file_path)
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            temp_file.close()
+            storage_client.download_file(remote_path=large_file_path, local_path=temp_file.name)
+            assert os.path.getsize(temp_file.name) == large_file_size
+            # Assert file content is the same
+            with open(temp_file.name, "rb") as f:
+                downloaded = f.read()
+            assert downloaded == large_file_body
 
         # Test download the file
         with tempfile.NamedTemporaryFile(delete=False) as temp_file:

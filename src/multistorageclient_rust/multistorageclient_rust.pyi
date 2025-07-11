@@ -63,3 +63,17 @@ class RustClient:
         :return: None. Raises an exception on failure.
         """
         ...
+
+    async def upload_multipart(self, local_path: str, remote_path: str) -> Awaitable[None]:
+        """
+        Upload a local file to the object store using multipart upload.
+
+        This method uploads large files by splitting them into smaller chunks and uploading
+        those chunks in parallel. This approach provides better performance for large files
+        compared to upload() method.
+
+        :param local_path: Path to the local file to upload.
+        :param remote_path: The destination path in the storage backend.
+        :return: None. Raises an exception on failure.
+        """
+        ...

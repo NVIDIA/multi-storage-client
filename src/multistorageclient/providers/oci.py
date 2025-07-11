@@ -50,7 +50,7 @@ _T = TypeVar("_T")
 MB = 1024 * 1024
 
 MULTIPART_THRESHOLD = 512 * MB
-MULTIPART_CHUNK_SIZE = 256 * MB
+MULTIPART_CHUNKSIZE = 256 * MB
 
 PROVIDER = "oci"
 
@@ -101,7 +101,7 @@ class OracleStorageProvider(BaseStorageProvider):
         self._oci_client = self._create_oci_client()
         self._upload_manager = UploadManager(self._oci_client)
         self._multipart_threshold = int(kwargs.get("multipart_threshold", MULTIPART_THRESHOLD))
-        self._multipart_chunk_size = int(kwargs.get("multipart_chunksize", MULTIPART_CHUNK_SIZE))
+        self._multipart_chunksize = int(kwargs.get("multipart_chunksize", MULTIPART_CHUNKSIZE))
 
     def _create_oci_client(self) -> ObjectStorageClient:
         config = oci.config.from_file()
@@ -465,7 +465,7 @@ class OracleStorageProvider(BaseStorageProvider):
                         bucket_name=bucket,
                         object_name=key,
                         file_path=f,
-                        part_size=self._multipart_chunk_size,
+                        part_size=self._multipart_chunksize,
                         allow_parallel_uploads=True,
                         metadata=validated_attributes or {},
                     )
@@ -499,7 +499,7 @@ class OracleStorageProvider(BaseStorageProvider):
                         bucket_name=bucket,
                         object_name=key,
                         stream_ref=f,
-                        part_size=self._multipart_chunk_size,
+                        part_size=self._multipart_chunksize,
                         allow_parallel_uploads=True,
                         metadata=validated_attributes or {},
                     )

@@ -53,10 +53,13 @@ BOTO3_MAX_POOL_CONNECTIONS = 32
 
 MB = 1024 * 1024
 
-MULTIPART_THRESHOLD = 512 * MB
-MULTIPART_CHUNK_SIZE = 256 * MB
-IO_CHUNK_SIZE = 128 * MB
-MAX_CONCURRENCY = 16
+# Python and Rust share the same multipart_threshold to keep the code simple.
+MULTIPART_THRESHOLD = 64 * MB
+MULTIPART_CHUNKSIZE = 32 * MB
+IO_CHUNKSIZE = 32 * MB
+# Python uses a lower default concurrency due to the GIL limiting true parallelism in threads.
+PYTHON_MAX_CONCURRENCY = 16
+RUST_MAX_CONCURRENCY = 32
 PROVIDER = "s3"
 
 EXPRESS_ONEZONE_STORAGE_CLASS = "EXPRESS_ONEZONE"
@@ -158,9 +161,9 @@ class S3StorageProvider(BaseStorageProvider):
         )
         self._transfer_config = TransferConfig(
             multipart_threshold=int(kwargs.get("multipart_threshold", MULTIPART_THRESHOLD)),
-            max_concurrency=int(kwargs.get("max_concurrency", MAX_CONCURRENCY)),
-            multipart_chunksize=int(kwargs.get("multipart_chunksize", MULTIPART_CHUNK_SIZE)),
-            io_chunksize=int(kwargs.get("io_chunk_size", IO_CHUNK_SIZE)),
+            max_concurrency=int(kwargs.get("max_concurrency", PYTHON_MAX_CONCURRENCY)),
+            multipart_chunksize=int(kwargs.get("multipart_chunksize", MULTIPART_CHUNKSIZE)),
+            io_chunksize=int(kwargs.get("io_chunksize", IO_CHUNKSIZE)),
             use_threads=True,
         )
 
@@ -277,6 +280,8 @@ class S3StorageProvider(BaseStorageProvider):
         if rust_client_options:
             if rust_client_options.get("allow_http", False):
                 configs["allow_http"] = True
+            configs["max_concurrency"] = rust_client_options.get("max_concurrency", RUST_MAX_CONCURRENCY)
+            configs["multipart_chunksize"] = rust_client_options.get("multipart_chunksize", MULTIPART_CHUNKSIZE)
 
         return RustClient(
             provider=PROVIDER,
@@ -688,14 +693,16 @@ class S3StorageProvider(BaseStorageProvider):
                 validated_attributes = validate_attributes(attributes)
                 if validated_attributes:
                     extra_args["Metadata"] = validated_attributes
-                # TODO: Add support for multipart upload of rust client
-                response = self._s3_client.upload_file(
-                    Filename=f,
-                    Bucket=bucket,
-                    Key=key,
-                    Config=self._transfer_config,
-                    ExtraArgs=extra_args,
-                )
+                if self._rust_client and not extra_args:
+                    response = run_async_rust_client_method(self._rust_client, "upload_multipart", f, key)
+                else:
+                    response = self._s3_client.upload_file(
+                        Filename=f,
+                        Bucket=bucket,
+                        Key=key,
+                        Config=self._transfer_config,
+                        ExtraArgs=extra_args,
+                    )
 
                 # Extract and set x-trans-id if present
                 _extract_x_trans_id(response)

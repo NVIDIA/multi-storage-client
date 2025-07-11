@@ -24,6 +24,7 @@ import pytest
 import multistorageclient.telemetry as telemetry
 import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
 from multistorageclient import StorageClient, StorageClientConfig
+from multistorageclient.constants import MEMORY_LOAD_LIMIT
 from multistorageclient.types import PreconditionFailedError, Range
 from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
 
@@ -574,6 +575,25 @@ def test_storage_providers_with_rust_client(
             temp_file.close()
             storage_client.download_file(remote_path=file_path, local_path=temp_file.name)
             assert os.path.getsize(temp_file.name) == len(file_body_bytes)
+
+        # Delete the file.
+        storage_client.delete(path=file_path)
+
+        # Test Multipart Upload
+        if storage_client._storage_provider._provider_name == "gcs":
+            # GCS simulator does not support multipart uploads
+            large_file_body_bytes = b"\x00" * MEMORY_LOAD_LIMIT
+        else:
+            large_file_body_bytes = b"\x00" * (MEMORY_LOAD_LIMIT + 1)
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            temp_file.write(large_file_body_bytes)
+            temp_file.close()
+            storage_client.upload_file(remote_path=file_path, local_path=temp_file.name)
+        assert storage_client.is_file(path=file_path)
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            temp_file.close()
+            storage_client.download_file(remote_path=file_path, local_path=temp_file.name)
+            assert os.path.getsize(temp_file.name) == len(large_file_body_bytes)
 
         # Delete the file.
         storage_client.delete(path=file_path)

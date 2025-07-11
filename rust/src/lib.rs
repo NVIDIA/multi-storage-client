@@ -15,13 +15,14 @@
 
 use bytes::Bytes;
 use object_store::aws::AmazonS3Builder;
-use object_store::{ObjectStore, path::Path, PutPayload};
+use object_store::{ObjectStore, path::Path, PutPayload, WriteMultipart};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule};
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::fs;
+use tokio::io::AsyncReadExt;
 
 #[derive(Error, Debug)]
 pub enum StorageError {
@@ -52,7 +53,14 @@ impl From<StorageError> for PyErr {
     }
 }
 
-fn build_s3_store(configs: Option<&Bound<'_, PyDict>>) -> PyResult<Arc<dyn ObjectStore>> {
+
+const DEFAULT_MULTIPART_CHUNKSIZE: usize = 32 * 1024 * 1024;
+const DEFAULT_MAX_CONCURRENCY: usize = 32;
+
+
+fn build_s3_store(configs: Option<&Bound<'_, PyDict>>) -> PyResult<(Arc<dyn ObjectStore>, usize, usize)> {
+    // TODO: Add support for other configuration fields of AmazonS3Builder, full list here:
+    // https://docs.rs/object_store/latest/src/object_store/aws/builder.rs.html#123
     let mut builder = AmazonS3Builder::new();
 
     let configs = configs.ok_or_else(|| {
@@ -91,12 +99,25 @@ fn build_s3_store(configs: Option<&Bound<'_, PyDict>>) -> PyResult<Arc<dyn Objec
 
     let store = builder.build().map_err(StorageError::from)?;
 
-    Ok(Arc::new(store))
+    let max_concurrency = if let Some(val) = configs.get_item("max_concurrency")? {
+        val.extract::<usize>()?
+    } else {
+        DEFAULT_MAX_CONCURRENCY
+    };
+    let multipart_chunksize = if let Some(val) = configs.get_item("multipart_chunksize")? {
+        val.extract::<usize>()?
+    } else {
+        DEFAULT_MULTIPART_CHUNKSIZE
+    };
+
+    Ok((Arc::new(store), max_concurrency, multipart_chunksize))
 }
 
 #[pyclass]
 pub struct RustClient {
     store: Arc<dyn ObjectStore>,
+    max_concurrency: usize,
+    multipart_chunksize: usize,
 }
 
 #[pymethods]
@@ -107,7 +128,7 @@ impl RustClient {
         provider: &str,
         configs: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Self> {
-        let store = match provider.to_lowercase().as_str() {
+        let (store, max_concurrency, multipart_chunksize) = match provider.to_lowercase().as_str() {
             "s3" => {
                 build_s3_store(configs)?
             }
@@ -119,7 +140,7 @@ impl RustClient {
             }
         };
 
-        Ok(Self { store })
+        Ok(Self { store, max_concurrency, multipart_chunksize })
     }
 
     #[pyo3(signature = (path, data))]
@@ -203,6 +224,42 @@ impl RustClient {
             fs::write(&local_path, data)
                 .await
                 .map_err(StorageError::from)?;
+            Ok(())
+        })
+    }
+
+
+    #[pyo3(signature = (local_path, remote_path))]
+    fn upload_multipart<'p>(
+        &self,
+        py: Python<'p>,
+        local_path: &str,
+        remote_path: &str,
+    ) -> PyResult<Bound<'p, PyAny>> {
+        let store = Arc::clone(&self.store);
+        let local_path = local_path.to_string();
+        let remote_path = Path::from(remote_path);
+        let max_concurrency = self.max_concurrency;
+        let multipart_chunksize = self.multipart_chunksize;
+
+        future_into_py(py, async move {
+            let mut file = tokio::fs::File::open(local_path).await.map_err(StorageError::from)?;
+
+            let upload = store.put_multipart(&remote_path).await.map_err(StorageError::from)?;
+            let mut writer = WriteMultipart::new_with_chunk_size(upload, multipart_chunksize);
+
+            let mut buffer = vec![0u8; multipart_chunksize];
+            loop {
+                let n = file.read(&mut buffer).await.map_err(StorageError::from)?;
+                if n == 0 {
+                    break;
+                }
+                writer.wait_for_capacity(max_concurrency).await.map_err(StorageError::from)?;
+                writer.write(&buffer[..n]);
+            }
+
+            writer.finish().await.map_err(StorageError::from)?;
+
             Ok(())
         })
     }

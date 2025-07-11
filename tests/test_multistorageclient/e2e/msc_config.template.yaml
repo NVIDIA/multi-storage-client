@@ -24,7 +24,7 @@ profiles:
         project_id: data-platform-dev
         multipart_threshold: 16777216 # 16MB
         multipart_chunksize: 4194304 # 4MB
-        io_chunk_size: 4194304 # 4MB
+        io_chunksize: 4194304 # 4MB
   test-gcs-hmac:
     credentials_provider:
       type: S3Credentials

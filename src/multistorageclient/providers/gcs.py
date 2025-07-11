@@ -53,8 +53,8 @@ PROVIDER = "gcs"
 MB = 1024 * 1024
 
 DEFAULT_MULTIPART_THRESHOLD = 512 * MB
-DEFAULT_MULTIPART_CHUNK_SIZE = 256 * MB
-DEFAULT_IO_CHUNK_SIZE = 256 * MB
+DEFAULT_MULTIPART_CHUNKSIZE = 256 * MB
+DEFAULT_IO_CHUNKSIZE = 256 * MB
 DEFAULT_MAX_CONCURRENCY = 8
 
 
@@ -138,8 +138,8 @@ class GoogleStorageProvider(BaseStorageProvider):
         self._credentials_provider = credentials_provider
         self._gcs_client = self._create_gcs_client()
         self._multipart_threshold = kwargs.get("multipart_threshold", DEFAULT_MULTIPART_THRESHOLD)
-        self._multipart_chunksize = kwargs.get("multipart_chunksize", DEFAULT_MULTIPART_CHUNK_SIZE)
-        self._io_chunk_size = kwargs.get("io_chunk_size", DEFAULT_IO_CHUNK_SIZE)
+        self._multipart_chunksize = kwargs.get("multipart_chunksize", DEFAULT_MULTIPART_CHUNKSIZE)
+        self._io_chunksize = kwargs.get("io_chunksize", DEFAULT_IO_CHUNKSIZE)
         self._max_concurrency = kwargs.get("max_concurrency", DEFAULT_MAX_CONCURRENCY)
 
     def _create_gcs_client(self) -> storage.Client:
@@ -599,7 +599,7 @@ class GoogleStorageProvider(BaseStorageProvider):
                     transfer_manager.download_chunks_concurrently(
                         blob,
                         temp_file_path,
-                        chunk_size=self._io_chunk_size,
+                        chunk_size=self._io_chunksize,
                         max_workers=self._max_concurrency,
                         worker_type=transfer_manager.THREAD,
                     )
@@ -630,7 +630,7 @@ class GoogleStorageProvider(BaseStorageProvider):
                     transfer_manager.download_chunks_concurrently(
                         blob,
                         temp_file_path,
-                        chunk_size=self._io_chunk_size,
+                        chunk_size=self._io_chunksize,
                         max_workers=self._max_concurrency,
                         worker_type=transfer_manager.THREAD,
                     )
