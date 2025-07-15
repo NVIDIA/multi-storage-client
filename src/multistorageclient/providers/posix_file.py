@@ -345,7 +345,8 @@ class PosixFileStorageProvider(BaseStorageProvider):
         if isinstance(f, str):
 
             def _invoke_api() -> int:
-                os.makedirs(os.path.dirname(f), exist_ok=True)
+                if os.path.dirname(f):
+                    os.makedirs(os.path.dirname(f), exist_ok=True)
                 atomic_write(source=remote_path, destination=f)
 
                 return filesize

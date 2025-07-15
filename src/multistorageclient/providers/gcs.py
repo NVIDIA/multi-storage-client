@@ -580,7 +580,8 @@ class GoogleStorageProvider(BaseStorageProvider):
         bucket, key = split_path(remote_path)
 
         if isinstance(f, str):
-            os.makedirs(os.path.dirname(f), exist_ok=True)
+            if os.path.dirname(f):
+                os.makedirs(os.path.dirname(f), exist_ok=True)
             # Download small files
             if metadata.content_length <= self._multipart_threshold:
                 with tempfile.NamedTemporaryFile(mode="wb", delete=False, dir=os.path.dirname(f), prefix=".") as fp:

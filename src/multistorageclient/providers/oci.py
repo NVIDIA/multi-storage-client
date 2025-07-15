@@ -527,7 +527,8 @@ class OracleStorageProvider(BaseStorageProvider):
         bucket, key = split_path(remote_path)
 
         if isinstance(f, str):
-            os.makedirs(os.path.dirname(f), exist_ok=True)
+            if os.path.dirname(f):
+                os.makedirs(os.path.dirname(f), exist_ok=True)
 
             def _invoke_api() -> int:
                 response = self._oci_client.get_object(
