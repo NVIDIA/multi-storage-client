@@ -19,14 +19,16 @@ import logging
 import os
 import threading
 from collections.abc import Iterator
+from io import BytesIO
 from pathlib import PurePosixPath
-from typing import Any, List, Optional, Union, cast
+from typing import IO, Any, List, Optional, Union, cast
 
 from .config import StorageClientConfig
 from .constants import MEMORY_LOAD_LIMIT
 from .file import ObjectFile, PosixFile
 from .instrumentation.utils import instrumented
 from .providers.posix_file import PosixFileStorageProvider
+from .replica_manager import ReplicaManager
 from .retry import retry
 from .sync import SyncManager
 from .types import MSC_PROTOCOL, ExecutionMode, ObjectMetadata, Range, Replica, SourceVersionCheckMode
@@ -53,6 +55,7 @@ class StorageClient:
         """
         self._initialize_providers(config)
         self._initialize_replicas(config.replicas)
+        self._replica_manager = ReplicaManager(self)
 
     def _committer_thread(self, commit_interval_minutes: float, stop_event: threading.Event):
         if not stop_event:
@@ -176,12 +179,24 @@ class StorageClient:
             data = self._cache_manager.read(path, source_version)
 
             if data is None:
-                data = self._storage_provider.get_object(path)
+                if len(self._replicas) > 0:
+                    data = self._read_from_replica_or_primary(path)
+                else:
+                    data = self._storage_provider.get_object(path)
                 self._cache_manager.set(path, data, source_version)
-
             return data
+        elif len(self._replicas) > 0:
+            return self._read_from_replica_or_primary(path)
 
         return self._storage_provider.get_object(path, byte_range=byte_range)
+
+    def _read_from_replica_or_primary(self, path: str) -> bytes:
+        """
+        Read from replica or primary storage provider. Use BytesIO to avoid creating temporary files.
+        """
+        file_obj = BytesIO()
+        self._replica_manager.download_from_replica_or_primary(path, file_obj, self._storage_provider)
+        return file_obj.getvalue()
 
     def info(self, path: str, strict: bool = True) -> ObjectMetadata:
         """
@@ -214,7 +229,7 @@ class StorageClient:
             raise  # Raise original FileNotFoundError
 
     @retry
-    def download_file(self, remote_path: str, local_path: str) -> None:
+    def download_file(self, remote_path: str, local_path: Union[str, IO]) -> None:
         """
         Downloads a file to the local file system.
 
@@ -228,6 +243,8 @@ class StorageClient:
                 raise FileNotFoundError(f"The file at path '{remote_path}' was not found by metadata provider.")
             metadata = self._metadata_provider.get_object_metadata(remote_path)
             self._storage_provider.download_file(real_path, local_path, metadata)
+        elif len(self._replicas) > 0:
+            self._replica_manager.download_from_replica_or_primary(remote_path, local_path, self._storage_provider)
         else:
             self._storage_provider.download_file(remote_path, local_path)
 
@@ -311,6 +328,9 @@ class StorageClient:
             metadata = self._storage_provider.get_object_metadata(dest_path)
             with self._metadata_provider_lock or contextlib.nullcontext():
                 self._metadata_provider.add_file(virtual_dest_path, metadata)
+
+        if len(self._replicas) > 0:
+            self._replica_manager.copy_to_replicas(src_path, dest_path)
 
     def delete(self, path: str, recursive: bool = False) -> None:
         """
@@ -528,6 +548,7 @@ class StorageClient:
         config = state["_config"]
         self._initialize_providers(config)
         self._initialize_replicas(config.replicas)
+        self._replica_manager = ReplicaManager(self)
         if self._metadata_provider:
             self._metadata_provider_lock = threading.Lock()
 

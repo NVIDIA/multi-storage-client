@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import os
 import tempfile
 import time
@@ -23,7 +24,9 @@ from typing import TypeVar
 import pytest
 
 import multistorageclient as msc
-from multistorageclient.types import MSC_PROTOCOL, SourceVersionCheckMode
+from multistorageclient.types import MSC_PROTOCOL, ExecutionMode, SourceVersionCheckMode
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 MB = 1024 * 1024
@@ -652,3 +655,116 @@ def test_open_with_source_version_check(profile: str):
             storage_provider.delete_object(key)
         except Exception:
             pass
+
+
+def _get_client_and_prefix(profile: str):
+    client, _ = msc.resolve_storage_client(f"msc://{profile}/")
+    prefix = f"test-upload-cache-{uuid.uuid4()}"
+    return client, prefix
+
+
+def _do_cleanup(client, prefix):
+    delete_files(client, prefix)
+    for replica in client.replicas:
+        delete_files(replica, prefix)
+
+
+def test_replica_read_using_msc_open(profile: str):
+    """Simple test to verify upload, cache, and replica functionality similar to avm1.py."""
+    client, prefix = _get_client_and_prefix(profile)
+    test_file_path = f"{prefix}/testfile.bin"
+    test_content = b"This is test content for upload, cache, and replica testing"
+
+    # Step 1: Upload a binary file to profile, verify file doesn't exist in cache or replica
+    with msc.open(f"msc://{profile}/{test_file_path}", "wb") as f:
+        f.write(test_content)
+
+    # Verify file exists in primary storage
+    assert client.is_file(test_file_path), f"File {test_file_path} should exist in primary storage"
+
+    # Step 2: Use msc.open to read binary file (similar to avm1.py)
+    with msc.open(f"msc://{profile}/{test_file_path}", "rb") as f:
+        f.read()  # Verify we can read from primary storage
+
+    # Step 3: Replicate uploaded file to replicas
+    client.sync_replicas(prefix + "/", execution_mode=ExecutionMode.LOCAL)
+
+    # Step 4: Verify file exists in cache and replica (if configured)
+    # Check if cache is configured and file is cached
+    assert client._cache_manager is not None, "Cache manager should be configured"
+
+    # Check if replicas are configured
+    assert hasattr(client, "replicas"), "Client should have replicas attribute"
+    assert client.replicas is not None, "Replicas should not be None"
+    assert len(client.replicas) > 0, "At least one replica should be configured"
+
+    # Verify each replica is properly configured and wait for uploads to complete
+    for replica in client.replicas:
+        assert hasattr(replica, "profile"), "Replica should have profile attribute"
+        assert replica.profile is not None, "Replica profile should not be None"
+
+    # Verify all replicas have the file after explicit sync
+    for replica in client.replicas:
+        assert replica.is_file(test_file_path), f"File {test_file_path} should exist in replica {replica.profile}"
+
+    # Step 5: Test reading from replicas using msc.open to verify replica functionality
+    # This should trigger replica-aware reading
+    with msc.open(f"msc://{profile}/{test_file_path}", "rb") as f:
+        content_from_replica = f.read()  # Verify we can read binary content from replica
+
+    # Verify binary content from replica matches original content
+    assert content_from_replica == test_content, (
+        f"Binary content from replica mismatch: expected {test_content}, got {content_from_replica}"
+    )
+
+    # Clean up
+    _do_cleanup(client, prefix + "/")
+
+
+def test_replica_read_using_msc_read(profile: str):
+    """Simple test to verify upload, cache, and replica functionality using storage_client.read method."""
+    client, prefix = _get_client_and_prefix(profile)
+    test_file_path = f"{prefix}/testfile.bin"
+    test_content = b"This is test content for upload, cache, and replica testing using read method"
+
+    # Step 1: Upload a binary file to profile using write method
+    client.write(test_file_path, test_content)
+
+    # Verify file exists in primary storage
+    assert client.is_file(test_file_path), f"File {test_file_path} should exist in primary storage"
+
+    # Step 2: Use storage_client.read to read binary file (instead of msc.open)
+    client.read(test_file_path)  # Verify we can read from primary storage
+
+    # Step 3: Replicate uploaded file to replicas
+    client.sync_replicas(prefix + "/", execution_mode=ExecutionMode.LOCAL)
+
+    # Step 4: Verify file exists in cache and replica (if configured)
+    # Check if cache is configured and file is cached
+    assert client._cache_manager is not None, "Cache manager should be configured"
+
+    # Check if replicas are configured
+    assert hasattr(client, "replicas"), "Client should have replicas attribute"
+    assert client.replicas is not None, "Replicas should not be None"
+    assert len(client.replicas) > 0, "At least one replica should be configured"
+
+    # Verify each replica is properly configured and wait for uploads to complete
+    for replica in client.replicas:
+        assert hasattr(replica, "profile"), "Replica should have profile attribute"
+        assert replica.profile is not None, "Replica profile should not be None"
+
+    # Verify all replicas have the file after explicit sync
+    for replica in client.replicas:
+        assert replica.is_file(test_file_path), f"File {test_file_path} should exist in replica {replica.profile}"
+
+    # Step 5: Test reading from replicas using client.read to verify replica functionality
+    # This should trigger replica-aware reading
+    content_from_replica = client.read(test_file_path)  # Verify we can read binary content from replica
+
+    # Verify binary content from replica matches original content
+    assert content_from_replica == test_content, (
+        f"Binary content from replica mismatch: expected {test_content}, got {content_from_replica}"
+    )
+
+    # Clean up
+    _do_cleanup(client, prefix + "/")

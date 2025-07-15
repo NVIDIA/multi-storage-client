@@ -130,7 +130,20 @@ def reset_globals():
     with shortcuts._STORAGE_CLIENT_CACHE_LOCK:
         shortcuts._STORAGE_CLIENT_CACHE.clear()
 
+    # Preserve MSC environment variables for testing
+    msc_num_processes = os.environ.get("MSC_NUM_PROCESSES")
+    msc_num_threads_per_process = os.environ.get("MSC_NUM_THREADS_PER_PROCESS")
+    msc_max_workers = os.environ.get("MSC_MAX_WORKERS")
+
     # Reset the environment variables before each test.
     os.environ.clear()
+
+    # Restore MSC environment variables
+    if msc_num_processes is not None:
+        os.environ["MSC_NUM_PROCESSES"] = msc_num_processes
+    if msc_num_threads_per_process is not None:
+        os.environ["MSC_NUM_THREADS_PER_PROCESS"] = msc_num_threads_per_process
+    if msc_max_workers is not None:
+        os.environ["MSC_MAX_WORKERS"] = msc_max_workers
 
     yield

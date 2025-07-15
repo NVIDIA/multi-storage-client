@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -31,7 +32,11 @@ def run_cli():
 
     def _run_cli(*args, expected_return_code=0):
         cmd = [sys.executable, "-m", "multistorageclient.commands.cli.main"] + list(args)
-        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        # Pass through existing environment variables to the subprocess
+        env = os.environ.copy()
+
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
 
         # Print output if return code doesn't match expected
         if result.returncode != expected_return_code:
