@@ -309,3 +309,191 @@ def test_autocommit(temp_data_store_type: type[tempdatastore.TemporaryDataStore]
             fname = f"folder/filename-{i}.txt"
             assert storage_client.is_file(fname)
             assert storage_client.open(fname, mode="r").read() == f"contents for {i}"
+
+
+def test_manifest_metadata_attribute_filtering():
+    """Test attribute filter support in manifest metadata provider."""
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        manifest_profile = "manifest"
+
+        storage_client = StorageClient(
+            config=StorageClientConfig.from_dict(
+                config_dict={
+                    "profiles": {
+                        manifest_profile: {
+                            **temp_data_store.profile_config_dict(),
+                            "metadata_provider": {
+                                "type": "manifest",
+                                "options": {
+                                    "manifest_path": DEFAULT_MANIFEST_BASE_DIR,
+                                    "writable": True,
+                                },
+                            },
+                        }
+                    }
+                },
+                profile=manifest_profile,
+            )
+        )
+
+        # Create test files with different attributes
+        test_files = [
+            {
+                "path": "models/model_v1.bin",
+                "content": b"model_v1_content",
+                "attributes": {
+                    "model_name": "gpt",
+                    "version": "1.0",
+                    "environment": "prod",
+                    "size": "large",
+                    "priority": "10",
+                },
+            },
+            {
+                "path": "models/model_v2.bin",
+                "content": b"model_v2_content",
+                "attributes": {
+                    "model_name": "gpt",
+                    "version": "2.0",
+                    "environment": "dev",
+                    "size": "small",
+                    "priority": "5",
+                },
+            },
+            {
+                "path": "data/dataset.bin",
+                "content": b"dataset_content",
+                "attributes": {
+                    "model_name": "bert",
+                    "version": "1.5",
+                    "environment": "test",
+                    "size": "medium",
+                    "priority": "8",
+                },
+            },
+            {
+                "path": "data/data_v1.bin",
+                "content": b"data_v1_content",
+                "attributes": {
+                    "model_name": "bert",
+                    "version": "1.0",
+                    "environment": "prod",
+                    "size": "large",
+                    "priority": "15",
+                },
+            },
+            {
+                "path": "config/settings.txt",
+                "content": b"settings_content",
+                "attributes": {
+                    "type": "config",
+                    "version": "0.5",
+                    "environment": "prod",
+                    "size": "small",
+                    "priority": "20",
+                },
+            },
+            {
+                "path": "cache/cache.tmp",
+                "content": b"cache_content",
+                "attributes": {
+                    "type": "cache",
+                    "version": "1.2",
+                    "environment": "dev",
+                    "size": "medium",
+                    "priority": "12",
+                },
+            },
+        ]
+
+        # Write all test files with attributes
+        for test_file in test_files:
+            storage_client.write(test_file["path"], test_file["content"], attributes=test_file["attributes"])
+
+        # Commit metadata to manifest
+        storage_client.commit_metadata()
+
+        # Test 1: list_objects with attribute filter expressions
+
+        # Test multiple filters (AND logic) - bert model in prod environment
+        results = list(
+            storage_client.list(attribute_filter_expression='(model_name = "bert" AND environment = "prod")')
+        )
+        assert len(results) == 1
+        result_paths = [r.key for r in results]
+        assert "data/data_v1.bin" in result_paths
+
+        # Test multiple filters (OR logic) - gpt or bert models
+        results = list(storage_client.list(attribute_filter_expression='(model_name = "gpt" OR model_name = "bert")'))
+        assert len(results) == 4  # All model files
+        result_paths = [r.key for r in results]
+        assert "models/model_v1.bin" in result_paths
+        assert "models/model_v2.bin" in result_paths
+        assert "data/dataset.bin" in result_paths
+        assert "data/data_v1.bin" in result_paths
+
+        # Test inequality filter - find files not in prod environment
+        results = list(storage_client.list(attribute_filter_expression='environment != "prod"'))
+        assert len(results) == 3  # dev + test + dev files
+        result_paths = [r.key for r in results]
+        assert "models/model_v2.bin" in result_paths  # dev
+        assert "data/dataset.bin" in result_paths  # test
+        assert "cache/cache.tmp" in result_paths  # dev
+
+        # Test string comparison (greater than) - priority > 10
+        results = list(storage_client.list(attribute_filter_expression='priority > "10"'))
+        assert len(results) == 3
+        result_paths = [r.key for r in results]
+        assert "data/data_v1.bin" in result_paths  # priority: 15
+        assert "config/settings.txt" in result_paths  # priority: 20
+        assert "cache/cache.tmp" in result_paths  # priority: 12
+
+        # Test numeric comparison (less than or equal) - priority <= 8
+        results = list(storage_client.list(attribute_filter_expression="priority <= 8.0"))
+        assert len(results) == 2
+        result_paths = [r.key for r in results]
+        assert "models/model_v2.bin" in result_paths  # priority: 5
+        assert "data/dataset.bin" in result_paths  # priority: 8
+
+        # Test empty filter (should return all files)
+        results = list(storage_client.list(attribute_filter_expression=""))
+        assert len(results) == 6
+
+        # Test 2: glob with attribute filter expressions
+
+        # Test glob with multiple filters (AND logic) - large files in prod
+        results = storage_client.glob("**/*", attribute_filter_expression='(size = "large" AND environment = "prod")')
+        assert len(results) == 2
+        result_paths = [path for path in results]
+        assert "models/model_v1.bin" in result_paths
+        assert "data/data_v1.bin" in result_paths
+
+        # Test filtering with mixed numeric and string comparisons
+        results = storage_client.glob("**/*", attribute_filter_expression='(priority > 7 AND size != "large")')
+        # Should return files with priority > 7 AND size != large
+        # That's: cache.tmp (12, medium), settings.txt (20, small)
+        assert len(results) >= 1
+        result_paths = [path for path in results]
+        assert "cache/cache.tmp" in result_paths or "config/settings.txt" in result_paths
+
+        # Test glob pattern specificity with filters - only .bin files that are small
+        results = storage_client.glob("**/*.bin", attribute_filter_expression='size = "small"')
+        assert len(results) == 1
+        assert "models/model_v2.bin" in results
+
+        # Test complex glob pattern with attribute filters
+        results = storage_client.glob("**/model_*.bin", attribute_filter_expression='environment != "test"')
+        assert len(results) == 2  # model_v1.bin (prod) and model_v2.bin (dev)
+        result_paths = [path for path in results]
+        assert "models/model_v1.bin" in result_paths
+        assert "models/model_v2.bin" in result_paths
+
+        # Test 3: Edge cases and error handling
+
+        # Test invalid filter format should raise error
+        with pytest.raises(ValueError, match="Invalid attribute filter expression"):
+            list(storage_client.list(attribute_filter_expression="incomplete_filter"))
+
+        # Test unsupported operator should raise error
+        with pytest.raises(ValueError, match="Invalid attribute filter expression"):
+            list(storage_client.list(attribute_filter_expression='model_name ~= "value"'))

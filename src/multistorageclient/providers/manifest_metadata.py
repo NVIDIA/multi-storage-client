@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from ..types import MetadataProvider, ObjectMetadata, StorageProvider
-from ..utils import glob
+from ..utils import create_attribute_filter_evaluator, glob, matches_attribute_filter_expression
 
 logger = logging.getLogger(__name__)
 
@@ -285,22 +285,36 @@ class ManifestMetadataProvider(MetadataProvider):
         include_directories: bool = False,
         attribute_filter_expression: Optional[str] = None,
     ) -> Iterator[ObjectMetadata]:
-        if attribute_filter_expression:
-            raise NotImplementedError("Attribute filter expressions are not supported for manifest metadata provider.")
+        """
+        List objects in the manifest.
 
+        :param prefix: The prefix to filter objects by.
+        :param start_after: The object to start after.
+        :param end_at: The object to end at.
+        :param include_directories: Whether to include directories.
+        :param attribute_filter_expression: The attribute filter expression to filter objects by.
+        """
         if (start_after is not None) and (end_at is not None) and not (start_after < end_at):
             raise ValueError(f"start_after ({start_after}) must be before end_at ({end_at})!")
 
         if prefix and not prefix.endswith("/"):
             prefix = prefix + "/"
 
+        # create evaluator for attribute filter expression if present
+        evaluator = (
+            create_attribute_filter_evaluator(attribute_filter_expression) if attribute_filter_expression else None
+        )
+
         # Note that this is a generator, not a tuple (there's no tuple comprehension).
         keys = (
             key
-            for key in self._files
+            for key, obj_metadata in self._files.items()
             if key.startswith(prefix)
             and (start_after is None or start_after < key)
             and (end_at is None or key <= end_at)
+            and (
+                evaluator is None or matches_attribute_filter_expression(obj_metadata, evaluator)
+            )  # filter by evaluator if present
         )
 
         pending_directory: Optional[ObjectMetadata] = None
@@ -348,10 +362,16 @@ class ManifestMetadataProvider(MetadataProvider):
             raise FileNotFoundError(f"Object {path} does not exist.")
 
     def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
-        if attribute_filter_expression:
-            raise NotImplementedError("Attribute filter expressions are not supported for manifest metadata provider.")
+        """
+        List objects in the manifest.
 
-        all_objects = [object.key for object in self.list_objects("")]
+        :param pattern: The pattern to filter objects by.
+        :param attribute_filter_expression: The attribute filter expression to filter objects by.
+        """
+
+        all_objects = [
+            object.key for object in self.list_objects("", attribute_filter_expression=attribute_filter_expression)
+        ]
         return [key for key in glob(all_objects, pattern)]
 
     def realpath(self, path: str) -> tuple[str, bool]:
@@ -387,7 +407,12 @@ class ManifestMetadataProvider(MetadataProvider):
 
         # Collect metadata for each object to write out in this part file.
         object_metadata = [
-            ObjectMetadata(key=file_path, content_length=metadata.content_length, last_modified=metadata.last_modified)
+            ObjectMetadata(
+                key=file_path,
+                content_length=metadata.content_length,
+                last_modified=metadata.last_modified,
+                metadata=metadata.metadata,
+            )
             for file_path, metadata in self._files.items()
         ]
         self._write_manifest_files(self._storage_provider, object_metadata)
