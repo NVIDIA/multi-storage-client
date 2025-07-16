@@ -139,5 +139,16 @@ async def test_rustclient_basic_operations(temp_data_store_type: Type[tempdatast
             with open(temp_file.name, "rb") as f:
                 assert f.read() == file_body_bytes
 
+        # Test download_multipart with a large file
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            temp_file.close()
+            await rust_client.download_multipart(large_file_path, temp_file.name)
+            assert os.path.getsize(temp_file.name) == large_file_size
+            # Assert file content is the same
+            with open(temp_file.name, "rb") as f:
+                downloaded = f.read()
+            assert downloaded == large_file_body
+
         # Delete the file.
         storage_client.delete(path=file_path)
+        storage_client.delete(path=large_file_path)

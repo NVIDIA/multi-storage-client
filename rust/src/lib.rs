@@ -19,10 +19,13 @@ use object_store::{ObjectStore, path::Path, PutPayload, WriteMultipart};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule};
 use pyo3_async_runtimes::tokio::future_into_py;
+use std::path::Path as StdPath;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::fs;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncSeekExt};
+use tokio::sync::{Semaphore, mpsc};
+use tempfile::NamedTempFile;
 
 #[derive(Error, Debug)]
 pub enum StorageError {
@@ -32,6 +35,8 @@ pub enum StorageError {
     IoError(#[from] std::io::Error),
     #[error("Configuration error: {0}")]
     ConfigError(String),
+    #[error("Temp file error: {0}")]
+    TempFileError(#[from] tempfile::PersistError),
 }
 
 impl From<object_store::Error> for StorageError {
@@ -260,6 +265,90 @@ impl RustClient {
 
             writer.finish().await.map_err(StorageError::from)?;
 
+            Ok(())
+        })
+    }
+
+
+    #[pyo3(signature = (remote_path, local_path))]
+    fn download_multipart<'p>(&self, py: Python<'p>, remote_path: &str, local_path: &str) -> PyResult<Bound<'p, PyAny>> {
+        let store = Arc::clone(&self.store);
+        let remote_path = Path::from(remote_path);
+        let local_path = local_path.to_string();
+        let max_concurrency = self.max_concurrency;
+        let multipart_chunksize = self.multipart_chunksize;
+
+        future_into_py(py, async move {
+            let result = store.head(&remote_path).await.map_err(StorageError::from)?;
+            let total_size = result.size;
+            
+            // Create the temp file in the same directory of local_path because tempfile.persist()
+            // does not support cross filesystem.
+            let target_path = StdPath::new(&local_path);
+            let temp_dir = target_path.parent().unwrap_or_else(|| StdPath::new("."));
+            let temp_file = NamedTempFile::new_in(temp_dir).map_err(StorageError::from)?;
+
+            let mut output_file = tokio::fs::File::from_std(temp_file.reopen().map_err(StorageError::from)?);
+            output_file.set_len(total_size).await.map_err(StorageError::from)?;
+            
+            let num_chunks = (total_size + multipart_chunksize as u64 - 1) / multipart_chunksize as u64;
+            
+            let semaphore = Arc::new(Semaphore::new(max_concurrency));
+            let (tx , mut rx): (
+                mpsc::Sender<Result<(u64, Vec<u8>), StorageError>>,
+                mpsc::Receiver<Result<(u64, Vec<u8>), StorageError>>,
+            ) = mpsc::channel(max_concurrency);
+            
+            // Start a task to process downloaded chunks in arrival order and write to file
+            let write_handle = tokio::task::spawn(async move {
+                while let Some(result) = rx.recv().await {
+                    match result {
+                        Ok((chunk_index, data)) => {
+                            output_file.seek(tokio::io::SeekFrom::Start(chunk_index as u64 * multipart_chunksize as u64)).await.map_err(StorageError::from)?;
+                            output_file.write_all(&data).await.map_err(StorageError::from)?;
+                        }
+                        Err(e) => {
+                            return Err(StorageError::from(e));
+                        }
+                    }
+                }
+                output_file.flush().await.map_err(StorageError::from)?;
+                output_file.sync_all().await.map_err(StorageError::from)?;
+                drop(output_file);
+
+                Ok::<(), StorageError>(())
+            });
+
+            // Download chunks in parallel
+            for chunk_index in 0..num_chunks {
+                let permit = semaphore.clone().acquire_owned().await.unwrap();
+                let store = Arc::clone(&store);
+                let remote_path = remote_path.clone();
+                let tx = tx.clone();
+                let start_offset = chunk_index * multipart_chunksize as u64;
+                let end_offset = std::cmp::min(start_offset + multipart_chunksize as u64, total_size);
+                
+                tokio::task::spawn(async move {
+                    let range = start_offset..end_offset;
+                    match store.get_range(&remote_path, range).await {
+                        Ok(result) => {
+                            let data = result.to_vec();
+                            let _ = tx.send(Ok((chunk_index, data))).await;
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Err(StorageError::from(e))).await;
+                        }
+                    }
+                    drop(permit);
+                });
+            }
+
+            drop(tx);
+
+            write_handle.await.unwrap()?;
+
+            temp_file.persist(&local_path).map_err(StorageError::from)?;
+            
             Ok(())
         })
     }

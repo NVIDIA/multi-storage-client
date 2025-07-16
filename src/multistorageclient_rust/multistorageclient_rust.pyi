@@ -77,3 +77,17 @@ class RustClient:
         :return: None. Raises an exception on failure.
         """
         ...
+
+    async def download_multipart(self, remote_path: str, local_path: str) -> Awaitable[None]:
+        """
+        Download an object from the store and save it to a local file using multipart download.
+
+        This method downloads large files by splitting them into smaller chunks and downloading
+        those chunks in parallel. This approach provides better performance for large files
+        compared to download() method.
+
+        :param remote_path: The destination path in the storage backend.
+        :param local_path: Path to the local file to upload.
+        :return: None. Raises an exception on failure.
+        """
+        ...

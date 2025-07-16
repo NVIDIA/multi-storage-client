@@ -774,13 +774,17 @@ class S3StorageProvider(BaseStorageProvider):
                 response = None
                 with tempfile.NamedTemporaryFile(mode="wb", delete=False, dir=os.path.dirname(f), prefix=".") as fp:
                     temp_file_path = fp.name
-                    # TODO: Add support for multipart download of rust client
-                    response = self._s3_client.download_fileobj(
-                        Bucket=bucket,
-                        Key=key,
-                        Fileobj=fp,
-                        Config=self._transfer_config,
-                    )
+                    if self._rust_client:
+                        response = run_async_rust_client_method(
+                            self._rust_client, "download_multipart", key, temp_file_path
+                        )
+                    else:
+                        response = self._s3_client.download_fileobj(
+                            Bucket=bucket,
+                            Key=key,
+                            Fileobj=fp,
+                            Config=self._transfer_config,
+                        )
 
                 # Extract and set x-trans-id if present
                 _extract_x_trans_id(response)

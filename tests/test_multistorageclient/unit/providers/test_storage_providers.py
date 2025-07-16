@@ -579,12 +579,12 @@ def test_storage_providers_with_rust_client(
         # Delete the file.
         storage_client.delete(path=file_path)
 
-        # Test Multipart Upload
+        # Test Multipart Upload and Download
         if storage_client._storage_provider._provider_name == "gcs":
             # GCS simulator does not support multipart uploads
-            large_file_body_bytes = b"\x00" * MEMORY_LOAD_LIMIT
+            large_file_body_bytes = os.urandom(MEMORY_LOAD_LIMIT)
         else:
-            large_file_body_bytes = b"\x00" * (MEMORY_LOAD_LIMIT + 1)
+            large_file_body_bytes = os.urandom(MEMORY_LOAD_LIMIT + 1)
         with tempfile.NamedTemporaryFile(delete=False) as temp_file:
             temp_file.write(large_file_body_bytes)
             temp_file.close()
@@ -594,6 +594,9 @@ def test_storage_providers_with_rust_client(
             temp_file.close()
             storage_client.download_file(remote_path=file_path, local_path=temp_file.name)
             assert os.path.getsize(temp_file.name) == len(large_file_body_bytes)
+            with open(temp_file.name, "rb") as f:
+                downloaded = f.read()
+            assert downloaded == large_file_body_bytes
 
         # Delete the file.
         storage_client.delete(path=file_path)
