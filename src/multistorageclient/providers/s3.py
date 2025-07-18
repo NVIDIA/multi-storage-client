@@ -51,12 +51,12 @@ _T = TypeVar("_T")
 
 BOTO3_MAX_POOL_CONNECTIONS = 32
 
-MB = 1024 * 1024
+MiB = 1024 * 1024
 
 # Python and Rust share the same multipart_threshold to keep the code simple.
-MULTIPART_THRESHOLD = 64 * MB
-MULTIPART_CHUNKSIZE = 32 * MB
-IO_CHUNKSIZE = 32 * MB
+MULTIPART_THRESHOLD = 64 * MiB
+MULTIPART_CHUNKSIZE = 32 * MiB
+IO_CHUNKSIZE = 32 * MiB
 # Python uses a lower default concurrency due to the GIL limiting true parallelism in threads.
 PYTHON_MAX_CONCURRENCY = 16
 RUST_MAX_CONCURRENCY = 32

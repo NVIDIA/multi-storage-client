@@ -15,6 +15,7 @@
 
 use bytes::Bytes;
 use object_store::aws::AmazonS3Builder;
+use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::{ObjectStore, path::Path, PutPayload, WriteMultipart};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule};
@@ -118,6 +119,68 @@ fn build_s3_store(configs: Option<&Bound<'_, PyDict>>) -> PyResult<(Arc<dyn Obje
     Ok((Arc::new(store), max_concurrency, multipart_chunksize))
 }
 
+
+fn build_gcs_store(configs: Option<&Bound<'_, PyDict>>) -> PyResult<(Arc<dyn ObjectStore>, usize, usize)> {
+    let mut builder = GoogleCloudStorageBuilder::new();
+
+    let configs = configs.ok_or_else(|| {
+        StorageError::ConfigError("Configuration dictionary is required for GCS provider.".to_string())
+    })?;
+
+    if let Some(bucket_val) = configs.get_item("bucket")? {
+        builder = builder.with_bucket_name(bucket_val.extract::<String>()?);
+    }
+
+    if let Some(service_account) = configs.get_item("service_account_key")? {
+        builder = builder.with_service_account_key(service_account.extract::<String>()?);
+    }
+
+    if let Some(service_account_path) = configs.get_item("service_account_path")? {
+        builder = builder.with_service_account_path(service_account_path.extract::<String>()?);
+    }
+
+    if let Some(application_credentials) = configs.get_item("application_credentials")? {
+        builder = builder.with_application_credentials(application_credentials.extract::<String>()?);
+    }
+
+    if let Some(skip_signature) = configs.get_item("skip_signature")? {
+        if skip_signature.extract::<bool>()? {
+            builder = builder.with_skip_signature(true);
+        }
+    }
+
+    if let Some(proxy_url) = configs.get_item("proxy_url")? {
+        builder = builder.with_proxy_url(proxy_url.extract::<String>()?);
+    }
+
+    if let Some(proxy_ca_certificate) = configs.get_item("proxy_ca_certificate")? {
+        builder = builder.with_proxy_ca_certificate(proxy_ca_certificate.extract::<String>()?);
+    }
+
+    if let Some(proxy_excludes) = configs.get_item("proxy_excludes")? {
+        builder = builder.with_proxy_excludes(proxy_excludes.extract::<String>()?);
+    }
+
+    if let Some(url) = configs.get_item("url")? {
+        builder = builder.with_url(url.extract::<String>()?);
+    }
+
+    let store = builder.build().map_err(StorageError::from)?;
+
+    let max_concurrency = if let Some(val) = configs.get_item("max_concurrency")? {
+        val.extract::<usize>()?
+    } else {
+        DEFAULT_MAX_CONCURRENCY
+    };
+    let multipart_chunksize = if let Some(val) = configs.get_item("multipart_chunksize")? {
+        val.extract::<usize>()?
+    } else {
+        DEFAULT_MULTIPART_CHUNKSIZE
+    };
+
+    Ok((Arc::new(store), max_concurrency, multipart_chunksize))
+}
+
 #[pyclass]
 pub struct RustClient {
     store: Arc<dyn ObjectStore>,
@@ -134,12 +197,15 @@ impl RustClient {
         configs: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Self> {
         let (store, max_concurrency, multipart_chunksize) = match provider.to_lowercase().as_str() {
-            "s3" => {
+            "s3" | "s8k" | "gcs_s3" => {
                 build_s3_store(configs)?
+            }
+            "gcs" => {
+                build_gcs_store(configs)?
             }
             _ => {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "Unsupported provider type: '{}'. Only 's3' is currently supported.",
+                    "Unsupported provider type: '{}'. Supported providers are: s3, s8k, gcs_s3, gcs",
                     provider
                 )));
             }

@@ -287,7 +287,7 @@ To address this limitation, MSC introduces an experimental Rust client, which ai
 To enable the Rust client, add the ``rust_client`` option to your storage provider configuration.
 
 .. note::
-   Currently, the Rust client is only supported for S3-compatible storage providers, including ``s3``, ``gcs_s3``, and ``s8k``.
+   Currently, the Rust client is supported for the following storage providers: ``s3``, ``s8k``, ``gcs_s3``, and ``gcs``.
 
 .. code-block:: yaml
    :caption: Example S3 storage provider configuration with Rust client.
@@ -299,7 +299,13 @@ To enable the Rust client, add the ``rust_client`` option to your storage provid
          options:
            base_path: my-bucket
            region_name: us-east-1
-           rust_client: {}
+           multipart_threshold: 16777216 # 16MiB
+           multipart_chunksize: 4194304 # 4MiB
+           io_chunksize: 4194304 # 4MiB
+           max_concurrency: 8
+           rust_client:
+             multipart_chunksize: 2097152 # 2MiB, Rust client supports a different multipart chunksize than the Python client
+             max_concurrency: 16 # Rust client supports a different multipart concurrency level than the Python client
 
 When the Rust client is enabled, it will replace Python implementations for the following storage provider operations:
 
@@ -309,10 +315,7 @@ When the Rust client is enabled, it will replace Python implementations for the 
 * :py:class:`multistorageclient.types.StorageProvider.download_file`
 
 .. note::
-   For `upload_file()` and `download_file()`, the Rust client is only used for files smaller than the `multipart_threshold`.
-   Larger files automatically fall back to the Python implementation to handle multipart uploads/downloads.
-   
-   For `put_object()` and `upload_file()`, if `attributes` is provided, the Rust client will not be used as well.
+   For `put_object()` and `upload_file()`, if `attributes` is provided, the Rust client will not be used.
 
 Other storage provider operations continue to use the Python implementation:
 

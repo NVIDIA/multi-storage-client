@@ -21,14 +21,14 @@ from multistorageclient.types import NotModifiedError, PreconditionFailedError
 
 
 @pytest.mark.parametrize("profile_name", ["test-gcs"])
-@pytest.mark.parametrize("config_suffix", [""])
+@pytest.mark.parametrize("config_suffix", ["", "-rust"])
 def test_gcs_shortcuts(profile_name, config_suffix):
     profile = profile_name + config_suffix
     common.test_shortcuts(profile)
 
 
 @pytest.mark.parametrize("profile_name", ["test-gcs"])
-@pytest.mark.parametrize("config_suffix", [""])
+@pytest.mark.parametrize("config_suffix", ["", "-rust"])
 def test_gcs_storage_client(profile_name, config_suffix):
     profile = profile_name + config_suffix
     common.test_storage_client(profile)
@@ -60,14 +60,14 @@ def test_gcs_attributes(profile_name):
 
 
 @pytest.mark.parametrize("profile_name", ["test-gcs-hmac"])
-@pytest.mark.parametrize("config_suffix", [""])
+@pytest.mark.parametrize("config_suffix", ["", "-rust"])
 def test_gcs_hmac_shortcuts(profile_name, config_suffix):
     profile = profile_name + config_suffix
     common.test_shortcuts(profile)
 
 
 @pytest.mark.parametrize("profile_name", ["test-gcs-hmac"])
-@pytest.mark.parametrize("config_suffix", [""])
+@pytest.mark.parametrize("config_suffix", ["", "-rust"])
 def test_gcs_hmac_storage_client(profile_name, config_suffix):
     profile = profile_name + config_suffix
     common.test_storage_client(profile)

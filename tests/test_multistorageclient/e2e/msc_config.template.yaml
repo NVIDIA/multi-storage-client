@@ -39,6 +39,35 @@ profiles:
         multipart_threshold: 16777216 # 16MB
         multipart_chunksize: 4194304 # 4MB
         io_chunksize: 4194304 # 4MB
+  test-gcs-rust:
+    storage_provider:
+      type: gcs
+      options:
+        base_path: nvdataplatformdev/msc-test
+        project_id: data-platform-dev
+        multipart_threshold: 16777216 # 16MB
+        multipart_chunksize: 4194304 # 4MB
+        io_chunksize: 4194304 # 4MB
+        rust_client:
+          multipart_chunksize: 4194304 # 4MB
+          max_concurrency: 16
+  test-gcs-hmac-rust:
+    credentials_provider:
+      type: S3Credentials
+      options:
+        access_key: "*****"
+        secret_key: "*****"
+    storage_provider:
+      type: gcs_s3 # Required instead of s3 since GCS Supports Only Signature Version 2, not Signature Version 4 (s3v4) (AWS current version)
+      options:
+        base_path: nvdataplatformdev/msc-test
+        endpoint_url: https://storage.googleapis.com
+        multipart_threshold: 16777216 # 16MB
+        multipart_chunksize: 4194304 # 4MB
+        io_chunksize: 4194304 # 4MB
+        rust_client:
+          multipart_chunksize: 4194304 # 4MB
+          max_concurrency: 16
   test-oci:
     storage_provider:
       type: oci

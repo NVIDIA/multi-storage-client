@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import io
+import logging
 import os
 import tempfile
 import time
@@ -28,6 +29,7 @@ from google.cloud.storage import transfer_manager
 from google.cloud.storage.exceptions import InvalidResponse
 from google.oauth2.credentials import Credentials as OAuth2Credentials
 
+from ..rust_utils import run_async_rust_client_method
 from ..telemetry import Telemetry
 from ..telemetry.attributes.base import AttributesProvider
 from ..types import (
@@ -50,12 +52,16 @@ _T = TypeVar("_T")
 
 PROVIDER = "gcs"
 
-MB = 1024 * 1024
+MiB = 1024 * 1024
 
-DEFAULT_MULTIPART_THRESHOLD = 512 * MB
-DEFAULT_MULTIPART_CHUNKSIZE = 256 * MB
-DEFAULT_IO_CHUNKSIZE = 256 * MB
-DEFAULT_MAX_CONCURRENCY = 8
+DEFAULT_MULTIPART_THRESHOLD = 512 * MiB
+DEFAULT_MULTIPART_CHUNKSIZE = 32 * MiB
+DEFAULT_IO_CHUNKSIZE = 32 * MiB
+# Python uses a lower default concurrency due to the GIL limiting true parallelism in threads.
+PYTHON_MAX_CONCURRENCY = 16
+RUST_MAX_CONCURRENCY = 32
+
+logger = logging.getLogger(__name__)
 
 
 class StringTokenSupplier(identity_pool.SubjectTokenSupplier):
@@ -140,7 +146,10 @@ class GoogleStorageProvider(BaseStorageProvider):
         self._multipart_threshold = kwargs.get("multipart_threshold", DEFAULT_MULTIPART_THRESHOLD)
         self._multipart_chunksize = kwargs.get("multipart_chunksize", DEFAULT_MULTIPART_CHUNKSIZE)
         self._io_chunksize = kwargs.get("io_chunksize", DEFAULT_IO_CHUNKSIZE)
-        self._max_concurrency = kwargs.get("max_concurrency", DEFAULT_MAX_CONCURRENCY)
+        self._max_concurrency = kwargs.get("max_concurrency", PYTHON_MAX_CONCURRENCY)
+        self._rust_client = None
+        if "rust_client" in kwargs:
+            self._rust_client = self._create_rust_client(kwargs.get("rust_client"))
 
     def _create_gcs_client(self) -> storage.Client:
         client_options = {}
@@ -168,6 +177,52 @@ class GoogleStorageProvider(BaseStorageProvider):
                 return storage.Client(project=self._project_id, credentials=creds, client_options=client_options)
         else:
             return storage.Client(project=self._project_id, client_options=client_options)
+
+    def _create_rust_client(self, rust_client_options: Optional[dict[str, Any]] = None):
+        from multistorageclient_rust import RustClient
+
+        configs = {}
+
+        if self._credentials_provider or self._endpoint_url:
+            # Workload Identity Federation (WIF) is not supported by the rust client:
+            # https://github.com/apache/arrow-rs-object-store/issues/258
+            logger.warning(
+                "Rust client for GCS only supports Application Default Credentials or Service Account Key, skipping rust client"
+            )
+            return None
+
+        # Use environment variables if available, could be overridden by rust_client_options
+        if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+            configs["application_credentials"] = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        if os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY"):
+            configs["service_account_key"] = os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY")
+        if os.getenv("GOOGLE_SERVICE_ACCOUNT"):
+            configs["service_account_path"] = os.getenv("GOOGLE_SERVICE_ACCOUNT")
+        if os.getenv("GOOGLE_SERVICE_ACCOUNT_PATH"):
+            configs["service_account_path"] = os.getenv("GOOGLE_SERVICE_ACCOUNT_PATH")
+
+        if rust_client_options:
+            if "application_credentials" in rust_client_options:
+                configs["application_credentials"] = rust_client_options["application_credentials"]
+            if "service_account_key" in rust_client_options:
+                configs["service_account_key"] = rust_client_options["service_account_key"]
+            if "service_account_path" in rust_client_options:
+                configs["service_account_path"] = rust_client_options["service_account_path"]
+            if "skip_signature" in rust_client_options:
+                configs["skip_signature"] = rust_client_options["skip_signature"]
+            configs["max_concurrency"] = rust_client_options.get("max_concurrency", RUST_MAX_CONCURRENCY)
+            configs["multipart_chunksize"] = rust_client_options.get("multipart_chunksize", DEFAULT_MULTIPART_CHUNKSIZE)
+
+        if rust_client_options and "bucket" in rust_client_options:
+            configs["bucket"] = rust_client_options["bucket"]
+        else:
+            bucket, _ = split_path(self._base_path)
+            configs["bucket"] = bucket
+
+        return RustClient(
+            provider=PROVIDER,
+            configs=configs,
+        )
 
     def _refresh_gcs_client_if_needed(self) -> None:
         """
@@ -299,7 +354,16 @@ class GoogleStorageProvider(BaseStorageProvider):
             if validated_attributes:
                 blob.metadata = validated_attributes
 
-            blob.upload_from_string(body, **kwargs)
+            if (
+                self._rust_client
+                # Rust client doesn't support creating objects with trailing /, see https://github.com/apache/arrow-rs/issues/7026
+                and not path.endswith("/")
+                and not kwargs
+                and not validated_attributes
+            ):
+                run_async_rust_client_method(self._rust_client, "put", key, body)
+            else:
+                blob.upload_from_string(body, **kwargs)
 
             return len(body)
 
@@ -313,10 +377,19 @@ class GoogleStorageProvider(BaseStorageProvider):
             bucket_obj = self._gcs_client.bucket(bucket)
             blob = bucket_obj.blob(key)
             if byte_range:
-                return blob.download_as_bytes(
-                    start=byte_range.offset, end=byte_range.offset + byte_range.size - 1, single_shot_download=True
-                )
-            return blob.download_as_bytes(single_shot_download=True)
+                if self._rust_client:
+                    return run_async_rust_client_method(
+                        self._rust_client, "get", key, byte_range.offset, byte_range.offset + byte_range.size - 1
+                    )
+                else:
+                    return blob.download_as_bytes(
+                        start=byte_range.offset, end=byte_range.offset + byte_range.size - 1, single_shot_download=True
+                    )
+            else:
+                if self._rust_client:
+                    return run_async_rust_client_method(self._rust_client, "get", key)
+                else:
+                    return blob.download_as_bytes(single_shot_download=True)
 
         return self._collect_metrics(_invoke_api, operation="GET", bucket=bucket, key=key)
 
@@ -503,22 +576,28 @@ class GoogleStorageProvider(BaseStorageProvider):
 
             # Upload small files
             if file_size <= self._multipart_threshold:
-                with open(f, "rb") as fp:
-                    self._put_object(remote_path, fp.read(), attributes=attributes)
+                if self._rust_client and not attributes:
+                    run_async_rust_client_method(self._rust_client, "upload", f, key)
+                else:
+                    with open(f, "rb") as fp:
+                        self._put_object(remote_path, fp.read(), attributes=attributes)
                 return file_size
 
             # Upload large files using transfer manager
             def _invoke_api() -> int:
-                bucket_obj = self._gcs_client.bucket(bucket)
-                blob = bucket_obj.blob(key)
-                blob.metadata = validate_attributes(attributes)
-                transfer_manager.upload_chunks_concurrently(
-                    f,
-                    blob,
-                    chunk_size=self._multipart_chunksize,
-                    max_workers=self._max_concurrency,
-                    worker_type=transfer_manager.THREAD,
-                )
+                if self._rust_client and not attributes:
+                    run_async_rust_client_method(self._rust_client, "upload_multipart", f, key)
+                else:
+                    bucket_obj = self._gcs_client.bucket(bucket)
+                    blob = bucket_obj.blob(key)
+                    blob.metadata = validate_attributes(attributes)
+                    transfer_manager.upload_chunks_concurrently(
+                        f,
+                        blob,
+                        chunk_size=self._multipart_chunksize,
+                        max_workers=self._max_concurrency,
+                        worker_type=transfer_manager.THREAD,
+                    )
 
                 return file_size
 
@@ -584,27 +663,32 @@ class GoogleStorageProvider(BaseStorageProvider):
                 os.makedirs(os.path.dirname(f), exist_ok=True)
             # Download small files
             if metadata.content_length <= self._multipart_threshold:
-                with tempfile.NamedTemporaryFile(mode="wb", delete=False, dir=os.path.dirname(f), prefix=".") as fp:
-                    temp_file_path = fp.name
-                    fp.write(self._get_object(remote_path))
-                os.rename(src=temp_file_path, dst=f)
+                if self._rust_client:
+                    run_async_rust_client_method(self._rust_client, "download", key, f)
+                else:
+                    with tempfile.NamedTemporaryFile(mode="wb", delete=False, dir=os.path.dirname(f), prefix=".") as fp:
+                        temp_file_path = fp.name
+                        fp.write(self._get_object(remote_path))
+                    os.rename(src=temp_file_path, dst=f)
                 return metadata.content_length
 
             # Download large files using transfer manager
             def _invoke_api() -> int:
                 bucket_obj = self._gcs_client.bucket(bucket)
                 blob = bucket_obj.blob(key)
-
-                with tempfile.NamedTemporaryFile(mode="wb", delete=False, dir=os.path.dirname(f), prefix=".") as fp:
-                    temp_file_path = fp.name
-                    transfer_manager.download_chunks_concurrently(
-                        blob,
-                        temp_file_path,
-                        chunk_size=self._io_chunksize,
-                        max_workers=self._max_concurrency,
-                        worker_type=transfer_manager.THREAD,
-                    )
-                os.rename(src=temp_file_path, dst=f)
+                if self._rust_client:
+                    run_async_rust_client_method(self._rust_client, "download_multipart", key, f)
+                else:
+                    with tempfile.NamedTemporaryFile(mode="wb", delete=False, dir=os.path.dirname(f), prefix=".") as fp:
+                        temp_file_path = fp.name
+                        transfer_manager.download_chunks_concurrently(
+                            blob,
+                            temp_file_path,
+                            chunk_size=self._io_chunksize,
+                            max_workers=self._max_concurrency,
+                            worker_type=transfer_manager.THREAD,
+                        )
+                    os.rename(src=temp_file_path, dst=f)
 
                 return metadata.content_length
 
