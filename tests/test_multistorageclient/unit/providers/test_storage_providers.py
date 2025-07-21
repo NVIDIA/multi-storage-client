@@ -600,3 +600,45 @@ def test_storage_providers_with_rust_client(
 
         # Delete the file.
         storage_client.delete(path=file_path)
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryAWSS3Bucket],
+        [tempdatastore.TemporarySwiftStackBucket],
+    ],
+)
+def test_storage_providers_with_rust_client_bucket_override(
+    temp_data_store_type: type[Union[tempdatastore.TemporaryAWSS3Bucket, tempdatastore.TemporarySwiftStackBucket]],
+):
+    with temp_data_store_type(enable_rust_client=True) as temp_data_store:
+        profile = "data"
+        config_dict = {"profiles": {profile: temp_data_store.profile_config_dict()}}
+        # Extract the base_path from the config_dict
+        base_path = config_dict["profiles"][profile]["storage_provider"]["options"]["base_path"]
+        # Reset the base_path in the config_dict to "/"
+        config_dict["profiles"][profile]["storage_provider"]["options"]["base_path"] = "/"
+        # Add the bucket name to the config_dict for the rust client
+        bucket_name = base_path.split("/")[0]
+        config_dict["profiles"][profile]["storage_provider"]["options"]["rust_client"]["bucket"] = bucket_name
+
+        storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
+        file_extension = ".txt"
+        # Path uses full bucket name, plus add a random string to avoid tests conflicts
+        file_path_fragments = [bucket_name, f"{uuid.uuid4().hex}-prefix", "infix", f"suffix{file_extension}"]
+        file_path = os.path.join(*file_path_fragments)
+        file_body_bytes = b"\x00\x01\x02" * 3
+
+        # Write a file.
+        storage_client.write(path=file_path, body=file_body_bytes)
+
+        # Check the file contents.
+        assert storage_client.read(path=file_path) == file_body_bytes
+
+        # Test range read
+        result = storage_client.read(path=file_path, byte_range=Range(1, 4))
+        assert result == file_body_bytes[1:4]
+
+        # Delete the file.
+        storage_client.delete(path=file_path)

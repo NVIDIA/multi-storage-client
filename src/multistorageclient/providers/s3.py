@@ -259,8 +259,12 @@ class S3StorageProvider(BaseStorageProvider):
         if self._region_name:
             configs["region_name"] = self._region_name
 
-        bucket, _ = split_path(self._base_path)
-        configs["bucket"] = bucket
+        # If the user specifies a bucket, use it. Otherwise, use the base path.
+        if rust_client_options and "bucket" in rust_client_options:
+            configs["bucket"] = rust_client_options["bucket"]
+        else:
+            bucket, _ = split_path(self._base_path)
+            configs["bucket"] = bucket
 
         if self._endpoint_url:
             configs["endpoint_url"] = self._endpoint_url
