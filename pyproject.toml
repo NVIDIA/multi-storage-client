@@ -1,6 +1,6 @@
 [build-system]
 requires = [
-    "maturin~=1.9"
+    "maturin>=1.9.1,<2"
 ]
 build-backend = "maturin"
 
@@ -13,7 +13,7 @@ authors = [
 ]
 license = "Apache-2.0"
 readme = "README.md"
-requires-python = "~=3.9"
+requires-python = ">=3.9,<4"
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Rust",
@@ -27,17 +27,17 @@ classifiers = [
     "Programming Language :: Python :: 3.13"
 ]
 dependencies = [
-    "filelock~=3.14",
-    "jmespath~=1.0.1",
-    "jsonschema~=4.0",
-    "python-dateutil~=2.8",
-    "pyyaml~=6.0.1",
-    "opentelemetry-api~=1.24",
-    "xattr~=1.1.4",
-    "wcmatch~=10.0",
-    "tqdm~=4.27",
-    "lark~=1.2.2",
-    "tabulate~=0.9.0"
+    "filelock>=3.14,<4",
+    "jmespath>=1.0.1,<2",
+    "jsonschema>=4,<5",
+    "python-dateutil>=2.8,<3",
+    "pyyaml>=6.0.1,<7",
+    "opentelemetry-api>=1.24,<2",
+    "xattr>=1.1.4,<2",
+    "wcmatch>=10,<11",
+    "tqdm>=4.27,<5",
+    "lark>=1.2.2,<2",
+    "tabulate>=0.9,<0.10"
 ]
 
 [project.urls]
@@ -47,30 +47,30 @@ documentation = "https://nvidia.github.io/multi-storage-client/"
 [project.optional-dependencies]
 # Observability.
 observability-otel = [
-    "opentelemetry-sdk~=1.24",
-    "opentelemetry-exporter-otlp-proto-http~=1.24",
-    "datasketches~=5.1"
+    "opentelemetry-sdk>=1.24,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.24,<2",
+    "datasketches>=5.1,<6"
 ]
 
 msal = [
-    "msal~=1.31.1"
+    "msal>=1.31.1,<2"
 ]
 
 # Storage providers.
 aistore = [
-    "aistore~=1.14"
+    "aistore>=1.14,<2"
 ]
 azure-storage-blob = [
-    "azure-storage-blob~=12.17"
+    "azure-storage-blob>=12.17,<13"
 ]
 boto3 = [
-    "boto3~=1.36"
+    "boto3>=1.36,<2"
 ]
 google-cloud-storage = [
-    "google-cloud-storage~=3.2"
+    "google-cloud-storage>=3.2,<4"
 ]
 oci = [
-    "oci~=2.150.0"
+    "oci>=2.150,<3"
 ]
 
 # Higher-level libraries.
@@ -78,37 +78,37 @@ fsspec = [
     "fsspec>=2023.9.0"
 ]
 numpy = [
-    "numpy~=2.0"
+    "numpy>=2,<3"
 ]
 torch = [
-    "torch~=2.7"
+    "torch>=2.7,<3"
 ]
 xarray = [
     "xarray>=2024.07.0"
 ]
 zarr = [
-    "zarr~=2.15"
+    "zarr>=2.15,<3"
 ]
 ray = [
-    "ray~=2.34.0"
+    "ray>=2.34,<3"
 ]
 
 [dependency-groups]
 dev = [
-    "types-PyYAML~=6.0.1",
-    "types-python-dateutil~=2.8",
-    "types-requests~=2.25",
-    "maturin[zig]~=1.9",
-    "pytest~=8.3.4",
-    "pytest-asyncio~=0.25.3",
-    "pytest-cov~=6.0.0",
-    "pytest-forked~=1.6",
-    "pytest-stress~=1.0.1",
-    "pytest-xdist[psutil]~=3.6.1",
-    "coverage[toml]~=7.6.12",
-    "sphinx~=7.4.7",
-    "sphinx-copybutton~=0.5.1",
-    "sphinx-pyproject~=0.3",
+    "types-PyYAML>=6.0.1,<7",
+    "types-python-dateutil>=2.8,<3",
+    "types-requests>=2.25,<3",
+    "maturin[zig]>=1.9.1,<2",
+    "pytest>=8.4.1,<9",
+    "pytest-asyncio>=1.1,<2",
+    "pytest-cov>=6.2.1,<7",
+    "pytest-forked>=1.6,<2",
+    "pytest-stress>=1.0.1,<2",
+    "pytest-xdist[psutil]>=3.8,<4",
+    "coverage[toml]>=7.9.2,<8",
+    "sphinx>=7.4.7,<8",
+    "sphinx-copybutton>=0.5.2,<0.6",
+    "sphinx-pyproject>=0.3,<0.4",
     "furo>=2024.8.6"
 ]
 
