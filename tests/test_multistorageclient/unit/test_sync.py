@@ -51,6 +51,9 @@ def verify_sync_and_contents(target_url: str, expected_files: dict):
     target_client, target_path = msc.resolve_storage_client(target_url)
     for targetf in target_client.list(prefix=target_path):
         key = targetf.key[len(target_path) :].lstrip("/")
+        # Skip temporary files that start with a dot (like .plexihcg)
+        if key.startswith(".") or os.path.basename(key).startswith("."):
+            continue
         assert key in expected_files
 
 

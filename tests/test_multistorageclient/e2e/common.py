@@ -768,3 +768,114 @@ def test_replica_read_using_msc_read(profile: str):
 
     # Clean up
     _do_cleanup(client, prefix + "/")
+
+
+def test_upload_cache_replica_using_open(profile: str):
+    """Simple test to verify upload, cache, and replica functionality similar to avm1.py."""
+    client, prefix = _get_client_and_prefix(profile)
+    test_file_path = f"{prefix}/testfile.txt"
+    test_content = b"This is test content for upload, cache, and replica testing"
+
+    # Step 1: Upload a file to profile, verify file doesn't exist in cache or replica
+    with msc.open(f"msc://{profile}/{test_file_path}", "wb") as f:
+        f.write(test_content)
+
+    # Verify file exists in primary storage
+    assert client.is_file(test_file_path), f"File {test_file_path} should exist in primary storage"
+
+    # Step 2: Use msc.open to read file (similar to avm1.py)
+    with msc.open(f"msc://{profile}/{test_file_path}", "rb") as f:
+        content = f.read()
+
+    # Verify content matches
+    assert content == test_content, f"Content mismatch: expected {test_content}, got {content}"
+    assert len(content) == len(test_content), (
+        f"Content length mismatch: expected {len(test_content)}, got {len(content)}"
+    )
+
+    # Step 3: Verify file exists in cache and replica (if configured)
+    # Check if cache is configured and file is cached
+    assert client._cache_manager is not None, "Cache manager should be configured"
+
+    # Check if replicas are configured
+    assert hasattr(client, "replicas"), "Client should have replicas attribute"
+    assert client.replicas is not None, "Replicas should not be None"
+    assert len(client.replicas) > 0, "At least one replica should be configured"
+
+    # Verify each replica is properly configured and wait for uploads to complete
+    for replica in client.replicas:
+        assert hasattr(replica, "profile"), "Replica should have profile attribute"
+        assert replica.profile is not None, "Replica profile should not be None"
+
+    # Wait for file to appear in all replicas (background upload might still be running)
+    wait(
+        waitable=lambda: all(replica.is_file(test_file_path) for replica in client.replicas),
+        should_wait=lambda all_exist: not all_exist,
+        max_attempts=3,
+        attempt_interval_seconds=1,
+    )
+
+    # Verify all replicas have the file
+    for replica in client.replicas:
+        assert replica.is_file(test_file_path), f"File {test_file_path} should exist in replica {replica.profile}"
+
+    # Clean up
+    _do_cleanup(client, prefix + "/")
+
+
+def test_upload_cache_replica_using_read(profile: str):
+    """Simple test to verify upload, cache, and replica functionality using storage_client.read method."""
+    client, prefix = _get_client_and_prefix(profile)
+    test_file_path = f"{prefix}/testfile.txt"
+    test_content = b"This is test content for upload, cache, and replica testing using read method"
+
+    # Step 1: Upload a file to profile using write method
+    client.write(test_file_path, test_content)
+
+    # Verify file exists in primary storage
+    assert client.is_file(test_file_path), f"File {test_file_path} should exist in primary storage"
+
+    # Step 2: Use storage_client.read to read file (instead of msc.open)
+    content = client.read(test_file_path)
+
+    # Verify content matches
+    assert content == test_content, f"Content mismatch: expected {test_content}, got {content}"
+    assert len(content) == len(test_content), (
+        f"Content length mismatch: expected {len(test_content)}, got {len(content)}"
+    )
+
+    # Step 3: Verify file exists in cache and replica (if configured)
+    # Check if cache is configured and file is cached
+    assert client._cache_manager is not None, "Cache manager should be configured"
+
+    # Check if replicas are configured
+    assert hasattr(client, "replicas"), "Client should have replicas attribute"
+    assert client.replicas is not None, "Replicas should not be None"
+    assert len(client.replicas) > 0, "At least one replica should be configured"
+
+    # Verify each replica is properly configured and wait for uploads to complete
+    for replica in client.replicas:
+        assert hasattr(replica, "profile"), "Replica should have profile attribute"
+        assert replica.profile is not None, "Replica profile should not be None"
+
+    # Wait for file to appear in all replicas (background upload might still be running)
+    wait(
+        waitable=lambda: all(replica.is_file(test_file_path) for replica in client.replicas),
+        should_wait=lambda all_exist: not all_exist,
+        max_attempts=3,
+        attempt_interval_seconds=1,
+    )
+
+    # Verify all replicas have the file
+    for replica in client.replicas:
+        assert replica.is_file(test_file_path), f"File {test_file_path} should exist in replica {replica.profile}"
+
+    # Step 4: Test reading from replicas by reading the file again
+    # This should trigger replica-aware reading
+    content_second_read = client.read(test_file_path)
+    assert content_second_read == test_content, (
+        f"Second read content mismatch: expected {test_content}, got {content_second_read}"
+    )
+
+    # Clean up
+    _do_cleanup(client, prefix + "/")

@@ -13,8 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
+import atexit
 import logging
+import os
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO, StringIO
 from typing import IO, Union
 
 from .types import StorageProvider
@@ -22,20 +26,21 @@ from .types import StorageProvider
 logger = logging.getLogger(__name__)
 
 
+# multiprocessing.cpu_count() can easily return 64/128 on modern servers, spawning that many I/O threads per process.
+# The async uploads are network-bound, so such a large pool wastes memory and harms context-switch performance.
+DEFAULT_REPLICA_UPLOAD_WORKERS = 8
+
+
 class ReplicaManager:
     """
     Manages replica operations for storage clients.
-
-    This class encapsulates replica functionality including:
-    - Downloading from replicas with fallback to primary
     """
 
-    def __init__(self, storage_client):
-        """
-        Initialize the ReplicaManager.
+    threads = os.getenv("MSC_REPLICA_UPLOAD_THREADS")
+    worker_count = DEFAULT_REPLICA_UPLOAD_WORKERS if threads is None or int(threads) <= 0 else int(threads)
+    _replica_upload_executor = ThreadPoolExecutor(max_workers=worker_count)
 
-        :param storage_client: The storage client instance that owns this replica manager
-        """
+    def __init__(self, storage_client):
         self._storage_client = storage_client
 
     def download_from_replica_or_primary(
@@ -43,24 +48,20 @@ class ReplicaManager:
     ) -> None:
         """Download the file from replicas, falling back to the primary provider.
 
-        The method iterates over configured replicas. The first replica that
-        reports the object exists is used to download the data. If no replica
-        contains the object, the primary *storage_provider* performs the
-        download.
-
-        No replica upload or synchronisation is performed by this method.
-
-        :param remote_path: Remote object path to fetch.
-        :param file: Local path or writable file-like object that will receive the content.
-        :param storage_provider: Storage provider to use for downloading if no replica contains the object.
+        :param remote_path: path to the file to download
+        :param file: file-like object or string path
+        :param storage_provider: storage provider to use if the file is not found in the replicas
         """
         file_exists = False
+        replicas_that_need_updates = []
+
         for replica_client in self._storage_client.replicas:
             try:
                 if replica_client.is_file(remote_path):
                     replica_client.download_file(remote_path, file)
                     file_exists = True
                     break
+                replicas_that_need_updates.append(replica_client)
             except FileNotFoundError:
                 logger.error(f"File not found in replica: {remote_path}")
                 continue
@@ -69,19 +70,95 @@ class ReplicaManager:
                 continue
 
         if not file_exists:
-            # Use the storage provider's public download_file method to ensure proper path handling
             storage_provider.download_file(remote_path, file)
 
         if hasattr(file, "seek"):
             file.seek(0)  # type: ignore
 
+        if replicas_that_need_updates:
+            # Handle file object conversion
+            local_file_path, created_temp = self._prepare_file_for_upload(file)
+
+            # Submit replica upload - (fire-and-forget, non-blocking)
+            self._replica_upload_executor.submit(
+                self._upload_to_replicas,
+                local_file_path,
+                remote_path,
+                replicas_that_need_updates,
+                created_temp,
+            )
+
+            logger.debug(
+                f"Submitted background replica upload for {remote_path} to {len(replicas_that_need_updates)} replicas"
+            )
+
+    def _prepare_file_for_upload(self, file: Union[str, IO]) -> tuple[str, bool]:
+        """Convert file object to path and determine if cleanup is needed.
+
+        :param file: file-like object or string path
+        :return: path to temporary file and boolean indicating if cleanup is needed
+        """
+        if isinstance(file, (BytesIO, StringIO)):
+            mode = "w" if isinstance(file, StringIO) else "wb"
+            with tempfile.NamedTemporaryFile(mode=mode, delete=False) as temp_file:
+                temp_file.write(file.getvalue())
+                return temp_file.name, True
+        elif isinstance(file, str):
+            return file, False
+        else:
+            if not getattr(file, "name", None):
+                raise TypeError("File-like object must expose a valid `.name`")
+            return file.name, False
+
+    def _upload_to_replicas(
+        self,
+        local_file_path: str,
+        remote_path: str,
+        replica_clients: list,
+        created_temp: bool = False,
+    ) -> None:
+        """Upload to replicas in background thread - no callbacks, just logging.
+
+        :param local_file_path: path to the local file to upload
+        :param remote_path: path to the file to upload
+        :param replica_clients: list of replica clients to upload to
+        :param created_temp: boolean indicating if the file was created as a temporary file (for cleanup)
+        """
+        try:
+            logger.debug(f"Starting replica upload for {remote_path}")
+
+            for replica_client in replica_clients:
+                try:
+                    replica_client.upload_file(remote_path, local_file_path)
+                    logger.debug(f"Successfully uploaded to replica {replica_client.profile}: {remote_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to upload to replica {replica_client.profile}: {e}")
+
+            logger.debug(f"Completed replica upload for {remote_path}")
+
+        except Exception as e:
+            logger.error(f"Replica upload process failed for {remote_path}: {e}", exc_info=True)
+        finally:
+            # Clean up temporary file if it was created
+            if created_temp and local_file_path and os.path.exists(local_file_path):
+                try:
+                    os.unlink(local_file_path)
+                    logger.debug(f"Cleaned up temporary file: {local_file_path}")
+                except OSError as e:
+                    logger.warning(f"Failed to delete temp file {local_file_path}: {e}")
+
     def copy_to_replicas(self, src_path: str, dest_path: str) -> None:
         """Copy the file to replicas.
 
-        The method iterates over configured replicas and copies the file to each replica.
-
-        :param src_path: Source object path to copy.
-        :param dest_path: Destination object path to copy to.
+        :param src_path: path to the file to copy
+        :param dest_path: path to the destination file
         """
         for replica_client in self._storage_client.replicas:
-            replica_client.copy(src_path, dest_path)
+            try:
+                replica_client.copy(src_path, dest_path)
+            except Exception as e:
+                logger.error(f"Failed to copy to replica {replica_client.profile}: {e}")
+
+
+# Ensure proper shutdown
+atexit.register(lambda: ReplicaManager._replica_upload_executor.shutdown(wait=True))
