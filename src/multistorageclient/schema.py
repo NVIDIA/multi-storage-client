@@ -150,6 +150,7 @@ PROFILE_SCHEMA = {
                 "additionalProperties": False,
             },
             "comment": {"type": "string"},
+            "caching_enabled": {"type": "boolean", "default": False},
         },
         "oneOf": [
             {

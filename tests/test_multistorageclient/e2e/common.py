@@ -770,7 +770,7 @@ def test_replica_read_using_msc_read(profile: str):
     _do_cleanup(client, prefix + "/")
 
 
-def test_upload_cache_replica_using_open(profile: str):
+def test_on_demand_replica_fetch_with_cache_using_open(profile: str):
     """Simple test to verify upload, cache, and replica functionality similar to avm1.py."""
     client, prefix = _get_client_and_prefix(profile)
     test_file_path = f"{prefix}/testfile.txt"
@@ -823,7 +823,7 @@ def test_upload_cache_replica_using_open(profile: str):
     _do_cleanup(client, prefix + "/")
 
 
-def test_upload_cache_replica_using_read(profile: str):
+def test_on_demand_replica_fetch_with_cache_using_read(profile: str):
     """Simple test to verify upload, cache, and replica functionality using storage_client.read method."""
     client, prefix = _get_client_and_prefix(profile)
     test_file_path = f"{prefix}/testfile.txt"

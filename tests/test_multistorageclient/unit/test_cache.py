@@ -500,6 +500,7 @@ def create_legacy_cache_config(profile_config, tmpdir):
 
 def create_new_cache_config(profile_config, tmpdir):
     """Helper function to create new cache config."""
+    profile_config["caching_enabled"] = True
     return {
         "profiles": {"s3-local": profile_config},
         "cache": {"size": "10M", "use_etag": False, "eviction_policy": {"policy": "random", "refresh_interval": 300}},
@@ -531,11 +532,12 @@ def test_storage_provider_cache_configs(config_creator, temp_data_store_type, tm
     """Test that both legacy and new cache config formats work correctly."""
     with temp_data_store_type() as temp_store:
         config_dict = config_creator(temp_store.profile_config_dict(), tmpdir)
+
         if config_creator == create_legacy_cache_config:
             with pytest.raises(RuntimeError, match="Failed to validate the config file"):
                 StorageClientConfig.from_dict(config_dict)
         else:
-            storage_config = StorageClientConfig.from_dict(config_dict)
+            storage_config = StorageClientConfig.from_dict(config_dict, profile="s3-local")
             real_storage_provider = storage_config.storage_provider
             for obj in real_storage_provider.list_objects(prefix="test_"):
                 real_storage_provider.delete_object(obj.key)
@@ -574,7 +576,7 @@ def test_storage_provider_invalid_cache_configs(
     with temp_data_store_type() as temp_store:
         config_dict = config_creator(temp_store.profile_config_dict(), tmpdir)
         with pytest.raises(expected_error, match=error_message):
-            StorageClientConfig.from_dict(config_dict)
+            StorageClientConfig.from_dict(config_dict, profile="s3-local")
 
 
 @pytest.fixture
@@ -602,7 +604,7 @@ def storage_provider_partial_cache_config(tmpdir):
 def test_storage_provider_partial_cache_config(storage_provider_partial_cache_config, temp_data_store_type):
     with temp_data_store_type() as temp_store:
         config_dict = storage_provider_partial_cache_config(temp_store.profile_config_dict())
-        storage_config = StorageClientConfig.from_dict(config_dict)
+        storage_config = StorageClientConfig.from_dict(config_dict, profile="s3-local")
         real_storage_provider = storage_config.storage_provider
         cache_manager = storage_config.cache_manager
 

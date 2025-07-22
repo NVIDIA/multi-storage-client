@@ -127,6 +127,7 @@ class TemporaryAWSS3Bucket(TemporaryDataStore):
                 "type": "S3Credentials",
                 "options": {"access_key": access_key, "secret_key": secret_key},
             },
+            "caching_enabled": True,
         }
 
         if enable_rust_client:
@@ -189,6 +190,7 @@ class TemporaryAzureBlobStorageContainer(TemporaryDataStore):
                 "type": "AzureCredentials",
                 "options": {"connection": connection_string},
             },
+            "caching_enabled": True,
         }
 
     def cleanup(self) -> None:

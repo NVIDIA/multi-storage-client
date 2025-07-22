@@ -565,7 +565,10 @@ class StorageClientConfigLoader:
         cache_config: Optional[CacheConfig] = None
         cache_manager: Optional[CacheManager] = None
 
-        if self._cache_dict is not None:
+        # Check if caching is enabled for this profile
+        caching_enabled = self._profile_dict.get("caching_enabled", False)
+
+        if self._cache_dict is not None and caching_enabled:
             tempdir = tempfile.gettempdir()
             default_location = os.path.join(tempdir, "msc_cache")
             location = self._cache_dict.get("location", default_location)
@@ -614,6 +617,10 @@ class StorageClientConfigLoader:
             )
 
             cache_manager = CacheManager(profile=self._profile, cache_config=cache_config)
+        elif self._cache_dict is not None and not caching_enabled:
+            logger.debug(f"Caching is disabled for profile '{self._profile}'")
+        elif self._cache_dict is None and caching_enabled:
+            logger.warning(f"Caching is enabled for profile '{self._profile}' but no cache configuration is provided")
 
         # retry options
         retry_config_dict = self._profile_dict.get("retry", None)

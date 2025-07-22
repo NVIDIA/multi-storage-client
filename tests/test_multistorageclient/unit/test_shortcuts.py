@@ -288,6 +288,9 @@ def test_msc_shortcuts(temp_data_store_type: type[tempdatastore.TemporaryDataSto
     msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
 
     with temp_data_store_type() as temp_data_store:
+        profile_config = temp_data_store.profile_config_dict()
+        profile_config["caching_enabled"] = True
+
         config.setup_msc_config(
             config_dict={
                 "profiles": {
@@ -322,7 +325,8 @@ def test_msc_shortcuts_with_s3_manifest(temp_data_store_type: type[tempdatastore
                     "manifest_path": DEFAULT_MANIFEST_BASE_DIR,
                     "writable": True,
                 },
-            }
+            },
+            "caching_enabled": True,
         }
         config.setup_msc_config(
             config_dict={
@@ -353,6 +357,7 @@ def test_msc_shortcuts_with_empty_base_path(temp_data_store_type: type[tempdatas
     with temp_data_store_type() as temp_data_store:
         profile_dict = temp_data_store.profile_config_dict()
         profile_dict["storage_provider"]["options"]["base_path"] = ""
+        profile_dict["caching_enabled"] = True
         config.setup_msc_config(
             config_dict={
                 "profiles": {
@@ -556,6 +561,9 @@ def test_open_with_source_version_check(temp_data_store_type: Type[tempdatastore
     msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
 
     with temp_data_store_type() as temp_data_store:
+        profile_config = temp_data_store.profile_config_dict()
+        profile_config["caching_enabled"] = True
+
         config.setup_msc_config(
             config_dict={
                 "profiles": {
@@ -613,6 +621,9 @@ def test_open_with_cache_config(temp_data_store_type: Type[tempdatastore.Tempora
     msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
     with temp_data_store_type() as temp_data_store:
         # Test with cache enabled and use_etag=True
+        profile_config = temp_data_store.profile_config_dict()
+        profile_config["caching_enabled"] = True
+
         config.setup_msc_config(
             config_dict={
                 "profiles": {
@@ -640,6 +651,9 @@ def test_open_with_cache_config(temp_data_store_type: Type[tempdatastore.Tempora
                 assert fp.read() == body
 
             # Test with cache enabled and use_etag=False
+            profile_config = temp_data_store.profile_config_dict()
+            profile_config["caching_enabled"] = True
+
             config.setup_msc_config(
                 config_dict={
                     "profiles": {

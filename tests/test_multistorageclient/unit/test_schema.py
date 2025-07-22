@@ -135,6 +135,48 @@ def test_validate_cache():
         )
 
 
+def test_validate_caching_enabled():
+    """Test that caching_enabled field is properly validated in profiles."""
+    default_storage_provider = {"storage_provider": {"type": "s3", "options": {"base_path": "bucket/prefix"}}}
+
+    # Valid: caching_enabled as boolean
+    validate_config(
+        {
+            "profiles": {
+                "default": {**default_storage_provider, "caching_enabled": True},
+            }
+        }
+    )
+
+    validate_config(
+        {
+            "profiles": {
+                "default": {**default_storage_provider, "caching_enabled": False},
+            }
+        }
+    )
+
+    # Invalid: caching_enabled as string
+    with pytest.raises(RuntimeError):
+        validate_config(
+            {
+                "profiles": {
+                    "default": {**default_storage_provider, "caching_enabled": "true"},
+                }
+            }
+        )
+
+    # Invalid: caching_enabled as integer
+    with pytest.raises(RuntimeError):
+        validate_config(
+            {
+                "profiles": {
+                    "default": {**default_storage_provider, "caching_enabled": 1},
+                }
+            }
+        )
+
+
 def test_validate_opentelemetry():
     default_storage_provider = {"storage_provider": {"type": "s3", "options": {"base_path": "bucket/prefix"}}}
 

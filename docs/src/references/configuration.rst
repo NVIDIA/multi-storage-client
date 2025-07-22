@@ -96,6 +96,9 @@ Each profile in the configuration defines how to interact with storage services 
      # Required. Provider-specific options
      options: <provider_options>
 
+   # Optional. Enable caching for this profile (default: false)
+   caching_enabled: <boolean>
+
 .. note::
    The configuration follows a consistent pattern across different providers:
 
@@ -107,6 +110,8 @@ Each profile in the configuration defines how to interact with storage services 
    * The ``options`` field contains provider-specific configuration that will be passed to the provider's constructor. The available options depend on the specific provider implementation being used.
 
    * Profile names must not start with an underscore (_) to prevent collision with :ref:`implicit profiles <implicit-profiles>`.
+
+   * The ``caching_enabled`` field controls whether caching is enabled for this specific profile. When set to ``true``, the profile will use the global cache configuration if provided. When set to ``false`` or omitted, caching is disabled for this profile regardless of global cache settings.
 
 Storage Providers
 =================
@@ -391,6 +396,11 @@ Cache
 The MSC cache configuration allows you to specify caching behavior for improved performance. The cache stores
 files locally for faster access on subsequent reads. The cache is shared across all profiles.
 
+.. note::
+   Caching can be controlled at the profile level using the ``caching_enabled`` field in the profile configuration.
+   When ``caching_enabled`` is set to ``true`` for a profile, that profile will use the global cache configuration.
+   When set to ``false`` or omitted, caching is disabled for that profile regardless of global cache settings.
+
 Options:
 
 * ``size``
@@ -409,7 +419,7 @@ Options:
 
   * ``policy``: Eviction policy type (``"fifo"``, ``"lru"``, ``"random"``)
 
-  * ``refresh_interval``: Interval in seconds to trigger cache eviction (optional, default: ``300``)
+  * ``refresh_interval``: Interval in seconds to trigger cache eviction (optional, default: ``"300"``)
 
 
 .. code-block:: yaml
@@ -428,6 +438,28 @@ Options:
      eviction_policy:
        policy: lru
        refresh_interval: 3600
+
+.. code-block:: yaml
+   :caption: Example configuration with profile-level caching control.
+
+   cache:
+     size: 500G
+     location: /path/to/msc_cache
+
+   profiles:
+     s3-profile:
+       storage_provider:
+         type: s3
+         options:
+           base_path: my-bucket
+       caching_enabled: true  # This profile will use caching
+     
+     azure-profile:
+       storage_provider:
+         type: azure
+         options:
+           base_path: my-container
+       caching_enabled: false  # This profile will not use caching
 
 *************
 OpenTelemetry

@@ -778,7 +778,12 @@ def test_legacy_cache_config():
 def test_cache_config_defaults():
     """Test cache config with minimal configuration."""
     config_dict = {
-        "profiles": {"test": {"storage_provider": {"type": "file", "options": {"base_path": "/tmp/test_storage"}}}},
+        "profiles": {
+            "test": {
+                "storage_provider": {"type": "file", "options": {"base_path": "/tmp/test_storage"}},
+                "caching_enabled": True,
+            }
+        },
         "cache": {"size": "100M", "eviction_policy": {"policy": "fifo"}},
     }
 
@@ -797,7 +802,12 @@ def test_invalid_cache_config():
     """Test invalid cache config combinations."""
     # Test invalid size format
     config_dict = {
-        "profiles": {"test": {"storage_provider": {"type": "file", "options": {"base_path": "/tmp/test_storage"}}}},
+        "profiles": {
+            "test": {
+                "storage_provider": {"type": "file", "options": {"base_path": "/tmp/test_storage"}},
+                "caching_enabled": True,
+            }
+        },
         "cache": {
             "size": "invalid",  # Invalid size format
             "use_etag": True,
@@ -811,7 +821,12 @@ def test_invalid_cache_config():
 
     # Relative location is not allowed
     config_dict = {
-        "profiles": {"test": {"storage_provider": {"type": "file", "options": {"base_path": "/tmp/test_storage"}}}},
+        "profiles": {
+            "test": {
+                "storage_provider": {"type": "file", "options": {"base_path": "/tmp/test_storage"}},
+                "caching_enabled": True,
+            }
+        },
         "cache": {
             "size": "200G",
             "use_etag": True,
@@ -1107,6 +1122,7 @@ def test_cache_backend_cache_path():
         "profiles": {
             "test": {
                 "storage_provider": {"type": "file", "options": {"base_path": "/tmp/test_storage"}},
+                "caching_enabled": True,
             }
         },
         "cache": {"size": "100M", "cache_backend": {"cache_path": "/tmp/new_cache_path"}},
@@ -1123,6 +1139,7 @@ def test_cache_backend_cache_path_without_location():
         "profiles": {
             "test": {
                 "storage_provider": {"type": "file", "options": {"base_path": "/tmp/test_storage"}},
+                "caching_enabled": True,
             }
         },
         "cache": {"size": "100M", "cache_backend": {"cache_path": "/tmp/cache_from_backend"}},
@@ -1139,6 +1156,7 @@ def test_cache_location_precedence():
         "profiles": {
             "test": {
                 "storage_provider": {"type": "file", "options": {"base_path": "/tmp/test_storage"}},
+                "caching_enabled": True,
             }
         },
         "cache": {
@@ -1160,6 +1178,7 @@ def test_cache_location_warning(caplog):
         "profiles": {
             "test": {
                 "storage_provider": {"type": "file", "options": {"base_path": "/tmp/test_storage"}},
+                "caching_enabled": True,
             }
         },
         "cache": {
@@ -1387,3 +1406,47 @@ def test_replica_mixed_priorities_with_gaps_is_allowed():
     # Check that priorities are correctly assigned as specified
     priorities = sorted([replica.read_priority for replica in config.replicas])
     assert priorities == [1, 5, 6]
+
+
+def test_caching_enabled_field():
+    """Test that caching_enabled field properly controls cache configuration."""
+    from multistorageclient.config import StorageClientConfig
+
+    # Test with caching enabled
+    config_dict = {
+        "profiles": {
+            "test-profile": {
+                "storage_provider": {"type": "s3", "options": {"base_path": "test-bucket"}},
+                "caching_enabled": True,
+            }
+        },
+        "cache": {
+            "size": "100M",
+            "location": "/tmp/test_cache",
+        },
+    }
+
+    config = StorageClientConfig.from_dict(config_dict, profile="test-profile")
+    assert config.cache_config is not None
+    assert config.cache_manager is not None
+    assert config.cache_config.size == "100M"
+    assert config.cache_config.location == "/tmp/test_cache"
+
+    # Test with caching disabled
+    config_dict["profiles"]["test-profile"]["caching_enabled"] = False
+    config = StorageClientConfig.from_dict(config_dict, profile="test-profile")
+    assert config.cache_config is None
+    assert config.cache_manager is None
+
+    # Test with caching_enabled omitted (should default to False)
+    del config_dict["profiles"]["test-profile"]["caching_enabled"]
+    config = StorageClientConfig.from_dict(config_dict, profile="test-profile")
+    assert config.cache_config is None
+    assert config.cache_manager is None
+
+    # Test with caching_enabled True but no cache config (should warn)
+    config_dict["profiles"]["test-profile"]["caching_enabled"] = True
+    del config_dict["cache"]
+    config = StorageClientConfig.from_dict(config_dict, profile="test-profile")
+    assert config.cache_config is None
+    assert config.cache_manager is None

@@ -85,3 +85,15 @@ def test_s3_replica_read_using_msc_open(profile_name):
 def test_s3_replica_read_using_msc_read(profile_name):
     profile = profile_name
     common.test_replica_read_using_msc_read(profile)
+
+
+@pytest.mark.parametrize("profile_name", ["test-s3-iad-with-replica"])
+def test_s3_on_demand_replica_fetch_with_cache_using_open(profile_name):
+    profile = profile_name
+    common.test_on_demand_replica_fetch_with_cache_using_open(profile)
+
+
+@pytest.mark.parametrize("profile_name", ["test-s3-iad-with-replica"])
+def test_s3_on_demand_replica_fetch_with_cache_using_read(profile_name):
+    profile = profile_name
+    common.test_on_demand_replica_fetch_with_cache_using_read(profile)
