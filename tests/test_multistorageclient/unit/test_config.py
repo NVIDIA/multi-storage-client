@@ -20,6 +20,7 @@ import tempfile
 from typing import cast
 
 import pytest
+import yaml
 
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.config import SimpleProviderBundle, _find_config_file_paths
@@ -30,6 +31,15 @@ from multistorageclient.providers import (
     StaticS3CredentialsProvider,
 )
 from multistorageclient.types import StorageProviderConfig
+
+
+@pytest.fixture
+def clean_msc_env_vars(monkeypatch):
+    """Clean up MSC config environment variables to ensure deterministic test behavior."""
+    monkeypatch.delenv("MSC_CONFIG", raising=False)
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_DIRS", raising=False)
 
 
 def test_json_config() -> None:
@@ -917,6 +927,92 @@ def test_find_config_file_paths():
     )
 
     assert paths == expected_paths
+
+
+def test_read_msc_config_no_files_found(caplog, clean_msc_env_vars):
+    """Test that read_msc_config logs warning when no config files are found."""
+    config, config_file = StorageClientConfig.read_msc_config()
+    assert "No MSC config files found" in caplog.text
+    assert config == {}
+    assert config_file is None
+
+
+def test_read_msc_config_single_file_found(caplog, clean_msc_env_vars, monkeypatch):
+    """Test that read_msc_config logs info when a single config file is found."""
+    from logging import INFO
+
+    # Set log level to INFO to capture info messages
+    caplog.set_level(INFO)
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml") as f:
+        yaml.dump({"profiles": {"test": {"storage_provider": {"type": "file", "options": {"base_path": "/tmp"}}}}}, f)
+        config_file = f.name
+
+        monkeypatch.setenv("MSC_CONFIG", config_file)
+        config, used_config_file = StorageClientConfig.read_msc_config()
+        assert f"Using MSC config file: {config_file}" in caplog.text
+        assert "Multiple MSC config files found" not in caplog.text
+        assert config != {}
+        assert used_config_file == config_file
+
+
+def test_read_msc_config_multiple_files_found(caplog, clean_msc_env_vars, monkeypatch):
+    """Test that read_msc_config logs warning when multiple config files are found."""
+    from logging import INFO
+
+    # Set log level to INFO to capture info messages
+    caplog.set_level(INFO)
+
+    # Create temporary directory that will be automatically cleaned up
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create first config file in the temp directory
+        config_file1 = os.path.join(temp_dir, "config1.yaml")
+        with open(config_file1, "w") as f1:
+            yaml.dump(
+                {"profiles": {"test1": {"storage_provider": {"type": "file", "options": {"base_path": "/tmp"}}}}}, f1
+            )
+
+        # Create second config file in the temp directory
+        default_config_path = os.path.join(temp_dir, ".msc_config.yaml")
+        with open(default_config_path, "w") as f2:
+            yaml.dump(
+                {"profiles": {"test2": {"storage_provider": {"type": "file", "options": {"base_path": "/tmp"}}}}}, f2
+            )
+
+        monkeypatch.setenv("MSC_CONFIG", config_file1)
+        monkeypatch.setenv("HOME", temp_dir)
+
+        config, used_config_file = StorageClientConfig.read_msc_config()
+        assert "Multiple MSC config files found" in caplog.text
+        assert f"Using MSC config file: {config_file1}" in caplog.text
+        assert config != {}
+        assert used_config_file == config_file1
+
+
+def test_read_msc_config_malformed_files(clean_msc_env_vars, monkeypatch):
+    """Test that read_msc_config raises ValueError when encountering malformed YAML or JSON files."""
+
+    # Test malformed YAML file
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml") as f:
+        # Write malformed YAML with invalid syntax (unmatched bracket)
+        f.write("profiles:\n  test: [\n    invalid")
+        f.flush()  # Ensure content is written to disk
+        malformed_yaml_path = f.name
+
+        monkeypatch.setenv("MSC_CONFIG", malformed_yaml_path)
+        with pytest.raises(ValueError, match=f"malformed msc config file: {malformed_yaml_path}"):
+            StorageClientConfig.read_msc_config()
+
+    # Test malformed JSON file
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as f:
+        # Write malformed JSON with missing closing bracket
+        f.write('{"profiles": {"test": {"invalid": "json"')
+        f.flush()  # Ensure content is written to disk
+        malformed_json_path = f.name
+
+        monkeypatch.setenv("MSC_CONFIG", malformed_json_path)
+        with pytest.raises(ValueError, match=f"malformed msc config file: {malformed_json_path}"):
+            StorageClientConfig.read_msc_config()
 
 
 def test_s3_storage_provider_with_rust_client() -> None:

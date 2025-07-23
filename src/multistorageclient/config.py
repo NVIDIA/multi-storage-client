@@ -166,8 +166,6 @@ def _find_config_file_paths():
     return tuple(paths)
 
 
-DEFAULT_MSC_CONFIG_FILE_SEARCH_PATHS = _find_config_file_paths()
-
 PACKAGE_NAME = "multistorageclient"
 
 logger = logging.getLogger(__name__)
@@ -686,7 +684,7 @@ class PathMapping:
             # Import locally to avoid circular imports
             from multistorageclient.config import StorageClientConfig
 
-            config_dict = StorageClientConfig.read_msc_config()
+            config_dict, _ = StorageClientConfig.read_msc_config()
 
         if not config_dict:
             return cls()
@@ -883,16 +881,7 @@ class StorageClientConfig:
     def from_file(
         profile: str = DEFAULT_POSIX_PROFILE_NAME, telemetry: Optional[Telemetry] = None
     ) -> "StorageClientConfig":
-        msc_config_file = os.getenv("MSC_CONFIG", None)
-
-        # Search config paths
-        if msc_config_file is None:
-            for filename in DEFAULT_MSC_CONFIG_FILE_SEARCH_PATHS:
-                if os.path.exists(filename):
-                    msc_config_file = filename
-                    break
-
-        msc_config_dict = StorageClientConfig.read_msc_config()
+        msc_config_dict, msc_config_file = StorageClientConfig.read_msc_config()
         # Parse rclone config file.
         rclone_config_dict, rclone_config_file = read_rclone_config()
 
@@ -952,13 +941,21 @@ class StorageClientConfig:
         return config
 
     @staticmethod
-    def read_msc_config() -> Optional[dict[str, Any]]:
-        """Get the MSC configuration dictionary.
+    def read_msc_config() -> tuple[Optional[dict[str, Any]], Optional[str]]:
+        """Get the MSC configuration dictionary and the path of the config file used.
 
-        :return: The MSC configuration dictionary or empty dict if no config was found
+        Configs are searched in the following order:
+        1. MSC_CONFIG environment variable (highest precedence)
+        2. Standard search paths (user-specified config and system-wide config)
+
+
+        :return: Tuple of (config_dict, config_file_path). config_dict is the MSC configuration
+                dictionary or empty dict if no config was found. config_file_path is the absolute
+                path of the config file used, or None if no config file was found.
         """
         config_dict = {}
-        config_found = False
+        found_config_files = []
+        used_config_file = None
 
         # Check for environment variable first
         msc_config = os.getenv("MSC_CONFIG", None)
@@ -967,34 +964,44 @@ class StorageClientConfig:
                 with open(msc_config) as f:
                     if msc_config.endswith(".json"):
                         config_dict = json.load(f)
-                        config_found = True
+                        used_config_file = msc_config
                     else:
                         config_dict = yaml.safe_load(f)
-                        config_found = True
+                        used_config_file = msc_config
+                found_config_files.append(msc_config)
             except Exception as e:
                 raise ValueError(f"malformed msc config file: {msc_config}, exception: {e}")
 
-        # If not found through environment variable, try standard search paths
-        if not config_found:
-            for path in DEFAULT_MSC_CONFIG_FILE_SEARCH_PATHS:
-                if not os.path.exists(path):
-                    continue
-                try:
-                    with open(path) as f:
-                        if path.endswith(".json"):
-                            config_dict = json.load(f)
-                            config_found = True
-                            break
-                        else:
-                            config_dict = yaml.safe_load(f)
-                            config_found = True
-                            break
-                except Exception as e:
-                    raise ValueError(f"malformed msc config file: {msc_config}, exception: {e}")
+        # Check all standard search paths
+        for path in _find_config_file_paths():
+            if os.path.exists(path):
+                found_config_files.append(path)
+                # Only load the first found config file (environment variable takes precedence)
+                if used_config_file is None:
+                    try:
+                        with open(path) as f:
+                            if path.endswith(".json"):
+                                config_dict = json.load(f)
+                                used_config_file = path
+                            else:
+                                config_dict = yaml.safe_load(f)
+                                used_config_file = path
+                    except Exception as e:
+                        raise ValueError(f"malformed msc config file: {path}, exception: {e}")
+
+        # Log warnings and info messages
+        if len(found_config_files) > 1:
+            found_config_files_str = ", ".join(found_config_files)
+            logger.warning(f"Multiple MSC config files found: {found_config_files_str}. ")
+
+        if len(found_config_files) == 0:
+            logger.warning("No MSC config files found in any of the search locations.")
+        else:
+            logger.info(f"Using MSC config file: {used_config_file}")
 
         if config_dict:
             validate_config(config_dict)
-        return config_dict
+        return config_dict, used_config_file
 
     @staticmethod
     def read_path_mapping() -> PathMapping:
