@@ -85,6 +85,18 @@ def test_resolve_storage_client(file_storage_config):
             assert results[i][0] is storage_client, "All threads should return the same StorageClient instance"
 
 
+def test_resolve_storage_client_with_trailing_question_mark(file_storage_config):
+    """Test that URLs with trailing '?' are handled correctly."""
+
+    # Test file URL with trailing "?" - should be treated as part of the filename
+    _, path = msc.resolve_storage_client("msc://default/tmp/data/file1.tx?")
+    assert path == "tmp/data/file1.tx?"
+
+    # Test POSIX path with trailing "?" - should be treated as part of the filename
+    _, path = msc.resolve_storage_client("/tmp/data/file1.tx?")
+    assert path == "/tmp/data/file1.tx?"
+
+
 def test_glob_with_posix_path(file_storage_config):
     for filepath in msc.glob("/etc/**/*.conf"):
         assert filepath.startswith("msc://") is False

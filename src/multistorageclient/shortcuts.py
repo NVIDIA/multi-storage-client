@@ -55,16 +55,19 @@ def set_telemetry(telemetry: Optional[Telemetry]) -> None:
         _TELEMETRY = telemetry
 
 
-def _build_full_path(pr: ParseResult) -> str:
+def _build_full_path(original_url: str, pr: ParseResult) -> str:
     """
     Helper function to construct the full path from a parsed URL, including query and fragment.
 
+    :param original_url: The original URL before parsing
     :param pr: The parsed URL result from urlparse
     :return: The complete path including query and fragment if present
     """
     path = pr.path
     if pr.query:
         path += "?" + pr.query
+    elif original_url.endswith("?"):
+        path += "?"  # handle the glob pattern that has a trailing question mark
     if pr.fragment:
         path += "#" + pr.fragment
     return path
@@ -79,7 +82,7 @@ def _resolve_msc_url(url: str) -> tuple[str, str]:
     """
     pr = urlparse(url)
     profile = pr.netloc
-    path = _build_full_path(pr)
+    path = _build_full_path(url, pr)
     if path.startswith("/"):
         path = path[1:]
     return profile, path
@@ -109,7 +112,7 @@ def _resolve_non_msc_url(url: str) -> tuple[str, str]:
     # For file paths, use the default POSIX profile
     if url.startswith("file://"):
         pr = urlparse(url)
-        return DEFAULT_POSIX_PROFILE_NAME, _build_full_path(pr)
+        return DEFAULT_POSIX_PROFILE_NAME, _build_full_path(url, pr)
     elif url.startswith("/"):
         url = os.path.normpath(url)
         return DEFAULT_POSIX_PROFILE_NAME, url
