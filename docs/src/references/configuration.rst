@@ -65,6 +65,11 @@ Each profile in the configuration defines how to interact with storage services 
 
   * Configures a custom provider implementation that bundles the above providers together.
 
+* ``replicas``
+
+  * Configure one or more *replica profiles* that the current profile can
+    read from and write to opportunistically (see :doc:`/user_guide/replicas`).
+
 .. code-block:: yaml
    :caption: Profile schema.
 
@@ -98,6 +103,12 @@ Each profile in the configuration defines how to interact with storage services 
 
    # Optional. Enable caching for this profile (default: false)
    caching_enabled: <boolean>
+
+   # Optional. List of replica configurations that this profile can use
+   # for fetch-on-demand reads and background read-through backfill.
+   replicas:
+     - replica_profile: <string>   # Name of another profile acting as replica
+       read_priority: <int>        # Required. Lower = preferred (1 = highest)
 
 .. note::
    The configuration follows a consistent pattern across different providers:
@@ -779,7 +790,8 @@ This feature enables users to:
 * Continue using existing URLs without modification.
 * Use MSC without managing a separate MSC configuration file.
 
-When a non-MSC URL is provided to functions like :py:meth:`multistorageclient.open` or :py:meth:`multistorageclient.resolve_storage_client`, MSC will first check if there is an existing profile applicable through path mapping. If not, MSC will create an implicit profile:
+When a non-MSC URL is provided to functions like :py:func:`multistorageclient.open` or
+:py:func:`multistorageclient.resolve_storage_client`, MSC will first check if there is an existing profile applicable through path mapping. If not, MSC will create an implicit profile:
 
 1. Infer the storage provider based on the URL protocol (currently supported: ``s3``, ``gcs``, ``ais``, ``file``) and construct an implicit profile name with the convention ``_protocol-bucket`` (e.g., ``_s3-bucket1``, ``_gs-bucket1``) or ``_file`` for file system paths.  If the derived protocol is not supported, an exception will be thrown.
 2. Configure the storage provider and credential provider with default settings, i.e. credentials will the same as that native SDKs look for (aws credentials file, azure credentials file, etc.)
