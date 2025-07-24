@@ -19,7 +19,11 @@ prepare-toolchain:
     # Add compiler targets.
     rustup target add {{compiler-targets}}
     # Prepare the virtual environment.
-    if [[ -z "${CI:-}" ]]; then uv sync --all-extras --python {{python-binary}}; else uv sync --all-extras --locked --python {{python-binary}}; fi
+    if [[ -z "${CI:-}" ]]; then \
+        uv sync --all-extras --python {{python-binary}} && uv run maturin develop --release; \
+    else \
+        uv sync --all-extras --locked --python {{python-binary}}; \
+    fi
 
 # Start the Python REPL.
 start-repl: prepare-toolchain
