@@ -585,6 +585,19 @@ class StorageClientConfigLoader:
                 # Use cache_backend.cache_path only if location is not explicitly defined
                 location = cache_backend_path
 
+            # Resolve the effective flag while preserving explicit ``False``.
+            if "check_source_version" in self._cache_dict:
+                check_source_version = self._cache_dict["check_source_version"]
+            else:
+                check_source_version = self._cache_dict.get("use_etag", True)
+
+            # Warn if both keys are specified – the new one wins.
+            if "check_source_version" in self._cache_dict and "use_etag" in self._cache_dict:
+                logger.warning(
+                    "Both 'check_source_version' and 'use_etag' are defined in cache config. "
+                    "Using 'check_source_version' and ignoring 'use_etag'."
+                )
+
             if not Path(location).is_absolute():
                 raise ValueError(f"Cache location must be an absolute path: {location}")
 
@@ -610,7 +623,7 @@ class StorageClientConfigLoader:
             cache_config = CacheConfig(
                 size=cache_dict.get("size", DEFAULT_CACHE_SIZE),
                 location=cache_dict.get("location", location),
-                use_etag=cache_dict.get("use_etag", True),
+                check_source_version=check_source_version,
                 eviction_policy=eviction_policy,
             )
 

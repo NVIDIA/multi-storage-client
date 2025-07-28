@@ -778,7 +778,12 @@ def test_legacy_cache_config():
     """Test that legacy cache config with size_mb and string eviction_policy raises schema validation error."""
     config_dict = {
         "profiles": {"test": {"storage_provider": {"type": "file", "options": {"base_path": "/tmp/test_storage"}}}},
-        "cache": {"location": "/tmp/msc_cache", "size_mb": 200000, "use_etag": True, "eviction_policy": "fifo"},
+        "cache": {
+            "location": "/tmp/msc_cache",
+            "size_mb": 200000,
+            "check_source_version": True,
+            "eviction_policy": "fifo",
+        },
     }
 
     with pytest.raises(RuntimeError, match="Failed to validate the config file"):
@@ -803,7 +808,7 @@ def test_cache_config_defaults():
 
     # Verify default values
     assert config.cache_config.size == "100M"
-    assert config.cache_config.use_etag is True  # Default value
+    assert config.cache_config.check_source_version is True  # Default value
     assert config.cache_config.eviction_policy.policy == "fifo"  # Default value
     assert config.cache_config.eviction_policy.refresh_interval == 300  # Default value
 
@@ -1546,3 +1551,77 @@ def test_caching_enabled_field():
     config = StorageClientConfig.from_dict(config_dict, profile="test-profile")
     assert config.cache_config is None
     assert config.cache_manager is None
+
+
+def _minimal_cache_profile(cache_section: dict) -> dict:
+    """Return a minimal MSC config with a single file profile and given cache section."""
+    return {
+        "profiles": {
+            "p": {
+                "storage_provider": {"type": "file", "options": {"base_path": "/tmp"}},
+                "caching_enabled": True,
+            }
+        },
+        "cache": cache_section,
+    }
+
+
+def test_cache_config_both_flags_precedence() -> None:
+    """When both `check_source_version` and `use_etag` are set, the former wins."""
+
+    cfg_dict = _minimal_cache_profile(
+        {
+            "size": "10M",
+            "check_source_version": False,
+            "use_etag": True,
+        }
+    )
+
+    sc_cfg = StorageClientConfig.from_dict(cfg_dict, profile="p")
+    assert sc_cfg.cache_config is not None
+    # Expect False because check_source_version overrides legacy value
+    assert sc_cfg.cache_config.check_source_version is False
+
+
+def test_cache_config_use_etag() -> None:
+    """only use_etag is set, check_source_version is not set"""
+
+    cfg_dict = _minimal_cache_profile(
+        {
+            "size": "10M",
+            "use_etag": True,
+        }
+    )
+
+    sc_cfg = StorageClientConfig.from_dict(cfg_dict, profile="p")
+    assert sc_cfg.cache_config is not None
+    assert sc_cfg.cache_config.check_source_version is True
+
+
+def test_cache_config_check_source_version() -> None:
+    """only check_source_version is set, use_etag is not set, check_source_version is True"""
+
+    cfg_dict = _minimal_cache_profile(
+        {
+            "size": "10M",
+            "check_source_version": True,
+        }
+    )
+
+    sc_cfg = StorageClientConfig.from_dict(cfg_dict, profile="p")
+    assert sc_cfg.cache_config is not None
+    assert sc_cfg.cache_config.check_source_version is True
+
+
+def test_cache_config_check_source_version_false() -> None:
+    """only check_source_version is set, use_etag is not set, check_source_version is False"""
+
+    cfg_dict = _minimal_cache_profile(
+        {
+            "size": "10M",
+            "check_source_version": False,
+        }
+    )
+    sc_cfg = StorageClientConfig.from_dict(cfg_dict, profile="p")
+    assert sc_cfg.cache_config is not None
+    assert sc_cfg.cache_config.check_source_version is False

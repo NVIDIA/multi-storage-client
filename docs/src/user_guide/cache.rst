@@ -34,6 +34,14 @@ an absolute filesystem path, and the size should be a positive integer with a un
    cache:
      size: 500G
      location: /path/to/msc_cache
+     check_source_version: true   # validate remote object version before serving cached copy
+
+``check_source_version`` replaces the older ``use_etag`` flag (still accepted
+for backward-compatibility).  The default is ``true`` (MSC validates the
+remote object’s current version — for example via ETag — before serving a
+cached copy).  Set it to ``false`` only if you want to skip that validation
+for performance reasons or when the storage backend lacks a versioning
+mechanism.
 
 For detailed configuration options, see :doc:`/references/configuration`
 

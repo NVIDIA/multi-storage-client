@@ -294,7 +294,7 @@ class ObjectFile(IO):
 
         try:
             if self._check_source_version == SourceVersionCheckMode.INHERIT:
-                if self._cache_manager.use_etag():
+                if self._cache_manager.check_source_version():
                     source_version = self._object_metadata.etag
                 else:
                     source_version = None

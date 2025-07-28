@@ -47,13 +47,13 @@ class CacheConfig:
     Configuration for the CacheManager.
 
     This class defines the complete configuration for the cache system,
-    including size limits, etag usage, eviction policy, and location.
+    including size limits, check_source_version usage, eviction policy, and location.
     """
 
     #: The maximum size of the cache in megabytes.
     size: str
-    #: Use etag to update the cached files. Default is True.
-    use_etag: bool = True
+    #: Use check_source_version(e.g. etag) to update the cached files. Default is True.
+    check_source_version: bool = True
     #: The location of the cache. Default is tempdir/msc-cache.
     location: Optional[str] = None
     #: Cache eviction policy configuration. Default is LRU with 300s refresh.

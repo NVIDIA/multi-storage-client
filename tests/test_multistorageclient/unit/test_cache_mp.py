@@ -31,7 +31,7 @@ def worker_write_read(cache_dir, keys, data, barrier, result_queue):
     Worker function that use CacheManager to write and read data at random order.
     """
     try:
-        cache_config = CacheConfig(size="10M", use_etag=False)
+        cache_config = CacheConfig(size="10M", check_source_version=False)
         cache_manager = CacheManager(profile="test", cache_config=cache_config)
 
         # Synchronize all worker processes at this point
@@ -73,7 +73,7 @@ def worker_write_refresh(cache_dir, keys, data, barrier, return_dict, result_que
     Worker function that use CacheManager to write and read data at random order.
     """
     try:
-        cache_config = CacheConfig(size="10M", use_etag=False, location=cache_dir)
+        cache_config = CacheConfig(size="10M", check_source_version=False, location=cache_dir)
         cache_manager = CacheManager(profile="test", cache_config=cache_config)
 
         # Synchronize all worker processes at this point
@@ -143,7 +143,7 @@ def test_multiprocessing_cache_manager(cache_dir):
             pytest.fail(f"Worker process failed with error: {result}")
 
     # Check the final cache size
-    cache_config = CacheConfig(size="10M", use_etag=False, location=cache_dir)
+    cache_config = CacheConfig(size="10M", check_source_version=False, location=cache_dir)
     cache_manager = CacheManager(profile="test", cache_config=cache_config)
     assert cache_manager.cache_size() <= max_cache_size
 

@@ -39,13 +39,13 @@ def profile_name():
 @pytest.fixture
 def cache_config(tmpdir):
     """Fixture for CacheConfig object."""
-    return CacheConfig(size="10M", use_etag=False, location=str(tmpdir))
+    return CacheConfig(size="10M", check_source_version=False, location=str(tmpdir))
 
 
 @pytest.fixture
 def cache_config_with_etag(tmpdir):
     """Fixture for CacheConfig object with etag support enabled."""
-    return CacheConfig(size="10M", use_etag=True, location=str(tmpdir))
+    return CacheConfig(size="10M", check_source_version=True, location=str(tmpdir))
 
 
 @pytest.fixture
@@ -250,7 +250,7 @@ def test_cache_manager_refresh_cache(tmpdir):
     cache_dir = os.path.join(str(tmpdir), "refresh_test")
     os.makedirs(cache_dir, exist_ok=True)
 
-    cache_config = CacheConfig(size="10M", use_etag=False, location=cache_dir)
+    cache_config = CacheConfig(size="10M", check_source_version=False, location=cache_dir)
     cache_manager = CacheManager(profile="refresh_test", cache_config=cache_config)
 
     data_10mb = b"*" * 10 * 1024 * 1024
@@ -296,7 +296,7 @@ def test_cache_manager_metrics(profile_name, tmpdir, cache_manager):
 def lru_cache_config(tmpdir):
     cache_dir = os.path.join(str(tmpdir), "lru_cache")
     return CacheConfig(
-        size="10M", use_etag=False, location=cache_dir, eviction_policy=EvictionPolicyConfig(policy="LRU")
+        size="10M", check_source_version=False, location=cache_dir, eviction_policy=EvictionPolicyConfig(policy="LRU")
     )
 
 
@@ -341,7 +341,7 @@ def test_lru_eviction_policy(profile_name, lru_cache_config):
 def fifo_cache_config(tmpdir):
     cache_dir = os.path.join(str(tmpdir), "fifo_cache")
     return CacheConfig(
-        size="10M", use_etag=False, location=cache_dir, eviction_policy=EvictionPolicyConfig(policy="FIFO")
+        size="10M", check_source_version=False, location=cache_dir, eviction_policy=EvictionPolicyConfig(policy="FIFO")
     )
 
 
@@ -399,7 +399,10 @@ def test_fifo_eviction_policy(profile_name, fifo_cache_config):
 def random_cache_config(tmpdir):
     cache_dir = os.path.join(str(tmpdir), "random_cache")
     return CacheConfig(
-        size="10M", use_etag=False, location=cache_dir, eviction_policy=EvictionPolicyConfig(policy="RANDOM")
+        size="10M",
+        check_source_version=False,
+        location=cache_dir,
+        eviction_policy=EvictionPolicyConfig(policy="RANDOM"),
     )
 
 
@@ -621,7 +624,7 @@ def test_storage_provider_partial_cache_config(storage_provider_partial_cache_co
         assert cache_config.location is not None and isinstance(cache_config.location, str)
         assert cache_config.eviction_policy.policy == "fifo"
         assert cache_config.eviction_policy.refresh_interval == DEFAULT_CACHE_REFRESH_INTERVAL
-        assert cache_config.use_etag
+        assert cache_config.check_source_version
         assert isinstance(cache_manager, CacheManager)
 
 
@@ -639,7 +642,10 @@ def test_storage_provider_partial_cache_config(storage_provider_partial_cache_co
 def no_eviction_cache_config(tmpdir):
     cache_dir = os.path.join(str(tmpdir), "no_eviction_cache")
     return CacheConfig(
-        size="3M", use_etag=False, location=cache_dir, eviction_policy=EvictionPolicyConfig(policy="NO_EVICTION")
+        size="3M",
+        check_source_version=False,
+        location=cache_dir,
+        eviction_policy=EvictionPolicyConfig(policy="NO_EVICTION"),
     )
 
 

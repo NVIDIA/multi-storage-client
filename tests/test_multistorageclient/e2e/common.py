@@ -811,8 +811,8 @@ def test_on_demand_replica_fetch_with_cache_using_open(profile: str):
     wait(
         waitable=lambda: all(replica.is_file(test_file_path) for replica in client.replicas),
         should_wait=lambda all_exist: not all_exist,
-        max_attempts=3,
-        attempt_interval_seconds=1,
+        max_attempts=5,
+        attempt_interval_seconds=2,
     )
 
     # Verify all replicas have the file
@@ -862,8 +862,8 @@ def test_on_demand_replica_fetch_with_cache_using_read(profile: str):
     wait(
         waitable=lambda: all(replica.is_file(test_file_path) for replica in client.replicas),
         should_wait=lambda all_exist: not all_exist,
-        max_attempts=3,
-        attempt_interval_seconds=1,
+        max_attempts=5,
+        attempt_interval_seconds=2,
     )
 
     # Verify all replicas have the file

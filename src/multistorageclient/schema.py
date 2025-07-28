@@ -83,6 +83,7 @@ CACHE_SCHEMA = {
         "size_mb": {"type": "integer"},
         "location": {"type": "string"},
         "use_etag": {"type": "boolean"},
+        "check_source_version": {"type": "boolean"},
         "eviction_policy": {
             "type": "object",
             "properties": {

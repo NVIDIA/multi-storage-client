@@ -175,9 +175,9 @@ class CacheManager:
         for file_path in cache.keys():
             logging.debug(f"Remaining file: {file_path}")
 
-    def use_etag(self) -> bool:
+    def check_source_version(self) -> bool:
         """Check if etag is used in the cache config."""
-        return self._cache_config.use_etag
+        return self._cache_config.check_source_version
 
     def get_max_cache_size(self) -> int:
         """Return the cache size in bytes from the cache config."""
@@ -299,7 +299,7 @@ class CacheManager:
 
             # If etag checking is disabled, return True if file exists
             if check_source_version == SourceVersionCheckMode.INHERIT:
-                if not self.use_etag():
+                if not self.check_source_version():
                     return True
             elif check_source_version == SourceVersionCheckMode.DISABLE:
                 return True
