@@ -32,7 +32,8 @@ from .instrumentation import setup_opentelemetry
 from .providers.manifest_metadata import ManifestMetadataProvider
 from .rclone import read_rclone_config
 from .schema import validate_config
-from .telemetry import Telemetry
+from .telemetry import Telemetry, TelemetryMode
+from .telemetry import init as telemetry_init
 from .telemetry.attributes.base import AttributesProvider
 from .types import (
     DEFAULT_RETRY_ATTEMPTS,
@@ -277,6 +278,18 @@ class StorageClientConfigLoader:
         self._metric_counters = metric_counters
         self._metric_attributes_providers = metric_attributes_providers
         if self._opentelemetry_dict is not None:
+            if telemetry is None:
+                try:
+                    # Try to create a telemetry instance with the default mode heuristic.
+                    telemetry = telemetry_init()
+                except (OSError, RuntimeError, ValueError):
+                    try:
+                        # Try to create a telemetry instance in server mode.
+                        telemetry = telemetry_init(mode=TelemetryMode.SERVER)
+                    except (OSError, RuntimeError, ValueError):
+                        # Don't throw on telemetry init failures.
+                        logger.error("Failed to automatically create telemetry instance!", exc_info=True)
+
             if "metrics" in self._opentelemetry_dict:
                 if telemetry is not None:
                     self._metric_gauges = {}

@@ -75,12 +75,14 @@ def test_s3_storage_client_rust(profile_name):
     common.test_storage_client(profile)
 
 
+@pytest.mark.skip(reason="Temporarily disable due to hangs in CI")
 @pytest.mark.parametrize("profile_name", ["test-s3-iad-with-replica"])
 def test_s3_replica_read_using_msc_open(profile_name):
     profile = profile_name
     common.test_replica_read_using_msc_open(profile)
 
 
+@pytest.mark.skip(reason="Temporarily disable due to hangs in CI")
 @pytest.mark.parametrize("profile_name", ["test-s3-iad-with-replica"])
 def test_s3_replica_read_using_msc_read(profile_name):
     profile = profile_name

@@ -95,7 +95,7 @@ Notes:
 * Replica profiles can also have caching, telemetry, etc. – normal profiles.
 
 Prefetching replicas with :py:meth:`multistorageclient.StorageClient.sync_replicas`
------------------------------------------
+-----------------------------------------------------------------------------------
 
 While this read-through mechanism eventually brings frequently accessed
 objects into replicas, you may want
@@ -146,7 +146,7 @@ Limitations
 
 * Replicas are **eventually** consistent – background uploads can lag behind
   your writes.
-* Object deletions are *not* propagated automatically. 
+* Object deletions are *not* propagated automatically.
   Use :py:meth:`multistorageclient.StorageClient.sync_replicas` with ``delete_unmatched_files=True`` or clean up manually.
 
 

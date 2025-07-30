@@ -20,6 +20,7 @@ import json
 import logging
 import multiprocessing
 import multiprocessing.managers
+import multiprocessing.process
 import threading
 from typing import Any, Optional, Union
 
@@ -489,7 +490,7 @@ class TelemetryMode(enum.Enum):
     CLIENT = "client"
 
 
-def _telemetry_manager_server_port() -> int:
+def _telemetry_manager_server_port(process: multiprocessing.process.BaseProcess) -> int:
     """
     Get the default telemetry manager server port.
 
@@ -497,14 +498,12 @@ def _telemetry_manager_server_port() -> int:
 
     * Avoid collisions between multiple independent Python interpreters running on the same machine.
     * Let child processes deterministically find their parent's telemetry manager server.
+
+    :param process: Process whose PID is used to calculate the port.
     """
 
-    # This won't work with 2+ high Python processes trees, but such setups are uncommon.
-    process = multiprocessing.parent_process() or multiprocessing.current_process()
     if process.pid is None:
-        raise ValueError(
-            "Can't calculate the default telemetry manager server port from an unstarted parent or current process!"
-        )
+        raise ValueError("Can't calculate the default telemetry manager server port from an unstarted process!")
 
     # Use the dynamic/private/ephemeral port range.
     #
@@ -522,7 +521,7 @@ def init(
     """
     Create or return an existing :py:class:`Telemetry` instance or :py:class:`Telemetry` proxy object.
 
-    :param mode: How to create a :py:class:`Telemetry` object.
+    :param mode: How to create a :py:class:`Telemetry` object. Defaults to :py:const:`TelemetryMode.SERVER`/:py:const:`TelemetryMode.CLIENT` if the current process is a main/child Python process.
     :param address: Telemetry IPC server address. Passed directly to a :py:class:`multiprocessing.managers.BaseManager`. Ignored if the mode is :py:const:`TelemetryMode.LOCAL`.
     :return: A telemetry instance.
     """
@@ -534,7 +533,16 @@ def init(
         global _TELEMETRY_PROXIES_LOCK
 
         if address is None:
-            address = ("127.0.0.1", _telemetry_manager_server_port())
+            process = multiprocessing.current_process()
+            if mode == TelemetryMode.CLIENT:
+                # If this is a child process, try to use the parent process's default telemetry manager server port instead.
+                #
+                # This won't work with 2+ high Python process trees, but such setups seem uncommon.
+                #
+                # TODO: Consider a service discovery propagation mechanism so grandchild processes can discover grandparent process IDs.
+                process = multiprocessing.parent_process() or process
+
+            address = ("127.0.0.1", _telemetry_manager_server_port(process=process))
 
         init_options = {"mode": mode.value, "address": address}
         init_options_json = json.dumps(init_options, sort_keys=True)

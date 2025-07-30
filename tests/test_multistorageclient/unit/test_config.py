@@ -17,11 +17,13 @@ import os
 import pickle
 import sys
 import tempfile
-from typing import cast
+from typing import Optional, cast
 
 import pytest
 import yaml
 
+import multistorageclient.telemetry as telemetry
+import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.config import SimpleProviderBundle, _find_config_file_paths
 from multistorageclient.providers import (
@@ -31,6 +33,7 @@ from multistorageclient.providers import (
     StaticS3CredentialsProvider,
 )
 from multistorageclient.types import StorageProviderConfig
+from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
 
 
 @pytest.fixture
@@ -1031,7 +1034,7 @@ def test_s3_storage_provider_with_rust_client() -> None:
                 base_path: bucket
                 region_name: us-west-2
                 endpoint_url: http://localhost:10000
-                rust_client: 
+                rust_client:
                   allow_http: true
             credentials_provider:
               type: S3Credentials
@@ -1625,3 +1628,35 @@ def test_cache_config_check_source_version_false() -> None:
     sc_cfg = StorageClientConfig.from_dict(cfg_dict, profile="p")
     assert sc_cfg.cache_config is not None
     assert sc_cfg.cache_config.check_source_version is False
+
+
+@pytest.mark.parametrize(
+    argnames=["manual_init"],
+    argvalues=[
+        [True],
+        [False],
+    ],
+)
+def test_telemetry_init(manual_init: bool) -> None:
+    telemetry_resources: Optional[telemetry.Telemetry] = telemetry.init() if manual_init else None
+
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        profile = "data"
+        config_dict = {
+            "profiles": {profile: temp_data_store.profile_config_dict()},
+            "opentelemetry": {
+                "metrics": {
+                    "attributes": [
+                        {"type": "static", "options": {"attributes": {"cluster": "local"}}},
+                        {"type": "host", "options": {"attributes": {"node": "name"}}},
+                        {"type": "process", "options": {"attributes": {"process": "pid"}}},
+                    ],
+                    "exporter": {"type": telemetry._fully_qualified_name(InMemoryMetricExporter)},
+                }
+            },
+        }
+        config = StorageClientConfig.from_dict(config_dict=config_dict, profile=profile, telemetry=telemetry_resources)
+        assert config is not None
+        assert config.metric_gauges is not None
+        assert config.metric_counters is not None
+        assert config.metric_attributes_providers is not None

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from multiprocessing import get_context
+from multiprocessing import current_process, get_context
 from multiprocessing.managers import BaseProxy
 from multiprocessing.pool import Pool
 from typing import Any, Optional
@@ -125,7 +125,7 @@ def test_telemetry_local_objects():
 
 def test_telemetry_manager_server_port():
     # Make sure the port is in the dynamic/private/ephemeral port range.
-    port = telemetry._telemetry_manager_server_port()
+    port = telemetry._telemetry_manager_server_port(process=current_process())
     assert (2**15 + 2**14) <= port
     assert port < 2**16
 

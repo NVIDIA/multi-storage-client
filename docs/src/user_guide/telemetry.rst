@@ -6,7 +6,7 @@ The MSC provides telemetry through the `OpenTelemetry Python API and SDK <https:
 
 Only the OpenTelemetry Python API is included by default. The OpenTelemetry Python SDK is included with the ``observability-otel`` extra.
 
-Telemetry can be configured with the ``opentelemetry`` dictionary in the MSC configuration and creating a telemetry provider to use with storage client creation flows. See :doc:`/references/configuration` for all configuration options.
+Telemetry can be configured with the ``opentelemetry`` dictionary in the MSC configuration. See :doc:`/references/configuration` for all configuration options.
 
 .. code-block:: yaml
    :caption: Example MSC configuration.
@@ -51,7 +51,25 @@ Telemetry can be configured with the ``opentelemetry`` dictionary in the MSC con
            endpoint: http://localhost:4318/v1/traces
 
 .. code-block:: python
-   :caption: Example usage.
+   :caption: Example usage with automatic telemetry initialization.
+
+   import multistorageclient
+
+   # Directly create a storage client for a profile and open an object/file.
+   client = multistorageclient.StorageClient(
+       config=multistorageclient.StorageClientConfig.from_file(profile="data")
+   )
+   client.open("file.txt")
+
+   # Use an MSC shortcut to create a storage client for a profile and open an object/file.
+   multistorageclient.open("msc://data/file.txt")
+
+This will automatically create telemetry provider instances which will spin up dedicated telemetry processes and local network ports (for IPC) as needed.
+
+If the default telemetry provider creation doesn't behave as desired, you can manually create a telemetry provider to use with storage client creation flows.
+
+.. code-block:: python
+   :caption: Example usage with manual telemetry initialization.
 
    import multistorageclient
    import multistorageclient.telemetry
@@ -72,18 +90,19 @@ Telemetry can be configured with the ``opentelemetry`` dictionary in the MSC con
    # See the API reference for more details.
    telemetry = multistorageclient.telemetry.init()
 
-   # Create a storage client with the telemetry provider instance.
+   # Directly create a storage client with the telemetry provider instance and open an object/file.
    client = multistorageclient.StorageClient(
        config=multistorageclient.StorageClientConfig.from_file(
            profile="data",
            telemetry=telemetry
        )
    )
+   client.open("file.txt")
 
    # Set the telemetry provider instance to use when MSC shortcuts create storage clients.
    multistorageclient.set_telemetry(telemetry=telemetry)
 
-   # Create a storage client for a profile and open an object/file.
+   # Use an MSC shortcut to create a storage client for a profile and open an object/file.
    multistorageclient.open("msc://data/file.txt")
 
 *******
