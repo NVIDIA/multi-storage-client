@@ -144,7 +144,7 @@ run-unit-tests: prepare-toolchain start-storage-systems && stop-storage-systems
     else \
         NUMPROCESSES=0; \
     fi; \
-    uv run pytest --cov --cov-report term --cov-report html --cov-report xml --durations 0 --durations-min 10 --junit-xml .reports/unit/pytest.xml --numprocesses $NUMPROCESSES --ignore tests/test_multistorageclient/unit/contrib/test_ray.py
+    uv run pytest --cov --cov-report term --cov-report html --cov-report xml --durations 10 --junit-xml .reports/unit/pytest.xml --numprocesses $NUMPROCESSES --ignore tests/test_multistorageclient/unit/contrib/test_ray.py
 
 # Run load tests. For dummy load generation when experimenting with telemetry.
 run-load-tests: prepare-toolchain start-storage-systems && stop-storage-systems
@@ -198,7 +198,7 @@ run-e2e-tests: prepare-toolchain
     # E2E test.
     #
     # The CI/CD runner setup only allows 4 cores per job.
-    uv run pytest --durations 0 --durations-min 60 --junit-xml .reports/e2e/pytest.xml --numprocesses 4 tests/test_multistorageclient/e2e
+    uv run pytest --durations 10 --junit-xml .reports/e2e/pytest.xml --numprocesses 4 tests/test_multistorageclient/e2e
 
 # Run minimal verification without any optional dependencies.
 run-minimal-verification:

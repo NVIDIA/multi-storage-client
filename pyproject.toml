@@ -104,6 +104,7 @@ dev = [
     "pytest-cov>=6.2.1,<7",
     "pytest-forked>=1.6,<2",
     "pytest-stress>=1.0.1,<2",
+    "pytest-timeout>=2.4,<3",
     "pytest-xdist[psutil]>=3.8,<4",
     "coverage[toml]>=7.9.2,<8",
     "sphinx>=7.4.7,<8",
@@ -164,14 +165,14 @@ asyncio_default_fixture_loop_scope = "function"
 markers = [
     "serial: marks tests as serial (deselect with '-m \"not serial\"')"
 ]
-
 pythonpath = [
     "tests"
 ]
 testpaths = [
     "tests/test_multistorageclient/unit",
-    "tests/test_multistorageclient_rust/unit",
+    "tests/test_multistorageclient_rust/unit"
 ]
+timeout = 600
 
 [tool.ruff]
 indent-width = 4
