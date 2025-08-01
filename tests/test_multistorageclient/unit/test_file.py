@@ -117,6 +117,13 @@ def test_file_open(temp_data_store_type: type[tempdatastore.TemporaryDataStore])
             file.seek(0)
             assert file.readlines() == [file_body_string]
 
+        # Check if tell() returns the correct position during iteration
+        with storage_client.open(path=file_path, mode="rb") as file:
+            expected = 0
+            for line in file:
+                expected += len(line)
+                assert file.tell() == expected
+
         # Delete the file.
         storage_client.delete(path=file_path)
         with pytest.raises(FileNotFoundError):

@@ -430,7 +430,7 @@ class ObjectFile(IO):
         return self._file.readlines()
 
     def __iter__(self) -> Iterator[Any]:
-        yield from self.readlines()
+        return self
 
     def __next__(self) -> Any:
         if self.readable():
@@ -675,7 +675,7 @@ class PosixFile(IO):
         return self._file.readlines()
 
     def __iter__(self) -> Iterator[Any]:
-        yield from self.readlines()
+        return self
 
     def __next__(self) -> Any:
         return next(self._file)
