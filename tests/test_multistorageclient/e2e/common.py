@@ -770,7 +770,7 @@ def test_replica_read_using_msc_read(profile: str):
     _do_cleanup(client, prefix + "/")
 
 
-@pytest.mark.skip(reason="Temporarily disabled in CI")
+@pytest.mark.skip(reason="Temporarily disable due to hangs in CI")
 def test_on_demand_replica_fetch_with_cache_using_open(profile: str):
     """Simple test to verify upload, cache, and replica functionality similar to avm1.py."""
     client, prefix = _get_client_and_prefix(profile)
@@ -824,7 +824,7 @@ def test_on_demand_replica_fetch_with_cache_using_open(profile: str):
     _do_cleanup(client, prefix + "/")
 
 
-@pytest.mark.skip(reason="Temporarily disabled in CI")
+@pytest.mark.skip(reason="Temporarily disable due to hangs in CI")
 def test_on_demand_replica_fetch_with_cache_using_read(profile: str):
     """Simple test to verify upload, cache, and replica functionality using storage_client.read method."""
     client, prefix = _get_client_and_prefix(profile)
