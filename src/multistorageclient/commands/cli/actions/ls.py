@@ -17,7 +17,7 @@ import argparse
 import json
 import sys
 
-from tabulate import tabulate
+from prettytable import PrettyTable
 
 import multistorageclient as msc
 
@@ -153,7 +153,7 @@ class LsAction(Action):
                 attribute_filter_expression=args.attribute_filter_expression,
             )
 
-            # Collect results for tabulate
+            # Collect results
             table_data = []
             count = 0
             total_size = 0
@@ -171,18 +171,22 @@ class LsAction(Action):
                 if args.limit and count == args.limit:
                     break
 
-            # Display results using tabulate
+            # Pretty print results
             if table_data:
                 if args.show_attributes:
-                    headers = ["Last Modified", "Size", "Name", "Attributes"]
-                    print(
-                        tabulate(
-                            table_data, headers=headers, tablefmt="plain", colalign=("left", "right", "left", "left")
-                        )
-                    )
+                    field_names = ["Last Modified", "Size", "Name", "Attributes"]
+                    table = PrettyTable(field_names=field_names, max_width=100, valign="t")
+                    for field_name, alignment in zip(field_names, ["l", "r", "l", "l"]):
+                        table.align[field_name] = alignment
+                    table.add_rows(table_data)
+                    print(table)
                 else:
-                    headers = ["Last Modified", "Size", "Name"]
-                    print(tabulate(table_data, headers=headers, tablefmt="plain", colalign=("left", "right", "left")))
+                    field_names = ["Last Modified", "Size", "Name"]
+                    table = PrettyTable(field_names=field_names, max_width=100, valign="t")
+                    for field_name, alignment in zip(field_names, ["l", "r", "l"]):
+                        table.align[field_name] = alignment
+                    table.add_rows(table_data)
+                    print(table)
 
             if args.limit and count == args.limit:
                 print(f"\n(Output limited to {args.limit} results)")
