@@ -23,7 +23,7 @@ import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Optional
 
 from .constants import MEMORY_LOAD_LIMIT
 from .progress_bar import ProgressBar
@@ -42,15 +42,7 @@ HAVE_RAY = is_ray_available()
 if TYPE_CHECKING:
     from .client import StorageClient
 
-
-class _Queue(Protocol):
-    """
-    Protocol defining the interface for queue-like objects.
-    """
-
-    def put(self, item: Any, block: bool = True, timeout: Optional[float] = None) -> None: ...
-
-    def get(self, block: bool = True, timeout: Optional[float] = None) -> Any: ...
+_Queue = Any  # queue.Queue | multiprocessing.Queue | SharedQueue
 
 
 class _SyncOp(Enum):
@@ -258,15 +250,13 @@ class SyncManager:
         num_workers = num_worker_processes * num_worker_threads
 
         # Create the file and result queues.
-        manager = None
         if execution_mode == ExecutionMode.LOCAL:
             if num_worker_processes == 1:
                 file_queue = queue.Queue(maxsize=100000)
                 result_queue = queue.Queue()
             else:
-                manager = multiprocessing.Manager()
-                file_queue = manager.Queue(maxsize=100000)
-                result_queue = manager.Queue()
+                file_queue = multiprocessing.Queue()
+                result_queue = multiprocessing.Queue()
         else:
             if not HAVE_RAY:
                 raise RuntimeError(
@@ -318,22 +308,27 @@ class SyncManager:
                     result_queue,
                 )
             else:
-                with multiprocessing.Pool(processes=num_worker_processes) as pool:
-                    pool.starmap(
-                        _sync_worker_process,
-                        [
-                            (
-                                self.source_client,
-                                self.source_path,
-                                self.target_client,
-                                self.target_path,
-                                num_worker_threads,
-                                file_queue,
-                                result_queue,
-                            )
-                            for _ in range(num_worker_processes)
-                        ],
+                # Create individual processes so they can share the multiprocessing.Queue
+                processes = []
+                for _ in range(num_worker_processes):
+                    process = multiprocessing.Process(
+                        target=_sync_worker_process,
+                        args=(
+                            self.source_client,
+                            self.source_path,
+                            self.target_client,
+                            self.target_path,
+                            num_worker_threads,
+                            file_queue,
+                            result_queue,
+                        ),
                     )
+                    processes.append(process)
+                    process.start()
+
+                # Wait for all processes to complete
+                for process in processes:
+                    process.join()
         elif execution_mode == ExecutionMode.RAY:
             if not HAVE_RAY:
                 raise RuntimeError(
@@ -371,13 +366,6 @@ class SyncManager:
 
         # Commit the metadata to the target storage client.
         self.target_client.commit_metadata()
-
-        # Clean up the multiprocessing manager if it was created
-        if manager is not None:
-            try:
-                manager.shutdown()
-            except Exception as e:
-                logger.warning(f"Error shutting down multiprocessing manager: {e}")
 
         # Log the completion of the sync operation.
         progress.close()
