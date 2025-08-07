@@ -62,7 +62,7 @@ def test_list_objects_with_ascending_order():
             file_count += 1
 
         provider = PosixFileStorageProvider(base_path=temp_dir)
-        objects = list(provider.list_objects(prefix=""))
+        objects = list(provider.list_objects(path=""))
 
         # Verify we have the expected number of files
         expected_file_count = file_count
@@ -77,3 +77,50 @@ def test_list_objects_with_ascending_order():
         ]
         glob_file_keys.sort()
         assert file_keys == glob_file_keys, "Files not sorted"
+
+
+def test_list_objects_with_paths():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create a test directory structure
+        test_files = [
+            "root_file.txt",
+            "docs/readme.md",
+            "docs/guide.md",
+            "data/2024/report.json",
+            "data/archive/old_data.csv",
+        ]
+
+        # Create all test files
+        for file_path in test_files:
+            full_path = os.path.join(temp_dir, file_path)
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            with open(full_path, "w") as f:
+                f.write(f"content for {file_path}")
+
+        provider = PosixFileStorageProvider(base_path=temp_dir)
+
+        # test case 1: empty path
+        results = list(provider.list_objects(path=""))
+        assert len(results) == len(test_files), "Empty path should list all files"
+        result_keys = [obj.key for obj in results]
+        for expected_file in test_files:
+            assert expected_file in result_keys, f"Should find {expected_file} with empty path"
+
+        # test case 2: root directory path
+        results = list(provider.list_objects(path="docs/"))
+        result_keys = [obj.key for obj in results]
+        expected_docs_files = ["docs/readme.md", "docs/guide.md"]
+        assert len(result_keys) == len(expected_docs_files), "Root directory path should list directory contents"
+        for expected_file in expected_docs_files:
+            assert expected_file in result_keys, f"Should find {expected_file} in docs directory"
+
+        # test case 3: full file path
+        results = list(provider.list_objects(path="docs/readme.md"))
+        result_keys = [obj.key for obj in results]
+        assert len(result_keys) == 1, "Full file path should return single file"
+        assert "docs/readme.md" in result_keys, "Should find the specific file"
+
+        # test case 4: partial path (should fail)
+        # Test with a partial path that doesn't correspond to a complete directory or file
+        results = list(provider.list_objects(path="doc"))
+        assert len(results) == 0, "Partial path that doesn't exist should return empty results"

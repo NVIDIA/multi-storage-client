@@ -398,6 +398,7 @@ class StorageClient:
     def list(
         self,
         prefix: str = "",
+        path: str = "",
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
@@ -405,9 +406,15 @@ class StorageClient:
         attribute_filter_expression: Optional[str] = None,
     ) -> Iterator[ObjectMetadata]:
         """
-        Lists objects in the storage provider under the specified prefix.
+        Lists objects in the storage provider under the specified path.
 
-        :param prefix: The prefix to list objects under.
+        **IMPORTANT**: Use the ``path`` parameter for new code. The ``prefix`` parameter is
+        deprecated and will be removed in a future version.
+
+        :param prefix: [DEPRECATED] Use ``path`` instead. The prefix to list objects under.
+        :param path: The directory or file path to list objects under. This should be a
+                    complete filesystem path (e.g., "my-bucket/documents/" or "data/2024/").
+                    Cannot be used together with ``prefix``.
         :param start_after: The key to start after (i.e. exclusive). An object with this key doesn't have to exist.
         :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
         :param include_directories: Whether to include directories in the result. When True, directories are returned alongside objects.
@@ -415,14 +422,45 @@ class StorageClient:
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
 
         :return: An iterator over objects.
+
+        :raises ValueError: If both ``path`` and ``prefix`` parameters are provided (both non-empty).
         """
+        # Parameter validation - either path or prefix, not both
+        if path and prefix:
+            raise ValueError(
+                f"Cannot specify both 'path' ({path!r}) and 'prefix' ({prefix!r}). "
+                f"Please use only the 'path' parameter for new code. "
+                f"Migration guide: Replace list(prefix={prefix!r}) with list(path={prefix!r})"
+            )
+        elif prefix:
+            logger.debug(
+                f"The 'prefix' parameter is deprecated and will be removed in a future version. "
+                f"Please use the 'path' parameter instead. "
+                f"Migration guide: Replace list(prefix={prefix!r}) with list(path={prefix!r})"
+            )
+
+        # Use path if provided, otherwise fall back to prefix
+        effective_path = path if path else prefix
+        if effective_path and not self.is_file(effective_path):
+            effective_path = (
+                effective_path.rstrip("/") + "/"
+            )  # assume it's a directory if the effective path is not empty
+
         if self._metadata_provider:
             objects = self._metadata_provider.list_objects(
-                prefix, start_after, end_at, include_directories, attribute_filter_expression
+                effective_path,
+                start_after=start_after,
+                end_at=end_at,
+                include_directories=include_directories,
+                attribute_filter_expression=attribute_filter_expression,
             )
         else:
             objects = self._storage_provider.list_objects(
-                prefix, start_after, end_at, include_directories, attribute_filter_expression
+                effective_path,
+                start_after=start_after,
+                end_at=end_at,
+                include_directories=include_directories,
+                attribute_filter_expression=attribute_filter_expression,
             )
 
         for object in objects:
@@ -507,7 +545,7 @@ class StorageClient:
                     # the base physical path removed from the beginning.
                     physical_base, _ = self._metadata_provider.realpath("")
                     physical_prefix, _ = self._metadata_provider.realpath(prefix)
-                    for obj in self._storage_provider.list_objects(prefix=physical_prefix):
+                    for obj in self._storage_provider.list_objects(physical_prefix):
                         virtual_path = obj.key[len(physical_base) :].lstrip("/")
                         self._metadata_provider.add_file(virtual_path, obj)
                 self._metadata_provider.commit_updates()

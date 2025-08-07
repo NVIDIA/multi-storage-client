@@ -113,7 +113,7 @@ def test_manifest_metadata(temp_data_store_type: type[tempdatastore.TemporaryDat
         assert file_info.type == "file"
         assert file_info.last_modified is not None
 
-        file_info_list = list(data_with_manifest_storage_client.list(prefix=base_path))
+        file_info_list = list(data_with_manifest_storage_client.list(path=base_path))
         assert len(file_info_list) == 1
         listed_file_info = file_info_list[0]
         assert listed_file_info is not None
@@ -179,13 +179,13 @@ def test_manifest_metadata(temp_data_store_type: type[tempdatastore.TemporaryDat
         file_count = 10
         for i in range(file_count):
             data_storage_client.write(path=os.path.join("directory", f"{i}.txt"), body=file_body_bytes)
-        assert len(list(data_with_manifest_storage_client.list(prefix=file_directory + "/"))) == 0
+        assert len(list(data_with_manifest_storage_client.list(path=file_directory + "/"))) == 0
 
         data_with_manifest_storage_client.commit_metadata(prefix=f"{file_directory}/")
-        assert len(list(data_with_manifest_storage_client.list(prefix=file_directory + "/"))) == file_count
+        assert len(list(data_with_manifest_storage_client.list(path=file_directory + "/"))) == file_count
 
         # Test listing with directories
-        with_dirs = list(data_with_manifest_storage_client.list(prefix=base_path, include_directories=True))
+        with_dirs = list(data_with_manifest_storage_client.list(path=base_path, include_directories=True))
         assert len(with_dirs) == 1
         assert with_dirs[0].key == file_directory + "/"
 
@@ -304,7 +304,7 @@ def test_autocommit(temp_data_store_type: type[tempdatastore.TemporaryDataStore]
         # Wait 3 seconds for the autocommit to commit the files.
         time.sleep(5)
 
-        assert len(list(storage_client.list(prefix="folder/"))) == file_count
+        assert len(list(storage_client.list(path="folder/"))) == file_count
         for i in range(file_count):
             fname = f"folder/filename-{i}.txt"
             assert storage_client.is_file(fname)

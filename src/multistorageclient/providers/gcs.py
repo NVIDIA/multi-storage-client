@@ -462,9 +462,11 @@ class GoogleStorageProvider(BaseStorageProvider):
         return self._collect_metrics(_invoke_api, operation="LIST", bucket=bucket, key=key)
 
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
-        if path.endswith("/"):
-            # If path is a "directory", then metadata is not guaranteed to exist if
-            # it is a "virtual prefix" that was never explicitly created.
+        bucket, key = split_path(path)
+        if path.endswith("/") or (bucket and not key):
+            # If path ends with "/" or empty key name is provided, then assume it's a "directory",
+            # which metadata is not guaranteed to exist for cases such as
+            # "virtual prefix" that was never explicitly created.
             if self._is_dir(path):
                 return ObjectMetadata(
                     key=path, type="directory", content_length=0, last_modified=AWARE_DATETIME_MIN, etag=None
@@ -472,7 +474,6 @@ class GoogleStorageProvider(BaseStorageProvider):
             else:
                 raise FileNotFoundError(f"Directory {path} does not exist.")
         else:
-            bucket, key = split_path(path)
             self._refresh_gcs_client_if_needed()
 
             def _invoke_api() -> ObjectMetadata:
@@ -507,12 +508,12 @@ class GoogleStorageProvider(BaseStorageProvider):
 
     def _list_objects(
         self,
-        prefix: str,
+        path: str,
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
     ) -> Iterator[ObjectMetadata]:
-        bucket, prefix = split_path(prefix)
+        bucket, prefix = split_path(path)
         self._refresh_gcs_client_if_needed()
 
         def _invoke_api() -> Iterator[ObjectMetadata]:

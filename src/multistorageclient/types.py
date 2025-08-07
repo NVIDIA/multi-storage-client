@@ -228,22 +228,22 @@ class StorageProvider(ABC):
     @abstractmethod
     def list_objects(
         self,
-        prefix: str,
+        path: str,
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
         attribute_filter_expression: Optional[str] = None,
     ) -> Iterator[ObjectMetadata]:
         """
-        Lists objects in the storage provider under the specified prefix.
+        Lists objects in the storage provider under the specified path.
 
-        :param prefix: The prefix or path to list objects under.
+        :param path: The path to list objects under. The path must be a valid file or subdirectory path, cannot be partial or just "prefix".
         :param start_after: The key to start after (i.e. exclusive). An object with this key doesn't have to exist.
         :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
         :param include_directories: Whether to include directories in the result. When True, directories are returned alongside objects.
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
 
-        :return: An iterator over objects metadata under the specified prefix.
+        :return: An iterator over objects metadata under the specified path.
         """
         pass
 
@@ -304,22 +304,22 @@ class MetadataProvider(ABC):
     @abstractmethod
     def list_objects(
         self,
-        prefix: str,
+        path: str,
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
         attribute_filter_expression: Optional[str] = None,
     ) -> Iterator[ObjectMetadata]:
         """
-        Lists objects in the storage provider under the specified prefix.
+        Lists objects in the metadata provider under the specified path.
 
-        :param prefix: The prefix or path to list objects under.
+        :param path: The path to list objects under. The path must be a valid file or subdirectory path, cannot be partial or just "prefix".
         :param start_after: The key to start after (i.e. exclusive). An object with this key doesn't have to exist.
         :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
         :param include_directories: Whether to include directories in the result. When True, directories are returned alongside objects.
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
 
-        :return: A iterator over objects metadata under the specified prefix.
+        :return: A iterator over objects metadata under the specified path.
         """
         pass
 

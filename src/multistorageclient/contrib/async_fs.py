@@ -87,7 +87,7 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
         if dir_path and not dir_path.endswith("/"):
             dir_path += "/"
 
-        objects = storage_client.list(dir_path, include_directories=True)
+        objects = storage_client.list(path=dir_path, include_directories=True)
 
         if detail:
             return [

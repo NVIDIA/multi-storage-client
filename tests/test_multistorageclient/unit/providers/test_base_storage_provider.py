@@ -40,7 +40,7 @@ class MockBaseStorageProvider(BaseStorageProvider):
 
     def _list_objects(
         self,
-        prefix: str,
+        path: str,
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
@@ -62,7 +62,7 @@ def test_list_objects_with_base_path():
     ]
     provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
     provider._list_objects = MagicMock(return_value=iter(mock_objects))
-    response = list(provider.list_objects(prefix="prefix/dir"))
+    response = list(provider.list_objects(path="prefix/dir"))
     assert len(response) == 3
 
     for m in response:
@@ -77,7 +77,7 @@ def test_list_objects_with_prefix_in_base_path():
     ]
     provider = MockBaseStorageProvider(base_path="bucket/prefix", provider_name="mock")
     provider._list_objects = MagicMock(return_value=iter(mock_objects))
-    response = list(provider.list_objects(prefix="dir/"))
+    response = list(provider.list_objects(path="dir/"))
     assert len(response) == 3
 
     for m in response:

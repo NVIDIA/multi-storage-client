@@ -192,14 +192,12 @@ def test_ls_command_without_attribute_filter_expression(run_cli):
         # Test basic ls command
         stdout, _ = run_cli("ls", test_dir)
 
-        # Should find files in root directory
-        assert "file1.txt" not in stdout
-        assert "file2.bin" not in stdout
+        assert "file1.txt" in stdout
+        assert "file2.bin" in stdout
 
         # Test recursive ls command
-        stdout, _ = run_cli("ls", "--recursive", test_dir)
+        stdout, _ = run_cli("ls", "--recursive", os.path.dirname(test_dir))
 
-        # Should find files in root directory
         assert "file1.txt" in stdout
         assert "file2.bin" in stdout
 
@@ -345,23 +343,28 @@ def test_rm_command(run_cli):
             file_path.write_text(f"Content of {file_path.name}")
 
         # Test dryrun
-        stdout, stderr = run_cli("rm", "--dryrun", f"{test_dir}/old_")
+        stdout, _ = run_cli("rm", "--dryrun", f"{test_dir}/")
         assert "Files that would be deleted:" in stdout
         assert "old_file1.txt" in stdout
         assert "old_file2.bin" in stdout
-        assert "new_file1.txt" not in stdout
-        assert "new_file2.bin" not in stdout
+        assert "new_file1.txt" in stdout
+        assert "new_file2.bin" in stdout
+
+        # Partial path is not supported
+        stdout, _ = run_cli("rm", "--dryrun", f"{test_dir}/old_")
+        assert "old_file1.txt" not in stdout
+        assert "old_file2.bin" not in stdout
 
         # Test debug output
-        stdout, _ = run_cli("rm", "--dryrun", "--debug", f"{test_dir}/old_")
+        stdout, _ = run_cli("rm", "--dryrun", "--debug", f"{test_dir}/")
         assert "Arguments:" in stdout
 
         # Test quiet mode
-        stdout, _ = run_cli("rm", "--dryrun", "--quiet", f"{test_dir}/old_")
+        stdout, _ = run_cli("rm", "--dryrun", "--quiet", f"{test_dir}/")
         assert "Arguments:" not in stdout
 
         # Test only-show-errors
-        stdout, _ = run_cli("rm", "--dryrun", "--only-show-errors", f"{test_dir}/old_")
+        stdout, _ = run_cli("rm", "--dryrun", "--only-show-errors", f"{test_dir}/")
         assert "Successfully deleted files with prefix" not in stdout
 
         # Test actual deletion without recursive (file by file)

@@ -279,7 +279,7 @@ class ManifestMetadataProvider(MetadataProvider):
 
     def list_objects(
         self,
-        prefix: str,
+        path: str,
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
@@ -288,7 +288,7 @@ class ManifestMetadataProvider(MetadataProvider):
         """
         List objects in the manifest.
 
-        :param prefix: The prefix to filter objects by.
+        :param path: The path to filter objects by.
         :param start_after: The object to start after.
         :param end_at: The object to end at.
         :param include_directories: Whether to include directories.
@@ -297,8 +297,8 @@ class ManifestMetadataProvider(MetadataProvider):
         if (start_after is not None) and (end_at is not None) and not (start_after < end_at):
             raise ValueError(f"start_after ({start_after}) must be before end_at ({end_at})!")
 
-        if prefix and not prefix.endswith("/"):
-            prefix = prefix + "/"
+        if path and not path.endswith("/"):
+            path = path + "/"
 
         # create evaluator for attribute filter expression if present
         evaluator = (
@@ -309,7 +309,7 @@ class ManifestMetadataProvider(MetadataProvider):
         keys = (
             key
             for key, obj_metadata in self._files.items()
-            if key.startswith(prefix)
+            if key.startswith(path)
             and (start_after is None or start_after < key)
             and (end_at is None or key <= end_at)
             and (
@@ -320,11 +320,11 @@ class ManifestMetadataProvider(MetadataProvider):
         pending_directory: Optional[ObjectMetadata] = None
         for key in sorted(keys):
             if include_directories:
-                relative = key[len(prefix) :].lstrip("/")
+                relative = key[len(path) :].lstrip("/")
                 subdirectory = relative.split("/", 1)[0] if "/" in relative else None
 
                 if subdirectory:
-                    directory_name = f"{prefix}{subdirectory}/"
+                    directory_name = f"{path}{subdirectory}/"
 
                     if pending_directory and pending_directory.key != directory_name:
                         yield pending_directory

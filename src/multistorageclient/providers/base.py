@@ -244,19 +244,30 @@ class BaseStorageProvider(StorageProvider):
 
     def list_objects(
         self,
-        prefix: str,
+        path: str,
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
         attribute_filter_expression: Optional[str] = None,
     ) -> Iterator[ObjectMetadata]:
+        """
+        Lists objects in the storage provider under the specified path.
+
+        :param path: The path to list objects under. The path must be a valid file or subdirectory path, cannot be partial or just "prefix".
+        :param start_after: The key to start after (i.e. exclusive). An object with this key doesn't have to exist.
+        :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
+        :param include_directories: Whether to include directories in the result. When True, directories are returned alongside objects.
+        :param attribute_filter_expression: The attribute filter expression to apply to the result.
+
+        :return: An iterator over objects metadata under the specified path.
+        """
         if (start_after is not None) and (end_at is not None) and not (start_after < end_at):
             raise ValueError(f"start_after ({start_after}) must be before end_at ({end_at})!")
 
-        prefix = self._prepend_base_path(prefix)
+        path = self._prepend_base_path(path)
         objects = self._emit_metrics(
             operation=BaseStorageProvider._Operation.LIST,
-            f=lambda: self._list_objects(prefix, start_after, end_at, include_directories),
+            f=lambda: self._list_objects(path, start_after, end_at, include_directories),
         )
 
         # Filter objects based on attribute filter expression
@@ -297,8 +308,8 @@ class BaseStorageProvider(StorageProvider):
         )
 
     def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
-        prefix = extract_prefix_from_glob(pattern)
-        keys = [object.key for object in self.list_objects(prefix)]
+        parent_dir = extract_prefix_from_glob(pattern)
+        keys = [object.key for object in self.list_objects(path=parent_dir)]
         keys = insert_directories(keys)
 
         matched_keys = [key for key in glob(keys, pattern)]
@@ -365,7 +376,7 @@ class BaseStorageProvider(StorageProvider):
     @abstractmethod
     def _list_objects(
         self,
-        prefix: str,
+        path: str,
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,

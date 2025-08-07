@@ -91,7 +91,7 @@ def test_manifest_metadata(temp_data_store_type: type[tempdatastore.TemporaryDat
         # List the manifest.
         manifest_directories_info = [
             metadata
-            for metadata in data_storage_client.list(prefix=f"{DEFAULT_MANIFEST_BASE_DIR}/", include_directories=True)
+            for metadata in data_storage_client.list(path=f"{DEFAULT_MANIFEST_BASE_DIR}/", include_directories=True)
             if metadata.type == "directory"
         ]
         assert len(manifest_directories_info) == 1
@@ -110,7 +110,7 @@ def test_manifest_metadata(temp_data_store_type: type[tempdatastore.TemporaryDat
         manifest_parts_directories_info = [
             metadata
             for metadata in data_storage_client.list(
-                prefix=f"{manifest_directories_info[0].key}/", include_directories=True
+                path=f"{manifest_directories_info[0].key}/", include_directories=True
             )
             if metadata.type == "directory" and metadata.key.endswith(MANIFEST_PARTS_CHILD_DIR)
         ]
@@ -118,7 +118,7 @@ def test_manifest_metadata(temp_data_store_type: type[tempdatastore.TemporaryDat
 
         # Check the manifest parts.
         manifest_parts_info = [
-            metadata for metadata in data_storage_client.list(prefix=f"{manifest_parts_directories_info[0].key}/")
+            metadata for metadata in data_storage_client.list(path=f"{manifest_parts_directories_info[0].key}/")
         ]
         assert len(manifest_parts_info) > 0
         for manifest_part_info in manifest_parts_info:
@@ -164,7 +164,7 @@ def test_manifest_metadata(temp_data_store_type: type[tempdatastore.TemporaryDat
         # List the later manifest.
         later_manifest_directories_info = [
             metadata
-            for metadata in data_storage_client.list(prefix=f"{DEFAULT_MANIFEST_BASE_DIR}/", include_directories=True)
+            for metadata in data_storage_client.list(path=f"{DEFAULT_MANIFEST_BASE_DIR}/", include_directories=True)
             if metadata.type == "directory" and metadata.key != manifest_directories_info[0].key
         ]
         assert len(later_manifest_directories_info) == 1

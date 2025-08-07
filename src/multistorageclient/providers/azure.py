@@ -339,9 +339,11 @@ class AzureBlobStorageProvider(BaseStorageProvider):
         return self._collect_metrics(_invoke_api, operation="LIST", container=container_name, blob=prefix)
 
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
-        if path.endswith("/"):
-            # If path is a "directory", then metadata is not guaranteed to exist if
-            # it is a "virtual prefix" that was never explicitly created.
+        container_name, blob_name = split_path(path)
+        if path.endswith("/") or (container_name and not blob_name):
+            # If path ends with "/" or empty blob name is provided, then assume it's a "directory",
+            # which metadata is not guaranteed to exist for cases such as
+            # "virtual prefix" that was never explicitly created.
             if self._is_dir(path):
                 return ObjectMetadata(
                     key=self._append_delimiter(path),
@@ -352,7 +354,6 @@ class AzureBlobStorageProvider(BaseStorageProvider):
             else:
                 raise FileNotFoundError(f"Directory {path} does not exist.")
         else:
-            container_name, blob_name = split_path(path)
             self._refresh_blob_service_client_if_needed()
 
             def _invoke_api() -> ObjectMetadata:
@@ -385,12 +386,12 @@ class AzureBlobStorageProvider(BaseStorageProvider):
 
     def _list_objects(
         self,
-        prefix: str,
+        path: str,
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
     ) -> Iterator[ObjectMetadata]:
-        container_name, prefix = split_path(prefix)
+        container_name, prefix = split_path(path)
         self._refresh_blob_service_client_if_needed()
 
         def _invoke_api() -> Iterator[ObjectMetadata]:

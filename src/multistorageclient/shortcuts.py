@@ -365,9 +365,9 @@ def list(
     :return: An iterator of :py:class:`ObjectMetadata` objects representing the files (and optionally directories)
              accessible under the specified URL prefix. The returned keys will always be prefixed with msc://.
     """
-    client, prefix = resolve_storage_client(url)
+    client, path = resolve_storage_client(url)
     return client.list(
-        prefix=prefix,
+        path=path,
         start_after=start_after,
         end_at=end_at,
         include_directories=include_directories,

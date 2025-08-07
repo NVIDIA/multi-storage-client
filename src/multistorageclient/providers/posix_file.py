@@ -248,23 +248,28 @@ class PosixFileStorageProvider(BaseStorageProvider):
 
     def _list_objects(
         self,
-        prefix: str,
+        path: str,
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
     ) -> Iterator[ObjectMetadata]:
         def _invoke_api() -> Iterator[ObjectMetadata]:
-            # Get parent directory and list its contents
-            parent_dir = os.path.dirname(prefix)
-            if not os.path.exists(parent_dir):
+            if os.path.isfile(path):
+                yield ObjectMetadata(
+                    key=os.path.relpath(path, self._base_path),  # relative path to the base path
+                    content_length=os.path.getsize(path),
+                    last_modified=datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc),
+                )
+            dir_path = path.rstrip("/") + "/"
+            if not os.path.isdir(dir_path):  # expect the input to be a directory
                 return
 
-            yield from self._explore_directory(parent_dir, prefix, start_after, end_at, include_directories)
+            yield from self._explore_directory(dir_path, start_after, end_at, include_directories)
 
-        return self._collect_metrics(_invoke_api, operation="LIST", path=prefix)
+        return self._collect_metrics(_invoke_api, operation="LIST", path=path)
 
     def _explore_directory(
-        self, dir_path: str, prefix: str, start_after: Optional[str], end_at: Optional[str], include_directories: bool
+        self, dir_path: str, start_after: Optional[str], end_at: Optional[str], include_directories: bool
     ) -> Iterator[ObjectMetadata]:
         """
         Recursively explore a directory and yield objects in lexicographical order.
@@ -279,8 +284,6 @@ class PosixFileStorageProvider(BaseStorageProvider):
 
             for entry in dir_entries:
                 full_path = os.path.join(dir_path, entry)
-                if not full_path.startswith(prefix):
-                    continue
 
                 relative_path = os.path.relpath(full_path, self._base_path)
 
@@ -315,7 +318,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
                     )
                 elif entry_type == _EntryType.DIRECTORY_TO_EXPLORE:
                     # Recursively explore this directory
-                    yield from self._explore_directory(full_path, prefix, start_after, end_at, include_directories)
+                    yield from self._explore_directory(full_path, start_after, end_at, include_directories)
 
         except (OSError, PermissionError) as e:
             logger.warning(f"Failed to list contents of {dir_path}, caused by: {e}")

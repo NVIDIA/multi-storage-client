@@ -542,7 +542,8 @@ def test_storage_provider_cache_configs(config_creator, temp_data_store_type, tm
         else:
             storage_config = StorageClientConfig.from_dict(config_dict, profile="s3-local")
             real_storage_provider = storage_config.storage_provider
-            for obj in real_storage_provider.list_objects(prefix="test_"):
+            tmpdir_path = os.path.abspath(str(tmpdir))
+            for obj in real_storage_provider.list_objects(path=tmpdir_path):
                 real_storage_provider.delete_object(obj.key)
             cache_manager = storage_config.cache_manager
             verify_cache_operations(cache_manager)
@@ -608,12 +609,7 @@ def test_storage_provider_partial_cache_config(storage_provider_partial_cache_co
     with temp_data_store_type() as temp_store:
         config_dict = storage_provider_partial_cache_config(temp_store.profile_config_dict())
         storage_config = StorageClientConfig.from_dict(config_dict, profile="s3-local")
-        real_storage_provider = storage_config.storage_provider
         cache_manager = storage_config.cache_manager
-
-        # Clean up any existing objects in the bucket with test prefix
-        for obj in real_storage_provider.list_objects(prefix="test_"):
-            real_storage_provider.delete_object(obj.key)
 
         # Access the CacheManager
         verify_cache_operations(cache_manager)

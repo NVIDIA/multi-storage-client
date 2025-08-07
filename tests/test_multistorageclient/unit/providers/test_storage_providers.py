@@ -135,19 +135,22 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
             assert directory_info.type == "directory"
 
         # List the infix directory.
-        assert len(list(storage_client.list(prefix=f"{file_path_fragments[0]}/", include_directories=True))) == 1
+        assert len(list(storage_client.list(path=f"{file_path_fragments[0]}/", include_directories=True))) == 1
 
-        # List based on the partial prefix
-        assert len(list(storage_client.list(prefix=f"{file_path_fragments[0]}/in", include_directories=True))) == 1
-        assert len(list(storage_client.list(prefix=f"{file_path_fragments[0]}/in", include_directories=False))) == 1
+        # List based on the partial prefix should return nothing by design.
+        assert len(list(storage_client.list(path=f"{file_path_fragments[0]}/in", include_directories=True))) == 0
+        assert len(list(storage_client.list(path=f"{file_path_fragments[0]}/in", include_directories=False))) == 0
         assert (
-            len(list(storage_client.list(prefix=f"{file_path_fragments[0]}/infix/suffix", include_directories=True)))
-            == 1
+            len(list(storage_client.list(path=f"{file_path_fragments[0]}/infix/suffix", include_directories=True))) == 0
         )
         assert (
-            len(list(storage_client.list(prefix=f"{file_path_fragments[0]}/infix/suffix", include_directories=False)))
-            == 1
+            len(list(storage_client.list(path=f"{file_path_fragments[0]}/infix/suffix", include_directories=False)))
+            == 0
         )
+
+        # List based on the full file path should return the file.
+        assert len(list(storage_client.list(path=file_path, include_directories=True))) == 1
+        assert len(list(storage_client.list(path=file_path, include_directories=False))) == 1
 
         # Delete the file.
         storage_client.delete(path=file_path)
@@ -518,12 +521,23 @@ def test_storage_with_root_base_path(temp_data_store_type: type[tempdatastore.Te
             storage_client.write(path=fname, body=file_body_bytes)
 
         # List the files.
-        files = list(storage_client.list(prefix=bucket))
+        files = list(storage_client.list(path=bucket))
         assert len(files) == len(file_names)
-
         for file, fname in zip(files, file_names):
             meta = storage_client.info(file.key)
             assert file.key == fname == meta.key
+
+        # List the file with bucket and trailing slash
+        files = list(storage_client.list(path=f"{bucket}/"))
+        assert len(files) == len(file_names)
+
+        # List the file with bucket and subfolder
+        files = list(storage_client.list(path=f"{bucket}/folder/"))
+        assert len(files) == len(file_names)
+
+        # List the file with partial path should return nothing
+        files = list(storage_client.list(path=f"{bucket}/fold"))
+        assert len(files) == 0
 
         # Delete the files.
         for fname in file_names:

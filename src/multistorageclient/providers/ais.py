@@ -284,30 +284,44 @@ class AIStoreStorageProvider(BaseStorageProvider):
 
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         bucket, key = split_path(path)
+        if path.endswith("/") or (bucket and not key):
+            # If path ends with "/" or empty key name is provided, then assume it's a "directory",
+            # which metadata is not guaranteed to exist for cases such as
+            # "virtual prefix" that was never explicitly created.
+            if self._is_dir(path):
+                return ObjectMetadata(
+                    key=path,
+                    type="directory",
+                    content_length=0,
+                    last_modified=AWARE_DATETIME_MIN,
+                )
+            else:
+                raise FileNotFoundError(f"Directory {path} does not exist.")
+        else:
 
-        def _invoke_api() -> ObjectMetadata:
-            obj = self.client.bucket(bck_name=bucket, provider=self.provider).object(obj_name=key)
-            headers = obj.head()
-            props = ObjectProps(headers)
+            def _invoke_api() -> ObjectMetadata:
+                obj = self.client.bucket(bck_name=bucket, provider=self.provider).object(obj_name=key)
+                headers = obj.head()
+                props = ObjectProps(headers)
 
-            return ObjectMetadata(
-                key=key,
-                content_length=int(props.size),  # pyright: ignore [reportArgumentType]
-                last_modified=AWARE_DATETIME_MIN,
-                etag=props.checksum_value,
-                metadata=props.custom_metadata,
-            )
+                return ObjectMetadata(
+                    key=key,
+                    content_length=int(props.size),  # pyright: ignore [reportArgumentType]
+                    last_modified=AWARE_DATETIME_MIN,
+                    etag=props.checksum_value,
+                    metadata=props.custom_metadata,
+                )
 
-        return self._collect_metrics(_invoke_api, operation="HEAD", bucket=bucket, key=key)
+            return self._collect_metrics(_invoke_api, operation="HEAD", bucket=bucket, key=key)
 
     def _list_objects(
         self,
-        prefix: str,
+        path: str,
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
     ) -> Iterator[ObjectMetadata]:
-        bucket, prefix = split_path(prefix)
+        bucket, prefix = split_path(path)
 
         def _invoke_api() -> Iterator[ObjectMetadata]:
             # AIS has no start key option like other object stores.

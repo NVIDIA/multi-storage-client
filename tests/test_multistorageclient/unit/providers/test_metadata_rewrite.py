@@ -36,7 +36,7 @@ class UuidMetadataProvider(MetadataProvider):
 
     def list_objects(
         self,
-        prefix: str,
+        path: str,
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
@@ -44,14 +44,14 @@ class UuidMetadataProvider(MetadataProvider):
     ) -> Iterator[ObjectMetadata]:
         assert not include_directories
         sorted_paths = sorted(self._path_to_uuid.keys())
-        for path in sorted_paths:
-            if start_after is not None and path < start_after:
+        for path_key in sorted_paths:
+            if start_after is not None and path_key < start_after:
                 continue
-            if end_at is not None and path > end_at:
+            if end_at is not None and path_key > end_at:
                 return
 
-            u = self._path_to_uuid[path]
-            if path.startswith(prefix):
+            u = self._path_to_uuid[path_key]
+            if path_key.startswith(path):
                 yield self._uuid_to_info[u]
 
     def get_object_metadata(self, path: str, include_pending: bool = False) -> ObjectMetadata:
