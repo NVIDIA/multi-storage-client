@@ -331,15 +331,17 @@ def test_attribute_filter_expression_parsing_errors(run_cli):
 
 def test_rm_command(run_cli):
     with tempfile.TemporaryDirectory() as test_dir:
-        # Create test files with different prefixes
+        # Create test files with different paths
         test_files = [
             Path(test_dir) / "old_file1.txt",
             Path(test_dir) / "old_file2.bin",
             Path(test_dir) / "new_file1.txt",
             Path(test_dir) / "new_file2.bin",
+            Path(test_dir) / "subdir" / "old_file3.txt",
         ]
 
         for file_path in test_files:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(f"Content of {file_path.name}")
 
         # Test dryrun
@@ -355,37 +357,41 @@ def test_rm_command(run_cli):
         assert "old_file1.txt" not in stdout
         assert "old_file2.bin" not in stdout
 
-        # Test debug output
+        # Test case 2: debug output
         stdout, _ = run_cli("rm", "--dryrun", "--debug", f"{test_dir}/")
         assert "Arguments:" in stdout
 
-        # Test quiet mode
+        # Test case 3: quiet mode
         stdout, _ = run_cli("rm", "--dryrun", "--quiet", f"{test_dir}/")
         assert "Arguments:" not in stdout
 
-        # Test only-show-errors
+        # Test case 4: only-show-errors
         stdout, _ = run_cli("rm", "--dryrun", "--only-show-errors", f"{test_dir}/")
-        assert "Successfully deleted files with prefix" not in stdout
+        assert "Successfully deleted files with path" not in stdout
 
-        # Test actual deletion without recursive (file by file)
-        stdout, _ = run_cli("rm", f"{test_dir}/old_file1.txt")
-        assert f"Successfully deleted files with prefix: {test_dir}/old_file1.txt" in stdout
+        # Test case 5: delete directory without recursive will fail
+        with pytest.raises(AssertionError):
+            stdout, stderr = run_cli("rm", "-y", f"{test_dir}")
+            assert stderr is not None
+        # validate that the files still exist
+        assert (Path(test_dir) / "old_file1.txt").exists()
+        assert (Path(test_dir) / "old_file2.bin").exists()
+
+        # Test case 6: delete a file with recursive can work
+        stdout, _ = run_cli("rm", "-y", f"{test_dir}/old_file1.txt")
         assert not (Path(test_dir) / "old_file1.txt").exists()
         assert (Path(test_dir) / "old_file2.bin").exists()
         assert (Path(test_dir) / "new_file1.txt").exists()
         assert (Path(test_dir) / "new_file2.bin").exists()
 
-        stdout, _ = run_cli("rm", f"{test_dir}/old_file2.bin")
-        assert f"Successfully deleted files with prefix: {test_dir}/old_file2.bin" in stdout
+        # Test case 7: delete a file without recursive can also work
+        stdout, _ = run_cli("rm", "-y", "--recursive", f"{test_dir}/old_file2.bin")
         assert not (Path(test_dir) / "old_file2.bin").exists()
         assert (Path(test_dir) / "new_file1.txt").exists()
         assert (Path(test_dir) / "new_file2.bin").exists()
 
-        # Test recursive deletion
-        subdir = Path(test_dir) / "subdir"
-        subdir.mkdir()
-        (subdir / "old_file3.txt").write_text("Content")
-        stdout, _ = run_cli("rm", "--recursive", f"{test_dir}")
+        # Test case 8: delete a directory with recursive can work
+        stdout, _ = run_cli("rm", "-y", "--recursive", f"{test_dir}")
         # Verify files were actually deleted
         assert not (Path(test_dir) / "new_file1.txt").exists()
         assert not (Path(test_dir) / "new_file2.bin").exists()

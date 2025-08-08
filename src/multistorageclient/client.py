@@ -19,6 +19,7 @@ import logging
 import os
 import threading
 from collections.abc import Iterator
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import PurePosixPath
 from typing import IO, Any, List, Optional, Union, cast
@@ -31,7 +32,15 @@ from .providers.posix_file import PosixFileStorageProvider
 from .replica_manager import ReplicaManager
 from .retry import retry
 from .sync import SyncManager
-from .types import MSC_PROTOCOL, ExecutionMode, ObjectMetadata, Range, Replica, SourceVersionCheckMode
+from .types import (
+    AWARE_DATETIME_MIN,
+    MSC_PROTOCOL,
+    ExecutionMode,
+    ObjectMetadata,
+    Range,
+    Replica,
+    SourceVersionCheckMode,
+)
 from .utils import NullStorageClient, join_paths
 
 logger = logging.getLogger(__name__)
@@ -207,6 +216,14 @@ class StorageClient:
 
         :return: A dictionary containing metadata about the object.
         """
+
+        if not path or path == ".":  # for the empty path provided by the user
+            if self._is_posix_file_storage_provider():
+                last_modified = datetime.fromtimestamp(os.path.getmtime("."), tz=timezone.utc)
+            else:
+                last_modified = AWARE_DATETIME_MIN
+            return ObjectMetadata(key="", type="directory", content_length=0, last_modified=last_modified)
+
         if not self._metadata_provider:
             return self._storage_provider.get_object_metadata(path, strict=strict)
 
@@ -336,10 +353,13 @@ class StorageClient:
         """
         Deletes an object at the specified path.
 
-        :param path: The logical path of the object to delete.
+        :param path: The logical path of the object or directory to delete.
         :param recursive: Whether to delete objects in the path recursively.
         """
-        if recursive:
+        obj_metadata = self.info(path)
+        is_dir = obj_metadata and obj_metadata.type == "directory"
+        is_file = obj_metadata and obj_metadata.type == "file"
+        if recursive and is_dir:
             self.sync_from(
                 NullStorageClient(),
                 path,
@@ -353,21 +373,27 @@ class StorageClient:
                 posix_storage_provider = cast(PosixFileStorageProvider, self._storage_provider)
                 posix_storage_provider.rmtree(path)
             return
+        else:
+            # 1) If path is a file: delete the file
+            # 2) If path is a directory: raise an error to prompt the user to use the recursive flag
+            if is_file:
+                virtual_path = path
+                if self._metadata_provider:
+                    path, exists = self._metadata_provider.realpath(path)
+                    if not exists:
+                        raise FileNotFoundError(f"The file at path '{virtual_path}' was not found.")
+                    with self._metadata_provider_lock or contextlib.nullcontext():
+                        self._metadata_provider.remove_file(virtual_path)
 
-        virtual_path = path
-        if self._metadata_provider:
-            path, exists = self._metadata_provider.realpath(path)
-            if not exists:
-                raise FileNotFoundError(f"The file at path '{virtual_path}' was not found.")
-            with self._metadata_provider_lock or contextlib.nullcontext():
-                self._metadata_provider.remove_file(virtual_path)
-
-        # Delete the cached file if it exists
-        if self._is_cache_enabled():
-            assert self._cache_manager is not None
-            self._cache_manager.delete(virtual_path)
-
-        self._storage_provider.delete_object(path)
+                # Delete the cached file if it exists
+                if self._is_cache_enabled():
+                    assert self._cache_manager is not None
+                    self._cache_manager.delete(virtual_path)
+                self._storage_provider.delete_object(path)
+            elif is_dir:
+                raise ValueError(f"'{path}' is a directory. Set recursive=True to delete entire directory.")
+            else:
+                raise FileNotFoundError(f"The file at '{path}' was not found.")
 
     def glob(
         self,

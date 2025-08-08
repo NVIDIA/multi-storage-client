@@ -30,8 +30,14 @@ The ``msc help`` command displays general help information and available command
    sync     Synchronize files from the source storage to the target storage
 
 
+******
+msc ls
+******
+
+The ``msc ls`` command lists files and directories in a storage service. It supports various options for filtering and displaying the results.
+
 .. code-block:: text
-  :caption: Command-specific help output
+  :caption: ls command help output
 
   $ msc help ls
   usage: msc ls [--attribute-filter-expression ATTRIBUTE_FILTER_EXPRESSION] [--recursive] [--human-readable] [--summarize] [--debug] [--limit LIMIT] [--show-attributes] path
@@ -56,38 +62,6 @@ The ``msc help`` command displays general help information and available command
     --limit LIMIT         Limit the number of results to display
     --show-attributes     Display metadata attributes dictionary as an additional column
 
-  examples:
-    # Basic directory listing
-    msc ls "msc://profile/data/"
-    msc ls "/path/to/files/"
-
-    # Human readable sizes
-    msc ls "msc://profile/models/" --human-readable
-
-    # Show summary information
-    msc ls "msc://profile/data/" --summarize
-
-    # List with attribute filtering
-    msc ls "msc://profile/models/" --attribute-filter-expression 'model_name = "gpt"'
-    msc ls "msc://profile/data/" --attribute-filter-expression 'version >= 1.0 AND environment != "test"'
-
-    # Limited results
-    msc ls "msc://profile/data/" --limit 10
-
-    # List contents recursively
-    msc ls "msc://profile/data/" --recursive
-
-    # Show metadata attributes
-    msc ls "msc://profile/models/" --show-attributes
-    msc ls "msc://profile/data/" --show-attributes --human-readable
-
-
-******
-msc ls
-******
-
-The ``msc ls`` command lists files and directories in a storage service. It supports various options for filtering and displaying the results.
-
 .. code-block:: text
   :caption: List files
 
@@ -95,6 +69,16 @@ The ``msc ls`` command lists files and directories in a storage service. It supp
   Last Modified           Size  Name
   2025-04-15 00:22:40  5242880  msc://profile/data/data-5MB.bin
   2025-04-15 00:23:36     1496  msc://profile/data/model.pt
+
+.. code-block:: text
+  :caption: List files recursively
+
+  $ msc ls --recursive msc://profile/data/
+  Last Modified           Size  Name
+  2025-04-15 00:22:40  5242880  msc://profile/data/data-5MB.bin
+  2025-04-15 00:23:36     1496  msc://profile/data/model.pt
+  2025-04-15 00:24:15     2048  msc://profile/data/subdir/config.json
+  2025-04-15 00:25:30     1024  msc://profile/data/subdir/logs/error.log
 
 .. note::
    The ``--attribute-filter-expression`` option allows you to filter files based on their metadata attributes.
@@ -113,7 +97,7 @@ The ``msc ls`` command lists files and directories in a storage service. It supp
 
    **Numeric vs String Comparison:** For comparison operators (``>``, ``>=``, ``<``, ``<=``), the system first attempts numeric comparison. If that fails, it falls back to lexicographic string comparison.
 
-   **Performance Considerations:** When using attribute filtering, the system makes additional HEAD requests to retrieve metadata for each file. This can increase latency, especially when working with many files.
+   **Performance Considerations:** When using attribute filtering, the system will make additional HEAD requests to retrieve metadata for each file if metadata provider is not provided. This can increase latency, especially when working with many files.
 
 
 ********
@@ -123,31 +107,83 @@ msc glob
 The ``msc glob`` command finds files in a storage service using Unix-style wildcard patterns.
 
 .. code-block:: text
+  :caption: glob command help output
+
+  $ msc help glob
+  usage: msc glob [--attribute-filter-expression ATTRIBUTE_FILTER_EXPRESSION] pattern
+
+  Find files using Unix-style wildcard patterns with optional attribute filtering.
+
+  positional arguments:
+    pattern               The glob pattern to match files (POSIX path or msc:// URL)
+
+  options:
+    --attribute-filter-expression ATTRIBUTE_FILTER_EXPRESSION, -e ATTRIBUTE_FILTER_EXPRESSION
+                          Filter by attributes using a filter expression (e.g., 'model_name = "gpt" AND version > 1.0')
+
+.. code-block:: text
   :caption: Find files with a wildcard pattern
 
   $ msc glob "msc://profile/data/*.pt"
   msc://profile/data/model.pt
 
 .. note::
-   The ``msc glob`` command works by first listing all files in the specified directory using the equivalent of ``msc ls``, then applying the glob pattern as a post-filter to the results. This means that glob patterns are evaluated locally after retrieving the file listing from the storage service.
+   The ``msc glob`` command works by first listing all files in the specified directory using the equivalent of ``msc ls``, then applying the glob pattern as a post-filter to the results. This means that glob patterns are evaluated locally after retrieving the file listing from the storage service.  To reduce number of HEAD requests, either opt in to use metadata provider or use ``msc glob`` for only a specific pattern of files.
 
 
 ******
 msc rm
 ******
 
-The ``msc rm`` command deletes files in a storage service. It supports recursively deleting directories.
+The ``msc rm`` command deletes files or directories in a storage service. It supports both single file deletion and recursive directory deletion.
+
+.. code-block:: text
+  :caption: rm command help output
+
+  $ msc help rm
+  usage: msc rm [-r] [-y] [--debug] [--dryrun] [--quiet] [--only-show-errors] path
+
+  Delete files or directories.
+
+  positional arguments:
+    path                  The file or directory path to delete (either POSIX path or MSC URL)
+
+  options:
+    -r, --recursive       Delete directories and their contents recursively (This option is needed to delete directories)
+    -y, --yes             Skip confirmation prompt and proceed with deletion
+    --debug               Enable debug output with deletion details
+    --dryrun              Show what would be deleted without actually deleting
+    --quiet               Suppress output of operations performed
+    --only-show-errors    Only errors and warnings are displayed. All other output is suppressed
+
+.. code-block:: text
+  :caption: Delete a single file
+
+  $ msc rm msc://profile/foo/file.txt
+  This will delete the file: msc://profile/foo/file.txt
+  Are you sure you want to continue? (y/N): y
+  Deleting: msc://profile/foo/file.txt
+  Successfully deleted: msc://profile/foo/file.txt
 
 .. code-block:: text
   :caption: Delete files in dryrun mode
 
-  $ msc rm --dryrun msc://profile/data
+  $ msc rm --dryrun --recursive msc://profile/foo
   
   Files that would be deleted:
-    msc://profile/data/data-5MB.bin
-    msc://profile/data/model.pt
+    msc://profile/foo/data-5MB.bin
+    msc://profile/foo/model.pt
 
   Total: 2 file(s)
+
+.. code-block:: text
+  :caption: Delete directory recursively
+
+  $ msc rm --recursive msc://profile/foo
+  This will delete everything under the path: msc://profile/foo (recursively)
+  Are you sure you want to continue? (y/N): y
+  Deleting: msc://profile/foo
+  Successfully deleted: msc://profile/foo
 
 
 ********

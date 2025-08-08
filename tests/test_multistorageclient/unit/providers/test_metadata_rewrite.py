@@ -201,7 +201,6 @@ def test_uuid_metadata_provider(temp_data_store_type: type[tempdatastore.Tempora
         content_dict[upload_filename] = upload_content.encode("utf-8")
 
         for path, content in content_dict.items():
-            print(f"Verifying {path}")
             metadata = storage_client.info(path)
             assert metadata.key == path
             assert metadata.content_length == len(content)

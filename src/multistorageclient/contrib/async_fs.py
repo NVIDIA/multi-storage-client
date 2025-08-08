@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from typing import Any, Union
 
-from fsspec.asyn import AsyncFileSystem
+from fsspec.asyn import AsyncFileSystem, _run_coros_in_chunks
 
 from ..client import StorageClient
 from ..file import ObjectFile, PosixFile
@@ -155,7 +155,8 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
         :param kwargs: Additional arguments for remove functionality.
         """
         storage_client, file_path = self.resolve_path_and_storage_client(path)
-        storage_client.delete(file_path)
+        recursive = kwargs.get("recursive", False)
+        storage_client.delete(file_path, recursive=recursive)
 
     async def _rm_file(self, path: str, **kwargs: Any):
         """
@@ -165,6 +166,27 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
         :param kwargs: Additional arguments for remove functionality.
         """
         return await self.asynchronize_sync(self.rm_file, path, **kwargs)
+
+    async def _rm(self, path, recursive=False, batch_size=None, **kwargs):
+        """
+        Asynchronously removes a file or directory.
+        Instead of using the implementation in the parent class to expand the path and parallel delete the files,
+        we explicitly pass down the recursive value and use the delete method in the StorageClient to handle the directory deletion.
+
+        :param path: The file or directory path to remove.
+        :param recursive: Whether to recursively remove directories.
+        :param batch_size: The number of files to process in each batch.
+        :param kwargs: Additional arguments for remove functionality.
+        """
+
+        if "recursive" not in kwargs:
+            kwargs["recursive"] = recursive
+
+        return await _run_coros_in_chunks(
+            [self._rm_file(path, **kwargs)],
+            batch_size=-1,  # no throttling
+            nofiles=True,
+        )
 
     def cp_file(self, path1: str, path2: str, **kwargs: Any):
         """
