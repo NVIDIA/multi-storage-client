@@ -248,8 +248,6 @@ class CacheManager:
             if isinstance(source, str):
                 # Move the file to the cache directory
                 os.rename(src=source, dst=file_path)
-                # Only allow the owner to read and write the file
-                os.chmod(file_path, mode=stat.S_IRUSR | stat.S_IWUSR)
             else:
                 # Create a temporary file and move the file to the cache directory
                 with tempfile.NamedTemporaryFile(
@@ -258,8 +256,6 @@ class CacheManager:
                     temp_file_path = temp_file.name
                     temp_file.write(source)
                 os.rename(src=temp_file_path, dst=file_path)
-                # Only allow the owner to read and write the file
-                os.chmod(file_path, mode=stat.S_IRUSR | stat.S_IWUSR)
 
             # Set extended attribute (e.g., ETag)
             if source_version:
@@ -268,7 +264,10 @@ class CacheManager:
                 except OSError as e:
                     logging.warning(f"Failed to set xattr on {file_path}: {e}")
 
-            # update access time if applicable
+            # Make the file read-only for all users
+            self._make_readonly(file_path)
+
+            # Update access time if applicable
             self._update_access_time(file_path)
 
             # Refresh cache after a few minutes
@@ -367,6 +366,24 @@ class CacheManager:
         lock_file = os.path.join(file_dir, lock_name)
         return FileLock(lock_file, timeout=self.DEFAULT_FILE_LOCK_TIMEOUT)
 
+    def _make_writable(self, file_path: str) -> None:
+        """Make file writable by owner while keeping it readable by all.
+
+        Changes permissions to 644 (rw-r--r--).
+
+        :param file_path: Path to the file to make writable.
+        """
+        os.chmod(file_path, mode=stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+
+    def _make_readonly(self, file_path: str) -> None:
+        """Make file read-only for all users.
+
+        Changes permissions to 444 (r--r--r--).
+
+        :param file_path: Path to the file to make read-only.
+        """
+        os.chmod(file_path, mode=stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+
     def _update_access_time(self, file_path: str) -> None:
         """Update access time to current time for LRU policy.
 
@@ -377,6 +394,8 @@ class CacheManager:
         """
         current_time = time.time()
         try:
+            # Make file writable to update timestamps
+            self._make_writable(file_path)
             # Only update atime, preserve mtime for FIFO ordering
             stat = os.stat(file_path)
             os.utime(file_path, (current_time, stat.st_mtime))
@@ -384,6 +403,9 @@ class CacheManager:
             # File might be deleted by another process or have permission issues
             # Just continue without updating the access time
             pass
+        finally:
+            # Restore read-only permissions
+            self._make_readonly(file_path)
 
     def _should_refresh_cache(self) -> bool:
         """Check if enough time has passed since the last refresh."""
