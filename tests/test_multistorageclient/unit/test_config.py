@@ -13,11 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import multiprocessing
 import os
 import pickle
 import sys
 import tempfile
-from typing import Optional, cast
+from typing import cast
 
 import pytest
 import yaml
@@ -1630,16 +1631,7 @@ def test_cache_config_check_source_version_false() -> None:
     assert sc_cfg.cache_config.check_source_version is False
 
 
-@pytest.mark.parametrize(
-    argnames=["manual_init"],
-    argvalues=[
-        [True],
-        [False],
-    ],
-)
-def test_telemetry_init(manual_init: bool) -> None:
-    telemetry_resources: Optional[telemetry.Telemetry] = telemetry.init() if manual_init else None
-
+def test_telemetry_init_manual() -> None:
     with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
         profile = "data"
         config_dict = {
@@ -1655,8 +1647,59 @@ def test_telemetry_init(manual_init: bool) -> None:
                 }
             },
         }
-        config = StorageClientConfig.from_dict(config_dict=config_dict, profile=profile, telemetry=telemetry_resources)
+        config = StorageClientConfig.from_dict(
+            config_dict=config_dict,
+            profile=profile,
+            telemetry=telemetry.init(mode=telemetry.TelemetryMode.LOCAL),
+        )
         assert config is not None
         assert config.metric_gauges is not None
         assert config.metric_counters is not None
         assert config.metric_attributes_providers is not None
+
+
+def _test_telemetry_init_automatic() -> None:
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        profile = "data"
+        config_dict = {
+            "profiles": {profile: temp_data_store.profile_config_dict()},
+            "opentelemetry": {
+                "metrics": {
+                    "attributes": [
+                        {"type": "static", "options": {"attributes": {"cluster": "local"}}},
+                        {"type": "host", "options": {"attributes": {"node": "name"}}},
+                        {"type": "process", "options": {"attributes": {"process": "pid"}}},
+                    ],
+                    "exporter": {"type": telemetry._fully_qualified_name(InMemoryMetricExporter)},
+                }
+            },
+        }
+        config = StorageClientConfig.from_dict(config_dict=config_dict, profile=profile)
+        assert config is not None
+        assert config.metric_gauges is not None
+        assert config.metric_counters is not None
+        assert config.metric_attributes_providers is not None
+
+
+def test_telemetry_init_automatic_main() -> None:
+    _test_telemetry_init_automatic()
+
+
+def _test_telemetry_init_automatic_child_parent(daemon: bool) -> None:
+    context = multiprocessing.get_context(method="spawn")
+    process = context.Process(target=_test_telemetry_init_automatic, daemon=daemon)
+    process.start()
+    process.join()
+
+
+@pytest.mark.parametrize(argnames=["daemon"], argvalues=[[True], [False]])
+def test_telemetry_init_automatic_child(daemon: bool) -> None:
+    # Create a 2-deep process tree so the leaf process has a parent process without a telemetry instance in server mode.
+    #
+    # Use spawn so the proxy object caches aren't inherited by child processes.
+    #
+    # This is to force test the fallback path.
+    context = multiprocessing.get_context(method="spawn")
+    process = context.Process(target=_test_telemetry_init_automatic_child_parent, kwargs={"daemon": daemon})
+    process.start()
+    process.join()

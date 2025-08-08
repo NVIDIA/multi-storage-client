@@ -19,6 +19,7 @@ import os
 import tempfile
 from collections import defaultdict
 from collections.abc import Sequence
+from multiprocessing import current_process
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
@@ -284,8 +285,17 @@ class StorageClientConfigLoader:
                     telemetry = telemetry_init()
                 except (OSError, RuntimeError, ValueError):
                     try:
-                        # Try to create a telemetry instance in server mode.
-                        telemetry = telemetry_init(mode=TelemetryMode.SERVER)
+                        if current_process().daemon:
+                            # Daemons can't have child processes.
+                            #
+                            # Try to create a telemetry instance in local mode.
+                            #
+                            # ⚠️ This may cause CPU contention if the current process is compute-intensive
+                            # and a high collect and/or export frequency is used due to global interpreter lock (GIL).
+                            telemetry = telemetry_init(mode=TelemetryMode.LOCAL)
+                        else:
+                            # Try to create a telemetry instance in server mode.
+                            telemetry = telemetry_init(mode=TelemetryMode.SERVER)
                     except (OSError, RuntimeError, ValueError):
                         # Don't throw on telemetry init failures.
                         logger.error("Failed to automatically create telemetry instance!", exc_info=True)

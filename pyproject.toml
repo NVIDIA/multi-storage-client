@@ -122,6 +122,10 @@ msc = "multistorageclient.contrib.async_fs.MultiStorageAsyncFileSystem"
 
 [tool.coverage.run]
 branch = true
+concurrency = [
+    "multiprocessing",
+    "thread"
+]
 data_file = ".reports/unit/.coverage"
 parallel = true
 source = [
