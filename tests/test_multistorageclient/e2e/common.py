@@ -216,8 +216,12 @@ def verify_storage_provider(storage_client: msc.StorageClient, prefix: str) -> N
     directories = list(storage_client.list(prefix=f"{prefix}/dir1/", include_directories=False))
     assert len(directories) == 0
 
-    # delete file
-    storage_client.delete(f"{prefix}/dir1/dir2/")
+    # delete directory with recursive flag will return an ValueError
+    with pytest.raises(ValueError, match=".*is a directory.*"):
+        storage_client.delete(f"{prefix}/dir1/dir2/")
+
+    # delete directory with recursive flag = True
+    storage_client.delete(f"{prefix}/dir1/dir2/", recursive=True)
 
     wait(waitable=lambda: storage_client.list(prefix), should_wait=len_should_wait(expected_len=1))
 
