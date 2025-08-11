@@ -32,6 +32,31 @@ This module provides the :py:class:`multistorageclient.contrib.async_fs.MultiSto
    )
 
 *****
+Hydra
+*****
+
+The MSC Hydra plugin enables loading Hydra configurations directly from object storage using ``msc://`` URLs.
+
+.. note:: The plugin is automatically registered by Hydra when both ``multistorageclient`` and ``hydra-core`` are installed.
+
+.. code-block:: python
+   :caption: Programmatic usage.
+
+   import hydra
+   import multistorageclient as msc
+   from omegaconf import DictConfig
+
+   # Load config directly from object storage
+   @hydra.main(version_base=None, config_path="msc://profile/configs", config_name="training")
+   def your_app(cfg: DictConfig) -> None:
+       print(f"Loaded config: {cfg}")
+
+.. code-block:: shell
+   :caption: Shell usage.
+
+   python your_app.py --config-path="msc://profile/configs" --config-name=training
+
+*****
 NumPy
 *****
 

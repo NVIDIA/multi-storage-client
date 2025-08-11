@@ -77,6 +77,9 @@ oci = [
 fsspec = [
     "fsspec>=2023.9.0"
 ]
+hydra-core = [
+    "hydra-core>=1,<2"
+]
 numpy = [
     "numpy>=2,<3"
 ]
@@ -141,7 +144,7 @@ output = ".reports/unit/coverage.xml"
 [tool.maturin]
 features = ["pyo3/extension-module"]
 manifest-path = "rust/Cargo.toml"
-python-packages = ["multistorageclient", "multistorageclient_rust"]
+python-packages = ["multistorageclient", "multistorageclient_rust", "hydra_plugins"]
 
 [tool.pip-licenses]
 format = "markdown"

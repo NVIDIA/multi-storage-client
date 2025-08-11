@@ -148,6 +148,13 @@ fsspec
    :members:
    :undoc-members:
 
+Hydra
+=====
+
+.. automodule:: multistorageclient.contrib.hydra
+   :members:
+   :undoc-members:
+
 NumPy
 =====
 

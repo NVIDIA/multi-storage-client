@@ -47,6 +47,9 @@ Likewise, there are extras for each higher level library.
    # fsspec.
    pip install "multi-storage-client[fsspec]"
 
+   # Hydra
+   pip install "multi-storage-client[hydra-core]"
+
    # PyTorch.
    pip install "multi-storage-client[torch]"
 
