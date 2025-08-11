@@ -26,6 +26,8 @@ BACKOFF_FACTOR = 0.5
 
 
 class AccessTokenProvider:
+    auth_options: dict[str, Any]
+
     def __init__(self, auth_options: dict[str, Any]):
         self.auth_options = auth_options
 
@@ -43,10 +45,16 @@ class AzureAccessTokenProvider(AccessTokenProvider):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         try:
-            self.azure_scopes = self.auth_options.pop("scopes")
+            self.azure_scopes = self.auth_options["scopes"]
         except KeyError as e:
             logger.error("Error: 'scopes' key is missing in auth options")
             raise e
+
+        # Auth options that shouldn't be passed to :py:class:`msal.ConfidentialClientApplication`.
+        nonpassthrough_auth_options_keys: set[str] = {"scopes"}
+        passthrough_auth_options: dict[str, Any] = {
+            key: value for key, value in self.auth_options.items() if key not in nonpassthrough_auth_options_keys
+        }
 
         import msal
         from requests.adapters import HTTPAdapter, Retry
@@ -60,7 +68,7 @@ class AzureAccessTokenProvider(AccessTokenProvider):
             status_forcelist=[408, 429, 500, 501, 502, 503, 504],
         )
         msal_session.mount("https://", HTTPAdapter(max_retries=retries))
-        self.msal_client = msal.ConfidentialClientApplication(http_client=msal_session, **self.auth_options)
+        self.msal_client = msal.ConfidentialClientApplication(http_client=msal_session, **passthrough_auth_options)
 
     def get_token(self):
         retry_count = 0

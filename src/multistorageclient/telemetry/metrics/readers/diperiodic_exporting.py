@@ -167,11 +167,14 @@ class DiperiodicExportingMetricReader(sdk_metrics_export.MetricReader):
         self._collect_iteration()
         self._export_iteration()
 
-    # :py:class:`sdk_metrics_export.MetricReader._collect` already exists. Using another name.
+    # :py:meth:`sdk_metrics_export.MetricReader._collect` is reserved. Using another name.
     def _collect_iteration(self, timeout_millis: Optional[float] = None) -> None:
         try:
-            # Inherited from :py:class:``sdk_metrics_export.MetricReader``.
-            self.collect(timeout_millis=timeout_millis or self._collect_timeout_millis)
+            # Only set when registered on a :py:class:`sdk_metrics.MeterProvider` which calls
+            # :py:meth:`sdk_metrics_export.MetricReader._set_collect_callback`.
+            if self._collect is not None:
+                # Inherited from :py:class:``sdk_metrics_export.MetricReader``.
+                self.collect(timeout_millis=timeout_millis or self._collect_timeout_millis)
         except sdk_metrics.MetricsTimeoutError:
             logger.warning("Metrics collection timed out.", exc_info=True)
         except Exception:

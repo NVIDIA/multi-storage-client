@@ -34,6 +34,10 @@ def test_diperiodic_exporting_metric_reader():
         collect_interval_millis=collect_interval_millis,
         export_interval_millis=export_interval_millis,
     )
+
+    # Skip collection before registering on a meter provider.
+    reader._collect_iteration()
+
     meter_provider = sdk_metrics.MeterProvider(metric_readers=[reader])
     meter = meter_provider.get_meter("meter")
     gauge = meter.create_gauge("gauge")

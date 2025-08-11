@@ -283,7 +283,7 @@ class StorageClientConfigLoader:
                 try:
                     # Try to create a telemetry instance with the default mode heuristic.
                     telemetry = telemetry_init()
-                except (OSError, RuntimeError, ValueError):
+                except (AssertionError, OSError, RuntimeError, ValueError):
                     try:
                         if current_process().daemon:
                             # Daemons can't have child processes.
@@ -296,7 +296,7 @@ class StorageClientConfigLoader:
                         else:
                             # Try to create a telemetry instance in server mode.
                             telemetry = telemetry_init(mode=TelemetryMode.SERVER)
-                    except (OSError, RuntimeError, ValueError):
+                    except (AssertionError, OSError, RuntimeError, ValueError):
                         # Don't throw on telemetry init failures.
                         logger.error("Failed to automatically create telemetry instance!", exc_info=True)
 
