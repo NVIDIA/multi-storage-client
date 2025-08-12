@@ -36,6 +36,9 @@ def is_ray_available():
     return importlib.util.find_spec("ray") is not None
 
 
+PLACEMENT_GROUP_STRATEGY = "SPREAD"
+PLACEMENT_GROUP_CPU_PER_WORKER = 1
+
 HAVE_RAY = is_ray_available()
 
 if TYPE_CHECKING:
@@ -337,13 +340,24 @@ class SyncManager:
                 )
 
             import ray
+            from ray.util.placement_group import placement_group
 
+            cluster_resources = ray.cluster_resources()
+            available_resources = ray.available_resources()
+            logger.debug(f"Ray cluster resources: {cluster_resources} Available resources: {available_resources}")
+
+            placement_grp = placement_group(
+                [{"CPU": PLACEMENT_GROUP_CPU_PER_WORKER}] * num_worker_processes, strategy=PLACEMENT_GROUP_STRATEGY
+            )
+            ray.get(placement_grp.ready())
             _sync_worker_process_ray = ray.remote(_sync_worker_process)
 
             # Start the sync worker processes.
             ray.get(
                 [
-                    _sync_worker_process_ray.remote(
+                    _sync_worker_process_ray.options(  # type: ignore
+                        placement_group=placement_grp, placement_group_bundle_index=worker_index
+                    ).remote(
                         self.source_client,
                         self.source_path,
                         self.target_client,
@@ -352,9 +366,11 @@ class SyncManager:
                         file_queue,
                         result_queue,
                     )
-                    for _ in range(num_worker_processes)
+                    for worker_index in range(num_worker_processes)
                 ]
             )
+
+        logger.debug(f"All {num_worker_processes} Ray workers completed")
 
         # Wait for the producer thread to finish.
         producer_thread.join()
