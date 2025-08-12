@@ -77,11 +77,19 @@ def test_manifest_metadata(temp_data_store_type: type[tempdatastore.TemporaryDat
         # Generate files.
         placeholder_last_modified = datetime.now(tz=timezone.utc)
         expected_files_info = {
-            key: ObjectMetadata(key=key, content_length=random.randint(0, 100), last_modified=placeholder_last_modified)
+            key: ObjectMetadata(
+                key=key,
+                content_length=random.randint(0, 100),
+                last_modified=placeholder_last_modified,
+                metadata={"key1": key},
+            )
             for key in [f"{i}.txt" for i in range(2)]
         }
+
         for key, placeholder_file_info in expected_files_info.items():
-            data_storage_client.write(path=key, body=b"\x00" * placeholder_file_info.content_length)
+            data_storage_client.write(
+                path=key, body=b"\x00" * placeholder_file_info.content_length, attributes=placeholder_file_info.metadata
+            )
 
         # Generate a manifest.
         ManifestMetadataGenerator.generate_and_write_manifest(
@@ -154,6 +162,7 @@ def test_manifest_metadata(temp_data_store_type: type[tempdatastore.TemporaryDat
             assert actual_file_info.key == expected_file_info.key
             assert actual_file_info.type == expected_file_info.type
             assert actual_file_info.content_length == expected_file_info.content_length
+            assert actual_file_info.metadata == expected_file_info.metadata
 
         # Generate a manifest with a later timestamp.
         time.sleep(1)

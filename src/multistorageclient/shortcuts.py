@@ -349,6 +349,7 @@ def list(
     end_at: Optional[str] = None,
     include_directories: bool = False,
     attribute_filter_expression: Optional[str] = None,
+    show_attributes: bool = False,
 ) -> Iterator[ObjectMetadata]:
     """
     Lists the contents of the specified URL prefix.
@@ -373,6 +374,7 @@ def list(
         include_directories=include_directories,
         include_url_prefix=True,
         attribute_filter_expression=attribute_filter_expression,
+        show_attributes=show_attributes,
     )
 
 

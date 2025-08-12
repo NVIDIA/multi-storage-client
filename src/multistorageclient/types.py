@@ -233,6 +233,7 @@ class StorageProvider(ABC):
         end_at: Optional[str] = None,
         include_directories: bool = False,
         attribute_filter_expression: Optional[str] = None,
+        show_attributes: bool = False,
     ) -> Iterator[ObjectMetadata]:
         """
         Lists objects in the storage provider under the specified path.
@@ -242,6 +243,7 @@ class StorageProvider(ABC):
         :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
         :param include_directories: Whether to include directories in the result. When True, directories are returned alongside objects.
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
+        :param show_attributes: Whether to return attributes in the result.  There will be performance impact if this is True as now we need to get object metadata for each object.
 
         :return: An iterator over objects metadata under the specified path.
         """
@@ -309,6 +311,7 @@ class MetadataProvider(ABC):
         end_at: Optional[str] = None,
         include_directories: bool = False,
         attribute_filter_expression: Optional[str] = None,
+        show_attributes: bool = False,
     ) -> Iterator[ObjectMetadata]:
         """
         Lists objects in the metadata provider under the specified path.
@@ -318,6 +321,7 @@ class MetadataProvider(ABC):
         :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
         :param include_directories: Whether to include directories in the result. When True, directories are returned alongside objects.
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
+        :param show_attributes: Whether to return attributes in the result.  Depend on implementation, there might be performance impact if this set to True.
 
         :return: A iterator over objects metadata under the specified path.
         """

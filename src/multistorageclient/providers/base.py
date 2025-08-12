@@ -249,6 +249,7 @@ class BaseStorageProvider(StorageProvider):
         end_at: Optional[str] = None,
         include_directories: bool = False,
         attribute_filter_expression: Optional[str] = None,
+        show_attributes: bool = False,
     ) -> Iterator[ObjectMetadata]:
         """
         Lists objects in the storage provider under the specified path.
@@ -258,6 +259,7 @@ class BaseStorageProvider(StorageProvider):
         :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
         :param include_directories: Whether to include directories in the result. When True, directories are returned alongside objects.
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
+        :param show_attributes: Whether to return attributes in the result.  There will be performance impact if this is True as now we need to get object metadata for each object.
 
         :return: An iterator over objects metadata under the specified path.
         """
@@ -278,7 +280,7 @@ class BaseStorageProvider(StorageProvider):
             if self._base_path:
                 obj.key = obj.key.removeprefix(self._base_path).lstrip("/")
 
-            if attribute_filter_expression:
+            if attribute_filter_expression or show_attributes:
                 obj_metadata = None
                 try:
                     obj_metadata = self.get_object_metadata(obj.key)
@@ -286,7 +288,9 @@ class BaseStorageProvider(StorageProvider):
                     logger.debug(
                         f"While listing objects, failed to get object metadata for {obj.key}: {e}, skipping the object"
                     )
-                if obj_metadata and matches_attribute_filter_expression(obj_metadata, evaluator):
+                if obj_metadata and matches_attribute_filter_expression(
+                    obj_metadata, evaluator
+                ):  # if evaluator is None then it will always return True
                     yield obj_metadata
                 else:
                     continue

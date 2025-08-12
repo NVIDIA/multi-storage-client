@@ -284,6 +284,7 @@ class ManifestMetadataProvider(MetadataProvider):
         end_at: Optional[str] = None,
         include_directories: bool = False,
         attribute_filter_expression: Optional[str] = None,
+        show_attributes: bool = False,
     ) -> Iterator[ObjectMetadata]:
         """
         List objects in the manifest.
@@ -293,7 +294,9 @@ class ManifestMetadataProvider(MetadataProvider):
         :param end_at: The object to end at.
         :param include_directories: Whether to include directories.
         :param attribute_filter_expression: The attribute filter expression to filter objects by.
+        :param show_attributes: This field is not used in this implementation - It will always return attributes.  This is present merely to satisfy the interface.
         """
+
         if (start_after is not None) and (end_at is not None) and not (start_after < end_at):
             raise ValueError(f"start_after ({start_after}) must be before end_at ({end_at})!")
 

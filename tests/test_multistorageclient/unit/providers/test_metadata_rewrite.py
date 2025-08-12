@@ -41,6 +41,7 @@ class UuidMetadataProvider(MetadataProvider):
         end_at: Optional[str] = None,
         include_directories: bool = False,
         attribute_filter_expression: Optional[str] = None,
+        show_attributes: bool = False,
     ) -> Iterator[ObjectMetadata]:
         assert not include_directories
         sorted_paths = sorted(self._path_to_uuid.keys())

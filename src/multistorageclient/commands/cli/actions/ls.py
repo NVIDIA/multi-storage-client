@@ -151,6 +151,7 @@ class LsAction(Action):
                 end_at=None,  # Could be added as CLI argument in future
                 include_directories=not args.recursive,
                 attribute_filter_expression=args.attribute_filter_expression,
+                show_attributes=args.show_attributes,
             )
 
             # Collect results
@@ -158,12 +159,6 @@ class LsAction(Action):
             count = 0
             total_size = 0
             for obj_metadata in results_iter:
-                if not args.attribute_filter_expression and args.show_attributes and obj_metadata.type == "file":
-                    # Currently, we only fire additional HEAD requests if users want to filter on attributes.
-                    # If there is no attribute filter provided but users somehow want to see attributes from the list results
-                    # users can use --show-attributes and it will fire additional HEAD request (one per file) to fetch the attributes.
-                    # If this flag ends up to be useful to users, we can flush this logic to the underlying list_objects
-                    obj_metadata = msc.info(obj_metadata.key)
                 row = self._format_listing(obj_metadata, args.human_readable, args.show_attributes)
                 table_data.append(row)
                 count += 1

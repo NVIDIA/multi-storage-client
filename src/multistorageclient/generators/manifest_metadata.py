@@ -84,7 +84,7 @@ class ManifestMetadataGenerator:
             def process_partition(boundary):
                 start_after, end_at = boundary
                 for object_metadata in data_storage_provider.list_objects(
-                    path="", start_after=start_after, end_at=end_at
+                    path="", start_after=start_after, end_at=end_at, show_attributes=True
                 ):
                     if DEFAULT_MANIFEST_BASE_DIR not in object_metadata.key.split("/"):  # Do not track manifest files
                         manifest_metadata_provider.add_file(path=object_metadata.key, metadata=object_metadata)
@@ -94,7 +94,7 @@ class ManifestMetadataGenerator:
                 for future in futures:
                     future.result()
         else:
-            for object_metadata in data_storage_provider.list_objects(path=""):
+            for object_metadata in data_storage_provider.list_objects(path="", show_attributes=True):
                 if DEFAULT_MANIFEST_BASE_DIR not in object_metadata.key.split("/"):  # Do not track manifest files
                     manifest_metadata_provider.add_file(path=object_metadata.key, metadata=object_metadata)
 

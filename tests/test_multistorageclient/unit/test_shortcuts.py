@@ -1057,6 +1057,75 @@ def test_msc_list_with_attribute_filter_expression(
         [tempdatastore.TemporaryPOSIXDirectory],
     ],
 )
+def test_msc_list_show_attributes(
+    temp_data_store_type: type[tempdatastore.TemporaryDataStore],
+) -> None:
+    """Test msc.list with show_attributes functionality."""
+    # Clear the instance cache to ensure that the config is not reused from the previous test
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    with temp_data_store_type() as temp_data_store:
+        config.setup_msc_config(
+            config_dict={
+                "profiles": {
+                    "test": temp_data_store.profile_config_dict(),
+                },
+            }
+        )
+
+        test_content = b"test content for show_attributes"
+        test_uuid = str(uuid.uuid4())
+        base_path = f"test-list-show-attributes-{test_uuid}"
+
+        # Create test files with different attributes
+        test_files = [
+            {
+                "name": "model_v1.bin",
+                "attributes": {"model_name": "gpt", "version": "1.0", "author": "alice", "priority": "10"},
+            },
+            {
+                "name": "model_v2.bin",
+                "attributes": {"model_name": "gpt", "version": "2.0", "author": "bob", "priority": "5"},
+            },
+        ]
+
+        try:
+            # Create test files with attributes
+            for test_file in test_files:
+                file_path = f"{MSC_PROTOCOL}test/{base_path}/{test_file['name']}"
+                msc.write(file_path, test_content, attributes=test_file["attributes"])
+
+            # Test list without show attribute flag
+            results = list(msc.list(f"{MSC_PROTOCOL}test/{base_path}"))
+            assert len(results) == 2
+            for object_metadata in results:
+                assert object_metadata.metadata is None
+
+            # Test list with show attribute flag = True
+            results = list(msc.list(f"{MSC_PROTOCOL}test/{base_path}", show_attributes=True))
+            assert len(results) == 2
+            for object_metadata in results:
+                assert object_metadata.metadata is not None
+                assert "model_name" in object_metadata.metadata
+                assert "version" in object_metadata.metadata
+                assert "author" in object_metadata.metadata
+                assert "priority" in object_metadata.metadata
+
+        finally:
+            # Clean up
+            try:
+                msc.delete(f"{MSC_PROTOCOL}test/{base_path}", recursive=True)
+            except Exception:
+                pass
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryAWSS3Bucket],
+        [tempdatastore.TemporaryPOSIXDirectory],
+    ],
+)
 def test_msc_glob_with_attribute_filter_expression(
     temp_data_store_type: type[tempdatastore.TemporaryDataStore],
 ) -> None:

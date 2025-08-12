@@ -434,6 +434,7 @@ class StorageClient:
         include_directories: bool = False,
         include_url_prefix: bool = False,
         attribute_filter_expression: Optional[str] = None,
+        show_attributes: bool = False,
     ) -> Iterator[ObjectMetadata]:
         """
         Lists objects in the storage provider under the specified path.
@@ -450,6 +451,7 @@ class StorageClient:
         :param include_directories: Whether to include directories in the result. When True, directories are returned alongside objects.
         :param include_url_prefix: Whether to include the URL prefix ``msc://profile`` in the result.
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
+        :param show_attributes: Whether to return attributes in the result.  WARNING: Depend on implementation, there might be performance impact if this set to True.
 
         :return: An iterator over objects.
 
@@ -483,6 +485,7 @@ class StorageClient:
                 end_at=end_at,
                 include_directories=include_directories,
                 attribute_filter_expression=attribute_filter_expression,
+                show_attributes=show_attributes,
             )
         else:
             objects = self._storage_provider.list_objects(
@@ -491,6 +494,7 @@ class StorageClient:
                 end_at=end_at,
                 include_directories=include_directories,
                 attribute_filter_expression=attribute_filter_expression,
+                show_attributes=show_attributes,
             )
 
         for object in objects:
