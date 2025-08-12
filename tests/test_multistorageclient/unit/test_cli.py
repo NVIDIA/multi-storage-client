@@ -14,6 +14,8 @@
 # limitations under the License.
 
 import os
+import random
+import string
 import subprocess
 import sys
 import tempfile
@@ -36,7 +38,7 @@ def run_cli():
         # Pass through existing environment variables to the subprocess
         env = os.environ.copy()
 
-        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=120)
 
         # Print output if return code doesn't match expected
         if result.returncode != expected_return_code:
@@ -100,16 +102,40 @@ def test_sync_without_replicas(run_cli):
 
 def test_sync_command_with_real_files(run_cli):
     with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
-        source_file = Path(source_dir) / "test.txt"
-        source_file.write_text("Test content")
+        # Create about 200 files in random 2-level directories
+        # Store created file paths for verification
+        created_files = []
+
+        # Create directories and files
+        for i in range(200):
+            # Generate random 2-level directory structure
+            level1 = "".join(random.choices(string.ascii_lowercase, k=5))
+            level2 = "".join(random.choices(string.ascii_lowercase, k=5))
+
+            # Create directory path
+            dir_path = Path(source_dir) / level1 / level2
+            dir_path.mkdir(parents=True, exist_ok=True)
+
+            # Create file with random content
+            filename = f"file_{i:03d}.txt"
+            file_path = dir_path / filename
+            content = f"Content for file {i} in {level1}/{level2}\n" + "".join(
+                random.choices(string.ascii_letters + string.digits, k=100)
+            )
+            file_path.write_text(content)
+
+            # Store for verification
+            created_files.append((level1, level2, filename, content))
 
         # Run the sync command
         stdout, stderr = run_cli("sync", "--verbose", source_dir, "--target-url", target_dir)
 
-        # Verify that the file was copied
-        target_file = Path(target_dir) / "test.txt"
-        assert target_file.exists()
-        assert target_file.read_text() == "Test content"
+        # Verify that files were copied (check a few random files)
+        for i in range(0, 200, 20):  # Check every 20th file
+            level1, level2, filename, content = created_files[i]
+            target_file = Path(target_dir) / level1 / level2 / filename
+            assert target_file.exists(), f"Target file {target_file} does not exist"
+            assert target_file.read_text() == content, f"Content mismatch for {target_file}"
 
         assert "Synchronizing files from" in stdout
         assert "Synchronization completed successfully" in stdout

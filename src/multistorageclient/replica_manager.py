@@ -30,15 +30,17 @@ logger = logging.getLogger(__name__)
 # The async uploads are network-bound, so such a large pool wastes memory and harms context-switch performance.
 DEFAULT_REPLICA_UPLOAD_WORKERS = 8
 
+_REPLICA_THREAD_POOL = ThreadPoolExecutor(
+    max_workers=int(os.getenv("MSC_REPLICA_UPLOAD_THREADS", DEFAULT_REPLICA_UPLOAD_WORKERS))
+)
+
+atexit.register(lambda: _REPLICA_THREAD_POOL.shutdown(wait=False))
+
 
 class ReplicaManager:
     """
     Manages replica operations for storage clients.
     """
-
-    threads = os.getenv("MSC_REPLICA_UPLOAD_THREADS")
-    worker_count = DEFAULT_REPLICA_UPLOAD_WORKERS if threads is None or int(threads) <= 0 else int(threads)
-    _replica_upload_executor = ThreadPoolExecutor(max_workers=worker_count)
 
     def __init__(self, storage_client):
         self._storage_client = storage_client
@@ -80,7 +82,7 @@ class ReplicaManager:
             local_file_path, created_temp = self._prepare_file_for_upload(file)
 
             # Submit replica upload - (fire-and-forget, non-blocking)
-            self._replica_upload_executor.submit(
+            _REPLICA_THREAD_POOL.submit(
                 self._upload_to_replicas,
                 local_file_path,
                 remote_path,
@@ -158,7 +160,3 @@ class ReplicaManager:
                 replica_client.copy(src_path, dest_path)
             except Exception as e:
                 logger.error(f"Failed to copy to replica {replica_client.profile}: {e}")
-
-
-# Ensure proper shutdown
-atexit.register(lambda: ReplicaManager._replica_upload_executor.shutdown(wait=True))

@@ -21,7 +21,6 @@ import os
 import queue
 import tempfile
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -435,7 +434,12 @@ def _sync_worker_process(
                     raise RuntimeError(f"Unknown operation: {op}")
 
     # Worker process that spawns threads to handle syncing.
-    with ThreadPoolExecutor(max_workers=num_worker_threads) as executor:
-        futures = [executor.submit(_sync_consumer) for _ in range(num_worker_threads)]
-        for future in futures:
-            future.result()  # Ensure all threads complete
+    threads = []
+    for _ in range(num_worker_threads):
+        thread = threading.Thread(target=_sync_consumer, daemon=True)
+        thread.start()
+        threads.append(thread)
+
+    # Wait for all threads to complete
+    for thread in threads:
+        thread.join()

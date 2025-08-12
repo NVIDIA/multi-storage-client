@@ -55,6 +55,7 @@ class StorageClient:
     _config: StorageClientConfig
     _metadata_provider_lock: Optional[threading.Lock] = None
     _stop_event: Optional[threading.Event] = None
+    _replica_manager: Optional[ReplicaManager] = None
 
     def __init__(self, config: StorageClientConfig):
         """
@@ -64,7 +65,6 @@ class StorageClient:
         """
         self._initialize_providers(config)
         self._initialize_replicas(config.replicas)
-        self._replica_manager = ReplicaManager(self)
 
     def _committer_thread(self, commit_interval_minutes: float, stop_event: threading.Event):
         if not stop_event:
@@ -114,6 +114,8 @@ class StorageClient:
     def __del__(self):
         if self._stop_event:
             self._stop_event.set()
+            if self._commit_thread.is_alive():
+                self._commit_thread.join(timeout=5.0)
 
     def _get_source_version(self, path: str) -> Optional[str]:
         """
@@ -158,6 +160,7 @@ class StorageClient:
             replica_clients.append(storage_client)
 
         self._replicas = replica_clients
+        self._replica_manager = ReplicaManager(self) if len(self._replicas) > 0 else None
 
     @property
     def replicas(self) -> list["StorageClient"]:
@@ -188,13 +191,13 @@ class StorageClient:
             data = self._cache_manager.read(path, source_version)
 
             if data is None:
-                if len(self._replicas) > 0:
+                if self._replica_manager:
                     data = self._read_from_replica_or_primary(path)
                 else:
                     data = self._storage_provider.get_object(path)
                 self._cache_manager.set(path, data, source_version)
             return data
-        elif len(self._replicas) > 0:
+        elif self._replica_manager:
             return self._read_from_replica_or_primary(path)
 
         return self._storage_provider.get_object(path, byte_range=byte_range)
@@ -203,6 +206,7 @@ class StorageClient:
         """
         Read from replica or primary storage provider. Use BytesIO to avoid creating temporary files.
         """
+        assert self._replica_manager is not None, "Replica manager is not initialized"
         file_obj = BytesIO()
         self._replica_manager.download_from_replica_or_primary(path, file_obj, self._storage_provider)
         return file_obj.getvalue()
@@ -260,7 +264,7 @@ class StorageClient:
                 raise FileNotFoundError(f"The file at path '{remote_path}' was not found by metadata provider.")
             metadata = self._metadata_provider.get_object_metadata(remote_path)
             self._storage_provider.download_file(real_path, local_path, metadata)
-        elif len(self._replicas) > 0:
+        elif self._replica_manager:
             self._replica_manager.download_from_replica_or_primary(remote_path, local_path, self._storage_provider)
         else:
             self._storage_provider.download_file(remote_path, local_path)
@@ -346,7 +350,7 @@ class StorageClient:
             with self._metadata_provider_lock or contextlib.nullcontext():
                 self._metadata_provider.add_file(virtual_dest_path, metadata)
 
-        if len(self._replicas) > 0:
+        if self._replica_manager:
             self._replica_manager.copy_to_replicas(src_path, dest_path)
 
     def delete(self, path: str, recursive: bool = False) -> None:
@@ -606,13 +610,14 @@ class StorageClient:
             del state["_metadata_provider_lock"]
         if "_replicas" in state:
             del state["_replicas"]
+        if "_replica_manager" in state:
+            del state["_replica_manager"]
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         config = state["_config"]
         self._initialize_providers(config)
         self._initialize_replicas(config.replicas)
-        self._replica_manager = ReplicaManager(self)
         if self._metadata_provider:
             self._metadata_provider_lock = threading.Lock()
 
@@ -637,7 +642,13 @@ class StorageClient:
         :param num_worker_processes: The number of worker processes to use.
         :param execution_mode: The execution mode to use. Currently supports "local" and "ray".
         """
+        # Disable the replica manager during sync
+        if not isinstance(source_client, NullStorageClient) and source_client._replica_manager:
+            source_client = StorageClient(source_client._config)
+            source_client._replica_manager = None
+
         m = SyncManager(source_client, source_path, self, target_path)
+
         m.sync_objects(
             execution_mode=execution_mode,
             description=description,
@@ -680,9 +691,16 @@ class StorageClient:
         else:
             replicas = self._replicas
 
+        # Disable the replica manager during sync
+        if self._replica_manager:
+            source_client = StorageClient(self._config)
+            source_client._replica_manager = None
+        else:
+            source_client = self
+
         for replica in replicas:
             replica.sync_from(
-                self,
+                source_client,
                 source_path,
                 source_path,
                 delete_unmatched_files=delete_unmatched_files,

@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import asyncio
+import atexit
 import os
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -27,7 +28,9 @@ from ..file import ObjectFile, PosixFile
 from ..shortcuts import resolve_storage_client
 from ..types import MSC_PROTOCOL_NAME
 
-_global_thread_pool = ThreadPoolExecutor(max_workers=int(os.getenv("MSC_MAX_WORKERS", "8")))
+_GLOBAL_THREAD_POOL = ThreadPoolExecutor(max_workers=int(os.getenv("MSC_MAX_WORKERS", "8")))
+
+atexit.register(lambda: _GLOBAL_THREAD_POOL.shutdown(wait=False))
 
 
 # pyright: reportIncompatibleMethodOverride=false
@@ -70,7 +73,7 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
         :return: The result of the asynchronous execution of the function.
         """
         loop = asyncio.get_event_loop()
-        return loop.run_in_executor(_global_thread_pool, partial(func, *args, **kwargs))
+        return loop.run_in_executor(_GLOBAL_THREAD_POOL, partial(func, *args, **kwargs))
 
     def ls(self, path: str, detail: bool = True, **kwargs: Any) -> Union[list[dict[str, Any]], list[str]]:
         """
