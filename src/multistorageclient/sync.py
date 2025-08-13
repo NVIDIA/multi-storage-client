@@ -21,6 +21,7 @@ import os
 import queue
 import tempfile
 import threading
+import time
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -37,7 +38,7 @@ def is_ray_available():
 
 
 PLACEMENT_GROUP_STRATEGY = "SPREAD"
-PLACEMENT_GROUP_CPU_PER_WORKER = 1
+PLACEMENT_GROUP_TIMEOUT_SECONDS = 60  # Timeout for placement group creation
 
 HAVE_RAY = is_ray_available()
 
@@ -340,37 +341,110 @@ class SyncManager:
                 )
 
             import ray
+
+            # Create a placement group to spread the workers across the cluster.
             from ray.util.placement_group import placement_group
 
             cluster_resources = ray.cluster_resources()
             available_resources = ray.available_resources()
             logger.debug(f"Ray cluster resources: {cluster_resources} Available resources: {available_resources}")
 
-            placement_grp = placement_group(
-                [{"CPU": PLACEMENT_GROUP_CPU_PER_WORKER}] * num_worker_processes, strategy=PLACEMENT_GROUP_STRATEGY
-            )
-            ray.get(placement_grp.ready())
+            # Check if we have enough resources before creating placement group
+            required_cpus = num_worker_threads * num_worker_processes
+            available_cpus = available_resources.get("CPU", 0)
+
+            # Create placement group based on available resources
+            if available_cpus > 0:
+                # We have CPU resources, create CPU-based placement group
+                if available_cpus < required_cpus:
+                    # Not enough resources for requested configuration, create fallback
+                    logger.warning(
+                        f"Insufficient Ray cluster resources for requested configuration. "
+                        f"Required: {required_cpus} CPUs, Available: {available_cpus} CPUs. "
+                        f"Creating fallback placement group to utilize all available resources."
+                    )
+
+                    # Calculate optimal worker distribution
+                    if available_cpus >= num_worker_processes:
+                        # We can create all processes but with fewer threads per process
+                        cpus_per_worker = max(1, available_cpus // num_worker_processes)
+                        actual_worker_processes = num_worker_processes
+                        actual_worker_threads = min(num_worker_threads, cpus_per_worker)
+                    else:
+                        # Not enough CPUs for all processes, reduce number of processes
+                        actual_worker_processes = max(1, available_cpus)
+                        actual_worker_threads = 1
+                        cpus_per_worker = 1
+
+                    logger.warning(
+                        f"Fallback configuration: {actual_worker_processes} processes, "
+                        f"{actual_worker_threads} threads per process, {cpus_per_worker} CPUs per worker"
+                    )
+
+                    # Create fallback placement group
+                    bundle_specs = [{"CPU": float(cpus_per_worker)}] * int(actual_worker_processes)
+                    msc_sync_placement_group = placement_group(bundle_specs, strategy=PLACEMENT_GROUP_STRATEGY)
+
+                    # Update worker configuration for fallback
+                    num_worker_processes = int(actual_worker_processes)
+                    num_worker_threads = int(actual_worker_threads)
+                else:
+                    # Sufficient resources, use requested configuration
+                    msc_sync_placement_group = placement_group(
+                        [{"CPU": float(num_worker_threads)}] * num_worker_processes, strategy=PLACEMENT_GROUP_STRATEGY
+                    )
+            else:
+                # No CPU resources, create placement group with minimal resource constraints
+                logger.info("Creating placement group with minimal resource constraints")
+                bundle_specs = [{"CPU": 1.0}] * int(num_worker_processes)
+                msc_sync_placement_group = placement_group(bundle_specs, strategy=PLACEMENT_GROUP_STRATEGY)
+
+            # Wait for placement group to be ready with timeout
+            start_time = time.time()
+            while time.time() - start_time < PLACEMENT_GROUP_TIMEOUT_SECONDS:
+                try:
+                    ray.get(msc_sync_placement_group.ready(), timeout=1.0)
+                    break
+                except Exception:
+                    if time.time() - start_time >= PLACEMENT_GROUP_TIMEOUT_SECONDS:
+                        raise RuntimeError(
+                            f"Placement group creation timed out after {PLACEMENT_GROUP_TIMEOUT_SECONDS} seconds. "
+                            f"Required: {required_cpus} CPUs, Available: {available_cpus} CPUs. "
+                            f"Please check your Ray cluster resources."
+                        )
+                    time.sleep(0.1)  # Small delay before retrying
+
             _sync_worker_process_ray = ray.remote(_sync_worker_process)
 
             # Start the sync worker processes.
-            ray.get(
-                [
-                    _sync_worker_process_ray.options(  # type: ignore
-                        placement_group=placement_grp, placement_group_bundle_index=worker_index
-                    ).remote(
-                        self.source_client,
-                        self.source_path,
-                        self.target_client,
-                        self.target_path,
-                        num_worker_threads,
-                        file_queue,
-                        result_queue,
-                    )
-                    for worker_index in range(num_worker_processes)
-                ]
-            )
+            try:
+                ray.get(
+                    [
+                        _sync_worker_process_ray.options(  # type: ignore
+                            placement_group=msc_sync_placement_group, placement_group_bundle_index=worker_index
+                        ).remote(
+                            self.source_client,
+                            self.source_path,
+                            self.target_client,
+                            self.target_path,
+                            num_worker_threads,
+                            file_queue,
+                            result_queue,
+                        )
+                        for worker_index in range(int(num_worker_processes))
+                    ]
+                )
+            finally:
+                # Clean up the placement group
+                try:
+                    ray.util.remove_placement_group(msc_sync_placement_group)
+                    msc_sync_placement_group = None
+                except Exception as e:
+                    logger.warning(f"Failed to remove placement group: {e}")
 
-        logger.debug(f"All {num_worker_processes} Ray workers completed")
+        logger.debug(
+            f"All {int(num_worker_processes)} Ray workers completed (using {int(num_worker_threads)} threads per worker)"
+        )
 
         # Wait for the producer thread to finish.
         producer_thread.join()

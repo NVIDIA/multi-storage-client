@@ -209,4 +209,4 @@ run-minimal-verification:
 
 # Run the ray tests
 run-ray-tests: prepare-toolchain start-ray-cluster && stop-ray-cluster
-    uv run pytest tests/test_multistorageclient/unit/contrib/test_ray.py
+    uv run pytest tests/test_multistorageclient/unit/contrib/test_ray.py --timeout 120
