@@ -36,9 +36,17 @@ variables:
 Create Package:
   extends:
     - .default
+  parallel:
+    matrix:
+      - PYTHON_BINARY:
+          - python3.9
+          - python3.10
+          - python3.11
+          - python3.12
+          - python3.13
   script:
     - |
-      nix develop --command bash -c "
+      nix develop '.#"'${PYTHON_BINARY}'"' --command bash -c "
         just package
       "
   artifacts:
@@ -53,27 +61,31 @@ Publish Package:
       artifacts: true
   parallel:
     matrix:
-      - WHEEL_ARCH: arm64
+      - PYTHON_TAG: ["cp39", "cp310", "cp311", "cp312", "cp313"]
+        WHEEL_ARCH: arm64
         WHEEL_OS: macosx
         ARTIFACTORY_ARCH: arm64
         ARTIFACTORY_OS: macosx
-      - WHEEL_ARCH: x86_64
+      - PYTHON_TAG: ["cp39", "cp310", "cp311", "cp312", "cp313"]
+        WHEEL_ARCH: x86_64
         WHEEL_OS: macosx
         ARTIFACTORY_ARCH: x86_64
         ARTIFACTORY_OS: macosx
-      - WHEEL_ARCH: aarch64
+      - PYTHON_TAG: ["cp39", "cp310", "cp311", "cp312", "cp313"]
+        WHEEL_ARCH: aarch64
         WHEEL_OS: manylinux
         ARTIFACTORY_ARCH: aarch64
         ARTIFACTORY_OS: linux
-      - WHEEL_ARCH: x86_64
+      - PYTHON_TAG: ["cp39", "cp310", "cp311", "cp312", "cp313"]
+        WHEEL_ARCH: x86_64
         WHEEL_OS: manylinux
         ARTIFACTORY_ARCH: x86_64
         ARTIFACTORY_OS: linux
   variables:
     URM_ARTIFACTORY_URL: https://urm.nvidia.com/artifactory
     URM_ARTIFACTORY_PATH: sw-ngc-data-platform-pypi/multi-storage-client/${CI_COMMIT_TAG}/
+    PYTHON_WHEEL_PATTERN: multi_storage_client-${CI_COMMIT_TAG}-${PYTHON_TAG}-*${WHEEL_OS}_*_${WHEEL_ARCH}*.whl
   script:
-    # Skip upload if artifacts for the tag already exist.
     # Hardcode "arch=any" temporarily to unblock publishing.
     - |
       nix develop --command bash -c "
@@ -81,11 +93,9 @@ Publish Package:
           --url ${URM_ARTIFACTORY_URL} \
           --user ${URM_ARTIFACTORY_USERNAME} \
           --password ${URM_ARTIFACTORY_PASSWORD} \
-          --props 'arch=${ARTIFACTORY_ARCH};os=${ARTIFACTORY_OS}' \
           --fail-no-op \
-          ${URM_ARTIFACTORY_PATH} ||
+          ${URM_ARTIFACTORY_PATH}/${PYTHON_WHEEL_PATTERN} ||
         (
-          just package &&
           jf rt upload \
             --url ${URM_ARTIFACTORY_URL} \
             --user ${URM_ARTIFACTORY_USERNAME} \
@@ -94,8 +104,8 @@ Publish Package:
             --fail-no-op \
             --flat \
             --quiet \
-            --target-props 'component_name=multi_storage_client;version=${CI_COMMIT_TAG};arch=any;os=${ARTIFACTORY_OS};changelist=${CI_COMMIT_SHORT_SHA};branch=release;release_approver=${GITLAB_USER_LOGIN};release_status=ready' \
-            dist/multi_storage_client-${CI_COMMIT_TAG}-*-${WHEEL_OS}_*_${WHEEL_ARCH}.whl \
+            --target-props 'component_name=multi_storage_client;version=${CI_COMMIT_TAG};python-tag=${PYTHON_TAG};arch=any;os=${ARTIFACTORY_OS};changelist=${CI_COMMIT_SHORT_SHA};branch=release;release_approver=${GITLAB_USER_LOGIN};release_status=ready' \
+            dist/${PYTHON_WHEEL_PATTERN} \
             ${URM_ARTIFACTORY_PATH}
         )
       "

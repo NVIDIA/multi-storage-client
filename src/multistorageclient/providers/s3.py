@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import codecs
 import io
 import os
 import tempfile
@@ -803,10 +804,16 @@ class S3StorageProvider(BaseStorageProvider):
         else:
             # Download small files
             if metadata.content_length <= self._transfer_config.multipart_threshold:
+                response = self._get_object(remote_path)
+                # Python client returns `bytes`, but Rust client returns a object implements buffer protocol,
+                # so we need to check whether `.decode()` is available.
                 if isinstance(f, io.StringIO):
-                    f.write(self._get_object(remote_path).decode("utf-8"))
+                    if hasattr(response, "decode"):
+                        f.write(response.decode("utf-8"))
+                    else:
+                        f.write(codecs.decode(memoryview(response), "utf-8"))
                 else:
-                    f.write(self._get_object(remote_path))
+                    f.write(response)
                 return metadata.content_length
 
             # Download large files using TransferConfig

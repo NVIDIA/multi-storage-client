@@ -13,13 +13,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use bytes::Bytes;
 use object_store::aws::AmazonS3Builder;
 use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::{ObjectStore, path::Path, PutPayload, WriteMultipart};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule};
 use pyo3_async_runtimes::tokio::future_into_py;
+use pyo3_bytes::PyBytes;
 use std::path::Path as StdPath;
 use std::sync::Arc;
 use thiserror::Error;
@@ -215,10 +215,10 @@ impl RustClient {
     }
 
     #[pyo3(signature = (path, data))]
-    fn put<'p>(&self, py: Python<'p>, path: &str, data: &[u8]) -> PyResult<Bound<'p, PyAny>> {
+    fn put<'p>(&self, py: Python<'p>, path: &str, data: PyBytes) -> PyResult<Bound<'p, PyAny>> {
         let store = Arc::clone(&self.store);
         let path = Path::from(path);
-        let payload = PutPayload::from_bytes(Bytes::copy_from_slice(data));
+        let payload = PutPayload::from_bytes(data.into_inner());
 
         future_into_py(py, async move {
             store
@@ -246,13 +246,13 @@ impl RustClient {
                     .get_range(&path, start_idx..end_idx)
                     .await
                     .map_err(StorageError::from)?;
-                Ok(result.to_vec())
+                Ok(PyBytes::new(result))
             })
         } else {
             future_into_py(py, async move {
                 let result = store.get(&path).await.map_err(StorageError::from)?;
                 let data = result.bytes().await.map_err(StorageError::from)?;
-                Ok(data.to_vec())
+                Ok(PyBytes::new(data))
             })
         }
     }

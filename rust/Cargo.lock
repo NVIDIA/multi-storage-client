@@ -778,6 +778,7 @@ dependencies = [
  "object_store",
  "pyo3",
  "pyo3-async-runtimes",
+ "pyo3-bytes",
  "tempfile",
  "thiserror",
  "tokio",
@@ -962,6 +963,16 @@ checksum = "458eb0c55e7ece017adeba38f2248ff3ac615e53660d7c71a238d7d2a01c7598"
 dependencies = [
  "once_cell",
  "target-lexicon",
+]
+
+[[package]]
+name = "pyo3-bytes"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "562fca6e381598ecb2c7b8f99df129400d85a94d1dfd04341560aa6c57e96760"
+dependencies = [
+ "bytes",
+ "pyo3",
 ]
 
 [[package]]

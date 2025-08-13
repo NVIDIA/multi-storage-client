@@ -20,7 +20,7 @@ prepare-toolchain:
     rustup target add {{compiler-targets}}
     # Prepare the virtual environment.
     if [[ -z "${CI:-}" ]]; then \
-        uv sync --all-extras --python {{python-binary}} && uv run maturin develop --release; \
+        uv sync --all-extras --python {{python-binary}} && uv run --python {{python-binary}} maturin develop --release; \
     else \
         uv sync --all-extras --locked --python {{python-binary}}; \
     fi
@@ -178,7 +178,10 @@ package: prepare-toolchain
                 unset MACOSX_DEPLOYMENT_TARGET \
                 unset SDKROOT \
                 ;; \
-        esac; env --unset _PYTHON_HOST_PLATFORM uv run maturin build --out dist --release --target $TARGET --zig; \
+        esac; \
+        PYTHON_VERSION=$(uv run {{python-binary}} -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')") && \
+        echo "Building for target $TARGET with $PYTHON_VERSION" && \
+        env --unset _PYTHON_HOST_PLATFORM uv run maturin build --out dist --release --target $TARGET --zig -i $PYTHON_VERSION; \
     done
 
 # Build the documentation.
@@ -189,7 +192,8 @@ document: prepare-toolchain
     uv run sphinx-build -b html docs/src docs/dist
 
 # Release build.
-build: analyze run-unit-tests package document
+build: analyze run-unit-tests document
+    if [[ -n "${CI:-}" ]]; then just package; fi
 
 # Run E2E tests.
 run-e2e-tests: prepare-toolchain

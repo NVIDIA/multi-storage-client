@@ -7,9 +7,6 @@
 name: Source
 on:
   workflow_call:
-defaults:
-  run:
-    shell: nix develop --command bash -e {0}
 jobs:
   build:
     name: Build
@@ -20,7 +17,11 @@ jobs:
           - python3.10
           - python3.11
           - python3.12
+          - python3.13
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: nix develop '.#"${{ matrix.python-binary }}"' --command bash -e {0}
     steps:
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: actions/checkout@v4

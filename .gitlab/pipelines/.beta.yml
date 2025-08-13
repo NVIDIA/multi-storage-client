@@ -42,9 +42,10 @@ Run E2E Tests:
       - PYTHON_BINARY: python3.10
       - PYTHON_BINARY: python3.11
       - PYTHON_BINARY: python3.12
+      - PYTHON_BINARY: python3.13
   script:
     - |
-      nix develop --command bash -c "
+      nix develop '.#"'${PYTHON_BINARY}'"' --command bash -c "
         export OCI_CONFIG_FILE=${OCI_CLIENT_CONFIGURATION_BETA} &&
         export MSC_CONFIG=${MULTI_STORAGE_CLIENT_CONFIGURATION_BETA} &&
         export GOOGLE_APPLICATION_CREDENTIALS=${GCS_APPLICATION_DEFAULT_CREDENTIALS_BETA} &&
