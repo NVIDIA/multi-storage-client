@@ -17,6 +17,7 @@ import atexit
 import logging
 import os
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO, StringIO
 from typing import IO, Union
@@ -44,6 +45,9 @@ class ReplicaManager:
 
     def __init__(self, storage_client):
         self._storage_client = storage_client
+        # Thread-safe set to track files currently being uploaded
+        self._uploading_files = set()
+        self._upload_lock = threading.Lock()
 
     def download_from_replica_or_primary(
         self, remote_path: str, file: Union[str, IO], storage_provider: StorageProvider
@@ -78,6 +82,13 @@ class ReplicaManager:
             file.seek(0)  # type: ignore
 
         if replicas_that_need_updates:
+            # Atomic check-and-add operation to prevent duplicate uploads
+            with self._upload_lock:
+                if remote_path in self._uploading_files:
+                    logger.debug(f"File {remote_path} is already being uploaded, skipping duplicate upload")
+                    return
+                self._uploading_files.add(remote_path)
+
             # Handle file object conversion
             local_file_path, created_temp = self._prepare_file_for_upload(file)
 
@@ -141,6 +152,10 @@ class ReplicaManager:
         except Exception as e:
             logger.error(f"Replica upload process failed for {remote_path}: {e}", exc_info=True)
         finally:
+            # Remove file from uploading set
+            with self._upload_lock:
+                self._uploading_files.discard(remote_path)
+
             # Clean up temporary file if it was created
             if created_temp and local_file_path and os.path.exists(local_file_path):
                 try:
