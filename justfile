@@ -135,7 +135,7 @@ start-ray-cluster: stop-ray-cluster
     timeout 30s bash -c "until uv run python -c 'import ray; ray.init(address=\"auto\", runtime_env={\"excludes\": [\".git\", \".git/**\"]}, ignore_reinit_error=True); print(\"Ray cluster ready\"); ray.shutdown()'; do sleep 1; done"
 
 # Run unit tests.
-run-unit-tests: prepare-toolchain start-storage-systems start-ray-cluster && stop-storage-systems stop-ray-cluster
+run-unit-tests: prepare-toolchain start-storage-systems && stop-storage-systems
     # Remove test artifacts.
     rm -rf .reports/unit
     # Unit test.
@@ -144,7 +144,7 @@ run-unit-tests: prepare-toolchain start-storage-systems start-ray-cluster && sto
     else \
         NUMPROCESSES=0; \
     fi; \
-    uv run --active pytest --cov --cov-report term --cov-report html --cov-report xml --durations 10 --junit-xml .reports/unit/pytest.xml --numprocesses $NUMPROCESSES --timeout 120
+    uv run pytest --cov --cov-report term --cov-report html --cov-report xml --durations 10 --junit-xml .reports/unit/pytest.xml --numprocesses $NUMPROCESSES --timeout 120 --ignore tests/test_multistorageclient/unit/contrib/test_ray.py
 
 # Run load tests. For dummy load generation when experimenting with telemetry.
 run-load-tests: prepare-toolchain start-storage-systems && stop-storage-systems

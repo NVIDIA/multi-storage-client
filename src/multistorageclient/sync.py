@@ -25,6 +25,8 @@ import time
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
 
+from filelock import FileLock
+
 from .constants import MEMORY_LOAD_LIMIT
 from .progress_bar import ProgressBar
 from .types import ExecutionMode, ObjectMetadata
@@ -39,6 +41,7 @@ def is_ray_available():
 
 PLACEMENT_GROUP_STRATEGY = "SPREAD"
 PLACEMENT_GROUP_TIMEOUT_SECONDS = 60  # Timeout for placement group creation
+DEFAULT_LOCK_TIMEOUT = 600  # 10 minutes
 
 HAVE_RAY = is_ray_available()
 
@@ -491,18 +494,43 @@ def _sync_worker_process(
 
             if op == _SyncOp.ADD:
                 logger.debug(f"sync {file_metadata.key} -> {target_file_path}")
-                if file_metadata.content_length < MEMORY_LOAD_LIMIT:
-                    file_content = source_client.read(file_metadata.key)
-                    target_client.write(target_file_path, file_content)
+                # Acquire exclusive lock to prevent race conditions when multiple worker processes attempt concurrent
+                # writes to the same target location on shared filesystems. This can occur when users run multiple sync
+                # operations targeting the same filesystem location simultaneously.
+                if target_client._is_posix_file_storage_provider():
+                    target_lock_file_path = os.path.join(
+                        os.path.dirname(target_file_path), f".{os.path.basename(target_file_path)}.lock"
+                    )
+                    lock_path = target_client._storage_provider._prepend_base_path(target_lock_file_path)
+                    exclusive_lock = FileLock(lock_path, timeout=DEFAULT_LOCK_TIMEOUT)
                 else:
-                    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-                        temp_filename = temp_file.name
+                    exclusive_lock = contextlib.nullcontext()
 
+                with exclusive_lock:
+                    # Skip if the file already exists and has the same content length but is newer.
                     try:
-                        source_client.download_file(file_metadata.key, temp_filename)
-                        target_client.upload_file(target_file_path, temp_filename)
-                    finally:
-                        os.remove(temp_filename)  # Ensure the temporary file is removed
+                        target_metadata = target_client.info(target_file_path)
+                        if (
+                            target_metadata.content_length == file_metadata.content_length
+                            and target_metadata.last_modified >= file_metadata.last_modified
+                        ):
+                            logger.debug(f"File {target_file_path} already exists, skipping")
+                            continue
+                    except FileNotFoundError:
+                        pass
+
+                    if file_metadata.content_length < MEMORY_LOAD_LIMIT:
+                        file_content = source_client.read(file_metadata.key)
+                        target_client.write(target_file_path, file_content)
+                    else:
+                        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                            temp_filename = temp_file.name
+
+                        try:
+                            source_client.download_file(file_metadata.key, temp_filename)
+                            target_client.upload_file(target_file_path, temp_filename)
+                        finally:
+                            os.remove(temp_filename)  # Ensure the temporary file is removed
             elif op == _SyncOp.DELETE:
                 logger.debug(f"rm {file_metadata.key}")
                 target_client.delete(file_metadata.key)

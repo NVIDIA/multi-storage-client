@@ -32,6 +32,7 @@ from ..utils import tempdatastore
 def ray_cluster():
     ray.init(
         address="127.0.0.1:6379",
+        ignore_reinit_error=True,
         runtime_env={"excludes": [".git", ".git/**"]},
     )
     yield
@@ -170,10 +171,10 @@ def test_storage_client_sync_with_files(ray_cluster):
         target_client.sync_from(source_client, "source/", "target/", execution_mode=ExecutionMode.RAY)
 
         # Verify sync worked by checking target has the same files
-        synced_files = list(target_client.list(prefix="target/"))
-        assert set([f.key.removeprefix("target/") for f in synced_files]) == set(source_files), (
-            f"Expected {source_files}, found {synced_files}"
-        )
+        synced_files = [
+            f.key.removeprefix("target/") for f in list(target_client.list(prefix="target/")) if f.key.endswith(".txt")
+        ]
+        assert set(synced_files) == set(source_files), f"Expected {source_files}, found {synced_files}"
         assert len(synced_files) == 500, f"Expected 500 synced files, found {len(synced_files)}"
 
 
@@ -214,16 +215,12 @@ def test_storage_client_sync_replicas(ray_cluster):
 
         # Verify sync worked by checking replica1 has the same files
         replica1 = StorageClient(StorageClientConfig.from_dict(config_dict=config_dict, profile="replica1"))
-        synced_files = list(replica1.list(prefix=""))
-        assert set([f.key.removeprefix("source/") for f in synced_files]) == set(source_files), (
-            f"Expected {source_files}, found {synced_files}"
-        )
+        synced_files = [f.key.removeprefix("source/") for f in list(replica1.list(prefix="")) if f.key.endswith(".txt")]
+        assert set(synced_files) == set(source_files), f"Expected {source_files}, found {synced_files}"
         assert len(synced_files) == 500, f"Expected 500 synced files, found {len(synced_files)}"
 
         # Verify sync worked by checking replica2 has the same files
         replica2 = StorageClient(StorageClientConfig.from_dict(config_dict=config_dict, profile="replica2"))
-        synced_files = list(replica2.list(prefix=""))
-        assert set([f.key.removeprefix("source/") for f in synced_files]) == set(source_files), (
-            f"Expected {source_files}, found {synced_files}"
-        )
+        synced_files = [f.key.removeprefix("source/") for f in list(replica2.list(prefix="")) if f.key.endswith(".txt")]
+        assert set(synced_files) == set(source_files), f"Expected {source_files}, found {synced_files}"
         assert len(synced_files) == 500, f"Expected 500 synced files, found {len(synced_files)}"
