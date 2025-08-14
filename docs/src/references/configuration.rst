@@ -275,6 +275,8 @@ Options: See parameters in :py:class:`multistorageclient.providers.ais.AIStoreSt
            endpoint: https://ais.example.com
            base_path: my-bucket
 
+.. _rust-client-reference:
+
 ``rust_client`` (experimental)
 ------------------------------
 

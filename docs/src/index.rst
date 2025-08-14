@@ -21,9 +21,14 @@ It provides a generic interface to interact with objects and files across variou
    user_guide/telemetry
    user_guide/manifests
    user_guide/cache
-   user_guide/replicas
    user_guide/libraries
    user_guide/cli
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Advanced Usage
+
+   user_guide/replicas
 
 .. toctree::
    :maxdepth: 2

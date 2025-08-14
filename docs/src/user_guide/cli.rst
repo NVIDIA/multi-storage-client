@@ -230,6 +230,24 @@ For large files, the sync operation uses temporary files to avoid loading entire
 .. note::
    The sync operation automatically handles metadata updates for the target storage client.
 
+.. _msc-sync-replicas-cli:
+
+Sync Replicas
+=============
+
+If the source profile has replicas configured, the sync operation will copy the data to all the replicas by default without requiring the ``--target-url`` option. Please refer to :doc:`/user_guide/replicas` for the configuration details.
+
+.. code-block:: shell
+  :caption: Sync to all replicas
+  
+  $ msc sync msc://source-profile/data
+
+You can also sync to specific replicas instead of all replicas by using the ``--replica-indices`` option. Replica indices start from 0.
+
+.. code-block:: shell
+  :caption: Sync to specific replicas
+
+  $ msc sync msc://source-profile/data --replica-indices "0,1"
 
 Fine-tuning Parallelism
 =======================
