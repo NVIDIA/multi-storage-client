@@ -390,9 +390,8 @@ class SyncManager:
                     num_worker_threads = int(actual_worker_threads)
                 else:
                     # Sufficient resources, use requested configuration
-                    msc_sync_placement_group = placement_group(
-                        [{"CPU": float(num_worker_threads)}] * num_worker_processes, strategy=PLACEMENT_GROUP_STRATEGY
-                    )
+                    bundle_specs = [{"CPU": float(num_worker_threads)}] * num_worker_processes
+                    msc_sync_placement_group = placement_group(bundle_specs, strategy=PLACEMENT_GROUP_STRATEGY)
             else:
                 # No CPU resources, create placement group with minimal resource constraints
                 logger.info("Creating placement group with minimal resource constraints")
@@ -410,6 +409,7 @@ class SyncManager:
                         raise RuntimeError(
                             f"Placement group creation timed out after {PLACEMENT_GROUP_TIMEOUT_SECONDS} seconds. "
                             f"Required: {required_cpus} CPUs, Available: {available_cpus} CPUs. "
+                            f"Bundle specs: {bundle_specs}"
                             f"Please check your Ray cluster resources."
                         )
                     time.sleep(0.1)  # Small delay before retrying
@@ -438,13 +438,14 @@ class SyncManager:
                 # Clean up the placement group
                 try:
                     ray.util.remove_placement_group(msc_sync_placement_group)
-                    msc_sync_placement_group = None
+                    start_time = time.time()
+                    while time.time() - start_time < PLACEMENT_GROUP_TIMEOUT_SECONDS:
+                        pg_info = ray.util.placement_group_table(msc_sync_placement_group)
+                        if pg_info is None or pg_info.get("state") == "REMOVED":
+                            break
+                        time.sleep(1.0)
                 except Exception as e:
                     logger.warning(f"Failed to remove placement group: {e}")
-
-        logger.debug(
-            f"All {int(num_worker_processes)} Ray workers completed (using {int(num_worker_threads)} threads per worker)"
-        )
 
         # Wait for the producer thread to finish.
         producer_thread.join()

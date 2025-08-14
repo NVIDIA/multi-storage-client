@@ -28,9 +28,12 @@ from multistorageclient.types import ExecutionMode, ObjectMetadata
 from ..utils import tempdatastore
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="function")
 def ray_cluster():
-    ray.init(address="127.0.0.1:6379", ignore_reinit_error=True)
+    ray.init(
+        address="127.0.0.1:6379",
+        runtime_env={"excludes": [".git", ".git/**"]},
+    )
     yield
     ray.shutdown()
 

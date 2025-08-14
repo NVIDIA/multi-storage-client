@@ -119,7 +119,7 @@ stop-ray-cluster:
     # Stop Ray cluster.
     #
     # Use ray stop to gracefully shut down the cluster
-    -uv run ray stop -g 60
+    -uv run --active ray stop -g 60
     # Remove Ray temporary directories
     -rm -rf /tmp/ray
 
@@ -129,13 +129,13 @@ start-ray-cluster: stop-ray-cluster
     #
     # Start a local Ray cluster with default settings
     echo "🚀 Starting Ray cluster..."
-    uv run ray start --head --port=6379 --disable-usage-stats --num-cpus 2
+    uv run --active ray start --head --port=6379 --disable-usage-stats --num-cpus 2
 
     # Wait for Ray cluster to be ready.
-    timeout 30s bash -c "until uv run python -c 'import ray; ray.init(address=\"auto\", ignore_reinit_error=True); print(\"Ray cluster ready\"); ray.shutdown()'; do sleep 1; done"
+    timeout 30s bash -c "until uv run python -c 'import ray; ray.init(address=\"auto\", runtime_env={\"excludes\": [\".git\", \".git/**\"]}, ignore_reinit_error=True); print(\"Ray cluster ready\"); ray.shutdown()'; do sleep 1; done"
 
 # Run unit tests.
-run-unit-tests: prepare-toolchain start-storage-systems && stop-storage-systems
+run-unit-tests: prepare-toolchain start-storage-systems start-ray-cluster && stop-storage-systems stop-ray-cluster
     # Remove test artifacts.
     rm -rf .reports/unit
     # Unit test.
@@ -144,7 +144,7 @@ run-unit-tests: prepare-toolchain start-storage-systems && stop-storage-systems
     else \
         NUMPROCESSES=0; \
     fi; \
-    uv run pytest --cov --cov-report term --cov-report html --cov-report xml --durations 10 --junit-xml .reports/unit/pytest.xml --numprocesses $NUMPROCESSES --timeout 120 --ignore tests/test_multistorageclient/unit/contrib/test_ray.py
+    uv run --active pytest --cov --cov-report term --cov-report html --cov-report xml --durations 10 --junit-xml .reports/unit/pytest.xml --numprocesses $NUMPROCESSES --timeout 120
 
 # Run load tests. For dummy load generation when experimenting with telemetry.
 run-load-tests: prepare-toolchain start-storage-systems && stop-storage-systems
@@ -210,7 +210,3 @@ run-minimal-verification:
     if [[ -z "${CI:-}" ]]; then uv sync --python {{python-binary}}; else uv sync --locked --python {{python-binary}}; fi
     # Minimal verification.
     uv run pytest tests/test_multistorageclient/unit/test_minimal.py
-
-# Run the ray tests
-run-ray-tests: prepare-toolchain start-ray-cluster && stop-ray-cluster
-    uv run pytest tests/test_multistorageclient/unit/contrib/test_ray.py --timeout 120

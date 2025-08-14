@@ -12,16 +12,36 @@ stages:
   - Pipeline
 
 default:
-  # This is a very minimal Linux with just Nix. It's not NixOS.
-  image: nixos/nix:latest
+  # Using this instead of nixos/nix:latest to handle hardcoded dynamic linker paths.
+  image: debian:unstable-slim
+  before_script:
+    # Install Nix with the Determinate Nix Installer. The `nix` command and flakes are enabled by default.
+    #
+    # https://github.com/DeterminateSystems/nix-installer#in-a-container
+    - apt update -y
+    - apt install curl git -y
+    - curl --fail --location https://install.determinate.systems/nix --proto '=https' --show-error --silent --tlsv1.2 | sh -s -- install linux --extra-conf "sandbox = false" --init none --no-confirm
+    - . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+    # Create `nix.conf` + `.netrc` files and alias Git URLs.
+    #
+    # https://nix.dev/manual/nix/latest/command-ref/conf-file
+    # https://www.gnu.org/software/inetutils/manual/html_node/The-_002enetrc-file.html
+    # https://git-scm.com/docs/git-config
+    - mkdir --parents /etc/nix
+    - |
+      tee --append /etc/nix/nix.conf << END_OF_FILE
+      access-tokens = ${CI_SERVER_HOST}=PAT:${CI_JOB_TOKEN}
+      netrc-file = /etc/nix/.netrc
+      END_OF_FILE
+    - |
+      tee --append /etc/nix/.netrc << END_OF_FILE
+      machine ${CI_SERVER_HOST}
+      login gitlab-ci-token
+      password ${CI_JOB_TOKEN}
+      END_OF_FILE
+    - git config set --system --append url."${CI_SERVER_PROTOCOL}://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_FQDN}".insteadOf "${CI_SERVER_URL}"
+    - git config set --system --append url."${CI_SERVER_PROTOCOL}://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_FQDN}".insteadOf "ssh://git@${CI_SERVER_SHELL_SSH_HOST}:${CI_SERVER_SHELL_SSH_PORT}"
   interruptible: true
-
-variables:
-  # So we don't have to do `nix --experimental-features "nix-command flakes"` every time.
-  #
-  # https://nixos.org/manual/nix/stable/command-ref/env-common#env-NIX_CONFIG
-  NIX_CONFIG: |
-    experimental-features = nix-command flakes
 
 #
 # Jobs.
