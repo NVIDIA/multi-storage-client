@@ -6,7 +6,7 @@ build-backend = "maturin"
 
 [project]
 name = "multi-storage-client"
-version = "0.25.0"
+version = "0.26.0"
 description = "Unified high-performance Python client for object and file stores."
 authors = [
     { name = "NVIDIA Multi-Storage Client Team" }

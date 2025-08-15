@@ -1136,7 +1136,7 @@ wheels = [
 
 [[package]]
 name = "multi-storage-client"
-version = "0.25.0"
+version = "0.26.0"
 source = { editable = "." }
 dependencies = [
     { name = "filelock" },
@@ -1250,7 +1250,7 @@ requires-dist = [
     { name = "xattr", specifier = ">=1.1.4,<2" },
     { name = "zarr", marker = "extra == 'zarr'", specifier = ">=2.15,<3" },
 ]
-provides-extras = ["observability-otel", "msal", "aistore", "azure-storage-blob", "boto3", "google-cloud-storage", "oci", "fsspec", "numpy", "torch", "xarray", "zarr", "ray", "hydra-core"]
+provides-extras = ["observability-otel", "msal", "aistore", "azure-storage-blob", "boto3", "google-cloud-storage", "oci", "fsspec", "hydra-core", "numpy", "torch", "xarray", "zarr", "ray"]
 
 [package.metadata.requires-dev]
 dev = [
