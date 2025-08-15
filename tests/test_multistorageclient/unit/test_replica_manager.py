@@ -523,3 +523,74 @@ def test_duplicate_upload_prevention() -> None:
 
             # Verify that upload was triggered only once
             assert upload_count == 1, f"Upload should be triggered only once, but was triggered {upload_count} times"
+
+
+def test_storage_client_delete_with_replicas() -> None:
+    """Test StorageClient.delete() method with replicas configured."""
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as origin_store,
+        tempdatastore.TemporaryPOSIXDirectory() as replica_store,
+    ):
+        # Create configuration and clients
+        config = create_basic_replica_config(origin_store, replica_store)
+        origin_client, origin_with_replica_client = create_test_clients(config)
+
+        # Test data
+        test_file_path = f"test-data-{uuid.uuid4()}/testfile.txt"
+        test_content = b"This is test content for storage client delete testing"
+
+        # Step 1: Write data to origin store
+        write_and_verify_origin_file(origin_client, test_file_path, test_content)
+
+        # Step 2: Sync replicas to ensure file exists in replica
+        origin_with_replica_client.sync_replicas("", execution_mode=ExecutionMode.LOCAL)
+
+        # Step 3: Verify file exists in replica
+        replica_client = StorageClient(config=StorageClientConfig.from_dict(config, profile="replica"))
+        assert replica_client.is_file(test_file_path), f"File {test_file_path} should exist in replica after sync"
+
+        # Step 4: Delete file using origin_with_replica_client (which has replica manager)
+        origin_with_replica_client.delete(test_file_path)
+
+        # Step 5: Verify file is deleted from both origin and replica
+        assert not origin_client.is_file(test_file_path), f"File {test_file_path} should be deleted from origin"
+        assert not replica_client.is_file(test_file_path), f"File {test_file_path} should be deleted from replica"
+
+
+def test_storage_client_delete_with_multiple_replicas() -> None:
+    """Test StorageClient.delete() method with multiple replicas configured."""
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as origin_store,
+        tempdatastore.TemporaryPOSIXDirectory() as replica1_store,
+        tempdatastore.TemporaryPOSIXDirectory() as replica2_store,
+    ):
+        # Create configuration and clients
+        config = create_multiple_replica_config(origin_store, replica1_store, replica2_store)
+        origin_client, origin_with_replicas_client = create_test_clients(
+            config, origin_with_replica_profile="origin_with_replicas"
+        )
+
+        # Test data
+        test_file_path = f"test-data-{uuid.uuid4()}/testfile.txt"
+        test_content = b"This is test content for multiple replica delete testing"
+
+        # Step 1: Write data to origin store
+        write_and_verify_origin_file(origin_client, test_file_path, test_content)
+
+        # Step 2: Sync replicas to ensure file exists in all replicas
+        origin_with_replicas_client.sync_replicas("", execution_mode=ExecutionMode.LOCAL)
+
+        # Step 3: Verify file exists in all replicas
+        replica1_client = StorageClient(config=StorageClientConfig.from_dict(config, profile="replica1"))
+        replica2_client = StorageClient(config=StorageClientConfig.from_dict(config, profile="replica2"))
+
+        assert replica1_client.is_file(test_file_path), f"File {test_file_path} should exist in replica1 after sync"
+        assert replica2_client.is_file(test_file_path), f"File {test_file_path} should exist in replica2 after sync"
+
+        # Step 4: Delete file using origin_with_replicas_client (which has replica manager)
+        origin_with_replicas_client.delete(test_file_path)
+
+        # Step 5: Verify file is deleted from origin and all replicas
+        assert not origin_client.is_file(test_file_path), f"File {test_file_path} should be deleted from origin"
+        assert not replica1_client.is_file(test_file_path), f"File {test_file_path} should be deleted from replica1"
+        assert not replica2_client.is_file(test_file_path), f"File {test_file_path} should be deleted from replica2"

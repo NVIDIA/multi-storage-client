@@ -394,6 +394,10 @@ class StorageClient:
                     assert self._cache_manager is not None
                     self._cache_manager.delete(virtual_path)
                 self._storage_provider.delete_object(path)
+
+                # Delete from replicas if replica manager exists
+                if self._replica_manager:
+                    self._replica_manager.delete_from_replicas(virtual_path)
             elif is_dir:
                 raise ValueError(f"'{path}' is a directory. Set recursive=True to delete entire directory.")
             else:

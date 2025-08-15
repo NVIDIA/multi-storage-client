@@ -175,3 +175,14 @@ class ReplicaManager:
                 replica_client.copy(src_path, dest_path)
             except Exception as e:
                 logger.error(f"Failed to copy to replica {replica_client.profile}: {e}")
+
+    def delete_from_replicas(self, path: str) -> None:
+        """Delete the file from replicas.
+
+        :param path: path to the file to delete
+        """
+        for replica_client in self._storage_client.replicas:
+            try:
+                replica_client.delete(path)
+            except Exception as e:
+                logger.error(f"Failed to delete from replica {replica_client.profile}: {e}")
