@@ -350,9 +350,6 @@ class StorageClient:
             with self._metadata_provider_lock or contextlib.nullcontext():
                 self._metadata_provider.add_file(virtual_dest_path, metadata)
 
-        if self._replica_manager:
-            self._replica_manager.copy_to_replicas(src_path, dest_path)
-
     def delete(self, path: str, recursive: bool = False) -> None:
         """
         Deletes an object at the specified path.

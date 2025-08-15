@@ -164,18 +164,6 @@ class ReplicaManager:
                 except OSError as e:
                     logger.warning(f"Failed to delete temp file {local_file_path}: {e}")
 
-    def copy_to_replicas(self, src_path: str, dest_path: str) -> None:
-        """Copy the file to replicas.
-
-        :param src_path: path to the file to copy
-        :param dest_path: path to the destination file
-        """
-        for replica_client in self._storage_client.replicas:
-            try:
-                replica_client.copy(src_path, dest_path)
-            except Exception as e:
-                logger.error(f"Failed to copy to replica {replica_client.profile}: {e}")
-
     def delete_from_replicas(self, path: str) -> None:
         """Delete the file from replicas.
 

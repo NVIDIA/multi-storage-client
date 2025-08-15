@@ -251,44 +251,6 @@ def test_replica_read_with_cache() -> None:
         )
 
 
-def test_storage_client_copy_with_replicas() -> None:
-    """Test copy functionality with replicas configured."""
-    with (
-        tempdatastore.TemporaryPOSIXDirectory() as origin_store,
-        tempdatastore.TemporaryPOSIXDirectory() as replica_store,
-    ):
-        # Create configuration and clients
-        config = create_basic_replica_config(origin_store, replica_store)
-        origin_client, origin_with_replica_client = create_test_clients(config)
-
-        # Test data
-        src_path = f"test-data-{uuid.uuid4()}/source.txt"
-        dest_path = f"new_path/{src_path}"  # Copy to a new location
-        test_content = b"This is test content for copy testing with replicas"
-
-        # Step 1: Write source file to origin
-        write_and_verify_origin_file(origin_client, src_path, test_content)
-
-        # Step 2: Sync source file to replicas so it's accessible in all storage locations
-        origin_with_replica_client.sync_replicas("", execution_mode=ExecutionMode.LOCAL)
-
-        # Verify source file exists in replica
-        replica_client = StorageClient(config=StorageClientConfig.from_dict(config, profile="replica"))
-        assert replica_client.is_file(src_path), f"Source file {src_path} should exist in replica after sync"
-
-        # Step 3: Copy file using origin client (which has replica configuration)
-        # Now that src_path exists in both origin and replica, the copy should work
-        origin_with_replica_client.copy(src_path, dest_path)
-
-        # Step 3: Verify destination file exists in origin
-        assert origin_client.is_file(dest_path), f"Destination file {dest_path} should exist in origin"
-        assert origin_client.read(dest_path) == test_content, "Destination file in origin should have correct content"
-
-        # Step 4: Verify destination file exists in replica (should be copied via replica manager)
-        assert replica_client.is_file(dest_path), f"Destination file {dest_path} should exist in replica"
-        assert replica_client.read(dest_path) == test_content, "Destination file in replica should have correct content"
-
-
 @pytest.mark.parametrize(
     "test_content,file_extension,encode_content",
     [
