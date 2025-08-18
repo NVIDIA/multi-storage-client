@@ -939,7 +939,10 @@ def test_find_config_file_paths():
 
 
 def test_read_msc_config_no_files_found(caplog, clean_msc_env_vars):
-    """Test that read_msc_config logs warning when no config files are found."""
+    """Test that read_msc_config logs when no config files are found."""
+    from logging import DEBUG
+
+    caplog.set_level(DEBUG)
     config, config_file = StorageClientConfig.read_msc_config()
     assert "No MSC config files found" in caplog.text
     assert config == {}
@@ -947,11 +950,11 @@ def test_read_msc_config_no_files_found(caplog, clean_msc_env_vars):
 
 
 def test_read_msc_config_single_file_found(caplog, clean_msc_env_vars, monkeypatch):
-    """Test that read_msc_config logs info when a single config file is found."""
-    from logging import INFO
+    """Test that read_msc_config logs when a single config file is found."""
+    from logging import DEBUG
 
-    # Set log level to INFO to capture info messages
-    caplog.set_level(INFO)
+    # Set log level to DEBUG to capture debug and info messages
+    caplog.set_level(DEBUG)
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml") as f:
         yaml.dump({"profiles": {"test": {"storage_provider": {"type": "file", "options": {"base_path": "/tmp"}}}}}, f)
@@ -966,11 +969,11 @@ def test_read_msc_config_single_file_found(caplog, clean_msc_env_vars, monkeypat
 
 
 def test_read_msc_config_multiple_files_found(caplog, clean_msc_env_vars, monkeypatch):
-    """Test that read_msc_config logs warning when multiple config files are found."""
-    from logging import INFO
+    """Test that read_msc_config logs when multiple config files are found."""
+    from logging import DEBUG
 
-    # Set log level to INFO to capture info messages
-    caplog.set_level(INFO)
+    # Set log level to DEBUG to capture debug and info messages
+    caplog.set_level(DEBUG)
 
     # Create temporary directory that will be automatically cleaned up
     with tempfile.TemporaryDirectory() as temp_dir:

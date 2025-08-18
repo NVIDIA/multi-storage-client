@@ -1025,13 +1025,13 @@ class StorageClientConfig:
                     except Exception as e:
                         raise ValueError(f"malformed msc config file: {path}, exception: {e}")
 
-        # Log warnings and info messages
+        # Log debug and info messages
         if len(found_config_files) > 1:
             found_config_files_str = ", ".join(found_config_files)
-            logger.warning(f"Multiple MSC config files found: {found_config_files_str}. ")
+            logger.debug(f"Multiple MSC config files found: {found_config_files_str}. ")
 
         if len(found_config_files) == 0:
-            logger.warning("No MSC config files found in any of the search locations.")
+            logger.debug("No MSC config files found in any of the search locations.")
         else:
             logger.info(f"Using MSC config file: {used_config_file}")
 
