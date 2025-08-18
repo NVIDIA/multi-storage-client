@@ -270,18 +270,6 @@ class S3StorageProvider(BaseStorageProvider):
         if self._endpoint_url:
             configs["endpoint_url"] = self._endpoint_url
 
-        if self._credentials_provider:
-            creds = self._fetch_credentials()
-            if "expiry_time" in creds and creds["expiry_time"]:
-                # TODO: Implement refreshable credentials
-                raise NotImplementedError("Refreshable credentials are not yet implemented for the rust client.")
-            else:
-                # Add static credentials to the configs dictionary
-                configs["aws_access_key_id"] = creds["access_key"]
-                configs["aws_secret_access_key"] = creds["secret_key"]
-                if creds["token"]:
-                    configs["aws_session_token"] = creds["token"]
-
         if rust_client_options:
             if rust_client_options.get("allow_http", False):
                 configs["allow_http"] = True
@@ -291,6 +279,7 @@ class S3StorageProvider(BaseStorageProvider):
         return RustClient(
             provider=PROVIDER,
             configs=configs,
+            credentials_provider=self._credentials_provider,
         )
 
     def _fetch_credentials(self) -> dict:

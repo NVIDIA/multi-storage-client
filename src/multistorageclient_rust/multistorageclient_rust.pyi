@@ -13,17 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Awaitable
+from typing import Any, Awaitable
 
 class RustClient:
     """
     RustClient provides asynchronous methods for interacting with an object storage backend (e.g., S3).
     """
-    def __init__(self, provider: str = "s3", configs: dict | None = ...) -> None:
+    def __init__(
+        self, provider: str = "s3", configs: dict | None = ..., credentials_provider: Any | None = ...
+    ) -> None:
         """
         Initialize a RustClient instance.
         :param provider: The storage provider type (default: 's3').
-        :param configs: Configuration dictionary for the provider (e.g., bucket, endpoint_url, credentials).
+        :param configs: Configuration dictionary for the provider (e.g., bucket, endpoint_url).
+        :param credentials_provider: Credentials provider for the provider (e.g., StaticS3CredentialsProvider).
         """
         ...
 

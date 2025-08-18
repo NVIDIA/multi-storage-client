@@ -15,7 +15,9 @@
 
 import os
 import tempfile
+import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Type
 
 import pytest
@@ -23,7 +25,10 @@ import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
 
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.constants import MEMORY_LOAD_LIMIT
+from multistorageclient.providers.s3 import StaticS3CredentialsProvider
 from multistorageclient_rust import RustClient  # pyright: ignore[reportAttributeAccessIssue]
+
+from .utils import RefreshableTestCredentialsProvider
 
 
 @pytest.mark.parametrize(
@@ -38,17 +43,20 @@ async def test_rustclient_basic_operations(temp_data_store_type: Type[tempdatast
     with temp_data_store_type() as temp_data_store:
         # Create a Rust client from the temp data store profile config dict
         config_dict = temp_data_store.profile_config_dict()
+        credentials_provider = StaticS3CredentialsProvider(
+            access_key=config_dict["credentials_provider"]["options"]["access_key"],
+            secret_key=config_dict["credentials_provider"]["options"]["secret_key"],
+        )
         rust_client = RustClient(
             provider="s3",
             configs={
                 "bucket": config_dict["storage_provider"]["options"]["base_path"],
                 "endpoint_url": config_dict["storage_provider"]["options"]["endpoint_url"],
-                "aws_access_key_id": config_dict["credentials_provider"]["options"]["access_key"],
-                "aws_secret_access_key": config_dict["credentials_provider"]["options"]["secret_key"],
                 "allow_http": config_dict["storage_provider"]["options"]["endpoint_url"].startswith("http://"),
                 "max_concurrency": 16,
                 "multipart_chunksize": 10 * 1024 * 1024,
             },
+            credentials_provider=credentials_provider,
         )
 
         # Create a storage client as well for operations that are not supported by the Rust client
@@ -152,3 +160,60 @@ async def test_rustclient_basic_operations(temp_data_store_type: Type[tempdatast
         # Delete the file.
         storage_client.delete(path=file_path)
         storage_client.delete(path=large_file_path)
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryAWSS3Bucket],
+        [tempdatastore.TemporarySwiftStackBucket],
+    ],
+)
+@pytest.mark.asyncio
+async def test_rustclient_with_refreshable_credentials(temp_data_store_type: Type[tempdatastore.TemporaryDataStore]):
+    with temp_data_store_type() as temp_data_store:
+        config_dict = temp_data_store.profile_config_dict()
+        # The credentials are valid for 5 seconds before the refresh
+        # After refresh, the credentials are invalid.
+        credentials_provider = RefreshableTestCredentialsProvider(
+            access_key=config_dict["credentials_provider"]["options"]["access_key"],
+            secret_key=config_dict["credentials_provider"]["options"]["secret_key"],
+            expiration=(datetime.now(timezone.utc) + timedelta(seconds=5)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+        rust_client = RustClient(
+            provider="s3",
+            configs={
+                "bucket": config_dict["storage_provider"]["options"]["base_path"],
+                "endpoint_url": config_dict["storage_provider"]["options"]["endpoint_url"],
+                "allow_http": config_dict["storage_provider"]["options"]["endpoint_url"].startswith("http://"),
+                "max_concurrency": 16,
+                "multipart_chunksize": 10 * 1024 * 1024,
+            },
+            credentials_provider=credentials_provider,
+        )
+
+        # Create a storage client as well for operations that are not supported by the Rust client
+        profile = "data"
+        config_dict = {"profiles": {profile: temp_data_store.profile_config_dict()}}
+        storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
+
+        file_extension = ".txt"
+        # add a random string to the file path below so concurrent tests don't conflict
+        file_path_fragments = [f"{uuid.uuid4().hex}-prefix", "infix", f"suffix{file_extension}"]
+        file_path = os.path.join(*file_path_fragments)
+        file_body_bytes = b"\x00\x01\x02" * 3
+
+        # Test before valid credentials expire
+        await rust_client.put(file_path, file_body_bytes)
+        result = await rust_client.get(file_path)
+        assert result == file_body_bytes
+        assert credentials_provider.refresh_count == 0
+
+        # Test after valid credentials expire, should call refresh_credentials and fail
+        time.sleep(6)
+        with pytest.raises(RuntimeError):
+            await rust_client.get(file_path)
+        assert credentials_provider.refresh_count == 1
+
+        # Delete the file.
+        storage_client.delete(path=file_path)
