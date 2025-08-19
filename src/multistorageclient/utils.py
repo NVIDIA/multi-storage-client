@@ -446,3 +446,6 @@ def matches_attribute_filter_expression(
 class NullStorageClient:
     def list(self, **kwargs: Any) -> Iterator[ObjectMetadata]:
         return iter([])
+
+    def commit_metadata(self, prefix: Optional[str] = None) -> None:
+        pass

@@ -98,6 +98,7 @@ class ProducerThread(threading.Thread):
         self.file_queue = file_queue
         self.num_workers = num_workers
         self.delete_unmatched_files = delete_unmatched_files
+        self.error = None
 
     def _match_file_metadata(self, source_info: ObjectMetadata, target_info: ObjectMetadata) -> bool:
         # If target and source have valid etags defined, use etag and file size to compare.
@@ -110,55 +111,58 @@ class ProducerThread(threading.Thread):
         )
 
     def run(self):
-        source_iter = iter(self.source_client.list(prefix=self.source_path))
-        target_iter = iter(self.target_client.list(prefix=self.target_path))
-        total_count = 0
+        try:
+            source_iter = iter(self.source_client.list(prefix=self.source_path))
+            target_iter = iter(self.target_client.list(prefix=self.target_path))
+            total_count = 0
 
-        source_file = next(source_iter, None)
-        target_file = next(target_iter, None)
+            source_file = next(source_iter, None)
+            target_file = next(target_iter, None)
 
-        while source_file or target_file:
-            # Update progress and count each pair (or single) considered for syncing
-            if total_count % 1000 == 0:
-                self.progress.update_total(total_count)
-            total_count += 1
+            while source_file or target_file:
+                # Update progress and count each pair (or single) considered for syncing
+                if total_count % 1000 == 0:
+                    self.progress.update_total(total_count)
+                total_count += 1
 
-            if source_file and target_file:
-                source_key = source_file.key[len(self.source_path) :].lstrip("/")
-                target_key = target_file.key[len(self.target_path) :].lstrip("/")
+                if source_file and target_file:
+                    source_key = source_file.key[len(self.source_path) :].lstrip("/")
+                    target_key = target_file.key[len(self.target_path) :].lstrip("/")
 
-                if source_key < target_key:
+                    if source_key < target_key:
+                        self.file_queue.put((_SyncOp.ADD, source_file))
+                        source_file = next(source_iter, None)
+                    elif source_key > target_key:
+                        if self.delete_unmatched_files:
+                            self.file_queue.put((_SyncOp.DELETE, target_file))
+                        else:
+                            self.progress.update_progress()
+                        target_file = next(target_iter, None)  # Skip unmatched target file
+                    else:
+                        # Both exist, compare metadata
+                        if not self._match_file_metadata(source_file, target_file):
+                            self.file_queue.put((_SyncOp.ADD, source_file))
+                        else:
+                            self.progress.update_progress()
+
+                        source_file = next(source_iter, None)
+                        target_file = next(target_iter, None)
+                elif source_file:
                     self.file_queue.put((_SyncOp.ADD, source_file))
                     source_file = next(source_iter, None)
-                elif source_key > target_key:
+                else:
                     if self.delete_unmatched_files:
                         self.file_queue.put((_SyncOp.DELETE, target_file))
                     else:
                         self.progress.update_progress()
-                    target_file = next(target_iter, None)  # Skip unmatched target file
-                else:
-                    # Both exist, compare metadata
-                    if not self._match_file_metadata(source_file, target_file):
-                        self.file_queue.put((_SyncOp.ADD, source_file))
-                    else:
-                        self.progress.update_progress()
-
-                    source_file = next(source_iter, None)
                     target_file = next(target_iter, None)
-            elif source_file:
-                self.file_queue.put((_SyncOp.ADD, source_file))
-                source_file = next(source_iter, None)
-            else:
-                if self.delete_unmatched_files:
-                    self.file_queue.put((_SyncOp.DELETE, target_file))
-                else:
-                    self.progress.update_progress()
-                target_file = next(target_iter, None)
 
-        self.progress.update_total(total_count)
-
-        for _ in range(self.num_workers):
-            self.file_queue.put((_SyncOp.STOP, None))  # Signal consumers to stop
+            self.progress.update_total(total_count)
+        except Exception as e:
+            self.error = e
+        finally:
+            for _ in range(self.num_workers):
+                self.file_queue.put((_SyncOp.STOP, None))  # Signal consumers to stop
 
 
 class ResultConsumerThread(threading.Thread):
@@ -178,28 +182,32 @@ class ResultConsumerThread(threading.Thread):
         self.target_path = target_path
         self.progress = progress
         self.result_queue = result_queue
+        self.error = None
 
     def run(self):
-        # Pull from result_queue to collect pending updates from each multiprocessing worker.
-        while True:
-            op, target_file_path, physical_metadata = self.result_queue.get()
+        try:
+            # Pull from result_queue to collect pending updates from each multiprocessing worker.
+            while True:
+                op, target_file_path, physical_metadata = self.result_queue.get()
 
-            if op == _SyncOp.STOP:
-                break
+                if op == _SyncOp.STOP:
+                    break
 
-            if self.target_client._metadata_provider:
-                with self.target_client._metadata_provider_lock or contextlib.nullcontext():
-                    if op == _SyncOp.ADD:
-                        # Use realpath() to get physical path so metadata provider can
-                        # track the logical/physical mapping.
-                        phys_path, _ = self.target_client._metadata_provider.realpath(target_file_path)
-                        physical_metadata.key = phys_path
-                        self.target_client._metadata_provider.add_file(target_file_path, physical_metadata)
-                    elif op == _SyncOp.DELETE:
-                        self.target_client._metadata_provider.remove_file(target_file_path)
-                    else:
-                        raise RuntimeError(f"Unknown operation: {op}")
-            self.progress.update_progress()
+                if self.target_client._metadata_provider:
+                    with self.target_client._metadata_provider_lock or contextlib.nullcontext():
+                        if op == _SyncOp.ADD:
+                            # Use realpath() to get physical path so metadata provider can
+                            # track the logical/physical mapping.
+                            phys_path, _ = self.target_client._metadata_provider.realpath(target_file_path)
+                            physical_metadata.key = phys_path
+                            self.target_client._metadata_provider.add_file(target_file_path, physical_metadata)
+                        elif op == _SyncOp.DELETE:
+                            self.target_client._metadata_provider.remove_file(target_file_path)
+                        else:
+                            raise RuntimeError(f"Unknown operation: {op}")
+                self.progress.update_progress()
+        except Exception as e:
+            self.error = e
 
 
 class SyncManager:
@@ -463,6 +471,18 @@ class SyncManager:
         # Log the completion of the sync operation.
         progress.close()
         logger.debug(f"Completed sync operation {description}")
+
+        # Raise an error if the producer or result consumer thread encountered an error.
+        errors = []
+
+        if producer_thread.error:
+            errors.append(f"Producer thread error: {producer_thread.error}")
+
+        if result_consumer_thread.error:
+            errors.append(f"Result consumer thread error: {result_consumer_thread.error}")
+
+        if errors:
+            raise RuntimeError(f"Errors in sync operation, caused by: {errors}")
 
 
 def _sync_worker_process(

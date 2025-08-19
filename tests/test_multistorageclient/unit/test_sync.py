@@ -15,13 +15,17 @@
 
 import copy
 import os
+import queue
 import time
+from typing import Optional
 
 import pytest
 
 import multistorageclient as msc
 from multistorageclient.constants import MEMORY_LOAD_LIMIT
+from multistorageclient.progress_bar import ProgressBar
 from multistorageclient.providers.manifest_metadata import DEFAULT_MANIFEST_BASE_DIR
+from multistorageclient.sync import ProducerThread, ResultConsumerThread, SyncManager, _SyncOp
 from multistorageclient.types import ExecutionMode
 from test_multistorageclient.unit.utils import config, tempdatastore
 
@@ -305,3 +309,65 @@ def test_sync_replicas(temp_data_store_type: type[tempdatastore.TemporaryDataSto
         target_client, target_path = msc.resolve_storage_client(replica_msc_url)
         files = list(target_client.list(prefix=target_path))
         assert len([f for f in files if f.key.endswith(".lock")]) == len(expected_files)
+
+
+class MockStorageClient:
+    def list(self, **kwargs):
+        raise Exception("No Such Method")
+
+    def commit_metadata(self, prefix: Optional[str] = None) -> None:
+        pass
+
+
+def test_producer_thread_error():
+    source_client = MockStorageClient()
+    target_client = MockStorageClient()
+
+    producer_thread = ProducerThread(
+        source_client=source_client,
+        source_path="",
+        target_client=target_client,
+        target_path="",
+        progress=ProgressBar(desc="", show_progress=False),
+        file_queue=queue.Queue(),
+        num_workers=1,
+    )
+
+    producer_thread.start()
+    producer_thread.join()
+
+    assert not producer_thread.is_alive()
+    assert producer_thread.error is not None
+
+
+def test_result_consumer_error():
+    target_client = MockStorageClient()
+    result_queue = queue.Queue()
+
+    result_consumer_thread = ResultConsumerThread(
+        target_client=target_client,
+        target_path="",
+        progress=ProgressBar(desc="", show_progress=False),
+        result_queue=result_queue,
+    )
+
+    result_consumer_thread.start()
+    result_consumer_thread.join(timeout=1)
+
+    assert result_consumer_thread.is_alive()
+    assert result_consumer_thread.error is None
+
+    result_queue.put((_SyncOp.ADD, None, None))
+    result_consumer_thread.join(timeout=1)
+
+    assert not result_consumer_thread.is_alive()
+    assert result_consumer_thread.error is not None
+
+
+def test_sync_function_return_producer_error():
+    source_client = MockStorageClient()
+    target_client = MockStorageClient()
+
+    manager = SyncManager(source_client=source_client, source_path="", target_client=target_client, target_path="")
+    with pytest.raises(RuntimeError, match="Errors in sync operation, caused by: .*"):
+        manager.sync_objects()
