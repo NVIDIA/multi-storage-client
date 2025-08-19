@@ -308,7 +308,7 @@ def test_sync_replicas(temp_data_store_type: type[tempdatastore.TemporaryDataSto
         # Verify that the lock file is created and removed.
         target_client, target_path = msc.resolve_storage_client(replica_msc_url)
         files = list(target_client.list(prefix=target_path))
-        assert len([f for f in files if f.key.endswith(".lock")]) == len(expected_files)
+        assert len([f for f in files if f.key.endswith(".lock")]) == 0
 
 
 class MockStorageClient:

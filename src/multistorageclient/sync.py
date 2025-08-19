@@ -551,6 +551,14 @@ def _sync_worker_process(
                             target_client.upload_file(target_file_path, temp_filename)
                         finally:
                             os.remove(temp_filename)  # Ensure the temporary file is removed
+
+                # Clean up the lock file for POSIX file storage providers
+                if target_client._is_posix_file_storage_provider():
+                    try:
+                        os.remove(lock_path)
+                    except OSError:
+                        # Lock file might already be removed or not accessible
+                        pass
             elif op == _SyncOp.DELETE:
                 logger.debug(f"rm {file_metadata.key}")
                 target_client.delete(file_metadata.key)
