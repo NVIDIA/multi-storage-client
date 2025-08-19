@@ -159,7 +159,7 @@ Lustre, which provides high-throughput, low-latency access for compute-intensive
 **Network Throughput Optimization**
 
 To maximize network throughput when copying data from object storage to local shared filesystems or 
-to other object storage systems, consider using the :ref:`rust-client-reference` Rust client in MSC. 
+to other object storage systems, consider using the :doc:`/user_guide/rust` in MSC. 
 The Rust client offers significant performance improvements over Python clients such as boto3, making it 
 ideal for large-scale data transfer operations.
 
