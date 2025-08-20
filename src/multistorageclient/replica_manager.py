@@ -89,16 +89,13 @@ class ReplicaManager:
                     return
                 self._uploading_files.add(remote_path)
 
-            # Handle file object conversion
-            local_file_path, created_temp = self._prepare_file_for_upload(file)
-
             # Submit replica upload - (fire-and-forget, non-blocking)
+            # Pass the file object directly to avoid pickle issues
             _REPLICA_THREAD_POOL.submit(
                 self._upload_to_replicas,
-                local_file_path,
+                file,
                 remote_path,
                 replicas_that_need_updates,
-                created_temp,
             )
 
             logger.debug(
@@ -125,20 +122,24 @@ class ReplicaManager:
 
     def _upload_to_replicas(
         self,
-        local_file_path: str,
+        file: Union[str, IO],
         remote_path: str,
         replica_clients: list,
-        created_temp: bool = False,
     ) -> None:
         """Upload to replicas in background thread - no callbacks, just logging.
 
-        :param local_file_path: path to the local file to upload
+        :param file: file-like object or string path to upload
         :param remote_path: path to the file to upload
         :param replica_clients: list of replica clients to upload to
-        :param created_temp: boolean indicating if the file was created as a temporary file (for cleanup)
         """
+        local_file_path = None
+        created_temp = False
+
         try:
             logger.debug(f"Starting replica upload for {remote_path}")
+
+            # Handle file object conversion in the background thread
+            local_file_path, created_temp = self._prepare_file_for_upload(file)
 
             for replica_client in replica_clients:
                 try:
