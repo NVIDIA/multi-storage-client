@@ -101,10 +101,7 @@ class ProducerThread(threading.Thread):
         self.error = None
 
     def _match_file_metadata(self, source_info: ObjectMetadata, target_info: ObjectMetadata) -> bool:
-        # If target and source have valid etags defined, use etag and file size to compare.
-        if source_info.etag and target_info.etag:
-            return source_info.etag == target_info.etag and source_info.content_length == target_info.content_length
-        # Else, check file size is the same and the target's last_modified is newer than the source.
+        # Check file size is the same and the target's last_modified is newer than the source.
         return (
             source_info.content_length == target_info.content_length
             and source_info.last_modified <= target_info.last_modified
@@ -529,7 +526,7 @@ def _sync_worker_process(
                 with exclusive_lock:
                     # Skip if the file already exists and has the same content length but is newer.
                     try:
-                        target_metadata = target_client.info(target_file_path)
+                        target_metadata = target_client.info(target_file_path, strict=False)
                         if (
                             target_metadata.content_length == file_metadata.content_length
                             and target_metadata.last_modified >= file_metadata.last_modified

@@ -92,7 +92,10 @@ class SyncAction(Action):
 
     def run(self, args: argparse.Namespace) -> int:
         if args.verbose:
-            print(f"Synchronizing files from {args.source_url} to {args.target_url} ...")
+            if args.target_url:
+                print(f"Synchronizing files from {args.source_url} to {args.target_url} ...")
+            else:
+                print(f"Synchronizing files from {args.source_url} to replicas ...")
 
         if args.ray_cluster:
             try:

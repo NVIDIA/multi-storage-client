@@ -611,18 +611,30 @@ class StorageClient:
         del state["_storage_provider"]
         del state["_metadata_provider"]
         del state["_cache_manager"]
+
         if "_metadata_provider_lock" in state:
             del state["_metadata_provider_lock"]
+
         if "_replicas" in state:
             del state["_replicas"]
+
+        # Replica manager could be disabled if it's set to None in the state.
         if "_replica_manager" in state:
-            del state["_replica_manager"]
+            if state["_replica_manager"] is not None:
+                del state["_replica_manager"]
+
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         config = state["_config"]
         self._initialize_providers(config)
-        self._initialize_replicas(config.replicas)
+
+        # Replica manager could be disabled if it's set to None in the state.
+        if "_replica_manager" in state and state["_replica_manager"] is None:
+            self._replica_manager = None
+        else:
+            self._initialize_replicas(config.replicas)
+
         if self._metadata_provider:
             self._metadata_provider_lock = threading.Lock()
 
@@ -666,7 +678,7 @@ class StorageClient:
         source_path: str,
         replica_indices: Optional[List[int]] = None,
         delete_unmatched_files: bool = False,
-        description: str = "Syncing replicas",
+        description: str = "Syncing replica",
         num_worker_processes: Optional[int] = None,
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
     ) -> None:
@@ -709,7 +721,7 @@ class StorageClient:
                 source_path,
                 source_path,
                 delete_unmatched_files=delete_unmatched_files,
-                description=description,
+                description=f"{description} ({replica.profile})",
                 num_worker_processes=num_worker_processes,
                 execution_mode=execution_mode,
             )
