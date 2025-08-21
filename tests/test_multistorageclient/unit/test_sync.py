@@ -17,6 +17,7 @@ import copy
 import os
 import queue
 import time
+from datetime import datetime
 from typing import Optional
 
 import pytest
@@ -26,7 +27,7 @@ from multistorageclient.constants import MEMORY_LOAD_LIMIT
 from multistorageclient.progress_bar import ProgressBar
 from multistorageclient.providers.manifest_metadata import DEFAULT_MANIFEST_BASE_DIR
 from multistorageclient.sync import ProducerThread, ResultConsumerThread, SyncManager, _SyncOp
-from multistorageclient.types import ExecutionMode
+from multistorageclient.types import ExecutionMode, ObjectMetadata
 from test_multistorageclient.unit.utils import config, tempdatastore
 
 
@@ -371,3 +372,49 @@ def test_sync_function_return_producer_error():
     manager = SyncManager(source_client=source_client, source_path="", target_client=target_client, target_path="")
     with pytest.raises(RuntimeError, match="Errors in sync operation, caused by: .*"):
         manager.sync_objects()
+
+
+def test_progress_bar_update_in_producer_thread():
+    source_client = MockStorageClient()
+    target_client = MockStorageClient()
+
+    source_files = [
+        ObjectMetadata(key="file0.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+        ObjectMetadata(key="file2.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+        ObjectMetadata(key="file3.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+    ]
+
+    target_files = [
+        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 1, 0, 0)),
+        ObjectMetadata(key="file2.txt", content_length=100, last_modified=datetime(2025, 1, 1, 1, 0, 0)),
+        ObjectMetadata(key="file4.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+        ObjectMetadata(key="file5.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+        ObjectMetadata(key="file6.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+    ]
+
+    source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
+    target_client.list = lambda **kwargs: iter(target_files)  # type: ignore
+
+    progress = ProgressBar(desc="Syncing", show_progress=True)
+    file_queue = queue.Queue()
+
+    producer_thread = ProducerThread(
+        source_client=source_client,
+        source_path="",
+        target_client=target_client,
+        target_path="",
+        progress=progress,
+        file_queue=file_queue,
+        num_workers=1,
+    )
+
+    producer_thread.start()
+    producer_thread.join()
+
+    assert producer_thread.error is None
+    assert progress.pbar is not None
+    assert progress.pbar.total == len(source_files)
+
+    # Because file1.txt and file2.txt are the same, they should be skipped and the progress bar should be updated.
+    assert progress.pbar.n == 2

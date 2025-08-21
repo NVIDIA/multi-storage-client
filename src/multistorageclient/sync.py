@@ -72,7 +72,7 @@ class ProducerThread(threading.Thread):
     for worker threads to process. It performs efficient merge-style iteration through sorted
     file listings to determine what files need to be synchronized.
 
-    The thread compares files by their relative paths and metadata (etag, content length,
+    The thread compares files by their relative paths and metadata (content length,
     last modified time) to determine if files need to be copied, deleted, or can be skipped.
 
     The thread will put tuples of (_SyncOp, ObjectMetadata) into the file_queue.
@@ -120,7 +120,6 @@ class ProducerThread(threading.Thread):
                 # Update progress and count each pair (or single) considered for syncing
                 if total_count % 1000 == 0:
                     self.progress.update_total(total_count)
-                total_count += 1
 
                 if source_file and target_file:
                     source_key = source_file.key[len(self.source_path) :].lstrip("/")
@@ -129,11 +128,10 @@ class ProducerThread(threading.Thread):
                     if source_key < target_key:
                         self.file_queue.put((_SyncOp.ADD, source_file))
                         source_file = next(source_iter, None)
+                        total_count += 1
                     elif source_key > target_key:
                         if self.delete_unmatched_files:
                             self.file_queue.put((_SyncOp.DELETE, target_file))
-                        else:
-                            self.progress.update_progress()
                         target_file = next(target_iter, None)  # Skip unmatched target file
                     else:
                         # Both exist, compare metadata
@@ -144,14 +142,14 @@ class ProducerThread(threading.Thread):
 
                         source_file = next(source_iter, None)
                         target_file = next(target_iter, None)
+                        total_count += 1
                 elif source_file:
                     self.file_queue.put((_SyncOp.ADD, source_file))
                     source_file = next(source_iter, None)
+                    total_count += 1
                 else:
                     if self.delete_unmatched_files:
                         self.file_queue.put((_SyncOp.DELETE, target_file))
-                    else:
-                        self.progress.update_progress()
                     target_file = next(target_iter, None)
 
             self.progress.update_total(total_count)
@@ -202,7 +200,9 @@ class ResultConsumerThread(threading.Thread):
                             self.target_client._metadata_provider.remove_file(target_file_path)
                         else:
                             raise RuntimeError(f"Unknown operation: {op}")
-                self.progress.update_progress()
+
+                if op == _SyncOp.ADD:
+                    self.progress.update_progress()
         except Exception as e:
             self.error = e
 
