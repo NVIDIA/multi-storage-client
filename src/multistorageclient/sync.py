@@ -132,6 +132,7 @@ class ProducerThread(threading.Thread):
                     elif source_key > target_key:
                         if self.delete_unmatched_files:
                             self.file_queue.put((_SyncOp.DELETE, target_file))
+                            total_count += 1
                         target_file = next(target_iter, None)  # Skip unmatched target file
                     else:
                         # Both exist, compare metadata
@@ -150,6 +151,7 @@ class ProducerThread(threading.Thread):
                 else:
                     if self.delete_unmatched_files:
                         self.file_queue.put((_SyncOp.DELETE, target_file))
+                        total_count += 1
                     target_file = next(target_iter, None)
 
             self.progress.update_total(total_count)

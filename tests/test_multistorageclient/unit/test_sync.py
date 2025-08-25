@@ -28,6 +28,7 @@ from multistorageclient.progress_bar import ProgressBar
 from multistorageclient.providers.manifest_metadata import DEFAULT_MANIFEST_BASE_DIR
 from multistorageclient.sync import ProducerThread, ResultConsumerThread, SyncManager, _SyncOp
 from multistorageclient.types import ExecutionMode, ObjectMetadata
+from multistorageclient.utils import NullStorageClient
 from test_multistorageclient.unit.utils import config, tempdatastore
 
 
@@ -374,7 +375,7 @@ def test_sync_function_return_producer_error():
         manager.sync_objects()
 
 
-def test_progress_bar_update_in_producer_thread():
+def test_progress_bar_update_in_producer_thread_without_deletion():
     source_client = MockStorageClient()
     target_client = MockStorageClient()
 
@@ -407,6 +408,7 @@ def test_progress_bar_update_in_producer_thread():
         progress=progress,
         file_queue=file_queue,
         num_workers=1,
+        delete_unmatched_files=False,
     )
 
     producer_thread.start()
@@ -418,3 +420,39 @@ def test_progress_bar_update_in_producer_thread():
 
     # Because file1.txt and file2.txt are the same, they should be skipped and the progress bar should be updated.
     assert progress.pbar.n == 2
+
+
+def test_progress_bar_update_in_producer_thread_with_deletion():
+    source_client = NullStorageClient()
+    target_client = MockStorageClient()
+
+    target_files = [
+        ObjectMetadata(key="file0.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+        ObjectMetadata(key="file2.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+        ObjectMetadata(key="file3.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+    ]
+
+    target_client.list = lambda **kwargs: iter(target_files)  # type: ignore
+
+    progress = ProgressBar(desc="Syncing", show_progress=True)
+    file_queue = queue.Queue()
+
+    producer_thread = ProducerThread(
+        source_client=source_client,
+        source_path="",
+        target_client=target_client,
+        target_path="",
+        progress=progress,
+        file_queue=file_queue,
+        num_workers=1,
+        delete_unmatched_files=True,
+    )
+
+    producer_thread.start()
+    producer_thread.join()
+
+    assert producer_thread.error is None
+    assert progress.pbar is not None
+    assert progress.pbar.total == len(target_files)
+    assert progress.pbar.n == 0
