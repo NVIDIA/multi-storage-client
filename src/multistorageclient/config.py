@@ -279,7 +279,13 @@ class StorageClientConfigLoader:
         self._metric_counters = metric_counters
         self._metric_attributes_providers = metric_attributes_providers
         if self._opentelemetry_dict is not None:
-            if telemetry is None:
+            # Try to create a telemetry instance only if no telemetry instance or OpenTelemetry instruments are provided (e.g. when unpickling).
+            #
+            # Multiprocessing unpickles during the Python interpreter's bootstrap phase for new processes.
+            # New processes (e.g. multiprocessing manager server) can't be created during this phase.
+            if telemetry is None and not any(
+                (self._metric_gauges, self._metric_counters, self._metric_attributes_providers)
+            ):
                 try:
                     # Try to create a telemetry instance with the default mode heuristic.
                     telemetry = telemetry_init()
