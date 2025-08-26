@@ -259,7 +259,9 @@ class SyncManager:
         logger.debug(f"Starting sync operation {description}")
 
         # Attempt to balance the number of worker processes and threads.
-        num_worker_processes, num_worker_threads = calculate_worker_processes_and_threads(num_worker_processes)
+        num_worker_processes, num_worker_threads = calculate_worker_processes_and_threads(
+            num_worker_processes, execution_mode, self.source_client, self.target_client
+        )
         num_workers = num_worker_processes * num_worker_threads
 
         # Create the file and result queues.

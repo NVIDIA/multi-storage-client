@@ -320,6 +320,12 @@ class MockStorageClient:
     def commit_metadata(self, prefix: Optional[str] = None) -> None:
         pass
 
+    def _is_rust_client_enabled(self) -> bool:
+        return False
+
+    def _is_posix_file_storage_provider(self) -> bool:
+        return False
+
 
 def test_producer_thread_error():
     source_client = MockStorageClient()

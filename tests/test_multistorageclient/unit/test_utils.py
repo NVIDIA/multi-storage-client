@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import multiprocessing
 import os
 from datetime import datetime
 from unittest.mock import patch
@@ -20,7 +21,7 @@ from unittest.mock import patch
 import pytest
 
 import multistorageclient as msc
-from multistorageclient.types import ObjectMetadata
+from multistorageclient.types import ExecutionMode, ObjectMetadata
 from multistorageclient.utils import (
     AttributeFilterEvaluator,
     calculate_worker_processes_and_threads,
@@ -286,6 +287,41 @@ def test_calculate_worker_processes_and_threads_both_custom(mock_cpu_count, monk
     processes, threads = calculate_worker_processes_and_threads()
     assert processes == 2  # Should use environment variable
     assert threads == 8  # Should use environment variable
+
+
+@patch("multistorageclient.StorageClient")
+@patch("multistorageclient.StorageClient")
+def test_calculate_worker_processes_and_threads_use_single_process(source_client, target_client):
+    # Both clients are using the Rust client.
+    source_client._is_rust_client_enabled.return_value = True
+    target_client._is_rust_client_enabled.return_value = True
+
+    processes, threads = calculate_worker_processes_and_threads(
+        execution_mode=ExecutionMode.LOCAL, source_client=source_client, target_client=target_client
+    )
+    assert processes == 1
+    assert threads == multiprocessing.cpu_count()
+
+    # One client is using the Rust client and the other is using the POSIX file storage provider.
+    source_client._is_rust_client_enabled.return_value = True
+    source_client._is_posix_file_storage_provider.return_value = False
+    target_client._is_rust_client_enabled.return_value = False
+    target_client._is_posix_file_storage_provider.return_value = True
+    processes, threads = calculate_worker_processes_and_threads(
+        execution_mode=ExecutionMode.LOCAL, source_client=source_client, target_client=target_client
+    )
+    assert processes == 1
+    assert threads == multiprocessing.cpu_count()
+
+    source_client._is_rust_client_enabled.return_value = False
+    source_client._is_posix_file_storage_provider.return_value = True
+    target_client._is_rust_client_enabled.return_value = False
+    target_client._is_posix_file_storage_provider.return_value = True
+    processes, threads = calculate_worker_processes_and_threads(
+        execution_mode=ExecutionMode.LOCAL, source_client=source_client, target_client=target_client
+    )
+    assert processes == 1
+    assert threads == multiprocessing.cpu_count()
 
 
 def test_attribute_filter_evaluator_comparison():

@@ -208,21 +208,22 @@ def test_ls_command_without_attribute_filter_expression(run_cli):
     with tempfile.TemporaryDirectory() as test_dir:
         # Create test files and subdirectory
         test_files = [
-            Path(test_dir) / "file1.txt",
+            Path(test_dir) / "dir0" / "file1.txt",
             Path(test_dir) / "file2.bin",
         ]
 
         for file_path in test_files:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(f"Content of {file_path.name}")
 
         # Test basic ls command
         stdout, _ = run_cli("ls", test_dir)
 
-        assert "file1.txt" in stdout
+        assert "file1.txt" not in stdout
         assert "file2.bin" in stdout
 
         # Test recursive ls command
-        stdout, _ = run_cli("ls", "--recursive", os.path.dirname(test_dir))
+        stdout, _ = run_cli("ls", "--recursive", test_dir)
 
         assert "file1.txt" in stdout
         assert "file2.bin" in stdout

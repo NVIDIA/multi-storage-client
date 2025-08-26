@@ -21,12 +21,15 @@ import re
 import shutil
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from lark import Lark, Transformer
 from wcmatch import glob as wcmatch_glob
 
-from .types import ObjectMetadata
+from .types import ExecutionMode, ObjectMetadata
+
+if TYPE_CHECKING:
+    from .client import StorageClient
 
 
 def split_path(path: str) -> tuple[str, str]:
@@ -250,12 +253,20 @@ def find_executable_path(executable_name: str) -> Optional[Path]:
     return None
 
 
-def calculate_worker_processes_and_threads(num_worker_processes: Optional[int] = None):
+def calculate_worker_processes_and_threads(
+    num_worker_processes: Optional[int] = None,
+    execution_mode: ExecutionMode = ExecutionMode.LOCAL,
+    source_client: Optional["StorageClient"] = None,
+    target_client: Optional["StorageClient"] = None,
+):
     """
     Calculate the number of worker processes and threads based on CPU count and environment variables.
 
     :param num_worker_processes: The number of worker processes to use. If not provided, the number of processes will be
         calculated based on the CPU count and the MSC_NUM_PROCESSES environment variable.
+    :param execution_mode: The execution mode to use.
+    :param source_client: The source client to use. If provided, the calculation will be updated if the Rust client is enabled.
+    :param target_client: The target client to use. If provided, the calculation will be updated if the Rust client is enabled.
 
     :return: Tuple of (num_worker_processes, num_worker_threads)
     """
@@ -264,6 +275,18 @@ def calculate_worker_processes_and_threads(num_worker_processes: Optional[int] =
     if num_worker_processes is None:
         num_worker_processes = int(os.getenv("MSC_NUM_PROCESSES", default_processes))
     num_worker_threads = int(os.getenv("MSC_NUM_THREADS_PER_PROCESS", max(cpu_count // num_worker_processes, 16)))
+
+    # Under the following conditions, multiprocessing is not needed for the local execution mode.
+    # 1. Both source and target clients are using the Rust client or POSIX file storage provider.
+    # 2. One of the clients is using the Rust client and the other is using the POSIX file storage provider.
+    if execution_mode == ExecutionMode.LOCAL:
+        if source_client is not None and target_client is not None:
+            if all(
+                client._is_rust_client_enabled() or client._is_posix_file_storage_provider()
+                for client in (source_client, target_client)
+            ):
+                num_worker_processes = 1
+                num_worker_threads = cpu_count
 
     return num_worker_processes, num_worker_threads
 
@@ -449,3 +472,9 @@ class NullStorageClient:
 
     def commit_metadata(self, prefix: Optional[str] = None) -> None:
         pass
+
+    def _is_rust_client_enabled(self) -> bool:
+        return False
+
+    def _is_posix_file_storage_provider(self) -> bool:
+        return True

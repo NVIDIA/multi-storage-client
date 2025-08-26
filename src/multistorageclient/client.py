@@ -139,6 +139,12 @@ class StorageClient:
         """
         return self._config.profile == "default"
 
+    def _is_rust_client_enabled(self) -> bool:
+        """
+        Return True if the storage provider is using the Rust client.
+        """
+        return hasattr(self._storage_provider, "_rust_client")
+
     @property
     def profile(self) -> str:
         return self._config.profile
