@@ -119,6 +119,10 @@ class MultiStoragePath:
             and self._internal_path == other._internal_path
         )
 
+    def __hash__(self) -> int:
+        """Return hash of the path."""
+        return hash((self._storage_client.profile, self._internal_path))
+
     def __fspath__(self) -> str:
         return str(self)
 
@@ -136,6 +140,14 @@ class MultiStoragePath:
             return self.with_segments(key, self)
         except TypeError:
             return NotImplemented
+
+    def __getstate__(self):
+        return {"_path": self._path, "_internal_path": self._internal_path}
+
+    def __setstate__(self, state):
+        self._path = state["_path"]
+        self._internal_path = state["_internal_path"]
+        self._storage_client, _ = resolve_storage_client(self._path)
 
     @property
     def anchor(self) -> str:

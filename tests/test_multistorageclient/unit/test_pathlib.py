@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import os
+import pickle
 import shutil
 import stat
 import tempfile
@@ -176,6 +177,26 @@ def test_shutil_rmtree(file_storage_config):
 def test_relative_path():
     path = msc.Path("./workspace/datasets/file.txt")
     assert path.as_posix() == os.path.realpath("./workspace/datasets/file.txt")
+
+
+def test_hashable_path():
+    path1 = msc.Path("/tmp/testfile")
+    path2 = msc.Path("msc://default/tmp/testfile")
+    assert hash(path1) == hash(path2)
+    assert path1 == path2
+
+    paths = {path1, path2}
+    assert len(paths) == 1
+
+
+def test_pickable_path():
+    local_path = msc.Path("/tmp/test/file.txt")
+    pickled = pickle.dumps(local_path)
+    unpickled = pickle.loads(pickled)
+
+    assert local_path == unpickled
+    assert str(local_path) == str(unpickled)
+    assert unpickled._storage_client
 
 
 def create_file(path: msc.Path):
