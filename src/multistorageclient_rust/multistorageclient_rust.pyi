@@ -35,7 +35,6 @@ class RustClient:
         Upload data to the object store at the specified path.
         :param path: The remote object path in the storage backend.
         :param data: The data to upload as bytes.
-        :return: None. Raises an exception on failure.
         """
         ...
 
@@ -54,7 +53,6 @@ class RustClient:
         Upload a local file to the object store.
         :param local_path: Path to the local file to upload.
         :param remote_path: The destination path in the storage backend.
-        :return: None. Raises an exception on failure.
         """
         ...
 
@@ -63,7 +61,6 @@ class RustClient:
         Download an object from the store and save it to a local file.
         :param remote_path: The remote object path in the storage backend.
         :param local_path: Path to the local file to save the downloaded data.
-        :return: None. Raises an exception on failure.
         """
         ...
 
@@ -77,7 +74,6 @@ class RustClient:
 
         :param local_path: Path to the local file to upload.
         :param remote_path: The destination path in the storage backend.
-        :return: None. Raises an exception on failure.
         """
         ...
 
@@ -91,6 +87,48 @@ class RustClient:
 
         :param remote_path: The destination path in the storage backend.
         :param local_path: Path to the local file to upload.
-        :return: None. Raises an exception on failure.
         """
         ...
+
+    def list_recursive(
+        self,
+        prefixes: list[str],
+        limit: int | None = ...,
+        suffix: str | None = ...,
+        max_depth: int | None = ...,
+        max_concurrency: int | None = ...,
+    ) -> ListResult:
+        """
+        List objects and directories recursively from the object store for the given prefixes input list.
+
+        This method lists objects and directories recursively from the object store for the given prefixes.
+        It supports filtering by suffix, limiting the number of objects returned,
+        and setting the maximum depth of the directory tree to traverse.
+        The method uses concurrent operations to improve performance. The default max_concurrency is 32.
+
+        :param prefixes: List of prefixes to list objects from.
+        :param limit: Maximum number of objects to return.
+        :param suffix: Filter objects by suffix.
+        :param max_depth: Maximum depth of the directory tree to traverse.
+        :param max_concurrency: Maximum number of concurrent operations.
+        """
+        ...
+
+class ObjectMetadata:
+    """
+    ObjectMetadata contains metadata about an object or a directory in the object store.
+    """
+
+    key: str
+    content_length: int
+    last_modified: str  # in RFC 3339 format
+    object_type: str  # "object" or "directory"
+    etag: str | None
+
+class ListResult:
+    """
+    ListResult contains the result of a list operation.
+    """
+
+    objects: list[ObjectMetadata]
+    prefixes: list[ObjectMetadata]

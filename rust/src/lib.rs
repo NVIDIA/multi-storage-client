@@ -16,20 +16,24 @@
 use chrono::{DateTime, Utc};
 use object_store::aws::AmazonS3Builder;
 use object_store::gcp::GoogleCloudStorageBuilder;
-use object_store::{path::Path, ObjectStore, PutPayload, WriteMultipart};
+use object_store::{path::Path, ObjectMeta, ObjectStore, PutPayload, WriteMultipart};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule};
+use pyo3::{PyAny, PyObject};
 use pyo3_async_runtimes::tokio::future_into_py;
 use pyo3_bytes::PyBytes;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path as StdPath;
-use std::sync::Arc;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use tempfile::NamedTempFile;
 use thiserror::Error;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::{mpsc, Semaphore};
+use tokio::task::JoinSet;
+
+mod types;
+use types::{ListResult, ObjectMetadata};
 
 #[derive(Error, Debug)]
 pub enum StorageError {
@@ -564,10 +568,183 @@ impl RustClient {
             Ok(())
         })
     }
+
+
+    #[pyo3(signature = (prefixes, limit=None, suffix=None, max_depth=None, max_concurrency=DEFAULT_MAX_CONCURRENCY))]
+    fn list_recursive<'p>(
+        &self,
+        py: Python<'p>,
+        prefixes: Vec<String>,
+        limit: Option<usize>,
+        suffix: Option<String>,
+        max_depth: Option<usize>,
+        max_concurrency: usize,
+    ) -> PyResult<Py<ListResult>> {
+        self.refresh_store_if_needed()?;
+        let store = Arc::clone(&*self.store.read().unwrap());
+
+        async fn list_single_directory(
+            store: Arc<dyn ObjectStore>,
+            prefix: Path,
+            limit: Option<usize>,
+            suffix: Option<&str>,
+            depth: usize,
+        ) -> Result<(Vec<ObjectMeta>, Vec<Path>, usize), StorageError> {
+            let mut objects = Vec::new();
+            let mut directories = Vec::new();
+
+            let list_result = store
+                .list_with_delimiter(Some(&prefix))
+                .await
+                .map_err(StorageError::from)?;
+
+            for entry in list_result.objects {
+                if limit.is_some_and(|x| objects.len() >= x) {
+                    break;
+                }
+
+                if let Some(suffix_filter) = suffix {
+                    if !entry.location.to_string().ends_with(suffix_filter) {
+                        continue;
+                    }
+                }
+
+                objects.push(entry);
+            }
+
+            for common_prefix in list_result.common_prefixes {
+                directories.push(common_prefix);
+            }
+
+            Ok((objects, directories, depth))
+        }
+
+        async fn list_recursive_async(
+            store: Arc<dyn ObjectStore>,
+            prefixes: Vec<String>,
+            limit: Option<usize>,
+            suffix: Option<String>,
+            max_depth: Option<usize>,
+            max_concurrency: usize,
+        ) -> Result<(Vec<ObjectMetadata>, Vec<ObjectMetadata>), StorageError> {
+            let mut dirs_to_visit = VecDeque::new();
+            for prefix in prefixes {
+                dirs_to_visit.push_back((Path::from(prefix), 0));
+            }
+
+            let mut total_found: usize = 0;
+            let mut all_objects: Vec<ObjectMetadata> = Vec::new();
+            let mut all_directories: Vec<ObjectMetadata> = Vec::new();
+            let mut join_set = JoinSet::new();
+
+            while !dirs_to_visit.is_empty() || !join_set.is_empty() {
+                if !join_set.is_empty() {
+                    let result: Result<(Vec<ObjectMeta>, Vec<Path>, usize), StorageError> =
+                        join_set.join_next().await.unwrap().unwrap();
+                    let (objects, directories, depth) = result?;
+
+                    for directory in &directories {
+                        if max_depth.map_or(true, |max_d| depth < max_d) {
+                            dirs_to_visit.push_back((directory.clone(), depth + 1));
+                        }
+                    }
+
+                    for obj in objects {
+                        let metadata = ObjectMetadata::new(
+                            obj.location.to_string(),
+                            obj.size,
+                            obj.last_modified.to_rfc3339(),
+                            "file".to_string(),
+                            obj.e_tag.clone(),
+                        );
+                        all_objects.push(metadata);
+                    }
+
+                    for path in directories {
+                        let metadata = ObjectMetadata::new(
+                            path.to_string(),
+                            0,
+                            DateTime::<Utc>::from_timestamp(0, 0).unwrap().to_rfc3339(),
+                            "directory".to_string(),
+                            None,
+                        );
+                        all_directories.push(metadata);
+                    }
+
+                    total_found = all_objects.len();
+
+                    if limit.is_some_and(|x| total_found >= x) {
+                        break;
+                    }
+                }
+
+                while !dirs_to_visit.is_empty() && join_set.len() < max_concurrency {
+                    let (prefix, depth) = dirs_to_visit.pop_front().unwrap();
+
+                    if max_depth.is_some_and(|x| depth >= x) {
+                        continue;
+                    }
+
+                    let store_clone = Arc::clone(&store);
+                    let suffix_clone = suffix.clone();
+                    let remaining_limit = limit.map(|x| x - total_found);
+
+                    join_set.spawn(async move {
+                        list_single_directory(
+                            store_clone,
+                            prefix,
+                            remaining_limit,
+                            suffix_clone.as_deref(),
+                            depth,
+                        )
+                        .await
+                    });
+                }
+            }
+
+            all_objects.sort_by(|a, b| a.key.cmp(&b.key));
+            all_directories.sort_by(|a, b| a.key.cmp(&b.key));
+
+            if let Some(limit_val) = limit {
+                all_objects.truncate(limit_val);
+            }
+
+            Ok((all_objects, all_directories))
+        }
+
+        let result = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.block_on(list_recursive_async(
+                Arc::clone(&store),
+                prefixes,
+                limit,
+                suffix,
+                max_depth,
+                max_concurrency,
+            ))
+        } else {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(list_recursive_async(
+                Arc::clone(&store),
+                prefixes,
+                limit,
+                suffix,
+                max_depth,
+                max_concurrency,
+            ))
+        }?;
+
+        let (all_objects, all_directories) = result;
+
+        let list_result = ListResult::new(all_objects, all_directories);
+
+        Ok(Py::new(py, list_result).unwrap())
+    }
 }
 
 #[pymodule]
 fn multistorageclient_rust(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustClient>()?;
+    m.add_class::<ObjectMetadata>()?;
+    m.add_class::<ListResult>()?;
     Ok(())
 }

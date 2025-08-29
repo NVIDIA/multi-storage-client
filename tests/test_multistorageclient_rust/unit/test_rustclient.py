@@ -217,3 +217,103 @@ async def test_rustclient_with_refreshable_credentials(temp_data_store_type: Typ
 
         # Delete the file.
         storage_client.delete(path=file_path)
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryAWSS3Bucket],
+        [tempdatastore.TemporarySwiftStackBucket],
+    ],
+)
+@pytest.mark.asyncio
+async def test_rustclient_list_recursive(temp_data_store_type: Type[tempdatastore.TemporaryDataStore]):
+    with temp_data_store_type() as temp_data_store:
+        config_dict = temp_data_store.profile_config_dict()
+        credentials_provider = StaticS3CredentialsProvider(
+            access_key=config_dict["credentials_provider"]["options"]["access_key"],
+            secret_key=config_dict["credentials_provider"]["options"]["secret_key"],
+        )
+        rust_client = RustClient(
+            provider="s3",
+            configs={
+                "bucket": config_dict["storage_provider"]["options"]["base_path"],
+                "endpoint_url": config_dict["storage_provider"]["options"]["endpoint_url"],
+                "allow_http": config_dict["storage_provider"]["options"]["endpoint_url"].startswith("http://"),
+                "max_concurrency": 16,
+                "multipart_chunksize": 10 * 1024 * 1024,
+            },
+            credentials_provider=credentials_provider,
+        )
+
+        profile = "data"
+        config_dict = {"profiles": {profile: temp_data_store.profile_config_dict()}}
+        storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
+
+        test_prefix = f"test-list-recursive-{uuid.uuid4().hex}"
+
+        test_files = [
+            f"{test_prefix}/file1.txt",
+            f"{test_prefix}/file2.txt",
+            f"{test_prefix}/subdir1/file3.txt",
+            f"{test_prefix}/subdir1/file4.txt",
+            f"{test_prefix}/subdir2/file5.txt",
+            f"{test_prefix}/subdir1/nested/file6.txt",
+        ]
+
+        file_content = b"test content for list_recursive"
+
+        for file_path in test_files:
+            await rust_client.put(file_path, file_content)
+
+        result = rust_client.list_recursive([test_prefix])
+
+        assert hasattr(result, "objects")
+        assert hasattr(result, "prefixes")
+        assert isinstance(result.objects, list)
+        assert isinstance(result.prefixes, list)
+
+        assert len(result.objects) == 6
+
+        for obj in result.objects:
+            assert hasattr(obj, "key")
+            assert hasattr(obj, "content_length")
+            assert hasattr(obj, "last_modified")
+            assert hasattr(obj, "object_type")
+            assert hasattr(obj, "etag")
+            assert obj.object_type == "file"
+            assert obj.content_length == len(file_content)
+            assert obj.key in test_files
+
+        expected_dirs = [
+            f"{test_prefix}/subdir1",
+            f"{test_prefix}/subdir2",
+            f"{test_prefix}/subdir1/nested",
+        ]
+
+        dir_keys = [obj.key for obj in result.prefixes]
+        assert len(dir_keys) == len(expected_dirs)
+        for expected_dir in expected_dirs:
+            assert any(dir_key == expected_dir for dir_key in dir_keys), (
+                f"Expected directory {expected_dir} not found in {dir_keys}"
+            )
+
+        limited_result = rust_client.list_recursive([test_prefix], limit=3)
+        assert len(limited_result.objects) == 3
+
+        txt_result = rust_client.list_recursive([test_prefix], suffix=".txt")
+        assert all(obj.key.endswith(".txt") for obj in txt_result.objects)
+
+        depth_1_result = rust_client.list_recursive([test_prefix], max_depth=1)
+        for obj in depth_1_result.objects:
+            path_parts = obj.key.replace(test_prefix + "/", "").split("/")
+            assert len(path_parts) <= 2, f"File {obj.key} exceeds max_depth=1"
+
+        multi_prefix_result = rust_client.list_recursive([f"{test_prefix}/subdir1", f"{test_prefix}/subdir2"])
+        assert len(multi_prefix_result.objects) == 4
+
+        concurrency_result = rust_client.list_recursive([test_prefix], max_concurrency=4)
+        assert len(concurrency_result.objects) == 6
+
+        for file_path in test_files:
+            storage_client.delete(path=file_path)
