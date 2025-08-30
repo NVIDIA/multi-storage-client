@@ -36,7 +36,8 @@ dependencies = [
     "wcmatch>=10,<11",
     "tqdm>=4.67.1,<5",
     "lark>=1.2.2,<2",
-    "prettytable>=3.10,<4"
+    "prettytable>=3.10,<4",
+    "psutil>=7,<8"
 ]
 
 [project.urls]

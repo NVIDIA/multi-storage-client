@@ -20,12 +20,12 @@ import json
 import logging
 import multiprocessing
 import multiprocessing.managers
-import multiprocessing.process
 import threading
 from typing import Any, Optional, Union
 
 import opentelemetry.metrics as api_metrics
 import opentelemetry.trace as api_trace
+import psutil
 
 from .. import utils
 
@@ -490,7 +490,7 @@ class TelemetryMode(enum.Enum):
     CLIENT = "client"
 
 
-def _telemetry_manager_server_port(process: multiprocessing.process.BaseProcess) -> int:
+def _telemetry_manager_server_port(process_id: int) -> int:
     """
     Get the default telemetry manager server port.
 
@@ -499,11 +499,8 @@ def _telemetry_manager_server_port(process: multiprocessing.process.BaseProcess)
     * Avoid collisions between multiple independent Python interpreters running on the same machine.
     * Let child processes deterministically find their parent's telemetry manager server.
 
-    :param process: Process whose PID is used to calculate the port.
+    :param process_id: Process ID used to calculate the port.
     """
-
-    if process.pid is None:
-        raise ValueError("Can't calculate the default telemetry manager server port from an unstarted process!")
 
     # Use the dynamic/private/ephemeral port range.
     #
@@ -511,7 +508,7 @@ def _telemetry_manager_server_port(process: multiprocessing.process.BaseProcess)
     # https://en.wikipedia.org/wiki/List_of_TCP_and_UDP_port_numbers#Dynamic,_private_or_ephemeral_ports
     #
     # Modulo the parent/child process PID by the port range length, then add the initial offset.
-    return (2**15 + 2**14) + (process.pid % ((2**16) - (2**15 + 2**14)))
+    return (2**15 + 2**14) + (process_id % ((2**16) - (2**15 + 2**14)))
 
 
 def init(
@@ -526,23 +523,13 @@ def init(
     :return: A telemetry instance.
     """
 
+    global _TELEMETRY_PROXIES
+    global _TELEMETRY_PROXIES_LOCK
+
     if mode == TelemetryMode.LOCAL:
         return _init()
-    elif mode == TelemetryMode.SERVER or mode == TelemetryMode.CLIENT:
-        global _TELEMETRY_PROXIES
-        global _TELEMETRY_PROXIES_LOCK
-
-        if address is None:
-            process = multiprocessing.current_process()
-            if mode == TelemetryMode.CLIENT:
-                # If this is a child process, try to use the parent process's default telemetry manager server port instead.
-                #
-                # This won't work with 2+ high Python process trees, but such setups seem uncommon.
-                #
-                # TODO: Consider a service discovery propagation mechanism so grandchild processes can discover grandparent process IDs.
-                process = multiprocessing.parent_process() or process
-
-            address = ("127.0.0.1", _telemetry_manager_server_port(process=process))
+    elif mode == TelemetryMode.SERVER:
+        address = address or ("127.0.0.1", _telemetry_manager_server_port(process_id=psutil.Process().pid))
 
         init_options = {"mode": mode.value, "address": address}
         init_options_json = json.dumps(init_options, sort_keys=True)
@@ -557,28 +544,73 @@ def init(
                     ctx=multiprocessing.get_context(method="spawn"),
                 )
 
-                if mode == TelemetryMode.SERVER:
-                    logger.debug(f"Creating telemetry manager server at {telemetry_manager.address}.")
-                    try:
-                        telemetry_manager.start()
-                        atexit.register(telemetry_manager.shutdown)
-                        logger.debug(f"Started telemetry manager server at {telemetry_manager.address}.")
-                    except Exception as e:
-                        logger.error(
-                            f"Failed to create telemetry manager server at {telemetry_manager.address}!", exc_info=True
-                        )
-                        raise e
+                logger.debug(f"Creating telemetry manager server at {telemetry_manager.address}.")
+                try:
+                    telemetry_manager.start()
+                    atexit.register(telemetry_manager.shutdown)
+                    logger.debug(f"Started telemetry manager server at {telemetry_manager.address}.")
+                except Exception as e:
+                    logger.error(
+                        f"Failed to create telemetry manager server at {telemetry_manager.address}!", exc_info=True
+                    )
+                    raise e
 
                 logger.debug(f"Connecting to telemetry manager server at {telemetry_manager.address}.")
                 try:
                     telemetry_manager.connect()
                     logger.debug(f"Connected to telemetry manager server at {telemetry_manager.address}.")
+                    return _TELEMETRY_PROXIES.setdefault(init_options_json, telemetry_manager.Telemetry())  # pyright: ignore [reportAttributeAccessIssue]
                 except Exception as e:
                     logger.error(
                         f"Failed to connect to telemetry manager server at {telemetry_manager.address}!", exc_info=True
                     )
                     raise e
+    elif mode == TelemetryMode.CLIENT:
+        candidate_addresses: list[Union[str, tuple[str, int]]] = []
 
-                return _TELEMETRY_PROXIES.setdefault(init_options_json, telemetry_manager.Telemetry())  # pyright: ignore [reportAttributeAccessIssue]
+        if address is not None:
+            candidate_addresses = [address]
+        else:
+            current_process = psutil.Process()
+            # Python processes from leaf to root.
+            python_process_ancestry: list[psutil.Process] = [
+                current_process,
+                # Try the default telemetry manager server port for all ancestor process IDs.
+                #
+                # psutil is used since multiprocessing only exposes the parent process.
+                #
+                # We can't use `itertools.takewhile(lambda ancestor_process: ancestor_process.name() == current_process.name(), ...)`
+                # to limit ourselves to ancestor Python processes by process name since some may not be named
+                # `python{optional version}` in some cases (e.g. may be named `pytest`).
+                *current_process.parents(),
+            ]
+            # Try to connect from leaf to root.
+            candidate_addresses = [
+                ("127.0.0.1", _telemetry_manager_server_port(process_id=process.pid))
+                for process in python_process_ancestry
+            ]
+
+        for candidate_address in candidate_addresses:
+            init_options = {"mode": mode.value, "address": candidate_address}
+            init_options_json = json.dumps(init_options, sort_keys=True)
+
+            with _TELEMETRY_PROXIES_LOCK:
+                if init_options_json in _TELEMETRY_PROXIES:
+                    return _TELEMETRY_PROXIES[init_options_json]
+                else:
+                    telemetry_manager = TelemetryManager(address=candidate_address)
+
+                    logger.debug(f"Connecting to telemetry manager server at {telemetry_manager.address}.")
+                    try:
+                        telemetry_manager.connect()
+                        logger.debug(f"Connected to telemetry manager server at {telemetry_manager.address}.")
+                        return _TELEMETRY_PROXIES.setdefault(init_options_json, telemetry_manager.Telemetry())  # pyright: ignore [reportAttributeAccessIssue]
+                    except Exception:
+                        logger.debug(
+                            f"Failed to connect to telemetry manager server at {telemetry_manager.address}!",
+                            exc_info=True,
+                        )
+
+        raise ConnectionError(f"Failed to connect to telemetry manager server at any of {candidate_addresses}!")
     else:
         raise ValueError(f"Unsupported telemetry mode: {mode}")
