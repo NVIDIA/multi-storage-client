@@ -38,11 +38,11 @@ Run E2E Tests:
     - .default
   parallel:
     matrix:
-      - PYTHON_BINARY: python3.9
-      - PYTHON_BINARY: python3.10
-      - PYTHON_BINARY: python3.11
-      - PYTHON_BINARY: python3.12
-      - PYTHON_BINARY: python3.13
+      - PYTHON_BINARY:
+          - python3.10
+          - python3.11
+          - python3.12
+          - python3.13
   script:
     - |
       nix develop '.#"'${PYTHON_BINARY}'"' --command bash -c "

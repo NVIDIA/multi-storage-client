@@ -170,10 +170,10 @@ To do a full release build, run:
 just build
 ```
 
-If you want to use a specific Python binary such as Python 3.9, run:
+If you want to use a specific Python binary such as Python 3.10, run:
 
 ```shell
-just python-binary=python3.9 build
+just python-binary=python3.10 build
 ```
 
 ## Notes
