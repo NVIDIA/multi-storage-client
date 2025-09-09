@@ -38,6 +38,7 @@ from .base import BaseStorageProvider
 _T = TypeVar("_T")
 
 PROVIDER = "file"
+READ_CHUNK_SIZE = 8192
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +69,11 @@ def atomic_write(source: Union[str, IO], destination: str, attributes: Optional[
         temp_file_path = fp.name
         if isinstance(source, str):
             with open(source, mode="rb") as src:
-                fp.write(src.read())
+                while chunk := src.read(READ_CHUNK_SIZE):
+                    fp.write(chunk)
         else:
-            fp.write(source.read())
+            while chunk := source.read(READ_CHUNK_SIZE):
+                fp.write(chunk)
 
         # Set attributes on temp file if provided
         validated_attributes = validate_attributes(attributes)
@@ -359,7 +362,8 @@ class PosixFileStorageProvider(BaseStorageProvider):
 
             def _invoke_api() -> int:
                 with open(remote_path, "r", encoding="utf-8") as src:
-                    f.write(src.read())
+                    while chunk := src.read(READ_CHUNK_SIZE):
+                        f.write(chunk)
 
                 return filesize
 
@@ -368,7 +372,8 @@ class PosixFileStorageProvider(BaseStorageProvider):
 
             def _invoke_api() -> int:
                 with open(remote_path, "rb") as src:
-                    f.write(src.read())
+                    while chunk := src.read(READ_CHUNK_SIZE):
+                        f.write(chunk)
 
                 return filesize
 
