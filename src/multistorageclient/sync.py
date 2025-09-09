@@ -544,19 +544,14 @@ def _sync_worker_process(
                         file_content = source_client.read(file_metadata.key)
                         target_client.write(target_file_path, file_content)
                     else:
-                        # If the source is a POSIX file storage provider, we can upload the file directly.
-                        if source_client._is_posix_file_storage_provider():
-                            local_path = source_client._storage_provider._prepend_base_path(file_metadata.key)
-                            target_client.upload_file(remote_path=target_file_path, local_path=local_path)
-                        else:
-                            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-                                temp_filename = temp_file.name
+                        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                            temp_filename = temp_file.name
 
-                            try:
-                                source_client.download_file(remote_path=file_metadata.key, local_path=temp_filename)
-                                target_client.upload_file(remote_path=target_file_path, local_path=temp_filename)
-                            finally:
-                                os.remove(temp_filename)  # Ensure the temporary file is removed
+                        try:
+                            source_client.download_file(remote_path=file_metadata.key, local_path=temp_filename)
+                            target_client.upload_file(remote_path=target_file_path, local_path=temp_filename)
+                        finally:
+                            os.remove(temp_filename)  # Ensure the temporary file is removed
 
                 # Clean up the lock file for POSIX file storage providers
                 if target_client._is_posix_file_storage_provider():
