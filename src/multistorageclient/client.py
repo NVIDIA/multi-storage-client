@@ -192,7 +192,8 @@ class StorageClient:
 
         # Read from cache if the file exists
         if self._is_cache_enabled():
-            assert self._cache_manager is not None
+            if self._cache_manager is None:
+                raise RuntimeError("Cache manager is not initialized")
             source_version = self._get_source_version(path)
             data = self._cache_manager.read(path, source_version)
 
@@ -212,7 +213,8 @@ class StorageClient:
         """
         Read from replica or primary storage provider. Use BytesIO to avoid creating temporary files.
         """
-        assert self._replica_manager is not None, "Replica manager is not initialized"
+        if self._replica_manager is None:
+            raise RuntimeError("Replica manager is not initialized")
         file_obj = BytesIO()
         self._replica_manager.download_from_replica_or_primary(path, file_obj, self._storage_provider)
         return file_obj.getvalue()
@@ -394,7 +396,8 @@ class StorageClient:
 
                 # Delete the cached file if it exists
                 if self._is_cache_enabled():
-                    assert self._cache_manager is not None
+                    if self._cache_manager is None:
+                        raise RuntimeError("Cache manager is not initialized")
                     self._cache_manager.delete(virtual_path)
                 self._storage_provider.delete_object(path)
 
