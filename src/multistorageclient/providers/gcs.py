@@ -30,6 +30,8 @@ from google.cloud.storage import transfer_manager
 from google.cloud.storage.exceptions import InvalidResponse
 from google.oauth2.credentials import Credentials as OAuth2Credentials
 
+from multistorageclient_rust import RustClient, RustRetryableError
+
 from ..rust_utils import run_async_rust_client_method
 from ..telemetry import Telemetry
 from ..telemetry.attributes.base import AttributesProvider
@@ -58,9 +60,7 @@ MiB = 1024 * 1024
 DEFAULT_MULTIPART_THRESHOLD = 512 * MiB
 DEFAULT_MULTIPART_CHUNKSIZE = 32 * MiB
 DEFAULT_IO_CHUNKSIZE = 32 * MiB
-# Python uses a lower default concurrency due to the GIL limiting true parallelism in threads.
-PYTHON_MAX_CONCURRENCY = 16
-RUST_MAX_CONCURRENCY = 32
+PYTHON_MAX_CONCURRENCY = 8
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +150,17 @@ class GoogleStorageProvider(BaseStorageProvider):
         self._max_concurrency = kwargs.get("max_concurrency", PYTHON_MAX_CONCURRENCY)
         self._rust_client = None
         if "rust_client" in kwargs:
-            self._rust_client = self._create_rust_client(kwargs.get("rust_client"))
+            # Inherit the rust client options from the kwargs
+            rust_client_options = kwargs["rust_client"]
+            if "max_concurrency" in kwargs:
+                rust_client_options["max_concurrency"] = kwargs["max_concurrency"]
+            if "multipart_chunksize" in kwargs:
+                rust_client_options["multipart_chunksize"] = kwargs["multipart_chunksize"]
+            if "read_timeout" in kwargs:
+                rust_client_options["read_timeout"] = kwargs["read_timeout"]
+            if "connect_timeout" in kwargs:
+                rust_client_options["connect_timeout"] = kwargs["connect_timeout"]
+            self._rust_client = self._create_rust_client(rust_client_options)
 
     def _create_gcs_client(self) -> storage.Client:
         client_options = {}
@@ -180,8 +190,6 @@ class GoogleStorageProvider(BaseStorageProvider):
             return storage.Client(project=self._project_id, client_options=client_options)
 
     def _create_rust_client(self, rust_client_options: Optional[dict[str, Any]] = None):
-        from multistorageclient_rust import RustClient
-
         configs = {}
 
         if self._credentials_provider or self._endpoint_url:
@@ -211,8 +219,14 @@ class GoogleStorageProvider(BaseStorageProvider):
                 configs["service_account_path"] = rust_client_options["service_account_path"]
             if "skip_signature" in rust_client_options:
                 configs["skip_signature"] = rust_client_options["skip_signature"]
-            configs["max_concurrency"] = rust_client_options.get("max_concurrency", RUST_MAX_CONCURRENCY)
-            configs["multipart_chunksize"] = rust_client_options.get("multipart_chunksize", DEFAULT_MULTIPART_CHUNKSIZE)
+            if "max_concurrency" in rust_client_options:
+                configs["max_concurrency"] = rust_client_options["max_concurrency"]
+            if "multipart_chunksize" in rust_client_options:
+                configs["multipart_chunksize"] = rust_client_options["multipart_chunksize"]
+            if "read_timeout" in rust_client_options:
+                configs["read_timeout"] = rust_client_options["read_timeout"]
+            if "connect_timeout" in rust_client_options:
+                configs["connect_timeout"] = rust_client_options["connect_timeout"]
 
         if rust_client_options and "bucket" in rust_client_options:
             configs["bucket"] = rust_client_options["bucket"]
@@ -297,6 +311,12 @@ class GoogleStorageProvider(BaseStorageProvider):
                 raise RetryableError(f"Multipart upload failed for {bucket}/{key}, {error_details}") from error
             else:
                 raise RuntimeError(f"Failed to {operation} object(s) at {bucket}/{key}. {error_details}") from error
+        except RustRetryableError as error:
+            status_code = -1
+            raise RetryableError(
+                f"Failed to {operation} object(s) at {bucket}/{key} due to exhausted retries from Rust. "
+                f"error_type: {type(error).__name__}"
+            ) from error
         except Exception as error:
             status_code = -1
             error_details = str(error)

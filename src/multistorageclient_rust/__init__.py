@@ -13,6 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .multistorageclient_rust import RustClient
+from .multistorageclient_rust import RustClient, RustRetryableError
 
-__all__ = ["RustClient"]
+__all__ = ["RustClient", "RustRetryableError"]

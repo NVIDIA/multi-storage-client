@@ -172,3 +172,10 @@ class ListResult:
 
     objects: list[ObjectMetadata]
     prefixes: list[ObjectMetadata]
+
+class RustRetryableError(Exception):
+    """
+    RustRetryableError is raised when a retryable error occurs.
+    """
+
+    ...

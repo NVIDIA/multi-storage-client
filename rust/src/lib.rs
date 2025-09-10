@@ -16,13 +16,18 @@
 use chrono::{DateTime, Utc};
 use object_store::aws::AmazonS3Builder;
 use object_store::gcp::GoogleCloudStorageBuilder;
+use object_store::RetryConfig;
 use object_store::{path::Path, ObjectMeta, ObjectStore, PutPayload, WriteMultipart};
+use object_store::ClientOptions;
+use object_store::limit::LimitStore;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule};
 use pyo3::{PyAny, PyObject};
+use pyo3::exceptions::PyException;
 use pyo3_async_runtimes::tokio::future_into_py;
 use pyo3_bytes::PyBytes;
 use std::collections::{HashMap, VecDeque};
+use std::error::Error as StdError;
 use std::path::Path as StdPath;
 use std::sync::{Arc, RwLock};
 use tempfile::NamedTempFile;
@@ -35,6 +40,8 @@ use tokio::task::JoinSet;
 mod types;
 use types::{ListResult, ObjectMetadata};
 
+pyo3::create_exception!(multistorageclient_rust, RustRetryableError, PyException);
+
 #[derive(Error, Debug)]
 pub enum StorageError {
     #[error("Object store error: {0}")]
@@ -45,12 +52,33 @@ pub enum StorageError {
     ConfigError(String),
     #[error("Temp file error: {0}")]
     TempFileError(#[from] tempfile::PersistError),
+    #[error("Connection error: {0}")]
+    RetryExhaustedError(String),
 }
 
 impl From<object_store::Error> for StorageError {
     fn from(err: object_store::Error) -> Self {
-        StorageError::ObjectStoreError(err.to_string())
+        let error_msg = format_error_chain(&err);
+        
+        if error_msg.contains("HTTP error: error sending request") || 
+           error_msg.contains("HTTP error: request or response body error") {
+            StorageError::RetryExhaustedError(error_msg)
+        } else {
+            StorageError::ObjectStoreError(error_msg)
+        }
     }
+}
+
+fn format_error_chain(err: &object_store::Error) -> String {
+    let mut chain = vec![err.to_string()];
+    let mut current = err.source();
+    
+    while let Some(source) = current {
+        chain.push(source.to_string());
+        current = source.source();
+    }
+    
+    chain.join(" -> ")
 }
 
 impl From<StorageError> for PyErr {
@@ -59,6 +87,9 @@ impl From<StorageError> for PyErr {
             StorageError::ConfigError(msg) => {
                 pyo3::exceptions::PyValueError::new_err(msg)
             }
+            StorageError::RetryExhaustedError(msg) => {
+                RustRetryableError::new_err(msg)
+            }
             _ => {
                 pyo3::exceptions::PyRuntimeError::new_err(err.to_string())
             }
@@ -66,9 +97,15 @@ impl From<StorageError> for PyErr {
     }
 }
 
-
+// Multipart upload and download default settings
 const DEFAULT_MULTIPART_CHUNKSIZE: usize = 32 * 1024 * 1024;
-const DEFAULT_MAX_CONCURRENCY: usize = 32;
+const DEFAULT_MAX_CONCURRENCY: usize = 8;
+
+// Connection timeout settings
+const DEFAULT_CONNECT_TIMEOUT: u64 = 60;
+const DEFAULT_READ_TIMEOUT: u64 = 120;
+const DEFAULT_POOL_IDLE_TIMEOUT: u64 = 30;
+const DEFAULT_POOL_CONNECTIONS: usize = 32;
 
 
 fn extract_credentials_from_provider(
@@ -106,7 +143,7 @@ fn extract_credentials_from_provider(
     Ok(credentials_expire_time)
 }
 
-fn create_store(provider: &str, configs: Option<&HashMap<String, ConfigValue>>) -> PyResult<Arc<dyn ObjectStore>> {
+fn create_store(provider: &str, configs: Option<&HashMap<String, ConfigValue>>, max_pool_connections: usize) -> PyResult<Arc<dyn ObjectStore>> {
     let store = match provider {
         "s3" | "s8k" | "gcs_s3" => {
             build_s3_store(configs)?
@@ -122,7 +159,9 @@ fn create_store(provider: &str, configs: Option<&HashMap<String, ConfigValue>>) 
         }
     };
 
-    Ok(store)
+    // Wrap the store with LimitStore to control concurrency
+    let limited_store = LimitStore::new(store, max_pool_connections);
+    Ok(Arc::new(limited_store))
 }
 
 fn build_s3_store<'a>(configs: Option<&'a HashMap<String, ConfigValue>>) -> PyResult<Arc<dyn ObjectStore>> {
@@ -146,22 +185,6 @@ fn build_s3_store<'a>(configs: Option<&'a HashMap<String, ConfigValue>>) -> PyRe
         builder = builder.with_endpoint(endpoint_val.to_string());
     }
 
-    if let Some(allow_http_val) = configs.get("allow_http") {
-        match allow_http_val {
-            ConfigValue::Boolean(b) => {
-                if *b {
-                    builder = builder.with_allow_http(true);
-                }
-            }
-            ConfigValue::String(s) => {
-                if s.parse::<bool>().unwrap_or(false) {
-                    builder = builder.with_allow_http(true);
-                }
-            }
-            _ => {}
-        }
-    }
-
     if let Some(access_key_val) = configs.get("access_key") {
         builder = builder.with_access_key_id(access_key_val.to_string());
     }
@@ -171,6 +194,50 @@ fn build_s3_store<'a>(configs: Option<&'a HashMap<String, ConfigValue>>) -> PyRe
     if let Some(token_val) = configs.get("token") {
         builder = builder.with_token(token_val.to_string());
     }
+
+    // Configure retry
+    builder = builder.with_retry(RetryConfig::default());
+
+    // Configure client options
+    let mut client_options = ClientOptions::new();
+
+    if let Some(connect_timeout_val) = configs.get("connect_timeout") {
+        let timeout_secs = match connect_timeout_val {
+            ConfigValue::Number(n) => *n as u64,
+            ConfigValue::String(s) => s.parse::<u64>().unwrap_or(DEFAULT_CONNECT_TIMEOUT),
+            _ => DEFAULT_CONNECT_TIMEOUT,
+        };
+        client_options = client_options.with_connect_timeout(std::time::Duration::from_secs(timeout_secs));
+    }
+
+    if let Some(read_timeout_val) = configs.get("read_timeout") {
+        let timeout_secs = match read_timeout_val {
+            ConfigValue::Number(n) => *n as u64,
+            ConfigValue::String(s) => s.parse::<u64>().unwrap_or(DEFAULT_READ_TIMEOUT),
+            _ => DEFAULT_READ_TIMEOUT,
+        };
+        client_options = client_options.with_timeout(std::time::Duration::from_secs(timeout_secs));
+    }
+
+    if let Some(allow_http_val) = configs.get("allow_http") {
+        match allow_http_val {
+            ConfigValue::Boolean(b) => {
+                if *b {
+                    client_options = client_options.with_allow_http(true);
+                }
+            }
+            ConfigValue::String(s) => {
+                if s.parse::<bool>().unwrap_or(false) {
+                    client_options = client_options.with_allow_http(true);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    client_options = client_options.with_pool_idle_timeout(std::time::Duration::from_secs(DEFAULT_POOL_IDLE_TIMEOUT));
+
+    builder = builder.with_client_options(client_options);
 
     let store = builder.build().map_err(StorageError::from)?;
 
@@ -232,6 +299,34 @@ fn build_gcs_store<'a>(configs: Option<&'a HashMap<String, ConfigValue>>) -> PyR
         builder = builder.with_url(url.to_string());
     }
 
+    // Configure retry
+    builder = builder.with_retry(RetryConfig::default());
+
+    // Configure client options
+    let mut client_options = ClientOptions::new();
+
+    if let Some(connect_timeout_val) = configs.get("connect_timeout") {
+        let timeout_secs = match connect_timeout_val {
+            ConfigValue::Number(n) => *n as u64,
+            ConfigValue::String(s) => s.parse::<u64>().unwrap_or(DEFAULT_CONNECT_TIMEOUT),
+            _ => DEFAULT_CONNECT_TIMEOUT,
+        };
+        client_options = client_options.with_connect_timeout(std::time::Duration::from_secs(timeout_secs));
+    }
+
+    if let Some(read_timeout_val) = configs.get("read_timeout") {
+        let timeout_secs = match read_timeout_val {
+            ConfigValue::Number(n) => *n as u64,
+            ConfigValue::String(s) => s.parse::<u64>().unwrap_or(DEFAULT_READ_TIMEOUT),
+            _ => DEFAULT_READ_TIMEOUT,
+        };
+        client_options = client_options.with_timeout(std::time::Duration::from_secs(timeout_secs));
+    }
+
+    client_options = client_options.with_pool_idle_timeout(std::time::Duration::from_secs(DEFAULT_POOL_IDLE_TIMEOUT));
+
+    builder = builder.with_client_options(client_options);
+
     let store = builder.build().map_err(StorageError::from)?;
 
     Ok(Arc::new(store))
@@ -260,6 +355,7 @@ pub struct RustClient {
     configs: RwLock<HashMap<String, ConfigValue>>,
     store: RwLock<Arc<dyn ObjectStore>>,
     max_concurrency: usize,
+    max_pool_connections: usize,
     multipart_chunksize: usize,
     credentials_provider: Option<PyObject>,
     credentials_expire_time: RwLock<Option<DateTime<Utc>>>,
@@ -280,8 +376,9 @@ impl RustClient {
         let mut configs_map = HashMap::new();
         let mut credentials_expire_time = None;
         let mut max_concurrency = DEFAULT_MAX_CONCURRENCY;
+        let mut max_pool_connections = DEFAULT_POOL_CONNECTIONS;
         let mut multipart_chunksize = DEFAULT_MULTIPART_CHUNKSIZE;
-        
+
         if let Some(configs_dict) = configs {
             for (key, value) in configs_dict.iter() {
                 let key_str = key.extract::<String>()?;
@@ -291,6 +388,10 @@ impl RustClient {
                     if key_str == "max_concurrency" {
                         if let Ok(int_val) = value.extract::<i64>() {
                             max_concurrency = int_val as usize;
+                        }
+                    } else if key_str == "max_pool_connections" {
+                        if let Ok(int_val) = value.extract::<i64>() {
+                            max_pool_connections = int_val as usize;
                         }
                     } else if key_str == "multipart_chunksize" {
                         if let Ok(int_val) = value.extract::<i64>() {
@@ -318,13 +419,14 @@ impl RustClient {
             credentials_expire_time = extract_credentials_from_provider(creds_provider, &mut configs_map)?;
         }
         
-        let store = create_store(&provider, Some(&configs_map))?;
+        let store = create_store(&provider, Some(&configs_map), max_pool_connections)?;
         
         let client = Self { 
             provider,
             configs: RwLock::new(configs_map),
             store: RwLock::new(store), 
             max_concurrency, 
+            max_pool_connections,
             multipart_chunksize, 
             credentials_provider,
             credentials_expire_time: RwLock::new(credentials_expire_time),
@@ -348,7 +450,7 @@ impl RustClient {
                 })?;
 
                 let new_credentials_expire_time = extract_credentials_from_provider(credentials_provider, &mut configs_guard)?;
-                let new_store = create_store(&self.provider, Some(&configs_guard))?;
+                let new_store = create_store(&self.provider, Some(&configs_guard), self.max_pool_connections)?;
 
                 *store_guard = new_store;
                 *expire_time_guard = new_credentials_expire_time;
@@ -458,8 +560,8 @@ impl RustClient {
         let store = Arc::clone(&*self.store.read().unwrap());
         let local_path = local_path.to_string();
         let remote_path = Path::from(remote_path);
-        let max_concurrency = self.max_concurrency;
         let multipart_chunksize = self.multipart_chunksize;
+        let max_concurrency = self.max_concurrency;
 
         future_into_py(py, async move {
             let mut file = tokio::fs::File::open(local_path).await.map_err(StorageError::from)?;
@@ -540,8 +642,8 @@ impl RustClient {
         let store = Arc::clone(&*self.store.read().unwrap());
         let remote_path = Path::from(remote_path);
         let local_path = local_path.to_string();
-        let max_concurrency = self.max_concurrency;
         let multipart_chunksize = self.multipart_chunksize;
+        let max_concurrency = self.max_concurrency;
 
         future_into_py(py, async move {
             let result = store.head(&remote_path).await.map_err(StorageError::from)?;
@@ -688,7 +790,7 @@ impl RustClient {
         })
     }
 
-    #[pyo3(signature = (prefixes, limit=None, suffix=None, max_depth=None, max_concurrency=DEFAULT_MAX_CONCURRENCY))]
+    #[pyo3(signature = (prefixes, limit=None, suffix=None, max_depth=None, max_concurrency=DEFAULT_POOL_CONNECTIONS))]
     fn list_recursive<'p>(
         &self,
         py: Python<'p>,
@@ -864,5 +966,44 @@ fn multistorageclient_rust(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()>
     m.add_class::<RustClient>()?;
     m.add_class::<ObjectMetadata>()?;
     m.add_class::<ListResult>()?;
+    m.add("RustRetryableError", _py.get_type::<RustRetryableError>())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+
+    #[test]
+    fn test_error_chain_with_connection_reset() {
+        // Test the exact error pattern from production
+        let connection_error = io::Error::new(io::ErrorKind::ConnectionReset, "Connection reset by peer (os error 104)");
+        let generic_error = object_store::Error::Generic {
+            store: "S3",
+            source: Box::new(connection_error),
+        };
+        
+        let chain = format_error_chain(&generic_error);
+        
+        // Should contain the root cause
+        assert!(chain.contains("Connection reset by peer (os error 104)"));
+        // Should be formatted as a chain
+        assert!(chain.contains(" -> "));
+        
+        // Test that it gets classified as retryable when it contains the HTTP error pattern
+        let http_error = object_store::Error::Generic {
+            store: "S3",
+            source: Box::new(io::Error::new(io::ErrorKind::ConnectionReset, "HTTP error: error sending request")),
+        };
+        
+        let storage_error = StorageError::from(http_error);
+        match storage_error {
+            StorageError::RetryExhaustedError(msg) => {
+                assert!(msg.contains("HTTP error: error sending request"));
+                assert!(msg.contains(" -> "));
+            }
+            _ => panic!("Expected RetryExhaustedError for HTTP error pattern"),
+        }
+    }
 }

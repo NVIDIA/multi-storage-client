@@ -29,6 +29,8 @@ from botocore.credentials import RefreshableCredentials
 from botocore.exceptions import ClientError, IncompleteReadError, ReadTimeoutError, ResponseStreamingError
 from botocore.session import get_session
 
+from multistorageclient_rust import RustClient, RustRetryableError
+
 from ..instrumentation.utils import set_span_attribute
 from ..rust_utils import run_async_rust_client_method
 from ..telemetry import Telemetry
@@ -58,9 +60,8 @@ MiB = 1024 * 1024
 MULTIPART_THRESHOLD = 64 * MiB
 MULTIPART_CHUNKSIZE = 32 * MiB
 IO_CHUNKSIZE = 32 * MiB
-# Python uses a lower default concurrency due to the GIL limiting true parallelism in threads.
-PYTHON_MAX_CONCURRENCY = 16
-RUST_MAX_CONCURRENCY = 32
+PYTHON_MAX_CONCURRENCY = 8
+
 PROVIDER = "s3"
 
 EXPRESS_ONEZONE_STORAGE_CLASS = "EXPRESS_ONEZONE"
@@ -170,7 +171,19 @@ class S3StorageProvider(BaseStorageProvider):
 
         self._rust_client = None
         if "rust_client" in kwargs:
-            self._rust_client = self._create_rust_client(kwargs.get("rust_client"))
+            # Inherit the rust client options from the kwargs
+            rust_client_options = kwargs["rust_client"]
+            if "max_pool_connections" in kwargs:
+                rust_client_options["max_pool_connections"] = kwargs["max_pool_connections"]
+            if "max_concurrency" in kwargs:
+                rust_client_options["max_concurrency"] = kwargs["max_concurrency"]
+            if "multipart_chunksize" in kwargs:
+                rust_client_options["multipart_chunksize"] = kwargs["multipart_chunksize"]
+            if "read_timeout" in kwargs:
+                rust_client_options["read_timeout"] = kwargs["read_timeout"]
+            if "connect_timeout" in kwargs:
+                rust_client_options["connect_timeout"] = kwargs["connect_timeout"]
+            self._rust_client = self._create_rust_client(rust_client_options)
 
     def _is_directory_bucket(self, bucket: str) -> bool:
         """
@@ -254,8 +267,6 @@ class S3StorageProvider(BaseStorageProvider):
         """
         Creates and configures the rust client, using refreshable credentials if possible.
         """
-        from multistorageclient_rust import RustClient
-
         configs = {}
         if self._region_name:
             configs["region_name"] = self._region_name
@@ -273,8 +284,12 @@ class S3StorageProvider(BaseStorageProvider):
         if rust_client_options:
             if rust_client_options.get("allow_http", False):
                 configs["allow_http"] = True
-            configs["max_concurrency"] = rust_client_options.get("max_concurrency", RUST_MAX_CONCURRENCY)
-            configs["multipart_chunksize"] = rust_client_options.get("multipart_chunksize", MULTIPART_CHUNKSIZE)
+            if "max_concurrency" in rust_client_options:
+                configs["max_concurrency"] = rust_client_options["max_concurrency"]
+            if "max_pool_connections" in rust_client_options:
+                configs["max_pool_connections"] = rust_client_options["max_pool_connections"]
+            if "multipart_chunksize" in rust_client_options:
+                configs["multipart_chunksize"] = rust_client_options["multipart_chunksize"]
 
         return RustClient(
             provider=PROVIDER,
@@ -396,6 +411,12 @@ class S3StorageProvider(BaseStorageProvider):
             status_code = -1
             raise RetryableError(
                 f"Failed to {operation} object(s) at {bucket}/{key} due to network timeout or incomplete read. "
+                f"error_type: {type(error).__name__}"
+            ) from error
+        except RustRetryableError as error:
+            status_code = -1
+            raise RetryableError(
+                f"Failed to {operation} object(s) at {bucket}/{key} due to exhausted retries from Rust. "
                 f"error_type: {type(error).__name__}"
             ) from error
         except Exception as error:
