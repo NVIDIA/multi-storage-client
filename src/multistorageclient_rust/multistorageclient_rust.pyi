@@ -42,8 +42,8 @@ class RustClient:
         """
         Download data from the object store at the specified path.
         :param path: The remote object path in the storage backend.
-        :param start: Optional start byte index for range download.
-        :param end: Optional end byte index for range download.
+        :param start: Optional start byte index for range download (inclusive).
+        :param end: Optional end byte index for range download (inclusive).
         :return: The downloaded data as bytes.
         """
         ...
@@ -94,7 +94,7 @@ class RustClient:
         """
         ...
 
-    async def download_multipart(self, remote_path: str, local_path: str) -> Awaitable[None]:
+    async def download_multipart_to_file(self, remote_path: str, local_path: str) -> Awaitable[None]:
         """
         Download an object from the store and save it to a local file using multipart download.
 
@@ -104,6 +104,29 @@ class RustClient:
 
         :param remote_path: The destination path in the storage backend.
         :param local_path: Path to the local file to upload.
+        """
+        ...
+
+    async def download_multipart_to_bytes(
+        self,
+        remote_path: str,
+        start: int | None = ...,
+        end: int | None = ...,
+        multipart_chunksize: int | None = ...,
+        max_concurrency: int | None = ...,
+    ) -> Awaitable[bytes]:
+        """
+        Download an object from the store and return it as bytes using multipart download.
+
+        This method downloads large data by splitting them into smaller chunks and downloading
+        those chunks in parallel. This approach provides better performance for large data
+        compared to get() method.
+
+        :param remote_path: The destination path in the storage backend.
+        :param start: Optional start byte index for range download (inclusive).
+        :param end: Optional end byte index for range download (inclusive).
+        :param multipart_chunksize: The size of the multipart chunks.
+        :param max_concurrency: The maximum number of concurrent operations.
         """
         ...
 

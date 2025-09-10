@@ -679,7 +679,7 @@ class GoogleStorageProvider(BaseStorageProvider):
                 bucket_obj = self._gcs_client.bucket(bucket)
                 blob = bucket_obj.blob(key)
                 if self._rust_client:
-                    run_async_rust_client_method(self._rust_client, "download_multipart", key, f)
+                    run_async_rust_client_method(self._rust_client, "download_multipart_to_file", key, f)
                 else:
                     with tempfile.NamedTemporaryFile(mode="wb", delete=False, dir=os.path.dirname(f), prefix=".") as fp:
                         temp_file_path = fp.name

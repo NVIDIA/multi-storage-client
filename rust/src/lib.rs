@@ -447,7 +447,6 @@ impl RustClient {
         })
     }
 
-
     #[pyo3(signature = (local_path, remote_path))]
     fn upload_multipart_from_file<'p>(
         &self,
@@ -530,9 +529,13 @@ impl RustClient {
         })
     }
 
-
     #[pyo3(signature = (remote_path, local_path))]
-    fn download_multipart<'p>(&self, py: Python<'p>, remote_path: &str, local_path: &str) -> PyResult<Bound<'p, PyAny>> {
+    fn download_multipart_to_file<'p>(
+        &self,
+        py: Python<'p>,
+        remote_path: &str,
+        local_path: &str,
+    ) -> PyResult<Bound<'p, PyAny>> {
         self.refresh_store_if_needed()?;
         let store = Arc::clone(&*self.store.read().unwrap());
         let remote_path = Path::from(remote_path);
@@ -615,6 +618,75 @@ impl RustClient {
         })
     }
 
+    #[pyo3(signature = (remote_path, start=None, end=None, multipart_chunksize=None, max_concurrency=None))]
+    fn download_multipart_to_bytes<'p>(
+        &self,
+        py: Python<'p>,
+        remote_path: &str,
+        start: Option<u64>,
+        end: Option<u64>,
+        multipart_chunksize: Option<usize>,
+        max_concurrency: Option<usize>,
+    ) -> PyResult<Bound<'p, PyAny>> {
+        self.refresh_store_if_needed()?;
+        let store = Arc::clone(&*self.store.read().unwrap());
+        let remote_path = Path::from(remote_path);
+        let chunksize = multipart_chunksize.unwrap_or(self.multipart_chunksize);
+        let concurrency = max_concurrency.unwrap_or(self.max_concurrency);
+
+        future_into_py(py, async move {
+            let (start_offset, end_offset, total_size) = if let (Some(start_val), Some(end_val)) = (start, end) {
+                // Range read - no HEAD request needed, we know the exact range
+                (start_val, end_val, end_val - start_val + 1)
+            } else {
+                // Full file download - need HEAD request to get total size for chunking
+                let result = store.head(&remote_path).await.map_err(StorageError::from)?;
+                let file_size = result.size;
+                (0, file_size - 1, file_size)
+            };
+
+            if total_size <= chunksize as u64 {
+                let range = start_offset..end_offset + 1;
+                let result = store.get_range(&remote_path, range).await.map_err(StorageError::from)?;
+                return Ok(PyBytes::new(result));
+            }
+
+            let num_chunks = (total_size + chunksize as u64 - 1) / chunksize as u64;
+            let mut chunks = Vec::with_capacity(num_chunks as usize);
+            
+            for i in 0..num_chunks {
+                let chunk_start = start_offset + i * chunksize as u64;
+                let chunk_end = std::cmp::min(chunk_start + chunksize as u64 - 1, end_offset);
+                chunks.push((chunk_start, chunk_end));
+            }
+
+            let semaphore = Arc::new(Semaphore::new(concurrency));
+            let mut tasks = Vec::with_capacity(chunks.len());
+
+            for (chunk_start, chunk_end) in chunks {
+                let permit = semaphore.clone().acquire_owned().await.unwrap();
+                let store = Arc::clone(&store);
+                let remote_path = remote_path.clone();
+                
+                tasks.push(tokio::task::spawn(async move {
+                    let range = chunk_start..chunk_end + 1;
+                    let result = store.get_range(&remote_path, range).await.map_err(StorageError::from)?;
+                    drop(permit);
+                    Ok::<bytes::Bytes, StorageError>(result)
+                }));
+            }
+
+            let mut segments = Vec::with_capacity(tasks.len());
+            for task in tasks {
+                let data = task.await.map_err(|e| StorageError::ObjectStoreError(format!("Failed to join multipart download task: {}", e)))??;
+                segments.push(data);
+            }
+
+            let final_data = segments.concat();
+
+            Ok(PyBytes::new(final_data.into()))
+        })
+    }
 
     #[pyo3(signature = (prefixes, limit=None, suffix=None, max_depth=None, max_concurrency=DEFAULT_MAX_CONCURRENCY))]
     fn list_recursive<'p>(

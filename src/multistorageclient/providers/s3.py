@@ -771,7 +771,7 @@ class S3StorageProvider(BaseStorageProvider):
                     temp_file_path = fp.name
                     if self._rust_client:
                         response = run_async_rust_client_method(
-                            self._rust_client, "download_multipart", key, temp_file_path
+                            self._rust_client, "download_multipart_to_file", key, temp_file_path
                         )
                     else:
                         response = self._s3_client.download_fileobj(

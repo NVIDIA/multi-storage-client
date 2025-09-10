@@ -126,10 +126,10 @@ async def test_rustclient_basic_operations(temp_data_store_type: Type[tempdatast
             with open(temp_file.name, "rb") as f:
                 assert f.read() == file_body_bytes
 
-        # Test download_multipart with a large file
+        # Test download_multipart_to_file with a large file
         with tempfile.NamedTemporaryFile(delete=False) as temp_file:
             temp_file.close()
-            await rust_client.download_multipart(large_file_path, temp_file.name)
+            await rust_client.download_multipart_to_file(large_file_path, temp_file.name)
             assert os.path.getsize(temp_file.name) == large_file_size
             # Assert file content is the same
             with open(temp_file.name, "rb") as f:
@@ -334,21 +334,29 @@ async def test_rustclient_explicit_multipart_chunksize(temp_data_store_type: Typ
         file_extension = ".txt"
         large_file_path_fragments = [f"{uuid.uuid4().hex}-prefix", "infix", f"multipart_suffix{file_extension}"]
         large_file_path = os.path.join(*large_file_path_fragments)
+
         # Test upload_multipart_from_bytes with large data bytes
+        chunk_size = 10 * 1024 * 1024
+        max_concurrency = 4
         await rust_client.upload_multipart_from_bytes(
-            large_file_path, large_data_bytes, multipart_chunksize=10 * 1024 * 1024, max_concurrency=4
+            large_file_path, large_data_bytes, multipart_chunksize=chunk_size, max_concurrency=max_concurrency
         )
 
-        # Verify the large file was uploaded successfully using multi-storage client
-        assert storage_client.is_file(path=large_file_path)
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            temp_file.close()
-            storage_client.download_file(remote_path=large_file_path, local_path=temp_file.name)
-            assert os.path.getsize(temp_file.name) == large_file_size
-            # Assert file content is the same
-            with open(temp_file.name, "rb") as f:
-                downloaded = f.read()
-            assert downloaded == large_data_bytes
+        # Test download_multipart_to_bytes with large data bytes
+        result = await rust_client.download_multipart_to_bytes(
+            large_file_path, multipart_chunksize=chunk_size, max_concurrency=max_concurrency
+        )
+        assert result == large_data_bytes
+
+        # Test download_multipart_to_bytes with range
+        result = await rust_client.download_multipart_to_bytes(
+            large_file_path,
+            start=10,
+            end=10 + chunk_size * max_concurrency,
+            multipart_chunksize=chunk_size,
+            max_concurrency=max_concurrency,
+        )
+        assert result == large_data_bytes[10 : 10 + chunk_size * max_concurrency + 1]
 
         # Delete the file.
         storage_client.delete(path=large_file_path)
