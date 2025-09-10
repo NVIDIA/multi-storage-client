@@ -84,6 +84,10 @@ CACHE_SCHEMA = {
         "location": {"type": "string"},
         "use_etag": {"type": "boolean"},
         "check_source_version": {"type": "boolean"},
+        "cache_line_size": {
+            "type": "string",
+            "pattern": "(?i)^[0-9]+[MGT]$",  # Accepts size with M, G suffix
+        },
         "eviction_policy": {
             "type": "object",
             "properties": {

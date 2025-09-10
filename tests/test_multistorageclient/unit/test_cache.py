@@ -15,20 +15,26 @@
 
 import os
 import shutil
+import tempfile
+import threading
 import time
 import uuid
 from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
+import xattr
 
 import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
+from multistorageclient import StorageClient
 from multistorageclient.cache import DEFAULT_CACHE_REFRESH_INTERVAL, CacheManager
 from multistorageclient.caching.cache_config import (
     CacheConfig,
     EvictionPolicyConfig,
 )
 from multistorageclient.config import StorageClientConfig
+from multistorageclient.types import Range
+from test_multistorageclient.unit.utils.tempdatastore import create_test_data
 
 
 @pytest.fixture
@@ -39,13 +45,13 @@ def profile_name():
 @pytest.fixture
 def cache_config(tmpdir):
     """Fixture for CacheConfig object."""
-    return CacheConfig(size="10M", check_source_version=False, location=str(tmpdir))
+    return CacheConfig(size="10M", cache_line_size="64M", check_source_version=False, location=str(tmpdir))
 
 
 @pytest.fixture
 def cache_config_with_etag(tmpdir):
     """Fixture for CacheConfig object with etag support enabled."""
-    return CacheConfig(size="10M", check_source_version=True, location=str(tmpdir))
+    return CacheConfig(size="10M", cache_line_size="64M", check_source_version=True, location=str(tmpdir))
 
 
 @pytest.fixture
@@ -250,7 +256,7 @@ def test_cache_manager_refresh_cache(tmpdir):
     cache_dir = os.path.join(str(tmpdir), "refresh_test")
     os.makedirs(cache_dir, exist_ok=True)
 
-    cache_config = CacheConfig(size="10M", check_source_version=False, location=cache_dir)
+    cache_config = CacheConfig(size="10M", cache_line_size="64M", check_source_version=False, location=cache_dir)
     cache_manager = CacheManager(profile="refresh_test", cache_config=cache_config)
 
     data_10mb = b"*" * 10 * 1024 * 1024
@@ -296,7 +302,11 @@ def test_cache_manager_metrics(profile_name, tmpdir, cache_manager):
 def lru_cache_config(tmpdir):
     cache_dir = os.path.join(str(tmpdir), "lru_cache")
     return CacheConfig(
-        size="10M", check_source_version=False, location=cache_dir, eviction_policy=EvictionPolicyConfig(policy="LRU")
+        size="10M",
+        cache_line_size="64M",
+        check_source_version=False,
+        location=cache_dir,
+        eviction_policy=EvictionPolicyConfig(policy="LRU"),
     )
 
 
@@ -341,7 +351,11 @@ def test_lru_eviction_policy(profile_name, lru_cache_config):
 def fifo_cache_config(tmpdir):
     cache_dir = os.path.join(str(tmpdir), "fifo_cache")
     return CacheConfig(
-        size="10M", check_source_version=False, location=cache_dir, eviction_policy=EvictionPolicyConfig(policy="FIFO")
+        size="10M",
+        cache_line_size="64M",
+        check_source_version=False,
+        location=cache_dir,
+        eviction_policy=EvictionPolicyConfig(policy="FIFO"),
     )
 
 
@@ -400,6 +414,7 @@ def random_cache_config(tmpdir):
     cache_dir = os.path.join(str(tmpdir), "random_cache")
     return CacheConfig(
         size="10M",
+        cache_line_size="64M",
         check_source_version=False,
         location=cache_dir,
         eviction_policy=EvictionPolicyConfig(policy="RANDOM"),
@@ -639,6 +654,7 @@ def no_eviction_cache_config(tmpdir):
     cache_dir = os.path.join(str(tmpdir), "no_eviction_cache")
     return CacheConfig(
         size="3M",
+        cache_line_size="64M",
         check_source_version=False,
         location=cache_dir,
         eviction_policy=EvictionPolicyConfig(policy="NO_EVICTION"),
@@ -712,3 +728,111 @@ def test_no_eviction_policy(profile_name, no_eviction_cache_config):
     assert not hasattr(cache_manager, "_eviction_thread_running"), (
         "No eviction thread running flag should exist during test"
     )
+
+
+def test_concurrent_chunk_creation_with_locking():
+    """Test that per-chunk locking prevents race conditions when multiple threads create the same chunk.
+
+    This test verifies:
+    1. Two threads can simultaneously request the same byte range
+    2. Only one thread successfully creates the chunk file
+    3. The other thread either waits for the lock or uses the existing chunk
+    4. No file corruption or duplicate chunks occur
+    """
+
+    with tempdatastore.TemporaryAWSS3Bucket() as origin_store:
+        # Create configuration with partial file caching enabled
+        config = {
+            "profiles": {
+                "origin": origin_store.profile_config_dict() | {"caching_enabled": True},
+            },
+            "cache": {
+                "size": "10M",
+                "location": tempfile.mkdtemp(),
+                "cache_line_size": "1M",  # 1MB cache lines for testing
+                "check_source_version": True,
+                "eviction_policy": {
+                    "policy": "lru",
+                    "refresh_interval": 300,
+                },
+            },
+        }
+
+        client = StorageClient(config=StorageClientConfig.from_dict(config, profile="origin"))
+
+        # Create a test file
+        file_path = f"test-data-{uuid.uuid4()}/concurrent_test.bin"
+        test_content = create_test_data(5)  # 5MB file
+        client.write(file_path, test_content)
+
+        # Create two separate clients to test concurrent access
+        client1 = StorageClient(config=StorageClientConfig.from_dict(config, profile="origin"))
+        client2 = StorageClient(config=StorageClientConfig.from_dict(config, profile="origin"))
+
+        # Ensure the cache directory structure exists and has proper permissions
+        cache_dir = os.path.join(config["cache"]["location"], "origin")
+        os.makedirs(cache_dir, exist_ok=True)
+
+        # Test data
+        byte_range = Range(offset=0, size=16 * 1024)  # 16KB starting at beginning
+
+        # Shared variables to track thread execution
+        thread_results = []
+        thread_errors = []
+
+        def read_range_thread(client_id, client):
+            """Thread function that reads a byte range using the client."""
+            try:
+                # Read the byte range - this may trigger chunk creation
+                result = client.read(file_path, byte_range=byte_range)
+                thread_results.append((client_id, len(result), "success"))
+
+            except Exception as e:
+                thread_errors.append((client_id, str(e)))
+
+        # Create and start two threads simultaneously, each with its own client
+        thread1 = threading.Thread(target=read_range_thread, args=(1, client1))
+        thread2 = threading.Thread(target=read_range_thread, args=(2, client2))
+
+        # Start both threads at nearly the same time
+        thread1.start()
+        thread2.start()
+
+        # Wait for both threads to complete
+        thread1.join()
+        thread2.join()
+
+        # Verify both threads succeeded
+        assert len(thread_errors) == 0, f"Threads encountered errors: {thread_errors}"
+        assert len(thread_results) == 2, f"Expected 2 thread results, got {len(thread_results)}"
+
+        # Verify both threads got the same result
+        result1 = thread_results[0]
+        result2 = thread_results[1]
+        assert result1[1] == result2[1], f"Thread results differ: {result1} vs {result2}"
+        assert result1[1] == byte_range.size, f"Expected {byte_range.size} bytes, got {result1[1]}"
+
+        # Verify chunk files were created and are valid
+        cache_dir = os.path.join(config["cache"]["location"], "origin")
+        file_dir = os.path.join(cache_dir, os.path.dirname(file_path))
+        base_name = os.path.basename(file_path)
+
+        # Check that chunk 0 exists (since we read from offset 0)
+        chunk0_path = os.path.join(file_dir, f".{base_name}#chunk0")
+        assert os.path.exists(chunk0_path), "Chunk 0 should exist after range read"
+
+        # Check that the chunk file is valid (not corrupted)
+        with open(chunk0_path, "rb") as f:
+            chunk_data = f.read()
+        assert len(chunk_data) > 0, "Chunk file should contain data"
+
+        etag = xattr.getxattr(chunk0_path, "user.etag").decode("utf-8")
+        assert etag, "Chunk should have etag metadata"
+        chunk_size = int(xattr.getxattr(chunk0_path, "user.cache_line_size").decode("utf-8"))
+        assert chunk_size == 1024 * 1024, f"Expected chunk size 1MB, got {chunk_size}"
+
+        # Verify only one chunk0 exists (no duplicates from race conditions)
+        chunk_files = [
+            f for f in os.listdir(file_dir) if f.startswith(f".{base_name}#chunk0") and not f.endswith(".lock")
+        ]
+        assert len(chunk_files) == 1, f"Expected 1 chunk0 file, found {len(chunk_files)}"

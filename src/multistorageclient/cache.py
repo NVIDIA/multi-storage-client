@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import glob
 import logging
 import os
 import stat
@@ -30,12 +31,13 @@ from .caching.cache_config import CacheConfig
 from .caching.cache_item import CacheItem
 from .caching.eviction_policy import FIFO, LRU, NO_EVICTION, RANDOM, EvictionPolicyFactory
 from .instrumentation.utils import CacheManagerMetricsHelper
-from .types import SourceVersionCheckMode
+from .types import Range, SourceVersionCheckMode
 
 DEFAULT_CACHE_SIZE = "10G"
 DEFAULT_CACHE_SIZE_MB = "10000"
 DEFAULT_CACHE_REFRESH_INTERVAL = 300  # 5 minutes
 DEFAULT_LOCK_TIMEOUT = 600  # 10 minutes
+DEFAULT_CACHE_LINE_SIZE = "64M"
 
 
 class CacheManager:
@@ -58,6 +60,9 @@ class CacheManager:
         self._last_refresh_time = datetime.now()
         self._metrics_helper = CacheManagerMetricsHelper()
         self._cache_refresh_interval = cache_config.eviction_policy.refresh_interval
+
+        # Range cache configuration
+        self._cache_line_size = cache_config.cache_line_size_bytes()
 
         default_location = os.path.join(tempfile.gettempdir(), "msc-cache")
         # Create cache directory if it doesn't exist, this is used to download files
@@ -130,8 +135,8 @@ class CacheManager:
         for dirpath, _, filenames in os.walk(self._cache_dir):
             for file_name in filenames:
                 file_path = os.path.join(dirpath, file_name)
-                # Skip lock files and hidden files
-                if file_name.endswith(".lock") or file_name.startswith("."):
+                # Skip lock files, but allow chunk files (hidden files that contain '#chunk')
+                if file_name.endswith(".lock") or (file_name.startswith(".") and "#chunk" not in file_name):
                     continue
                 try:
                     if os.path.isfile(file_path):
@@ -191,8 +196,43 @@ class CacheManager:
         """Return the path to the local cache file for the given key."""
         return os.path.join(self._cache_dir, self._profile, key)
 
-    def read(self, key: str, source_version: Optional[str] = None) -> Optional[bytes]:
-        """Read the contents of a file from the cache if it exists."""
+    def read(
+        self,
+        key: str,
+        source_version: Optional[str] = None,
+        byte_range: Optional[Range] = None,
+        storage_provider: Optional[Any] = None,
+        size: Optional[int] = None,
+    ) -> Optional[bytes]:
+        """Read the contents of a file from the cache if it exists.
+
+        This method handles both full-file reads and partial file caching. For range reads
+        (when byte_range is provided), it delegates to _read_range to implement partial
+        file caching using chunks. For full-file reads, it uses the existing cache logic.
+
+        :param key: The cache key for the file
+        :param source_version: Optional source version for cache validation
+        :param byte_range: Optional byte range for partial file reads
+        :param storage_provider: Storage provider required for range reads
+        :param size: Optional file size for range reads
+        :return: The file contents as bytes, or None if not found in cache
+        """
+        # If this is a range read, check for full cached file first
+        if byte_range:
+            assert storage_provider is not None, "storage_provider is required for range reads"
+            assert source_version is not None, "source_version is required for range reads"
+            assert size is not None, "size is required for range reads"
+            cache_path = self._get_cache_file_path(key)
+
+            # Try to read range from full cached file first
+            range_data = self._read_range_from_full_cached_file(cache_path, byte_range, source_version)
+            if range_data is not None:
+                return range_data
+
+            # No valid full cached file, delegate to chunk-based range reading
+            return self._read_range(cache_path, byte_range, storage_provider, source_version, size, key)  # type: ignore[arg-type]
+
+        # Full-file cached read (existing behavior)
         success = True
         try:
             try:
@@ -205,6 +245,14 @@ class CacheManager:
                     return data
             except OSError:
                 pass
+
+            # No full cached file found, check if we can reconstruct from chunks
+            if source_version is not None:
+                cache_path = self._get_cache_file_path(key)
+                # Check if we have a chunk that contains the full file
+                chunk_data = self._read_full_file_from_chunks(cache_path, source_version)
+                if chunk_data is not None:
+                    return chunk_data
 
             # cache miss
             success = False
@@ -411,3 +459,312 @@ class CacheManager:
         """Check if enough time has passed since the last refresh."""
         now = datetime.now()
         return (now - self._last_refresh_time).seconds > self._cache_refresh_interval
+
+    # Range cache methods
+    def _get_chunk_path(self, cache_path: str, chunk_idx: int) -> str:
+        """Get the path for a chunk file.
+
+        Constructs the path for a specific chunk file using the pattern '.{base}#chunk{idx}'
+        where base is the original file name and idx is the chunk index.
+
+        :param cache_path: The base cache path for the original file
+        :param chunk_idx: The index of the chunk (0-based)
+        :return: The full path to the chunk file
+        """
+        cache_dir = os.path.dirname(cache_path)
+        base_name = os.path.basename(cache_path)
+        return os.path.join(cache_dir, f".{base_name}#chunk{chunk_idx}")
+
+    def _download_missing_chunks(
+        self,
+        cache_path: str,
+        original_key: str,
+        start_chunk: int,
+        end_chunk: int,
+        configured_cache_line_size: int,
+        storage_provider,
+        source_version: str,
+        size: Optional[int],
+    ) -> None:
+        """Download all missing chunks for a given range.
+
+        This method handles the downloading and caching of chunks that are not already
+        present in the cache or have invalid metadata. It implements thread-safe chunk
+        downloading with race condition prevention.
+
+        Logic flow:
+        1. For each chunk in the range [start_chunk, end_chunk]:
+           a. Check if chunk file exists and validate its metadata (etag, cache_line_size)
+           b. If invalid or missing, acquire per-chunk lock to prevent race conditions
+           c. Double-check chunk existence after acquiring lock (another thread may have created it)
+           d. If still missing, fetch chunk from storage provider
+           e. Cache chunk file and set extended attributes (etag, cache_line_size, size)
+           f. Update access time for LRU eviction
+
+        :param cache_path: The base cache path for the original file
+        :param original_key: The original key for fetching from storage provider
+        :param start_chunk: The starting chunk index
+        :param end_chunk: The ending chunk index
+        :param configured_cache_line_size: The size of each chunk in bytes
+        :param storage_provider: The storage provider to fetch chunks from
+        :param source_version: The source version for validation
+        :param size: Optional file size for metadata
+        """
+        for chunk_idx in range(start_chunk, end_chunk + 1):
+            chunk_path = self._get_chunk_path(cache_path, chunk_idx)
+            chunk_data: Optional[bytes] = None
+
+            if os.path.exists(chunk_path):
+                # Validate xattrs
+                try:
+                    xattr_chunk_etag = xattr.getxattr(chunk_path, "user.etag").decode("utf-8")
+                except Exception:
+                    xattr_chunk_etag = None
+                try:
+                    xattr_cache_line_size_raw = xattr.getxattr(chunk_path, "user.cache_line_size")
+                    xattr_cache_line_size = int(xattr_cache_line_size_raw.decode("utf-8"))
+                except Exception:
+                    xattr_cache_line_size = None
+
+                if xattr_chunk_etag != source_version or xattr_cache_line_size != configured_cache_line_size:
+                    try:
+                        os.unlink(chunk_path)
+                    except OSError:
+                        pass
+                else:
+                    continue  # Chunk is valid, skip to next
+
+            # Use per-chunk locking to prevent race conditions
+            chunk_lock_key = f"{cache_path}#chunk{chunk_idx}"
+
+            with self.acquire_lock(chunk_lock_key):
+                # Double-check if chunk was created by another thread
+                if os.path.exists(chunk_path):
+                    try:
+                        xattr_chunk_etag = xattr.getxattr(chunk_path, "user.etag").decode("utf-8")
+                        xattr_chunk_size_raw = xattr.getxattr(chunk_path, "user.cache_line_size")
+                        xattr_chunk_size = int(xattr_chunk_size_raw.decode("utf-8"))
+                        if xattr_chunk_etag == source_version and xattr_chunk_size == configured_cache_line_size:
+                            continue  # Chunk was created by another thread and is valid
+                    except Exception:
+                        pass  # Proceed to download if validation fails
+
+                # Fetch from storage provider using original key
+                chunk_start = chunk_idx * configured_cache_line_size
+                chunk_end = chunk_start + configured_cache_line_size - 1
+
+                chunk_data = storage_provider.get_object(
+                    original_key, Range(offset=chunk_start, size=chunk_end - chunk_start + 1)
+                )
+
+                # Cache the chunk and set xattrs
+                os.makedirs(os.path.dirname(chunk_path), exist_ok=True)
+                with open(chunk_path, "wb") as f:
+                    assert isinstance(chunk_data, (bytes, bytearray))
+                    f.write(chunk_data)
+                try:
+                    xattr.setxattr(chunk_path, "user.etag", source_version.encode("utf-8"))
+                    xattr.setxattr(chunk_path, "user.cache_line_size", str(configured_cache_line_size).encode("utf-8"))
+                    if size:
+                        xattr.setxattr(chunk_path, "user.size", str(size).encode("utf-8"))
+                except OSError:
+                    # xattrs may not be supported; continue without failing
+                    pass
+
+                # Update access time for LRU
+                self._update_access_time(chunk_path)
+
+    def _assemble_result_from_chunks(
+        self, cache_path: str, start_chunk: int, end_chunk: int, configured_cache_line_size: int, byte_range: Range
+    ) -> bytes:
+        """Assemble the final result from cached chunks.
+
+        This method reads all the required chunks from cache and assembles them
+        into the final byte range result.
+
+        :param cache_path: The base cache path for the original file
+        :param start_chunk: The starting chunk index
+        :param end_chunk: The ending chunk index
+        :param configured_cache_line_size: The size of each chunk in bytes
+        :param byte_range: The byte range to read (offset and size)
+        :return: The assembled byte range data
+        """
+        result = bytearray(byte_range.size)
+
+        for chunk_idx in range(start_chunk, end_chunk + 1):
+            chunk_path = self._get_chunk_path(cache_path, chunk_idx)
+
+            # Read chunk data from cache (guaranteed to exist after download step)
+            with open(chunk_path, "rb") as f:
+                chunk_data = f.read()
+
+            # Copy relevant portion to result
+            chunk_start = chunk_idx * configured_cache_line_size
+            chunk_end = chunk_start + configured_cache_line_size - 1
+
+            overlap_start = max(byte_range.offset, chunk_start)
+            overlap_end = min(byte_range.offset + byte_range.size - 1, chunk_end)
+
+            if overlap_start <= overlap_end:
+                chunk_offset = overlap_start - chunk_start
+                result_offset_in_chunk = overlap_start - byte_range.offset
+                length = overlap_end - overlap_start + 1
+                assert isinstance(chunk_data, (bytes, bytearray))
+                result[result_offset_in_chunk : result_offset_in_chunk + length] = chunk_data[
+                    chunk_offset : chunk_offset + length
+                ]
+
+        return bytes(result)
+
+    def _invalidate_chunks(self, cache_path: str):
+        """Delete all chunks and metadata for a path.
+
+        Removes all chunk files associated with the given cache path by finding
+        all files matching the pattern '.{base}#chunk*' and deleting them.
+
+        :param cache_path: The base cache path for which to invalidate all chunks
+        """
+        cache_dir = os.path.dirname(cache_path)
+        base_name = os.path.basename(cache_path)
+        pattern = os.path.join(cache_dir, f".{base_name}#chunk*")
+
+        for path in glob.glob(pattern):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def _read_full_file_from_chunks(self, cache_path: str, source_version: str) -> Optional[bytes]:
+        """Read a full file by reconstructing it from cached chunks.
+
+        This method checks if we have cached chunks that can be used to reconstruct
+        the full file. This is useful when a range read has cached chunks that contain
+        the entire file, and then a full file read is requested.
+
+        :param cache_path: Path to the cached file
+        :param source_version: Source version identifier for cache validation
+        :return: The full file data if successful, None otherwise
+        """
+
+        # Check if we have chunk 0 (which should contain the full file if file size < chunk size)
+        chunk0_path = self._get_chunk_path(cache_path, 0)
+
+        if not os.path.exists(chunk0_path):
+            return None
+
+        try:
+            # Validate chunk 0's etag
+            chunk_etag = xattr.getxattr(chunk0_path, "user.etag").decode("utf-8")
+            if chunk_etag != source_version:
+                return None
+
+            # Check if chunk 0 contains the full file by looking at the size xattr
+            try:
+                size_xattr = xattr.getxattr(chunk0_path, "user.size")
+                file_size = int(size_xattr.decode("utf-8"))
+            except (OSError, AttributeError, ValueError):
+                # No size xattr or invalid, can't determine if chunk contains full file
+                return None
+
+            # If file size is less than or equal to chunk size, chunk 0 contains the full file
+            if file_size <= self._cache_line_size:
+                with open(chunk0_path, "rb") as f:
+                    # Read only the actual file size, not the entire chunk
+                    data = f.read(file_size)
+                # Update access time for LRU
+                self._update_access_time(chunk0_path)
+                return data
+
+        except (OSError, AttributeError):
+            # xattrs not supported or file corrupted
+            pass
+
+        return None
+
+    def _read_range_from_full_cached_file(
+        self, cache_path: str, byte_range: Range, source_version: str
+    ) -> Optional[bytes]:
+        """Read a byte range from a full cached file if it exists and is valid.
+
+        This method checks if a full cached file exists at the given cache path,
+        validates its etag against the source version, and if valid, reads the
+        requested byte range directly from the cached file.
+
+        :param cache_path: Path to the cached file
+        :param byte_range: The byte range to read (offset and size)
+        :param source_version: Source version identifier for cache validation
+        :return: The requested byte range data if successful, None otherwise
+        """
+        # Check if we have a full cached file that's valid
+        if os.path.exists(cache_path):
+            try:
+                # Validate the full cached file's etag
+                cached_etag = xattr.getxattr(cache_path, "user.etag").decode("utf-8")
+                if cached_etag == source_version:
+                    # Full file is cached and valid, read range directly from it
+                    with open(cache_path, "rb") as f:
+                        f.seek(byte_range.offset)
+                        data = f.read(byte_range.size)
+                    # Update access time for LRU
+                    self._update_access_time(cache_path)
+                    return data
+            except (OSError, AttributeError):
+                # xattrs not supported or file corrupted, fall through to chunking
+                pass
+
+        # No valid full cached file available
+        return None
+
+    def _read_range(
+        self, cache_path: str, byte_range: Range, storage_provider, source_version: str, size: int, original_key: str
+    ) -> bytes:
+        """Read a byte range using chunk-based caching.
+
+        This method implements partial file caching by calculating which chunks are needed
+        for the requested byte range, checking if chunks exist in cache and validating
+        their metadata (etag, cache_line_size), fetching missing or invalid chunks from the
+        storage provider, caching the fetched chunks with metadata stored as extended
+        attributes, and extracting the requested byte range from the cached chunks.
+
+        Note: This method assumes that full-file cache optimization has already been
+        checked by the calling read() method.
+
+        :param cache_path: Path where chunks should be cached locally
+        :param byte_range: The byte range to read (offset and size)
+        :param storage_provider: Storage provider to fetch chunks from if not cached
+        :param source_version: Source version identifier for cache validation
+        :param size: Total size of the original object
+        :param original_key: Original object key for fetching from storage provider
+        :return: The requested byte range data
+        """
+        # Per-chunk validation via xattrs. Chunks with mismatched etag/cache_line_size are deleted.
+
+        # Calculate needed chunks
+        configured_cache_line_size = (
+            self._cache_line_size
+        )  # Type checker knows this is not None due to range_cache_enabled check
+        assert configured_cache_line_size is not None  # For type checker
+        start_chunk = byte_range.offset // configured_cache_line_size
+        end_chunk = (byte_range.offset + byte_range.size - 1) // configured_cache_line_size
+
+        try:
+            # Step 1: Download all missing chunks
+            self._download_missing_chunks(
+                cache_path,
+                original_key,
+                start_chunk,
+                end_chunk,
+                configured_cache_line_size,
+                storage_provider,
+                source_version,
+                size,
+            )
+
+            # Step 2: Assemble result from cached chunks
+            return self._assemble_result_from_chunks(
+                cache_path, start_chunk, end_chunk, configured_cache_line_size, byte_range
+            )
+        except Exception as e:
+            # If any step fails, fall back to getting the object directly
+            logging.warning(f"Failed to process chunks for {original_key}: {e}")
+            return storage_provider.get_object(original_key, byte_range=byte_range)

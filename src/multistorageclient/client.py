@@ -179,6 +179,7 @@ class StorageClient:
         Reads an object from the specified logical path.
 
         :param path: The logical path of the object to read.
+        :param byte_range: Optional byte range to read.
         :return: The content of the object.
         """
         if self._metadata_provider:
@@ -186,9 +187,30 @@ class StorageClient:
             if not exists:
                 raise FileNotFoundError(f"The file at path '{path}' was not found.")
 
-        # Never cache range-read requests
-        if byte_range:
-            return self._storage_provider.get_object(path, byte_range=byte_range)
+        # Handle caching logic
+        if self._is_cache_enabled() and self._cache_manager:
+            if byte_range:
+                # Range request with cache
+                try:
+                    metadata = self._storage_provider.get_object_metadata(path)
+                    data = self._cache_manager.read(
+                        key=path,
+                        source_version=metadata.etag,
+                        byte_range=byte_range,
+                        storage_provider=self._storage_provider,
+                        size=metadata.content_length,
+                    )
+                    if data is not None:
+                        return data
+                    # Fallback (should not normally happen)
+                    return self._storage_provider.get_object(path, byte_range=byte_range)
+                except (FileNotFoundError, Exception):
+                    # Fall back to direct read if metadata fetching fails
+                    return self._storage_provider.get_object(path, byte_range=byte_range)
+            else:
+                # Full file read with cache
+                source_version = self._get_source_version(path)
+                data = self._cache_manager.read(path, source_version)
 
         # Read from cache if the file exists
         if self._is_cache_enabled():
@@ -205,9 +227,11 @@ class StorageClient:
                 self._cache_manager.set(path, data, source_version)
             return data
         elif self._replica_manager:
+            # No cache, but replicas available
             return self._read_from_replica_or_primary(path)
-
-        return self._storage_provider.get_object(path, byte_range=byte_range)
+        else:
+            # No cache, no replicas - direct storage provider read
+            return self._storage_provider.get_object(path, byte_range=byte_range)
 
     def _read_from_replica_or_primary(self, path: str) -> bytes:
         """

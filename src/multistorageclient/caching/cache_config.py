@@ -52,6 +52,8 @@ class CacheConfig:
 
     #: The maximum size of the cache in megabytes.
     size: str
+    #: Cache line size for range caching. Can be string (e.g., '1M'), defaults to 64MB.
+    cache_line_size: str
     #: Use check_source_version(e.g. etag) to update the cached files. Default is True.
     check_source_version: bool = True
     #: The location of the cache. Default is tempdir/msc-cache.
@@ -66,6 +68,14 @@ class CacheConfig:
         :return: The cache size in bytes.
         """
         return self._convert_to_bytes(self.size)
+
+    def cache_line_size_bytes(self) -> int:
+        """
+        Convert cache line size to bytes.
+
+        :return: The cache line size in bytes.
+        """
+        return self._convert_to_bytes(self.cache_line_size)
 
     def get_eviction_policy(self) -> str:
         """

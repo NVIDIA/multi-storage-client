@@ -27,7 +27,7 @@ from urllib.parse import urlparse
 import opentelemetry.metrics as api_metrics
 import yaml
 
-from .cache import DEFAULT_CACHE_SIZE, CacheManager
+from .cache import DEFAULT_CACHE_LINE_SIZE, DEFAULT_CACHE_SIZE, CacheManager
 from .caching.cache_config import CacheConfig, EvictionPolicyConfig
 from .instrumentation import setup_opentelemetry
 from .providers.manifest_metadata import ManifestMetadataProvider
@@ -654,6 +654,7 @@ class StorageClientConfigLoader:
                 location=cache_dict.get("location", location),
                 check_source_version=check_source_version,
                 eviction_policy=eviction_policy,
+                cache_line_size=cache_dict.get("cache_line_size", DEFAULT_CACHE_LINE_SIZE),
             )
 
             cache_manager = CacheManager(profile=self._profile, cache_config=cache_config)

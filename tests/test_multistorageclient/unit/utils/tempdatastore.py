@@ -27,6 +27,12 @@ from typing import Any, Optional
 # Backed by local storage services.
 
 
+def create_test_data(size_mb: int) -> bytes:
+    """Create test data of specified size in MB."""
+    pattern = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789" * 16384  # ~1MB
+    return pattern * size_mb
+
+
 class TemporaryDataStore(AbstractContextManager):
     """
     This class creates a temporary data store. The resulting object can be used as a context manager.
