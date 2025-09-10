@@ -389,7 +389,7 @@ impl RustClient {
         if let (Some(start_idx), Some(end_idx)) = (start, end) {
             future_into_py(py, async move {
                 let result = store
-                    .get_range(&path, start_idx..end_idx)
+                    .get_range(&path, start_idx..end_idx+1)
                     .await
                     .map_err(StorageError::from)?;
                 Ok(PyBytes::new(result))

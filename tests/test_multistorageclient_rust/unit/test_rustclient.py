@@ -79,7 +79,7 @@ async def test_rustclient_basic_operations(temp_data_store_type: Type[tempdatast
 
         # Test range get
         result = await rust_client.get(file_path, 1, 4)
-        assert result == file_body_bytes[1:4]
+        assert result == file_body_bytes[1:5]
 
         result = await rust_client.get(file_path, 0, len(file_body_bytes))
         assert result == file_body_bytes

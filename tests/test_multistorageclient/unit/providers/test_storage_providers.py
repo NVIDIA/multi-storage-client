@@ -574,7 +574,7 @@ def test_storage_providers_with_rust_client(
 
         # Test range read
         result = storage_client.read(path=file_path, byte_range=Range(1, 4))
-        assert result == file_body_bytes[1:4]
+        assert result == file_body_bytes[1:5]
 
         # Delete the file.
         storage_client.delete(path=file_path)
@@ -652,7 +652,7 @@ def test_storage_providers_with_rust_client_bucket_override(
 
         # Test range read
         result = storage_client.read(path=file_path, byte_range=Range(1, 4))
-        assert result == file_body_bytes[1:4]
+        assert result == file_body_bytes[1:5]
 
         # Delete the file.
         storage_client.delete(path=file_path)
