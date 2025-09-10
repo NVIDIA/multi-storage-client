@@ -588,7 +588,7 @@ class GoogleStorageProvider(BaseStorageProvider):
             # Upload large files using transfer manager
             def _invoke_api() -> int:
                 if self._rust_client and not attributes:
-                    run_async_rust_client_method(self._rust_client, "upload_multipart", f, key)
+                    run_async_rust_client_method(self._rust_client, "upload_multipart_from_file", f, key)
                 else:
                     bucket_obj = self._gcs_client.bucket(bucket)
                     blob = bucket_obj.blob(key)

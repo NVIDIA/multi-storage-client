@@ -689,7 +689,7 @@ class S3StorageProvider(BaseStorageProvider):
                 if validated_attributes:
                     extra_args["Metadata"] = validated_attributes
                 if self._rust_client and not extra_args:
-                    response = run_async_rust_client_method(self._rust_client, "upload_multipart", f, key)
+                    response = run_async_rust_client_method(self._rust_client, "upload_multipart_from_file", f, key)
                 else:
                     response = self._s3_client.upload_file(
                         Filename=f,

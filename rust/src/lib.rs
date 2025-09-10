@@ -449,7 +449,7 @@ impl RustClient {
 
 
     #[pyo3(signature = (local_path, remote_path))]
-    fn upload_multipart<'p>(
+    fn upload_multipart_from_file<'p>(
         &self,
         py: Python<'p>,
         local_path: &str,
@@ -476,6 +476,52 @@ impl RustClient {
                 }
                 writer.wait_for_capacity(max_concurrency).await.map_err(StorageError::from)?;
                 writer.write(&buffer[..n]);
+            }
+
+            writer.finish().await.map_err(StorageError::from)?;
+
+            Ok(())
+        })
+    }
+
+    #[pyo3(signature = (remote_path, data, multipart_chunksize=None, max_concurrency=None))]
+    fn upload_multipart_from_bytes<'p>(
+        &self,
+        py: Python<'p>,
+        remote_path: &str,
+        data: PyBytes,
+        multipart_chunksize: Option<usize>,
+        max_concurrency: Option<usize>,
+    ) -> PyResult<Bound<'p, PyAny>> {
+        self.refresh_store_if_needed()?;
+        let store = Arc::clone(&*self.store.read().unwrap());
+        let remote_path: Path = Path::from(remote_path);
+        let data_bytes = data.into_inner();
+        let chunksize = multipart_chunksize.unwrap_or(self.multipart_chunksize);
+        let concurrency = max_concurrency.unwrap_or(self.max_concurrency);
+
+        future_into_py(py, async move {
+            if data_bytes.len() <= chunksize {
+                let payload = PutPayload::from_bytes(data_bytes);
+                store
+                    .put(&remote_path, payload)
+                    .await
+                    .map_err(StorageError::from)?;
+                return Ok(());
+            }
+
+            let upload = store.put_multipart(&remote_path).await.map_err(StorageError::from)?;
+            let mut writer = WriteMultipart::new_with_chunk_size(upload, chunksize);
+
+            let mut offset = 0;
+            while offset < data_bytes.len() {
+                let end = std::cmp::min(offset + chunksize, data_bytes.len());
+                let chunk = &data_bytes[offset..end];
+
+                writer.wait_for_capacity(concurrency).await.map_err(StorageError::from)?;
+                writer.write(chunk);
+
+                offset = end;
             }
 
             writer.finish().await.map_err(StorageError::from)?;

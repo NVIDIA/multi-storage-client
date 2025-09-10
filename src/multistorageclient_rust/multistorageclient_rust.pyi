@@ -64,7 +64,7 @@ class RustClient:
         """
         ...
 
-    async def upload_multipart(self, local_path: str, remote_path: str) -> Awaitable[None]:
+    async def upload_multipart_from_file(self, local_path: str, remote_path: str) -> Awaitable[None]:
         """
         Upload a local file to the object store using multipart upload.
 
@@ -74,6 +74,23 @@ class RustClient:
 
         :param local_path: Path to the local file to upload.
         :param remote_path: The destination path in the storage backend.
+        """
+        ...
+
+    async def upload_multipart_from_bytes(
+        self, remote_path: str, data: bytes, multipart_chunksize: int | None = ..., max_concurrency: int | None = ...
+    ) -> Awaitable[None]:
+        """
+        Upload data to the object store at the specified remote_path using multipart upload.
+
+        This method uploads large data by splitting them into smaller chunks and uploading
+        those chunks in parallel. This approach provides better performance for large data
+        compared to put() method.
+
+        :param remote_path: The remote object path in the storage backend.
+        :param data: The data to upload as bytes.
+        :param multipart_chunksize: The size of the multipart chunks.
+        :param max_concurrency: The maximum number of concurrent operations.
         """
         ...
 
