@@ -1,3 +1,4 @@
+import os
 import sys
 from typing import Any
 
@@ -6,6 +7,10 @@ from tqdm import tqdm
 
 class ProgressBar:
     def __init__(self, desc: str, show_progress: bool, total_items: int = 0):
+        # If the env var is defined, always suppress the progress bar
+        if os.getenv("SUPPRESS_PROGRESS_BAR") is not None:
+            show_progress = False
+
         if not show_progress:
             self.pbar = None
             return
