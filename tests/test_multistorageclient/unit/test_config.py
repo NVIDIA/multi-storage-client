@@ -938,6 +938,16 @@ def test_find_config_file_paths():
     assert paths == expected_paths
 
 
+def test_read_msc_config_explicit_path():
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml") as f:
+        yaml.dump({"profiles": {"test": {"storage_provider": {"type": "file", "options": {"base_path": "/tmp"}}}}}, f)
+        config_file = f.name
+
+        config, used_config_file = StorageClientConfig.read_msc_config(config_file_paths=[config_file])
+        assert config != {}
+        assert used_config_file == config_file
+
+
 def test_read_msc_config_no_files_found(caplog, clean_msc_env_vars):
     """Test that read_msc_config logs when no config files are found."""
     from logging import DEBUG
@@ -963,7 +973,6 @@ def test_read_msc_config_single_file_found(caplog, clean_msc_env_vars, monkeypat
         monkeypatch.setenv("MSC_CONFIG", config_file)
         config, used_config_file = StorageClientConfig.read_msc_config()
         assert f"Using MSC config file: {config_file}" in caplog.text
-        assert "Multiple MSC config files found" not in caplog.text
         assert config != {}
         assert used_config_file == config_file
 
@@ -995,7 +1004,6 @@ def test_read_msc_config_multiple_files_found(caplog, clean_msc_env_vars, monkey
         monkeypatch.setenv("HOME", temp_dir)
 
         config, used_config_file = StorageClientConfig.read_msc_config()
-        assert "Multiple MSC config files found" in caplog.text
         assert f"Using MSC config file: {config_file1}" in caplog.text
         assert config != {}
         assert used_config_file == config_file1
@@ -1012,7 +1020,7 @@ def test_read_msc_config_malformed_files(clean_msc_env_vars, monkeypatch):
         malformed_yaml_path = f.name
 
         monkeypatch.setenv("MSC_CONFIG", malformed_yaml_path)
-        with pytest.raises(ValueError, match=f"malformed msc config file: {malformed_yaml_path}"):
+        with pytest.raises(ValueError, match=f"malformed MSC config file: {malformed_yaml_path}"):
             StorageClientConfig.read_msc_config()
 
     # Test malformed JSON file
@@ -1023,7 +1031,7 @@ def test_read_msc_config_malformed_files(clean_msc_env_vars, monkeypatch):
         malformed_json_path = f.name
 
         monkeypatch.setenv("MSC_CONFIG", malformed_json_path)
-        with pytest.raises(ValueError, match=f"malformed msc config file: {malformed_json_path}"):
+        with pytest.raises(ValueError, match=f"malformed MSC config file: {malformed_json_path}"):
             StorageClientConfig.read_msc_config()
 
 
