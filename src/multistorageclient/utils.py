@@ -15,6 +15,7 @@
 
 import hashlib
 import importlib
+import math
 import multiprocessing
 import os
 import re
@@ -253,6 +254,84 @@ def find_executable_path(executable_name: str) -> Optional[Path]:
     return None
 
 
+def _get_cgroup_cpu_limit() -> Optional[int]:
+    """
+    Try to read CPU limit from cgroup v2 and v1 filesystems.
+
+    :return: CPU limit if found, None otherwise
+    """
+    # Try cgroup v2 first
+    cgroup_v2_path = "/sys/fs/cgroup/cpu.max"
+    if os.path.exists(cgroup_v2_path):
+        try:
+            with open(cgroup_v2_path, "r") as f:
+                content = f.read().strip()
+                if content == "max":
+                    return None  # No limit set
+                # Format: "quota period" (e.g., "200000 100000" = 2 CPUs)
+                parts = content.split()
+                if len(parts) == 2:
+                    quota, period = int(parts[0]), int(parts[1])
+                    if period > 0:
+                        return math.ceil(quota / period)
+        except (OSError, ValueError, IndexError):
+            pass
+
+    # Try cgroup v1 as fallback
+    cgroup_v1_path = "/sys/fs/cgroup/cpu/cpu.cfs_quota_us"
+    if os.path.exists(cgroup_v1_path):
+        try:
+            with open(cgroup_v1_path, "r") as f:
+                quota = int(f.read().strip())
+                if quota == -1:
+                    return None  # No limit set
+
+            # Read the period
+            period_path = "/sys/fs/cgroup/cpu/cpu.cfs_period_us"
+            if os.path.exists(period_path):
+                with open(period_path, "r") as f:
+                    period = int(f.read().strip())
+                    if period > 0:
+                        return math.ceil(quota / period)
+        except (OSError, ValueError):
+            pass
+
+    return None
+
+
+def get_available_cpu_count() -> int:
+    """
+    Get the available CPU count, accounting for job scheduler environments.
+
+    This function detects the execution environment and returns the appropriate
+    CPU count based on the job scheduler's resource allocation:
+
+    - **Slurm jobs**: Uses SLURM_CPUS_PER_TASK environment variable
+    - **Containerized environments** (including Kubernetes): Uses cgroup filesystem (/sys/fs/cgroup/cpu.max or cpu.cfs_quota_us)
+    - **Local execution**: Falls back to multiprocessing.cpu_count()
+
+    :return: Number of available CPUs for the current job/process
+    """
+    # Check if running in a Slurm job
+    if "SLURM_JOB_ID" in os.environ:
+        if "SLURM_CPUS_PER_TASK" in os.environ:
+            try:
+                return int(os.environ["SLURM_CPUS_PER_TASK"])
+            except (ValueError, TypeError):
+                pass
+
+    # Try reading from cgroup filesystem (works in containers/K8s pods)
+    try:
+        cgroup_cpu = _get_cgroup_cpu_limit()
+        if cgroup_cpu is not None:
+            return cgroup_cpu
+    except (OSError, ValueError, TypeError):
+        pass
+
+    # Fallback to system CPU count for local execution
+    return multiprocessing.cpu_count()
+
+
 def calculate_worker_processes_and_threads(
     num_worker_processes: Optional[int] = None,
     execution_mode: ExecutionMode = ExecutionMode.LOCAL,
@@ -270,7 +349,8 @@ def calculate_worker_processes_and_threads(
 
     :return: Tuple of (num_worker_processes, num_worker_threads)
     """
-    cpu_count = multiprocessing.cpu_count()
+    cpu_count = get_available_cpu_count()
+    print(f"CPU count: {cpu_count}")
     default_processes = "8" if cpu_count > 8 else str(cpu_count)
     if num_worker_processes is None:
         num_worker_processes = int(os.getenv("MSC_NUM_PROCESSES", default_processes))

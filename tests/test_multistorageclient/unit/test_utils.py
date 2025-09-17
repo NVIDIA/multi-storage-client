@@ -28,6 +28,7 @@ from multistorageclient.utils import (
     create_attribute_filter_evaluator,
     expand_env_vars,
     extract_prefix_from_glob,
+    get_available_cpu_count,
     glob,
     insert_directories,
     join_paths,
@@ -232,66 +233,83 @@ def test_version():
     assert msc.__version__ != "0.1.0"
 
 
-@patch("multiprocessing.cpu_count")
-def test_calculate_worker_processes_and_threads_low_cpu(mock_cpu_count, monkeypatch):
+@patch("multistorageclient.utils.get_available_cpu_count")
+def test_calculate_worker_processes_and_threads_low_cpu(mock_get_cpu_count):
     # Test with 4 CPUs (should use all CPUs for processes)
-    mock_cpu_count.return_value = 4
-    monkeypatch.delenv("MSC_NUM_PROCESSES", raising=False)
-    monkeypatch.delenv("MSC_NUM_THREADS_PER_PROCESS", raising=False)
+    mock_get_cpu_count.return_value = 4
 
-    processes, threads = calculate_worker_processes_and_threads()
-    assert processes == 4  # Default processes should equal CPU count
-    assert threads == 16  # Default minimum threads is 16
+    with patch.dict(os.environ, {}, clear=True):
+        processes, threads = calculate_worker_processes_and_threads()
+        assert processes == 4  # Default processes should equal CPU count
+        assert threads == 16  # Default minimum threads is 16
 
 
-@patch("multiprocessing.cpu_count")
-def test_calculate_worker_processes_and_threads_high_cpu(mock_cpu_count, monkeypatch):
+@patch("multistorageclient.utils.get_available_cpu_count")
+def test_calculate_worker_processes_and_threads_high_cpu(mock_get_cpu_count):
     # Test with 16 CPUs (should cap at 8 processes)
-    mock_cpu_count.return_value = 16
-    monkeypatch.delenv("MSC_NUM_PROCESSES", raising=False)
-    monkeypatch.delenv("MSC_NUM_THREADS_PER_PROCESS", raising=False)
+    mock_get_cpu_count.return_value = 16
 
-    processes, threads = calculate_worker_processes_and_threads()
-    assert processes == 8  # Default processes should cap at 8
-    assert threads == 16  # Default threads should be 16 for 8 processes on 16 CPUs
-
-
-@patch("multiprocessing.cpu_count")
-def test_calculate_worker_processes_and_threads_custom_processes(mock_cpu_count, monkeypatch):
-    mock_cpu_count.return_value = 8
-    monkeypatch.setenv("MSC_NUM_PROCESSES", "4")
-    monkeypatch.delenv("MSC_NUM_THREADS_PER_PROCESS", raising=False)
-
-    processes, threads = calculate_worker_processes_and_threads()
-    assert processes == 4  # Should use environment variable
-    assert threads == 16  # Should calculate based on CPU and processes
+    with patch.dict(os.environ, {}, clear=True):
+        processes, threads = calculate_worker_processes_and_threads()
+        assert processes == 8  # Default processes should cap at 8
+        assert threads == 16  # Default threads should be 16 for 8 processes on 16 CPUs
 
 
-@patch("multiprocessing.cpu_count")
-def test_calculate_worker_processes_and_threads_custom_threads(mock_cpu_count, monkeypatch):
-    mock_cpu_count.return_value = 8
-    monkeypatch.delenv("MSC_NUM_PROCESSES", raising=False)
-    monkeypatch.setenv("MSC_NUM_THREADS_PER_PROCESS", "10")
+@patch("multistorageclient.utils.get_available_cpu_count")
+def test_calculate_worker_processes_and_threads_custom_processes(mock_get_cpu_count):
+    mock_get_cpu_count.return_value = 8
 
-    processes, threads = calculate_worker_processes_and_threads()
-    assert processes == 8  # Should use default
-    assert threads == 10  # Should use environment variable
-
-
-@patch("multiprocessing.cpu_count")
-def test_calculate_worker_processes_and_threads_both_custom(mock_cpu_count, monkeypatch):
-    mock_cpu_count.return_value = 16
-    monkeypatch.setenv("MSC_NUM_PROCESSES", "2")
-    monkeypatch.setenv("MSC_NUM_THREADS_PER_PROCESS", "8")
-
-    processes, threads = calculate_worker_processes_and_threads()
-    assert processes == 2  # Should use environment variable
-    assert threads == 8  # Should use environment variable
+    with patch.dict(
+        os.environ,
+        {
+            "MSC_NUM_PROCESSES": "4",
+        },
+        clear=True,
+    ):
+        processes, threads = calculate_worker_processes_and_threads()
+        assert processes == 4  # Should use environment variable
+        assert threads == 16  # Should calculate based on CPU and processes
 
 
+@patch("multistorageclient.utils.get_available_cpu_count")
+def test_calculate_worker_processes_and_threads_custom_threads(mock_get_cpu_count):
+    mock_get_cpu_count.return_value = 8
+
+    with patch.dict(
+        os.environ,
+        {
+            "MSC_NUM_THREADS_PER_PROCESS": "10",
+        },
+        clear=True,
+    ):
+        processes, threads = calculate_worker_processes_and_threads()
+        assert processes == 8  # Should use default
+        assert threads == 10  # Should use environment variable
+
+
+@patch("multistorageclient.utils.get_available_cpu_count")
+def test_calculate_worker_processes_and_threads_both_custom(mock_get_cpu_count):
+    mock_get_cpu_count.return_value = 16
+
+    with patch.dict(
+        os.environ,
+        {
+            "MSC_NUM_PROCESSES": "2",
+            "MSC_NUM_THREADS_PER_PROCESS": "8",
+        },
+        clear=True,
+    ):
+        processes, threads = calculate_worker_processes_and_threads()
+        assert processes == 2  # Should use environment variable
+        assert threads == 8  # Should use environment variable
+
+
+@patch("multistorageclient.utils.get_available_cpu_count")
 @patch("multistorageclient.StorageClient")
 @patch("multistorageclient.StorageClient")
-def test_calculate_worker_processes_and_threads_use_single_process(source_client, target_client):
+def test_calculate_worker_processes_and_threads_use_single_process(target_client, source_client, mock_get_cpu_count):
+    mock_get_cpu_count.return_value = 8
+
     # Both clients are using the Rust client.
     source_client._is_rust_client_enabled.return_value = True
     target_client._is_rust_client_enabled.return_value = True
@@ -300,7 +318,7 @@ def test_calculate_worker_processes_and_threads_use_single_process(source_client
         execution_mode=ExecutionMode.LOCAL, source_client=source_client, target_client=target_client
     )
     assert processes == 1
-    assert threads == multiprocessing.cpu_count()
+    assert threads == 8
 
     # One client is using the Rust client and the other is using the POSIX file storage provider.
     source_client._is_rust_client_enabled.return_value = True
@@ -311,7 +329,7 @@ def test_calculate_worker_processes_and_threads_use_single_process(source_client
         execution_mode=ExecutionMode.LOCAL, source_client=source_client, target_client=target_client
     )
     assert processes == 1
-    assert threads == multiprocessing.cpu_count()
+    assert threads == 8
 
     source_client._is_rust_client_enabled.return_value = False
     source_client._is_posix_file_storage_provider.return_value = True
@@ -321,7 +339,7 @@ def test_calculate_worker_processes_and_threads_use_single_process(source_client
         execution_mode=ExecutionMode.LOCAL, source_client=source_client, target_client=target_client
     )
     assert processes == 1
-    assert threads == multiprocessing.cpu_count()
+    assert threads == 8
 
 
 def test_attribute_filter_evaluator_comparison():
@@ -403,3 +421,69 @@ def test_matches_attribute_filter_expression():
     empty_metadata = ObjectMetadata(key="test.txt", content_length=100, last_modified=datetime.now(), metadata={})
     evaluator = create_attribute_filter_evaluator('model_name = "gpt"')
     assert not matches_attribute_filter_expression(empty_metadata, evaluator)
+
+
+def test_get_available_cpu_count_in_slurm_job():
+    with patch.dict(os.environ, {"SLURM_JOB_ID": "123456", "SLURM_CPUS_PER_TASK": "4"}, clear=True):
+        assert get_available_cpu_count() == 4
+
+
+@patch("multistorageclient.utils.os.path.exists")
+@patch("builtins.open")
+def test_get_available_cpu_count_in_k8s_job_with_cgroup_v1(mock_open, mock_exists):
+    # Mock file existence
+    mock_exists.side_effect = lambda path: path in [
+        "/sys/fs/cgroup/cpu/cpu.cfs_quota_us",
+        "/sys/fs/cgroup/cpu/cpu.cfs_period_us",
+    ]
+
+    # Mock file contents
+    mock_file_quota = mock_open.return_value.__enter__.return_value
+    mock_file_quota.read.side_effect = ["12800000", "100000"]
+
+    # Clear any Slurm environment variables
+    with patch.dict(os.environ, {}, clear=True):
+        result = get_available_cpu_count()
+        assert result == 128
+
+
+@patch("multistorageclient.utils.os.path.exists")
+@patch("builtins.open")
+def test_get_available_cpu_count_in_k8s_job_with_cgroup_v2(mock_open, mock_exists):
+    # Mock file existence
+    mock_exists.side_effect = lambda path: path == "/sys/fs/cgroup/cpu.max"
+
+    # Mock file contents
+    mock_file = mock_open.return_value.__enter__.return_value
+    mock_file.read.return_value = "200000 100000"  # 2 CPUs
+
+    # Clear any Slurm environment variables
+    with patch.dict(os.environ, {}, clear=True):
+        result = get_available_cpu_count()
+        assert result == 2
+
+
+@patch("multistorageclient.utils.os.path.exists")
+@patch("builtins.open")
+def test_get_available_cpu_count_in_k8s_job_with_fractional_cpu(mock_open, mock_exists):
+    # Mock file existence
+    mock_exists.side_effect = lambda path: path == "/sys/fs/cgroup/cpu.max"
+
+    # Mock file contents
+    mock_file = mock_open.return_value.__enter__.return_value
+    mock_file.read.return_value = "50000 100000"  # 0.5 CPUs
+
+    # Clear any Slurm environment variables
+    with patch.dict(os.environ, {}, clear=True):
+        result = get_available_cpu_count()
+        assert result == 1
+
+
+@patch("multistorageclient.utils._get_cgroup_cpu_limit")
+def test_get_available_cpu_count_in_local_execution(mock_get_cgroup_cpu_limit):
+    mock_get_cgroup_cpu_limit.return_value = None
+
+    # Clear environment and mock no cgroup files
+    with patch.dict(os.environ, {}, clear=True):
+        result = get_available_cpu_count()
+        assert result == multiprocessing.cpu_count()
