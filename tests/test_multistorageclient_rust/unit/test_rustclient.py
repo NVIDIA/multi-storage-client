@@ -360,3 +360,30 @@ async def test_rustclient_explicit_multipart_chunksize(temp_data_store_type: Typ
 
         # Delete the file.
         storage_client.delete(path=large_file_path)
+
+        # Test upload_multipart_from_file with explicit chunk size and concurrency
+        large_file_path_fragments = [f"{uuid.uuid4().hex}-prefix", "infix", f"multipart_suffix{file_extension}"]
+        large_file_path = os.path.join(*large_file_path_fragments)
+        chunk_size = 10 * 1024 * 1024
+        max_concurrency = 4
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            temp_file.write(large_data_bytes)
+            temp_file.close()
+            await rust_client.upload_multipart_from_file(
+                temp_file.name, large_file_path, multipart_chunksize=chunk_size, max_concurrency=max_concurrency
+            )
+
+        # Test download_multipart_to_file with explicit chunk size and concurrency
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            temp_file.close()
+            await rust_client.download_multipart_to_file(
+                large_file_path, temp_file.name, multipart_chunksize=chunk_size, max_concurrency=max_concurrency
+            )
+            assert os.path.getsize(temp_file.name) == large_file_size
+            # Assert file content is the same
+            with open(temp_file.name, "rb") as f:
+                downloaded = f.read()
+            assert downloaded == large_data_bytes
+
+        # Delete the file.
+        storage_client.delete(path=large_file_path)

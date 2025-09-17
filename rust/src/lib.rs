@@ -549,33 +549,35 @@ impl RustClient {
         })
     }
 
-    #[pyo3(signature = (local_path, remote_path))]
+    #[pyo3(signature = (local_path, remote_path, multipart_chunksize=None, max_concurrency=None))]
     fn upload_multipart_from_file<'p>(
         &self,
         py: Python<'p>,
         local_path: &str,
         remote_path: &str,
+        multipart_chunksize: Option<usize>,
+        max_concurrency: Option<usize>,
     ) -> PyResult<Bound<'p, PyAny>> {
         self.refresh_store_if_needed()?;
         let store = Arc::clone(&*self.store.read().unwrap());
         let local_path = local_path.to_string();
         let remote_path = Path::from(remote_path);
-        let multipart_chunksize = self.multipart_chunksize;
-        let max_concurrency = self.max_concurrency;
+        let chunksize = multipart_chunksize.unwrap_or(self.multipart_chunksize);
+        let concurrency = max_concurrency.unwrap_or(self.max_concurrency);
 
         future_into_py(py, async move {
             let mut file = tokio::fs::File::open(local_path).await.map_err(StorageError::from)?;
 
             let upload = store.put_multipart(&remote_path).await.map_err(StorageError::from)?;
-            let mut writer = WriteMultipart::new_with_chunk_size(upload, multipart_chunksize);
+            let mut writer = WriteMultipart::new_with_chunk_size(upload, chunksize);
 
-            let mut buffer = vec![0u8; multipart_chunksize];
+            let mut buffer = vec![0u8; chunksize];
             loop {
                 let n = file.read(&mut buffer).await.map_err(StorageError::from)?;
                 if n == 0 {
                     break;
                 }
-                writer.wait_for_capacity(max_concurrency).await.map_err(StorageError::from)?;
+                writer.wait_for_capacity(concurrency).await.map_err(StorageError::from)?;
                 writer.write(&buffer[..n]);
             }
 
@@ -631,19 +633,21 @@ impl RustClient {
         })
     }
 
-    #[pyo3(signature = (remote_path, local_path))]
+    #[pyo3(signature = (remote_path, local_path, multipart_chunksize=None, max_concurrency=None))]
     fn download_multipart_to_file<'p>(
         &self,
         py: Python<'p>,
         remote_path: &str,
         local_path: &str,
+        multipart_chunksize: Option<usize>,
+        max_concurrency: Option<usize>,
     ) -> PyResult<Bound<'p, PyAny>> {
         self.refresh_store_if_needed()?;
         let store = Arc::clone(&*self.store.read().unwrap());
         let remote_path = Path::from(remote_path);
         let local_path = local_path.to_string();
-        let multipart_chunksize = self.multipart_chunksize;
-        let max_concurrency = self.max_concurrency;
+        let chunksize = multipart_chunksize.unwrap_or(self.multipart_chunksize);
+        let concurrency = max_concurrency.unwrap_or(self.max_concurrency);
 
         future_into_py(py, async move {
             let result = store.head(&remote_path).await.map_err(StorageError::from)?;
@@ -658,20 +662,20 @@ impl RustClient {
             let mut output_file = tokio::fs::File::from_std(temp_file.reopen().map_err(StorageError::from)?);
             output_file.set_len(total_size).await.map_err(StorageError::from)?;
             
-            let num_chunks = (total_size + multipart_chunksize as u64 - 1) / multipart_chunksize as u64;
+            let num_chunks = (total_size + chunksize as u64 - 1) / chunksize as u64;
             
-            let semaphore = Arc::new(Semaphore::new(max_concurrency));
+            let semaphore = Arc::new(Semaphore::new(concurrency));
             let (tx , mut rx): (
                 mpsc::Sender<Result<(u64, Vec<u8>), StorageError>>,
                 mpsc::Receiver<Result<(u64, Vec<u8>), StorageError>>,
-            ) = mpsc::channel(max_concurrency);
+            ) = mpsc::channel(concurrency);
             
             // Start a task to process downloaded chunks in arrival order and write to file
             let write_handle = tokio::task::spawn(async move {
                 while let Some(result) = rx.recv().await {
                     match result {
                         Ok((chunk_index, data)) => {
-                            output_file.seek(tokio::io::SeekFrom::Start(chunk_index as u64 * multipart_chunksize as u64)).await.map_err(StorageError::from)?;
+                            output_file.seek(tokio::io::SeekFrom::Start(chunk_index as u64 * chunksize as u64)).await.map_err(StorageError::from)?;
                             output_file.write_all(&data).await.map_err(StorageError::from)?;
                         }
                         Err(e) => {
@@ -692,8 +696,8 @@ impl RustClient {
                 let store = Arc::clone(&store);
                 let remote_path = remote_path.clone();
                 let tx = tx.clone();
-                let start_offset = chunk_index * multipart_chunksize as u64;
-                let end_offset = std::cmp::min(start_offset + multipart_chunksize as u64, total_size);
+                let start_offset = chunk_index * chunksize as u64;
+                let end_offset = std::cmp::min(start_offset + chunksize as u64, total_size);
                 
                 tokio::task::spawn(async move {
                     let range = start_offset..end_offset;
