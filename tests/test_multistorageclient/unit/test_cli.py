@@ -137,6 +137,7 @@ def test_sync_command_with_real_files(run_cli):
             assert target_file.exists(), f"Target file {target_file} does not exist"
             assert target_file.read_text() == content, f"Content mismatch for {target_file}"
 
+        assert "200/200" in stdout
         assert "Synchronizing files from" in stdout
         assert "Synchronization completed successfully" in stdout
 
@@ -412,7 +413,7 @@ def test_rm_command(run_cli):
         assert (Path(test_dir) / "new_file2.bin").exists()
 
         # Test case 7: delete a file without recursive can also work
-        stdout, _ = run_cli("rm", "-y", "--recursive", f"{test_dir}/old_file2.bin")
+        stdout, bc = run_cli("rm", "-y", "--recursive", f"{test_dir}/old_file2.bin")
         assert not (Path(test_dir) / "old_file2.bin").exists()
         assert (Path(test_dir) / "new_file1.txt").exists()
         assert (Path(test_dir) / "new_file2.bin").exists()
@@ -423,3 +424,23 @@ def test_rm_command(run_cli):
         assert not (Path(test_dir) / "new_file1.txt").exists()
         assert not (Path(test_dir) / "new_file2.bin").exists()
         assert not (Path(test_dir) / "subdir" / "old_file3.txt").exists()
+
+
+def test_rm_command_with_progress(run_cli):
+    with tempfile.TemporaryDirectory() as test_dir:
+        # Create test files with different paths
+        test_files = [
+            Path(test_dir) / "old_file1.txt",
+            Path(test_dir) / "old_file2.bin",
+            Path(test_dir) / "new_file1.txt",
+            Path(test_dir) / "new_file2.bin",
+            Path(test_dir) / "subdir" / "old_file3.txt",
+        ]
+
+        for file_path in test_files:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(f"Content of {file_path.name}")
+
+        # Test with progress
+        stdout, _ = run_cli("rm", "-y", "--recursive", f"{test_dir}")
+        assert "5/5" in stdout

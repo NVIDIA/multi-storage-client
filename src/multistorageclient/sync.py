@@ -203,7 +203,7 @@ class ResultConsumerThread(threading.Thread):
                         else:
                             raise RuntimeError(f"Unknown operation: {op}")
 
-                if op == _SyncOp.ADD:
+                if op in (_SyncOp.ADD, _SyncOp.DELETE):
                     self.progress.update_progress()
         except Exception as e:
             self.error = e

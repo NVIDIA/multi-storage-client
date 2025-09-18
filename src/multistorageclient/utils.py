@@ -350,7 +350,6 @@ def calculate_worker_processes_and_threads(
     :return: Tuple of (num_worker_processes, num_worker_threads)
     """
     cpu_count = get_available_cpu_count()
-    print(f"CPU count: {cpu_count}")
     default_processes = "8" if cpu_count > 8 else str(cpu_count)
     if num_worker_processes is None:
         num_worker_processes = int(os.getenv("MSC_NUM_PROCESSES", default_processes))
