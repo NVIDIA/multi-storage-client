@@ -84,7 +84,7 @@ workflow:
       auto_cancel:
         on_new_commit: none
     # Tag push.
-    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_TAG != null
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_TAG != null && $CI_COMMIT_TAG_MESSAGE =~ /^(latest|backport)$/
       when: always
       auto_cancel:
         on_new_commit: none
@@ -106,7 +106,7 @@ include:
       # Default branch push.
       - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       # Tag push.
-      - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_TAG != null
+      - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_TAG != null && $CI_COMMIT_TAG_MESSAGE =~ /^(latest|backport)$/
   - local: .gitlab/pipelines/update.yml
     rules:
       # Scheduled pipeline with the `SCHEDULED_PIPELINE_METHOD` variable set to `update`.
