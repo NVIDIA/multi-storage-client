@@ -246,14 +246,6 @@ class CacheManager:
             except OSError:
                 pass
 
-            # No full cached file found, check if we can reconstruct from chunks
-            if source_version is not None:
-                cache_path = self._get_cache_file_path(key)
-                # Check if we have a chunk that contains the full file
-                chunk_data = self._read_full_file_from_chunks(cache_path, source_version)
-                if chunk_data is not None:
-                    return chunk_data
-
             # cache miss
             success = False
             return None
@@ -484,7 +476,7 @@ class CacheManager:
         configured_cache_line_size: int,
         storage_provider,
         source_version: str,
-        size: Optional[int],
+        size: int,
     ) -> None:
         """Download all missing chunks for a given range.
 
@@ -565,11 +557,15 @@ class CacheManager:
                 try:
                     xattr.setxattr(chunk_path, "user.etag", source_version.encode("utf-8"))
                     xattr.setxattr(chunk_path, "user.cache_line_size", str(configured_cache_line_size).encode("utf-8"))
-                    if size:
-                        xattr.setxattr(chunk_path, "user.size", str(size).encode("utf-8"))
+                    xattr.setxattr(chunk_path, "user.size", str(size).encode("utf-8"))
                 except OSError:
                     # xattrs may not be supported; continue without failing
                     pass
+
+                # If this is chunk 0 and file size < chunk size, rename to original file name
+                if chunk_idx == 0 and size <= configured_cache_line_size:
+                    if not os.path.exists(cache_path):
+                        os.rename(chunk_path, cache_path)
 
                 # Update access time for LRU
                 self._update_access_time(chunk_path)
@@ -633,53 +629,6 @@ class CacheManager:
                 os.unlink(path)
             except OSError:
                 pass
-
-    def _read_full_file_from_chunks(self, cache_path: str, source_version: str) -> Optional[bytes]:
-        """Read a full file by reconstructing it from cached chunks.
-
-        This method checks if we have cached chunks that can be used to reconstruct
-        the full file. This is useful when a range read has cached chunks that contain
-        the entire file, and then a full file read is requested.
-
-        :param cache_path: Path to the cached file
-        :param source_version: Source version identifier for cache validation
-        :return: The full file data if successful, None otherwise
-        """
-
-        # Check if we have chunk 0 (which should contain the full file if file size < chunk size)
-        chunk0_path = self._get_chunk_path(cache_path, 0)
-
-        if not os.path.exists(chunk0_path):
-            return None
-
-        try:
-            # Validate chunk 0's etag
-            chunk_etag = xattr.getxattr(chunk0_path, "user.etag").decode("utf-8")
-            if chunk_etag != source_version:
-                return None
-
-            # Check if chunk 0 contains the full file by looking at the size xattr
-            try:
-                size_xattr = xattr.getxattr(chunk0_path, "user.size")
-                file_size = int(size_xattr.decode("utf-8"))
-            except (OSError, AttributeError, ValueError):
-                # No size xattr or invalid, can't determine if chunk contains full file
-                return None
-
-            # If file size is less than or equal to chunk size, chunk 0 contains the full file
-            if file_size <= self._cache_line_size:
-                with open(chunk0_path, "rb") as f:
-                    # Read only the actual file size, not the entire chunk
-                    data = f.read(file_size)
-                # Update access time for LRU
-                self._update_access_time(chunk0_path)
-                return data
-
-        except (OSError, AttributeError):
-            # xattrs not supported or file corrupted
-            pass
-
-        return None
 
     def _read_range_from_full_cached_file(
         self, cache_path: str, byte_range: Range, source_version: str

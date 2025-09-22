@@ -552,7 +552,7 @@ def test_partial_file_caching_full_file_optimization() -> None:
 
 
 def test_partial_file_caching_chunk_to_full_file_merge() -> None:
-    """Test that full file reads can use cached chunks when file size < chunk size."""
+    """Test that small files are renamed from chunk 0 to original file name for efficiency."""
     with tempdatastore.TemporaryAWSS3Bucket() as origin_store:
         # Create configuration with partial file caching enabled
         config = create_partial_caching_config(origin_store)
@@ -569,12 +569,11 @@ def test_partial_file_caching_chunk_to_full_file_merge() -> None:
         file_dir = os.path.join(cache_profile_dir, os.path.dirname(file_path))
         base_name = os.path.basename(file_path)
         full_cache_path = os.path.join(file_dir, base_name)
-        chunk0_path = os.path.join(file_dir, f".{base_name}#chunk0")
 
         # Verify no full file is cached initially
         assert not os.path.exists(full_cache_path), "Full file should not be cached initially"
 
-        # Perform a range read - this should create chunk 0 (which contains the full file)
+        # Perform a range read - this should create and rename chunk 0 to the original file name
         range_read = Range(offset=128 * 1024, size=128 * 1024)  # 128KB at 128KB offset
         partial_content = client.read(file_path, byte_range=range_read)
 
@@ -584,25 +583,23 @@ def test_partial_file_caching_chunk_to_full_file_merge() -> None:
             f"Range read content mismatch: expected {len(expected_content)} bytes, got {len(partial_content)} bytes"
         )
 
-        # Verify that chunk 0 was created (contains the full file since file size < chunk size)
-        assert os.path.exists(chunk0_path), "Chunk 0 should exist after range read"
-        assert not os.path.exists(full_cache_path), "Full file should still not be cached"
+        # Verify that the original file exists (chunk 0 was renamed to it since file size < chunk size)
+        assert os.path.exists(full_cache_path), "Full file should exist (renamed from chunk 0)"
 
-        # Now perform a full file read - this should use the cached chunk, not re-download
+        # Now perform a full file read - this should use the cached file, not re-download
         full_content = client.read(file_path)
 
         # Verify the full file read returned correct data
         assert full_content == test_content, "Full file read content mismatch"
 
-        # Verify that chunk 0 still exists (was reused)
-        assert os.path.exists(chunk0_path), "Chunk 0 should still exist after full file read"
+        # Verify that the full cached file still exists (was reused)
+        assert os.path.exists(full_cache_path), "Full cached file should still exist after full file read"
 
-        # Verify that no full cached file was created (we used the chunk instead)
-        assert not os.path.exists(full_cache_path), "Full file should still not be cached (used chunk instead)"
-
-        # Verify chunk 0 contains the correct data
-        with open(chunk0_path, "rb") as f:
-            chunk_data = f.read()
-        # The chunk should contain the full file data (512KB)
-        assert len(chunk_data) == len(test_content), f"Chunk should contain full file data, got {len(chunk_data)} bytes"
-        assert chunk_data == test_content, "Chunk data should match full file content"
+        # Verify the full cached file contains the correct data
+        with open(full_cache_path, "rb") as f:
+            cached_data = f.read()
+        # The cached file should contain the full file data (512KB)
+        assert len(cached_data) == len(test_content), (
+            f"Cached file should contain full file data, got {len(cached_data)} bytes"
+        )
+        assert cached_data == test_content, "Cached file data should match full file content"
