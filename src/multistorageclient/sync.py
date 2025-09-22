@@ -118,8 +118,7 @@ class ProducerThread(threading.Thread):
 
             while source_file or target_file:
                 # Update progress and count each pair (or single) considered for syncing
-                if total_count % 1000 == 0:
-                    self.progress.update_total(total_count)
+                self.progress.update_total(total_count)
 
                 if source_file and target_file:
                     source_key = source_file.key[len(self.source_path) :].lstrip("/")
