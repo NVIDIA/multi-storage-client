@@ -57,7 +57,7 @@ PROVIDER = "gcs"
 
 MiB = 1024 * 1024
 
-DEFAULT_MULTIPART_THRESHOLD = 512 * MiB
+DEFAULT_MULTIPART_THRESHOLD = 64 * MiB
 DEFAULT_MULTIPART_CHUNKSIZE = 32 * MiB
 DEFAULT_IO_CHUNKSIZE = 32 * MiB
 PYTHON_MAX_CONCURRENCY = 8
@@ -612,7 +612,10 @@ class GoogleStorageProvider(BaseStorageProvider):
                 else:
                     bucket_obj = self._gcs_client.bucket(bucket)
                     blob = bucket_obj.blob(key)
-                    blob.metadata = validate_attributes(attributes)
+                    # GCS will raise an error if blob.metadata is None
+                    validated_attributes = validate_attributes(attributes)
+                    if validated_attributes is not None:
+                        blob.metadata = validated_attributes
                     transfer_manager.upload_chunks_concurrently(
                         f,
                         blob,

@@ -218,7 +218,7 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
         # Delete the file.
         storage_client.delete(path=file_path)
 
-        MEMORY_LOAD_LIMIT = 128 * 1024 * 1024
+        MEMORY_LOAD_LIMIT = 64 * 1024 * 1024
         # Open the file for writes + reads (bytes).
         if storage_client._storage_provider._provider_name == "gcs":
             # GCS simulator does not support multipart uploads

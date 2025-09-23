@@ -186,6 +186,29 @@ def verify_storage_provider(storage_client: msc.StorageClient, prefix: str) -> N
 
     wait(waitable=lambda: storage_client.list(prefix), should_wait=len_should_wait(expected_len=0))
 
+    # test multipart upload large file
+    body_large = b"*" * (64 * MB + 1)
+    temp_file = tempfile.NamedTemporaryFile(delete=False)
+    temp_file.write(body_large)
+    temp_file.seek(0)
+    temp_file.flush()
+    storage_client.upload_file(filename, temp_file.name)
+    os.unlink(temp_file.name)
+
+    wait(waitable=lambda: storage_client.list(prefix), should_wait=len_should_wait(expected_len=1))
+
+    # test multipart download large file
+    with tempfile.TemporaryDirectory() as tmpdir:
+        temp_dir_name = tmpdir
+        temp_file_path = os.path.join(temp_dir_name, "downloads/data", "downloaded.bin")
+        storage_client.download_file(filename, temp_file_path)
+        assert os.path.getsize(temp_file_path) == len(body_large)
+
+    # delete file
+    storage_client.delete(filename)
+
+    wait(waitable=lambda: storage_client.list(prefix), should_wait=len_should_wait(expected_len=0))
+
     # unicode file
     filename = f"{prefix}/testfile.txt"
     with storage_client.open(filename, "w") as fp:

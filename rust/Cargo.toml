@@ -19,7 +19,7 @@ pyo3-async-runtimes = { version = "0.25", features = ["tokio-runtime"] }
 pyo3-bytes = "0.3.0"
 tokio = { version = "1.45.1", features = ["full", "macros"] }
 bytes = "1.10.1"
-object_store = { version = "0.12.3", features = ["aws", "gcp"] }
+object_store = { git = "ssh://git@gitlab-master.nvidia.com:12051/nsv-data-platform/experiments/forked-rust-object-store.git", branch = "main", features = ["aws", "gcp"] }
 thiserror = "2.0.12"
 tempfile = "3.20.0"
 chrono = "0.4.41"
