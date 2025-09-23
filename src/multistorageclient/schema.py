@@ -178,6 +178,35 @@ PATH_MAPPING_SCHEMA = {
     "propertyNames": {"pattern": "^(/|[a-z][a-z0-9+.-]*://)[^/].*/$"},
 }
 
+# Schema for the posix section (FUSE mount configuration)
+POSIX_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "mountname": {
+            "type": "string",
+            "description": "FUSE mount name that shows up in commands like mount(1) and df(1)",
+        },
+        "mountpoint": {
+            "type": "string",
+            "description": "File system path where the FUSE mount will be created",
+            "pattern": "^/([^/\0]+/)*[^/\0]*$",  # Valid absolute path: starts with /, no null chars, no double slashes
+            "default": "/mnt",
+        },
+        "allow_other": {
+            "type": "boolean",
+            "description": "Allows users other than the one launching the tool to see the mountpoint",
+            "default": False,
+        },
+        "auto_sighup_interval": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Time in seconds between config re-reads (defaults to 0 requiring an actual SIGHUP)",
+            "default": 0,
+        },
+    },
+    "additionalProperties": False,
+}
+
 CONFIG_SCHEMA = {
     "type": "object",
     "properties": {
@@ -185,6 +214,7 @@ CONFIG_SCHEMA = {
         "cache": CACHE_SCHEMA,
         "opentelemetry": OTEL_SCHEMA,
         "path_mapping": PATH_MAPPING_SCHEMA,
+        "posix": POSIX_SCHEMA,
         "additionalProperties": False,
     },
     "required": ["profiles"],

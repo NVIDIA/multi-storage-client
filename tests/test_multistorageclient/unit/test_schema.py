@@ -223,3 +223,173 @@ def test_validate_opentelemetry():
             },
         }
     )
+
+
+def test_validate_posix():
+    default_storage_provider = {"storage_provider": {"type": "s3", "options": {"base_path": "bucket/prefix"}}}
+
+    # Valid: minimal posix configuration
+    validate_config(
+        {
+            "profiles": {
+                "default": default_storage_provider,
+            },
+            "posix": {
+                "mountname": "msc-fuse-mount",
+            },
+        }
+    )
+
+    # Valid: full posix configuration
+    validate_config(
+        {
+            "profiles": {
+                "default": default_storage_provider,
+            },
+            "posix": {
+                "mountname": "msc-fuse-mount",
+                "mountpoint": "/mnt/msc",
+                "allow_other": True,
+                "auto_sighup_interval": 300,
+            },
+        }
+    )
+
+    # Valid: posix with default values
+    validate_config(
+        {
+            "profiles": {
+                "default": default_storage_provider,
+            },
+            "posix": {
+                "mountname": "test-mount",
+                "mountpoint": "/mnt",
+                "allow_other": False,
+                "auto_sighup_interval": 0,
+            },
+        }
+    )
+
+    # Valid: posix without mountname (optional field)
+    validate_config(
+        {
+            "profiles": {
+                "default": default_storage_provider,
+            },
+            "posix": {
+                "mountpoint": "/mnt/msc",
+                "allow_other": True,
+            },
+        }
+    )
+
+    # Valid: posix with various valid mountpoint paths
+    for valid_path in ["/", "/mnt", "/tmp/msc", "/home/user/mounts", "/var/lib/msc"]:
+        validate_config(
+            {
+                "profiles": {
+                    "default": default_storage_provider,
+                },
+                "posix": {
+                    "mountname": "test-mount",
+                    "mountpoint": valid_path,
+                },
+            }
+        )
+
+    # Invalid: incorrect type for mountname
+    with pytest.raises(RuntimeError):
+        validate_config(
+            {
+                "profiles": {
+                    "default": default_storage_provider,
+                },
+                "posix": {
+                    "mountname": 123,  # Should be string
+                },
+            }
+        )
+
+    # Invalid: incorrect type for allow_other
+    with pytest.raises(RuntimeError):
+        validate_config(
+            {
+                "profiles": {
+                    "default": default_storage_provider,
+                },
+                "posix": {
+                    "mountname": "test-mount",
+                    "allow_other": "true",  # Should be boolean
+                },
+            }
+        )
+
+    # Invalid: negative auto_sighup_interval
+    with pytest.raises(RuntimeError):
+        validate_config(
+            {
+                "profiles": {
+                    "default": default_storage_provider,
+                },
+                "posix": {
+                    "mountname": "test-mount",
+                    "auto_sighup_interval": -1,  # Should be >= 0
+                },
+            }
+        )
+
+    # Invalid: relative mountpoint path
+    with pytest.raises(RuntimeError):
+        validate_config(
+            {
+                "profiles": {
+                    "default": default_storage_provider,
+                },
+                "posix": {
+                    "mountname": "test-mount",
+                    "mountpoint": "relative/path",  # Should be absolute path
+                },
+            }
+        )
+
+    # Invalid: mountpoint with double slashes
+    with pytest.raises(RuntimeError):
+        validate_config(
+            {
+                "profiles": {
+                    "default": default_storage_provider,
+                },
+                "posix": {
+                    "mountname": "test-mount",
+                    "mountpoint": "/mnt//msc",  # Double slashes not allowed
+                },
+            }
+        )
+
+    # Invalid: mountpoint with null character
+    with pytest.raises(RuntimeError):
+        validate_config(
+            {
+                "profiles": {
+                    "default": default_storage_provider,
+                },
+                "posix": {
+                    "mountname": "test-mount",
+                    "mountpoint": "/mnt\0msc",  # Null character not allowed
+                },
+            }
+        )
+
+    # Invalid: unknown property
+    with pytest.raises(RuntimeError):
+        validate_config(
+            {
+                "profiles": {
+                    "default": default_storage_provider,
+                },
+                "posix": {
+                    "mountname": "test-mount",
+                    "unknown_property": "value",  # Not allowed
+                },
+            }
+        )
