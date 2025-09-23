@@ -9,18 +9,33 @@ workflow:
     - if: $CI_PIPELINE_SOURCE == "parent_pipeline"
 
 stages:
-  - Pipeline
+  - 💿
 
 default:
   # This is a very minimal Linux with just Nix. It's not NixOS.
   image: nixos/nix:latest
-
-variables:
-  # So we don't have to do `nix --experimental-features "nix-command flakes"` every time.
-  #
-  # https://nixos.org/manual/nix/stable/command-ref/env-common#env-NIX_CONFIG
-  NIX_CONFIG: |
-    experimental-features = nix-command flakes
+  before_script:
+    # Create `nix.conf` + `.netrc` files and alias Git URLs.
+    #
+    # https://nix.dev/manual/nix/latest/command-ref/conf-file
+    # https://www.gnu.org/software/inetutils/manual/html_node/The-_002enetrc-file
+    # https://git-scm.com/docs/git-config
+    - mkdir --parents /etc/nix
+    # `experimental-features` can be omitted if Nix was installed with the Determinate Nix Installer (e.g. when using other base images).
+    - |
+      tee --append /etc/nix/nix.conf << END_OF_FILE
+      experimental-features = nix-command flakes
+      access-tokens = ${CI_SERVER_HOST}=PAT:${CI_JOB_TOKEN}
+      netrc-file = /etc/nix/.netrc
+      END_OF_FILE
+    - |
+      tee --append /etc/nix/.netrc << END_OF_FILE
+      machine ${CI_SERVER_HOST}
+      login gitlab-ci-token
+      password ${CI_JOB_TOKEN}
+      END_OF_FILE
+    - git config set --system --append url."${CI_SERVER_PROTOCOL}://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_FQDN}".insteadOf "${CI_SERVER_URL}"
+    - git config set --system --append url."${CI_SERVER_PROTOCOL}://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_FQDN}".insteadOf "ssh://git@${CI_SERVER_SHELL_SSH_HOST}:${CI_SERVER_SHELL_SSH_PORT}"
 
 #
 # Jobs.
@@ -28,7 +43,7 @@ variables:
 
 # Properties we can't set with `default`.
 .default:
-  stage: Pipeline
+  stage: 💿
   environment:
     name: Beta
     action: access
