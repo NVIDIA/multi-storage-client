@@ -1,0 +1,8 @@
+#
+# Cargo configuration.
+#
+# https://doc.rust-lang.org/cargo/reference/config.html
+#
+
+[net]
+git-fetch-with-cli = true
