@@ -892,6 +892,13 @@ class StorageClientConfig:
     def from_json(
         config_json: str, profile: str = DEFAULT_POSIX_PROFILE_NAME, telemetry: Optional[Telemetry] = None
     ) -> "StorageClientConfig":
+        """
+        Load a storage client configuration from a JSON string.
+
+        :param config_json: Configuration JSON string.
+        :param profile: Profile to use.
+        :param telemetry: Telemetry instance to use.
+        """
         config_dict = json.loads(config_json)
         return StorageClientConfig.from_dict(config_dict=config_dict, profile=profile, telemetry=telemetry)
 
@@ -899,6 +906,13 @@ class StorageClientConfig:
     def from_yaml(
         config_yaml: str, profile: str = DEFAULT_POSIX_PROFILE_NAME, telemetry: Optional[Telemetry] = None
     ) -> "StorageClientConfig":
+        """
+        Load a storage client configuration from a YAML string.
+
+        :param config_yaml: Configuration YAML string.
+        :param profile: Profile to use.
+        :param telemetry: Telemetry instance to use.
+        """
         config_dict = yaml.safe_load(config_yaml)
         return StorageClientConfig.from_dict(config_dict=config_dict, profile=profile, telemetry=telemetry)
 
@@ -909,6 +923,14 @@ class StorageClientConfig:
         skip_validation: bool = False,
         telemetry: Optional[Telemetry] = None,
     ) -> "StorageClientConfig":
+        """
+        Load a storage client configuration from a Python dictionary.
+
+        :param config_dict: Configuration Python dictionary.
+        :param profile: Profile to use.
+        :param skip_validation: Skip configuration schema validation.
+        :param telemetry: Telemetry instance to use.
+        """
         # Validate the config file with predefined JSON schema
         if not skip_validation:
             validate_config(config_dict)
@@ -926,6 +948,13 @@ class StorageClientConfig:
         profile: str = DEFAULT_POSIX_PROFILE_NAME,
         telemetry: Optional[Telemetry] = None,
     ) -> "StorageClientConfig":
+        """
+        Load a storage client configuration from the first file found.
+
+        :param config_file_paths: Configuration file search paths. If omitted, the default search paths are used (see :py:meth:`StorageClientConfig.read_msc_config`).
+        :param profile: Profile to use.
+        :param telemetry: Telemetry instance to use.
+        """
         msc_config_dict, msc_config_file = StorageClientConfig.read_msc_config(config_file_paths=config_file_paths)
         # Parse rclone config file.
         rclone_config_dict, rclone_config_file = read_rclone_config()
@@ -989,14 +1018,14 @@ class StorageClientConfig:
     def read_msc_config(
         config_file_paths: Optional[Iterable[str]] = None,
     ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
-        """Get the MSC configuration dictionary and the path of the config file used.
+        """Get the MSC configuration dictionary and the path of the first file found.
 
         If no config paths are specified, configs are searched in the following order:
 
-        1. MSC_CONFIG environment variable (highest precedence)
+        1. ``MSC_CONFIG`` environment variable (highest precedence)
         2. Standard search paths (user-specified config and system-wide config)
 
-        :param config_file_paths: Paths to MSC configuration files. If omitted, the default paths are used.
+        :param config_file_paths: Configuration file search paths. If omitted, the default search paths are used.
         :return: Tuple of ``(config_dict, config_file_path)``. ``config_dict`` is the MSC configuration
                  dictionary or empty dict if no config was found. ``config_file_path`` is the absolute
                  path of the config file used, or ``None`` if no config file was found.
@@ -1015,6 +1044,9 @@ class StorageClientConfig:
 
             # Standard search paths.
             config_file_paths.extend(_find_config_file_paths())
+
+        # Normalize + absolutize paths.
+        config_file_paths = [os.path.abspath(path) for path in config_file_paths]
 
         # Log plan.
         logger.debug(f"Searching MSC config file paths: {config_file_paths}")

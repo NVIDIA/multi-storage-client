@@ -215,7 +215,14 @@ instances directly.
    from multistorageclient import StorageClient, StorageClientConfig
 
    # Use a file-based configuration.
-   config = StorageClientConfig.from_file()
+   config = StorageClientConfig.from_file(
+       # Optional. See the API reference for more details.
+       config_file_paths=[
+           "path/to/msc_config.yaml",
+           "path/to/msc_config.json"
+       ],
+       profile="my-profile"
+   )
 
    # Use a dictionary-based configuration.
    config = StorageClientConfig.from_dict(
@@ -258,9 +265,10 @@ Use :py:meth:`multistorageclient.StorageClient.sync_from` to copy files from one
    from multistorageclient import StorageClient, StorageClientConfig
 
    # Load two clients with different profiles
-   config = StorageClientConfig.from_file()
-   src_client = StorageClient(config=config, profile="staging-data")
-   dst_client = StorageClient(config=config, profile="prod-data")
+   src_config = StorageClientConfig.from_file(profile="staging-data")
+   dst_config = StorageClientConfig.from_file(profile="prod-data")
+   src_client = StorageClient(config=src_config)
+   dst_client = StorageClient(config=dst_config)
 
    # Sync files in images/ from the staging bucket to the prod bucket
    dst_client.sync_from(
