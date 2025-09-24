@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import codecs
 import logging
 import os
 import stat
@@ -540,7 +541,10 @@ class MultiStoragePath:
         """
         Open the file in text mode, read it, and close the file.
         """
-        return self._storage_client.read(str(self._internal_path)).decode(encoding)
+        result = self._storage_client.read(str(self._internal_path))
+        if not hasattr(result, "decode"):  # Rust's PyBytes does not implement decode
+            return codecs.decode(memoryview(result), encoding)
+        return result.decode(encoding)
 
     def write_bytes(self, data: bytes) -> None:
         """

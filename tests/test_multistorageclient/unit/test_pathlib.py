@@ -301,3 +301,20 @@ def test_pathlib_local_and_remote(temp_data_store_type: type[tempdatastore.Tempo
     with temp_data_store_type() as temp_data_store:
         config.setup_msc_config(config_dict={"profiles": {"test": temp_data_store.profile_config_dict()}})
         verify_pathlib(profile="test", prefix="files")
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryAWSS3Bucket],
+    ],
+)
+def test_pathlib_local_and_remote_with_rust_client(
+    temp_data_store_type: type[tempdatastore.TemporaryAWSS3Bucket],
+) -> None:
+    # Clear the instance cache to ensure that the config is not reused from the previous test
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    with temp_data_store_type(enable_rust_client=True) as temp_data_store:
+        config.setup_msc_config(config_dict={"profiles": {"test": temp_data_store.profile_config_dict()}})
+        verify_pathlib(profile="test", prefix="files")
