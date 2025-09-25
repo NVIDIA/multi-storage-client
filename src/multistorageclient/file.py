@@ -53,11 +53,18 @@ class RemoteFileReader(IO[bytes]):
     range-based reading of large files without needing to load the entire file into memory.
     """
 
-    def __init__(self, remote_path: str, file_size: int, storage_client: StorageClient):
+    def __init__(
+        self,
+        remote_path: str,
+        file_size: int,
+        storage_client: StorageClient,
+        check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
+    ):
         self._remote_path = remote_path
         self._file_size = file_size
         self._pos = 0
         self._storage_client = storage_client
+        self._check_source_version = check_source_version
 
     @property
     def name(self) -> str:
@@ -102,12 +109,12 @@ class RemoteFileReader(IO[bytes]):
 
         # Perform range read from storage provider
         bytes_range = Range(offset=offset, size=length)
-        data = self._storage_client.read(self._remote_path, byte_range=bytes_range)
-
+        data = self._storage_client.read(
+            self._remote_path, byte_range=bytes_range, check_source_version=self._check_source_version
+        )
         # Update the position by the number of bytes read
         bytes_read = len(data)
         self._pos += bytes_read
-
         return data
 
     def readinto(self, b: Any) -> int:
@@ -132,7 +139,12 @@ class RemoteFileReader(IO[bytes]):
         return False
 
     def fileno(self) -> int:
-        raise io.UnsupportedOperation("fileno operation is not supported on this file")
+        # Remote file readers don't have real file descriptors, but some libraries (like energon)
+        # expect fileno() to work for operations like os.posix_fadvise().
+        # Return a temporary file descriptor to avoid UnsupportedOperation errors.
+        if not hasattr(self, "_temp_fd_holder"):
+            self._temp_fd_holder = tempfile.TemporaryFile()
+        return self._temp_fd_holder.fileno()
 
     def write(self, b: Any) -> int:
         raise io.UnsupportedOperation("write operation is not supported on this file")
@@ -147,7 +159,10 @@ class RemoteFileReader(IO[bytes]):
         pass
 
     def close(self) -> None:
-        pass
+        # Clean up temporary file descriptor if it was created
+        if hasattr(self, "_temp_fd_holder"):
+            self._temp_fd_holder.close()
+            delattr(self, "_temp_fd_holder")
 
     def __enter__(self) -> RemoteFileReader:
         return self
@@ -200,6 +215,7 @@ class ObjectFile(IO):
         memory_load_limit: int = MEMORY_LOAD_LIMIT,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
         attributes: Optional[dict[str, str]] = None,
+        prefetch_file: bool = True,
     ):
         """
         Initialize the ObjectFile instance.
@@ -212,6 +228,7 @@ class ObjectFile(IO):
         :param memory_load_limit: Size limit in bytes for loading files into memory. Defaults to 512MB. This parameter is only applicable when the mode is "r" or "rb".
         :param check_source_version: Whether to check the source version of cached objects.
         :param attributes: The attributes to add to the file if a new file is created.
+        :param prefetch_file: If True, downloads the entire file to cache in the background for faster subsequent reads. If False, uses RemoteFileReader for streaming reads without caching. Defaults to True.
         """
         # Initialize parent trace span for this file to share the context with following R/W operations
         self._trace_span = TRACER.start_span("ObjectFile Lifecycle", attributes=DEFAULT_ATTRIBUTES)
@@ -235,6 +252,7 @@ class ObjectFile(IO):
         self._memory_load_limit = memory_load_limit
         self._open_files = []
         self._check_source_version = check_source_version
+        self._prefetch_file = prefetch_file
 
         if disable_read_cache:
             self._cache_manager = None
@@ -242,11 +260,18 @@ class ObjectFile(IO):
         if self._cache_manager:
             # Use local file as the fileobj
             if self._mode in ("r", "rb"):
-                # Read
+                # Read - common setup for both prefetch and non-prefetch
                 self._object_metadata = self._storage_client.info(self._remote_path)
                 self._download_complete = threading.Event()
-                self._download_thread = threading.Thread(target=self._download_file)
-                self._download_thread.start()
+
+                # RemoteFileReader only supports binary mode, so force prefetch for text mode
+                if self._prefetch_file or self._mode == "r":
+                    # Use threaded download for prefetch
+                    self._download_thread = threading.Thread(target=self._download_file)
+                    self._download_thread.start()
+                else:
+                    # Use RemoteFileReader directly for non-prefetch (binary mode only)
+                    self._open_large_file()
             else:
                 # Write or append
                 self._create_fileobj()
@@ -290,6 +315,7 @@ class ObjectFile(IO):
                 f"exceeds the cache size ({self._cache_manager.get_max_cache_size()}). Please increase the cache size "
                 f"in the config file to cache the file."
             )
+
             return self._open_large_file()
 
         try:
@@ -504,8 +530,8 @@ class ObjectFile(IO):
             return
 
         if self.readable():
-            # Ensure the download thread finishes
-            if self._download_thread.is_alive():
+            # Ensure the download thread finishes (if it exists)
+            if hasattr(self, "_download_thread") and self._download_thread.is_alive():
                 self._download_thread.join()
         else:
             self._upload_file()

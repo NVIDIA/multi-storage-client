@@ -183,7 +183,7 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
         with storage_client.open(path=file_path, mode="w") as file:
             file.write(file_body_string)
         assert storage_client.is_file(path=file_path)
-        with storage_client.open(path=file_path, mode="r") as file:
+        with storage_client.open(path=file_path, mode="r", prefetch_file=True) as file:
             assert file.read() == file_body_string
 
         # Copy the file.
@@ -199,20 +199,20 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
         assert len(list(storage_client.list(prefix=file_copy_path_fragments[0]))) == 0
 
         # Open the file for appends (bytes).
-        with storage_client.open(path=file_path, mode="ab") as file:
+        with storage_client.open(path=file_path, mode="ab", prefetch_file=True) as file:
             file.write(file_body_bytes)
         assert storage_client.is_file(path=file_path)
-        with storage_client.open(path=file_path, mode="rb") as file:
+        with storage_client.open(path=file_path, mode="rb", prefetch_file=True) as file:
             assert file.read() == file_body_bytes
 
         # Delete the file.
         storage_client.delete(path=file_path)
 
         # Open the file for appends (string).
-        with storage_client.open(path=file_path, mode="a") as file:
+        with storage_client.open(path=file_path, mode="a", prefetch_file=True) as file:
             file.write(file_body_string)
         assert storage_client.is_file(path=file_path)
-        with storage_client.open(path=file_path, mode="r") as file:
+        with storage_client.open(path=file_path, mode="r", prefetch_file=True) as file:
             assert file.read() == file_body_string
 
         # Delete the file.
@@ -228,7 +228,7 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
         with storage_client.open(path=file_path, mode="wb") as file:
             file.write(large_file_body_bytes)
         assert storage_client.is_file(path=file_path)
-        with storage_client.open(path=file_path, mode="rb") as file:
+        with storage_client.open(path=file_path, mode="rb", prefetch_file=True) as file:
             content = b""
             for chunk in iter(functools.partial(file.read, (MEMORY_LOAD_LIMIT // 2)), b""):
                 content += chunk

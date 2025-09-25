@@ -271,12 +271,12 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
 
         :param path: The file path to open.
         :param mode: The mode in which to open the file.
-        :param kwargs: Additional arguments for file opening.
+        :param kwargs: Additional arguments passed to client.open (e.g., check_source_version, prefetch_file, etc.)
 
         :return: A ManagedFile object representing the opened file.
         """
         storage_client, path = self.resolve_path_and_storage_client(path)
-        return storage_client.open(path, mode)
+        return storage_client.open(path, mode, **kwargs)
 
     async def _open(self, path: str, mode: str = "rb", **kwargs: Any) -> Union[PosixFile, ObjectFile]:
         """

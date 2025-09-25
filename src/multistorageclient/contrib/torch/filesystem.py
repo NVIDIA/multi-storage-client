@@ -38,7 +38,8 @@ class MultiStorageFileSystem(FileSystemBase):
 
     @contextmanager
     def create_stream(self, path: Union[str, os.PathLike], mode: str) -> Generator[io.IOBase, None, None]:
-        with MultiStoragePath(path).open(mode=mode) as fp:
+        # always download the file here (used for checkpointing)
+        with MultiStoragePath(path).open(mode=mode, prefetch_file=True) as fp:
             yield fp
 
     def concat_path(self, path: Union[str, os.PathLike], suffix: str) -> Union[str, os.PathLike]:

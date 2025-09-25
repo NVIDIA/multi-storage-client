@@ -128,7 +128,8 @@ class StorageClient:
         return metadata.etag
 
     def _is_cache_enabled(self) -> bool:
-        return self._cache_manager is not None and not self._is_posix_file_storage_provider()
+        enabled = self._cache_manager is not None and not self._is_posix_file_storage_provider()
+        return enabled
 
     def _is_posix_file_storage_provider(self) -> bool:
         return isinstance(self._storage_provider, PosixFileStorageProvider)
@@ -174,12 +175,19 @@ class StorageClient:
         return self._replicas
 
     @retry
-    def read(self, path: str, byte_range: Optional[Range] = None) -> bytes:
+    def read(
+        self,
+        path: str,
+        byte_range: Optional[Range] = None,
+        check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
+    ) -> bytes:
         """
         Reads an object from the specified logical path.
 
         :param path: The logical path of the object to read.
         :param byte_range: Optional byte range to read.
+        :param check_source_version: Whether to check the source version of cached objects.
+        :param size: Optional file size for range reads.
         :return: The content of the object.
         """
         if self._metadata_provider:
@@ -192,13 +200,25 @@ class StorageClient:
             if byte_range:
                 # Range request with cache
                 try:
-                    metadata = self._storage_provider.get_object_metadata(path)
+                    if check_source_version == SourceVersionCheckMode.ENABLE:
+                        metadata = self._storage_provider.get_object_metadata(path)
+                        source_version = metadata.etag
+                    elif check_source_version == SourceVersionCheckMode.INHERIT:
+                        if self._cache_manager.check_source_version():
+                            metadata = self._storage_provider.get_object_metadata(path)
+                            source_version = metadata.etag
+                        else:
+                            metadata = None
+                            source_version = None
+                    else:
+                        metadata = None
+                        source_version = None
+
                     data = self._cache_manager.read(
                         key=path,
-                        source_version=metadata.etag,
+                        source_version=source_version,
                         byte_range=byte_range,
                         storage_provider=self._storage_provider,
-                        size=metadata.content_length,
                     )
                     if data is not None:
                         return data
@@ -550,6 +570,7 @@ class StorageClient:
         atomic: bool = True,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
         attributes: Optional[dict[str, str]] = None,
+        prefetch_file: bool = True,
     ) -> Union[PosixFile, ObjectFile]:
         """
         Returns a file-like object from the specified path.
@@ -585,6 +606,7 @@ class StorageClient:
                 memory_load_limit=memory_load_limit,
                 check_source_version=check_source_version,
                 attributes=attributes,
+                prefetch_file=prefetch_file,
             )
 
     def is_file(self, path: str) -> bool:

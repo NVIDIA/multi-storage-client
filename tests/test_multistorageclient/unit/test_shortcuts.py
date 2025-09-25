@@ -269,13 +269,13 @@ def verify_shortcuts(profile: str, prefix: str):
     )
 
     # mmap
-    with msc.open(f"msc://{profile}/{prefix}/folder/data-2.bin") as fp:
+    with msc.open(f"msc://{profile}/{prefix}/folder/data-2.bin", prefetch_file=True) as fp:
         with mmap.mmap(fp.fileno(), length=0, access=mmap.ACCESS_READ) as mm:
             content = mm[:]
             assert content == body
 
     # open file without cache
-    with msc.open(f"msc://{profile}/{prefix}/folder/data-2.bin", disable_read_cache=True) as fp:
+    with msc.open(f"msc://{profile}/{prefix}/folder/data-2.bin", disable_read_cache=True, prefetch_file=True) as fp:
         if isinstance(fp, ObjectFile):
             assert fp._cache_manager is None
 
@@ -600,7 +600,12 @@ def test_open_with_source_version_check(temp_data_store_type: Type[tempdatastore
                 f.write(content1)
 
             # Read with ENABLE mode - should get updated content
-            with msc.open(f"{MSC_PROTOCOL}test/{key}", "rb", check_source_version=SourceVersionCheckMode.ENABLE) as f:
+            with msc.open(
+                f"{MSC_PROTOCOL}test/{key}",
+                "rb",
+                check_source_version=SourceVersionCheckMode.ENABLE,
+                prefetch_file=True,
+            ) as f:
                 assert f.read() == content1
 
             # Modify file content
@@ -608,11 +613,21 @@ def test_open_with_source_version_check(temp_data_store_type: Type[tempdatastore
                 f.write(content2)
 
             # Read with DISABLE mode - should get old content from cache
-            with msc.open(f"{MSC_PROTOCOL}test/{key}", "rb", check_source_version=SourceVersionCheckMode.DISABLE) as f:
+            with msc.open(
+                f"{MSC_PROTOCOL}test/{key}",
+                "rb",
+                check_source_version=SourceVersionCheckMode.DISABLE,
+                prefetch_file=True,
+            ) as f:
                 assert f.read() == content1  # Should read from cache, not see the modification
 
             # Read with ENABLE mode - should get new content
-            with msc.open(f"{MSC_PROTOCOL}test/{key}", "rb", check_source_version=SourceVersionCheckMode.ENABLE) as f:
+            with msc.open(
+                f"{MSC_PROTOCOL}test/{key}",
+                "rb",
+                check_source_version=SourceVersionCheckMode.ENABLE,
+                prefetch_file=True,
+            ) as f:
                 assert f.read() == content2  # Should update cache
 
         finally:

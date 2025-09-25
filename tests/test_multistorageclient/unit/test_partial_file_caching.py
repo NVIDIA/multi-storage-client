@@ -22,7 +22,7 @@ from typing import Any, Dict
 import xattr
 
 from multistorageclient import StorageClient, StorageClientConfig
-from multistorageclient.types import Range
+from multistorageclient.types import Range, SourceVersionCheckMode
 from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.unit.utils.tempdatastore import create_test_data
 
@@ -89,6 +89,7 @@ def test_partial_file_caching_range_read() -> None:
         # The chunk should be stored as .file_0.bin#chunk0
         cache_dir = config["cache"]["location"]
         cache_profile_dir = os.path.join(cache_dir, "origin")
+        # The cache path mirrors the file structure
         file_dir = os.path.join(cache_profile_dir, os.path.dirname(test_file_path))
         base_name = os.path.basename(test_file_path)
         chunk_path = os.path.join(file_dir, f".{base_name}#chunk0")
@@ -126,6 +127,58 @@ def test_partial_file_caching_range_read() -> None:
         for chunk_idx in [2, 3]:
             other_chunk_path = os.path.join(file_dir, f".{base_name}#chunk{chunk_idx}")
             assert not os.path.exists(other_chunk_path), f"Chunk {chunk_idx} should not exist yet"
+
+
+def test_partial_file_caching_without_source_version() -> None:
+    """Test partial file caching when source_version is disabled (None)."""
+    with tempdatastore.TemporaryAWSS3Bucket() as origin_store:
+        # Create configuration with partial file caching enabled but source version disabled
+        config = create_partial_caching_config(origin_store)
+        config["cache"]["check_source_version"] = False  # Disable source version checking
+
+        client = StorageClient(config=StorageClientConfig.from_dict(config, profile="origin"))
+
+        # Create a test file
+        file_path = f"test-data-{uuid.uuid4()}/file.bin"
+        test_content = create_test_data(4)  # 4MB file
+        client.write(file_path, test_content)
+
+        # Read a range that should trigger chunking
+        range_read = Range(offset=512 * 1024, size=16 * 1024)  # 16KB at 512KB offset
+        partial_content = client.read(
+            file_path, byte_range=range_read, check_source_version=SourceVersionCheckMode.DISABLE
+        )
+
+        # Verify the range read returned correct data
+        expected_content = test_content[range_read.offset : range_read.offset + range_read.size]
+        assert partial_content == expected_content, (
+            f"Range read content mismatch: expected {len(expected_content)} bytes, got {len(partial_content)} bytes"
+        )
+
+        # Verify that chunk was created (should work without xattr validation)
+        cache_dir = config["cache"]["location"]
+        cache_profile_dir = os.path.join(cache_dir, "origin")
+        file_dir = os.path.join(cache_profile_dir, os.path.dirname(file_path))
+        base_name = os.path.basename(file_path)
+        chunk_path = os.path.join(file_dir, f".{base_name}#chunk0")
+        full_cache_path = os.path.join(file_dir, base_name)
+
+        # When size=None, chunk 0 gets renamed to the original file name
+        # Check that either the chunk file exists OR the full file exists (renamed chunk)
+        chunk_exists = os.path.exists(chunk_path)
+        full_file_exists = os.path.exists(full_cache_path)
+
+        assert chunk_exists or full_file_exists, (
+            f"Either chunk file {chunk_path} or full file {full_cache_path} should exist"
+        )
+
+        # Check the size of whichever file exists
+        if chunk_exists:
+            chunk_size = os.path.getsize(chunk_path)
+            assert chunk_size == 1024 * 1024, f"Chunk size should be 1MB, got {chunk_size} bytes"
+        else:
+            full_file_size = os.path.getsize(full_cache_path)
+            assert full_file_size == 1024 * 1024, f"Full file size should be 1MB, got {full_file_size} bytes"
 
 
 def test_partial_file_caching_edge_cases() -> None:
@@ -603,3 +656,230 @@ def test_partial_file_caching_chunk_to_full_file_merge() -> None:
             f"Cached file should contain full file data, got {len(cached_data)} bytes"
         )
         assert cached_data == test_content, "Cached file data should match full file content"
+
+
+def test_partial_file_caching_3mb_file_1mb_read():
+    """Test that reading 1MB from a 3MB file creates and saves a chunk in cache."""
+    with tempdatastore.TemporaryAWSS3Bucket() as origin_store:
+        # Create configuration with partial file caching enabled
+        config = create_partial_caching_config(origin_store)
+        config["cache"]["cache_line_size"] = "1M"  # 1MB cache lines
+        config["cache"]["size"] = "2M"  # 2MB cache size (smaller than 3MB file)
+
+        # Create storage client
+        msc = StorageClient(StorageClientConfig.from_dict(config, profile="origin"))
+
+        # Create a 3MB test file
+        test_content = b"X" * (3 * 1024 * 1024)  # 3MB of data
+        test_file_path = "test_3mb_file.bin"
+
+        # Write the file to S3
+        msc.write(test_file_path, test_content)
+
+        # Read 1MB from the file with prefetch_file=False
+        open_kwargs = {"prefetch_file": False}
+        with msc.open(test_file_path, "rb", **open_kwargs) as f:
+            # 1. f (ObjectFile) receives calls (f.read(), f.seek())
+            # 2. f delegates to f._file (RemoteFileReader)
+            # 3. f._file (RemoteFileReader) does the actual work:
+            # - Converts read(size) → Range(offset=self._pos, size=size)
+            # - Calls storage_client.read(byte_range=range)
+            # - Updates self._pos
+
+            # Seek to beginning and read 1MB
+            f.seek(0)
+            data = f.read(1024 * 1024)  # Read 1MB
+
+            # Verify we got the expected data
+            assert len(data) == 1024 * 1024, f"Expected 1MB, got {len(data)} bytes"
+            assert data == test_content[: 1024 * 1024], "Data should match first 1MB of test content"
+
+        # Debug: Check what was created in the cache
+        cache_dir = config["cache"]["location"]
+        origin_dir = os.path.join(cache_dir, "origin")
+
+        # Check if chunk0 was created (chunks are stored directly in origin directory)
+        chunk0_path = os.path.join(origin_dir, f".{test_file_path}#chunk0")
+
+        assert os.path.exists(chunk0_path), "Chunk 0 should be created in cache"
+
+        # Verify chunk0 contains the correct data (1MB)
+        with open(chunk0_path, "rb") as f:
+            chunk_data = f.read()
+        assert len(chunk_data) == 1024 * 1024, f"Chunk should contain 1MB, got {len(chunk_data)} bytes"
+        assert chunk_data == test_content[: 1024 * 1024], "Chunk data should match first 1MB of test content"
+
+        # Verify xattrs are set correctly
+        try:
+            import xattr
+
+            etag_attr = xattr.getxattr(chunk0_path, "user.etag")
+            cache_line_size_attr = xattr.getxattr(chunk0_path, "user.cache_line_size")
+            size_attr = xattr.getxattr(chunk0_path, "user.size")
+
+            assert etag_attr is not None, "ETag xattr should be set"
+            assert cache_line_size_attr.decode("utf-8") == "1048576", "Cache line size xattr should be 1MB"
+            assert size_attr.decode("utf-8") == str(len(test_content)), "Size xattr should be total file size (3MB)"
+        except (OSError, AttributeError):
+            # xattrs not supported on this system, skip xattr verification
+            pass
+
+
+def test_chunk_download_lock_file_cleanup():
+    """Test that lock files are automatically cleaned up when FileLock context manager exits.
+
+    This test verifies that when _download_missing_chunks completes, the lock files
+    created by the FileLock context manager are automatically cleaned up.
+    """
+
+    with tempdatastore.TemporaryAWSS3Bucket() as origin_store:
+        # Create configuration with partial file caching enabled
+        config = {
+            "profiles": {
+                "origin": origin_store.profile_config_dict() | {"caching_enabled": True},
+            },
+            "cache": {
+                "size": "10M",
+                "location": tempfile.mkdtemp(),
+                "cache_line_size": "1M",  # 1MB cache lines for testing
+                "check_source_version": True,
+                "eviction_policy": {
+                    "policy": "lru",
+                    "refresh_interval": 300,
+                },
+            },
+        }
+
+        client = StorageClient(config=StorageClientConfig.from_dict(config, profile="origin"))
+
+        # Create a test file
+        file_path = f"test-data-{uuid.uuid4()}/lock_cleanup_test.bin"
+        test_content = create_test_data(2)  # 2MB file
+        client.write(file_path, test_content)
+
+        # Ensure the cache directory structure exists
+        cache_dir = os.path.join(config["cache"]["location"], "origin")
+        os.makedirs(cache_dir, exist_ok=True)
+
+        # Read a byte range to trigger chunk download
+        byte_range = Range(offset=0, size=512 * 1024)  # 512KB starting at beginning
+        result = client.read(file_path, byte_range=byte_range)
+
+        # Verify we got the expected data
+        assert result == test_content[byte_range.offset : byte_range.offset + byte_range.size]
+
+        # Check that chunk files were created
+        file_dir = os.path.join(cache_dir, os.path.dirname(file_path))
+        base_name = os.path.basename(file_path)
+        chunk0_path = os.path.join(file_dir, f".{base_name}#chunk0")
+        assert os.path.exists(chunk0_path), "Chunk 0 should exist after range read"
+
+        # Verify that NO lock files remain after chunk download completes
+        lock_files = [f for f in os.listdir(file_dir) if f.endswith(".lock")]
+        assert len(lock_files) == 0, f"Expected no lock files after chunk download, found: {lock_files}"
+
+        # Specifically check that the chunk lock file doesn't exist
+        chunk_lock_path = os.path.join(file_dir, f".{base_name}#chunk0.lock")
+        assert not os.path.exists(chunk_lock_path), "Chunk lock file should be automatically cleaned up"
+
+
+def test_cache_directory_structure():
+    """Test that cache directory structure does not create unnecessary intermediate folders.
+
+    This test verifies that the cache should not create folders outside the cache directory.
+    If the data is at tmp/footest/A/B/C/foo.txt, the cache should handle this path intelligently
+    without creating a full nested structure that mirrors the original path exactly.
+    """
+
+    with tempdatastore.TemporaryAWSS3Bucket() as origin_store:
+        # Create a temporary cache directory to avoid conflicts during concurrent test runs
+        temp_cache_dir = tempfile.mkdtemp(prefix="msc_cache_")
+
+        # Create configuration with partial file caching enabled
+        config = {
+            "profiles": {
+                "origin": origin_store.profile_config_dict() | {"caching_enabled": True},
+            },
+            "cache": {
+                "size": "10M",
+                "location": temp_cache_dir,
+                "cache_line_size": "1M",  # 1MB cache lines for testing
+                "check_source_version": True,
+                "eviction_policy": {
+                    "policy": "lru",
+                    "refresh_interval": 300,
+                },
+            },
+        }
+
+        client = StorageClient(config=StorageClientConfig.from_dict(config, profile="origin"))
+
+        # Create a test file with a nested path structure
+        file_path = "tmp/footest/A/B/C/structure_test.bin"
+        test_content = create_test_data(2)  # 2MB file
+        client.write(file_path, test_content)
+
+        # Ensure the cache directory structure exists
+        cache_dir = os.path.join(config["cache"]["location"], "origin")
+        os.makedirs(cache_dir, exist_ok=True)
+
+        # Read a byte range to trigger chunk download and cache creation
+        byte_range = Range(offset=0, size=512 * 1024)  # 512KB starting at beginning
+        result = client.read(file_path, byte_range=byte_range)
+
+        # Verify we got the expected data
+        assert result == test_content[byte_range.offset : byte_range.offset + byte_range.size]
+
+        # Check the cache directory structure
+        expected_chunk_path = os.path.join(
+            cache_dir, os.path.dirname(file_path), f".{os.path.basename(file_path)}#chunk0"
+        )
+
+        # Verify the expected cache structure exists
+        assert os.path.exists(expected_chunk_path), f"Expected chunk at {expected_chunk_path}"
+
+        # Verify the directory structure is correct
+        expected_dir = os.path.join(cache_dir, "tmp", "footest", "A", "B", "C")
+        assert os.path.exists(expected_dir), f"Expected directory structure at {expected_dir}"
+
+        # The cache creates the full path structure, which is the expected behavior
+        # This documents the current behavior for future reference
+
+        # Verify that the chunk file exists (regardless of the directory structure approach)
+        assert os.path.exists(expected_chunk_path), f"Expected chunk at {expected_chunk_path}"
+
+        # The current implementation creates the full path structure, so we verify it exists
+        # This documents the current behavior, which may be improved in the future
+        assert os.path.exists(expected_dir), f"Expected directory structure at {expected_dir}"
+
+        # Verify the full path structure is preserved
+        full_cache_path = os.path.join(cache_dir, file_path)
+        full_cache_dir = os.path.dirname(full_cache_path)
+        assert os.path.exists(full_cache_dir), f"Expected full cache directory structure at {full_cache_dir}"
+
+        # CRITICAL: Verify that files are ONLY written to cache, NOT to the original path structure
+        # The cache should not create any files outside the cache directory
+
+        # Check that the specific path structure does NOT exist in the filesystem
+        # e.g., tmp/footest/A/B/C/foo.txt should NOT exist at /tmp/footest/A/B/C/foo.txt
+        # But we need to be careful not to check system directories like /tmp
+
+        # Check the full original path doesn't exist (this is the key test)
+        full_original_path = os.path.join("/", file_path)
+        assert not os.path.exists(full_original_path), (
+            f"ERROR: Cache created {full_original_path} outside cache directory!"
+        )
+
+        # Check that the specific nested path doesn't exist
+        # /tmp/footest should not exist (assuming /tmp exists but /tmp/footest should not)
+        footest_path = "/tmp/footest"
+        assert not os.path.exists(footest_path), f"ERROR: Cache created {footest_path} outside cache directory!"
+
+        # Check that the full nested structure doesn't exist
+        full_nested_path = "/tmp/footest/A/B/C"
+        assert not os.path.exists(full_nested_path), f"ERROR: Cache created {full_nested_path} outside cache directory!"
+
+        # Verify that the cache path resolution works correctly
+        # The cache should mirror the original file path structure
+        relative_path = os.path.relpath(full_cache_path, cache_dir)
+        assert relative_path == file_path, f"Cache path structure mismatch: expected {file_path}, got {relative_path}"

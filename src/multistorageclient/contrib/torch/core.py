@@ -27,7 +27,7 @@ def load(f: Union[str, os.PathLike[str], IO[bytes]], *args: Any, **kwargs: Any) 
     Adapt ``torch.load``.
     """
     if isinstance(f, str):
-        with msc_open(f, "rb") as fp:
+        with msc_open(f, "rb", prefetch_file=True) as fp:
             return _torch.load(fp, *args, **kwargs)
     elif isinstance(f, MultiStoragePath):
         with f.open("rb") as fp:

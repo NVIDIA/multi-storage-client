@@ -22,7 +22,7 @@ from typing import Union
 
 from .client import StorageClient
 from .shortcuts import resolve_storage_client
-from .types import MSC_PROTOCOL, ObjectMetadata, SourceVersionCheckMode
+from .types import MSC_PROTOCOL, ObjectMetadata
 from .utils import join_paths
 
 logger = logging.getLogger(__name__)
@@ -539,24 +539,19 @@ class MultiStoragePath:
 
     # Reading and writing files
 
-    def open(
-        self,
-        mode="r",
-        buffering=-1,
-        encoding=None,
-        errors=None,
-        newline=None,
-        check_source_version=SourceVersionCheckMode.INHERIT,
-    ):
+    def open(self, mode="r", buffering=-1, encoding=None, errors=None, newline=None, **kwargs):
         """
         Open the file and return a file object.
+
+        :param mode: The file mode to open the file in.
+        :param buffering: The buffering mode.
+        :param encoding: The encoding to use for text files.
+        :param errors: How to handle encoding errors.
+        :param newline: Controls universal newlines mode.
+        :param kwargs: Additional arguments passed to client.open (e.g., check_source_version, prefetch_file, etc.)
         """
         return self._storage_client.open(
-            str(self._internal_path),
-            mode=mode,
-            buffering=buffering,
-            encoding=encoding,
-            check_source_version=check_source_version,
+            str(self._internal_path), mode=mode, buffering=buffering, encoding=encoding, **kwargs
         )
 
     def read_bytes(self) -> bytes:
