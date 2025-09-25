@@ -831,7 +831,7 @@ dependencies = [
 [[package]]
 name = "object_store"
 version = "0.12.4"
-source = "git+ssh://git@gitlab-master.nvidia.com:12051/nsv-data-platform/experiments/forked-rust-object-store.git?branch=main#5cc3890132eff74e7458c85003b5af1d603ccdb6"
+source = "git+https://github.com/dreamtalen/arrow-rs-object-store.git?branch=msc-0.30#8f6ec214f90b71097b488f87ec5f9e88eee86c1e"
 dependencies = [
  "async-trait",
  "base64",
