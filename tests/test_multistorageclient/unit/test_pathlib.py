@@ -19,7 +19,7 @@ import shutil
 import stat
 import tempfile
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -177,6 +177,67 @@ def test_shutil_rmtree(file_storage_config):
 def test_relative_path():
     path = msc.Path("./workspace/datasets/file.txt")
     assert path.as_posix() == os.path.realpath("./workspace/datasets/file.txt")
+
+
+def test_relative_to():
+    """Test the relative_to method of MultiStoragePath."""
+    # Test 1: Basic cases - multi-level and single-level paths
+    path1 = msc.Path("/home/user/documents/projects/myproject/src/main.py")
+    path2 = msc.Path("/home/user/documents/projects")
+    assert str(path1.relative_to(path2)) == "myproject/src/main.py"
+    assert isinstance(path1.relative_to(path2), PurePosixPath)
+
+    # Single-level relative path
+    path3 = msc.Path("/home/user/documents/file.txt")
+    assert str(path3.relative_to(path3.parent)) == "file.txt"
+
+    # Same path returns "."
+    assert str(path1.relative_to(path1)) == "."
+
+    # Test 2: ValueError cases
+    # Unrelated paths
+    with pytest.raises(ValueError, match="is not in the subpath of"):
+        msc.Path("/home/user/documents").relative_to(msc.Path("/home/other/files"))
+
+    # Parent relative to child
+    with pytest.raises(ValueError, match="is not in the subpath of"):
+        msc.Path("/home/user").relative_to(msc.Path("/home/user/documents"))
+
+    # Test 3: TypeError when other is not MultiStoragePath
+    path = msc.Path("/home/user/documents")
+    with pytest.raises(TypeError, match="object cannot be used as relative base"):
+        path.relative_to("/home/user")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="object cannot be used as relative base"):
+        path.relative_to(Path("/home/user"))  # type: ignore[arg-type]
+
+
+def test_relative_to_remote_storage(file_storage_config):
+    """Test relative_to method with remote storage paths."""
+    # Test 1: MSC protocol paths and deep nesting
+    # Standard multi-level path
+    path1 = msc.Path("msc://default/data/reports/2024/january/sales.csv")
+    path2 = msc.Path("msc://default/data/reports")
+    assert str(path1.relative_to(path2)) == "2024/january/sales.csv"
+    assert isinstance(path1.relative_to(path2), PurePosixPath)
+
+    # Deep nesting stress test
+    deep_path = msc.Path("msc://default/a/b/c/d/e/f/g/h/file.txt")
+    base_path = msc.Path("msc://default/a/b")
+    assert str(deep_path.relative_to(base_path)) == "c/d/e/f/g/h/file.txt"
+
+    # Test 2: Cross-profile errors
+    # Different storage profiles
+    with pytest.raises(ValueError, match="Cannot compute relative path between different storage profiles"):
+        msc.Path("s3://bucket1/data/file.txt").relative_to(msc.Path("s3://bucket2/data"))
+
+    # Local vs remote with different profiles
+    with pytest.raises(ValueError, match="Cannot compute relative path between different storage profiles"):
+        msc.Path("/local/path/file.txt").relative_to(msc.Path("s3://bucket/path"))
+
+    # Test 3: Local and msc://default compatibility (same profile)
+    local_path = msc.Path("/home/user/documents/file.txt")
+    msc_default = msc.Path("msc://default/home/user/documents")
+    assert str(local_path.relative_to(msc_default)) == "file.txt"
 
 
 def test_hashable_path():

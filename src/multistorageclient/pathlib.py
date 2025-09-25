@@ -256,11 +256,39 @@ class MultiStoragePath:
         """
         return Path(self._internal_path).match(pattern)
 
-    def relative_to(self, other: "MultiStoragePath") -> "MultiStoragePath":
+    def relative_to(self, other: "MultiStoragePath") -> PurePosixPath:
         """
-        Not implemented.
+        Return a version of this path relative to another path.
+
+        Both paths must use the same storage profile. The operation raises ValueError if:
+        - The paths have different storage profiles
+        - This path is not relative to the other path
+        - The other path is not a MultiStoragePath instance
+
+        Note: This method returns a PurePosixPath (not a MultiStoragePath) because
+        MultiStoragePath always represents absolute paths.
+
+        :param other: The base path to calculate relative path from
+        :return: A PurePosixPath representing the relative path
+        :raises ValueError: If the path cannot be made relative to other
+        :raises TypeError: If other is not a MultiStoragePath instance
         """
-        raise NotImplementedError("MultiStoragePath.relative_to() is unsupported")
+        if not isinstance(other, MultiStoragePath):
+            raise TypeError(f"'{type(other).__name__}' object cannot be used as relative base")
+
+        # Check if both paths use the same storage profile
+        if self._storage_client.profile != other._storage_client.profile:
+            raise ValueError(
+                f"Cannot compute relative path between different storage profiles: "
+                f"'{self._storage_client.profile}' and '{other._storage_client.profile}'"
+            )
+
+        # Use the internal PurePosixPath.relative_to() method
+        try:
+            return self._internal_path.relative_to(other._internal_path)
+        except ValueError:
+            # Re-raise with paths that include the profile information for clarity
+            raise ValueError(f"{str(self)!r} is not in the subpath of {str(other)!r}")
 
     def with_name(self, name: str) -> "MultiStoragePath":
         """
