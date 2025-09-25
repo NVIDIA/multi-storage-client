@@ -118,7 +118,7 @@ PROFILE_SCHEMA = {
                 "properties": {
                     "type": {
                         "type": "string",
-                        "enum": ["ais", "azure", "file", "gcs", "gcs_s3", "oci", "s3", "s8k"],
+                        "enum": ["ais", "azure", "file", "gcs", "gcs_s3", "oci", "s3", "s8k", "huggingface"],
                     },
                     "options": {
                         "type": "object",

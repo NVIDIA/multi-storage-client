@@ -99,6 +99,7 @@ STORAGE_PROVIDER_MAPPING = {
     "ais": "AIStoreStorageProvider",
     "s8k": "S8KStorageProvider",
     "gcs_s3": "GoogleS3StorageProvider",
+    "huggingface": "HuggingFaceStorageProvider",
 }
 
 CREDENTIALS_PROVIDER_MAPPING = {
@@ -106,6 +107,7 @@ CREDENTIALS_PROVIDER_MAPPING = {
     "AzureCredentials": "StaticAzureCredentialsProvider",
     "AISCredentials": "StaticAISCredentialProvider",
     "GoogleIdentityPoolCredentialsProvider": "GoogleIdentityPoolCredentialsProvider",
+    "HuggingFaceCredentials": "HuggingFaceCredentialsProvider",
 }
 
 

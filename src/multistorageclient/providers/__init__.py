@@ -50,6 +50,9 @@ def __getattr__(name: str) -> Any:
         # AIS
         "AIStoreStorageProvider": ".ais",
         "StaticAISCredentialProvider": ".ais",
+        # HuggingFace
+        "HuggingFaceStorageProvider": ".huggingface",
+        "HuggingFaceCredentialsProvider": ".huggingface",
     }
 
     if name in module_map:
@@ -69,6 +72,7 @@ def __getattr__(name: str) -> Any:
                 ".s3": "boto3",
                 ".s8k": "boto3",
                 ".ais": "aistore",
+                ".huggingface": "huggingface",
             }
 
             required_package = package_map.get(module_name, module_name.lstrip("."))
@@ -78,6 +82,7 @@ def __getattr__(name: str) -> Any:
                 "oci": "Oracle Cloud Infrastructure",
                 "boto3": "Amazon S3 or other S3-compatible storage",
                 "aistore": "NVIDIA AIStore",
+                "huggingface": "HuggingFace Hub",
             }.get(required_package, required_package)
 
             # Write a helpful message to stderr

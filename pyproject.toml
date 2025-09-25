@@ -72,6 +72,9 @@ google-cloud-storage = [
 oci = [
     "oci>=2.150,<3"
 ]
+huggingface = [
+    "huggingface_hub>=0.34.4,<1"
+]
 
 # Higher-level libraries.
 fsspec = [

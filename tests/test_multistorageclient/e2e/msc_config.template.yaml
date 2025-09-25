@@ -168,3 +168,21 @@ profiles:
         multipart_chunksize: 4194304 # 4MB
         io_chunksize: 4194304 # 4MB
         rust_client: {}
+  test-hf-public-model:
+    storage_provider:
+      type: huggingface
+      options:
+        repository_id: "microsoft/DialoGPT-medium"
+        repo_type: "model"
+        base_path: ""
+  test-hf-private-dataset:
+    credentials_provider:
+      type: HuggingFaceCredentials
+      options:
+        access_token: "*****"
+    storage_provider:
+      type: huggingface
+      options:
+        repository_id: "some-xet-enabled-repo"
+        repo_type: "dataset"
+        base_path: ""
