@@ -30,11 +30,12 @@ class RustClient:
         """
         ...
 
-    async def put(self, path: str, data: bytes) -> Awaitable[None]:
+    async def put(self, path: str, data: bytes) -> Awaitable[int]:
         """
         Upload data to the object store at the specified path.
         :param path: The remote object path in the storage backend.
         :param data: The data to upload as bytes.
+        :return: The number of bytes uploaded.
         """
         ...
 
@@ -48,19 +49,21 @@ class RustClient:
         """
         ...
 
-    async def upload(self, local_path: str, remote_path: str) -> Awaitable[None]:
+    async def upload(self, local_path: str, remote_path: str) -> Awaitable[int]:
         """
         Upload a local file to the object store.
         :param local_path: Path to the local file to upload.
         :param remote_path: The destination path in the storage backend.
+        :return: The number of bytes uploaded.
         """
         ...
 
-    async def download(self, remote_path: str, local_path: str) -> Awaitable[None]:
+    async def download(self, remote_path: str, local_path: str) -> Awaitable[int]:
         """
         Download an object from the store and save it to a local file.
         :param remote_path: The remote object path in the storage backend.
         :param local_path: Path to the local file to save the downloaded data.
+        :return: The number of bytes downloaded.
         """
         ...
 
@@ -70,7 +73,7 @@ class RustClient:
         remote_path: str,
         multipart_chunksize: int | None = ...,
         max_concurrency: int | None = ...,
-    ) -> Awaitable[None]:
+    ) -> Awaitable[int]:
         """
         Upload a local file to the object store using multipart upload.
 
@@ -82,12 +85,13 @@ class RustClient:
         :param remote_path: The destination path in the storage backend.
         :param multipart_chunksize: The size of the multipart chunks.
         :param max_concurrency: The maximum number of concurrent operations.
+        :return: The number of bytes uploaded.
         """
         ...
 
     async def upload_multipart_from_bytes(
         self, remote_path: str, data: bytes, multipart_chunksize: int | None = ..., max_concurrency: int | None = ...
-    ) -> Awaitable[None]:
+    ) -> Awaitable[int]:
         """
         Upload data to the object store at the specified remote_path using multipart upload.
 
@@ -99,6 +103,7 @@ class RustClient:
         :param data: The data to upload as bytes.
         :param multipart_chunksize: The size of the multipart chunks.
         :param max_concurrency: The maximum number of concurrent operations.
+        :return: The number of bytes uploaded.
         """
         ...
 
@@ -108,7 +113,7 @@ class RustClient:
         local_path: str,
         multipart_chunksize: int | None = ...,
         max_concurrency: int | None = ...,
-    ) -> Awaitable[None]:
+    ) -> Awaitable[int]:
         """
         Download an object from the store and save it to a local file using multipart download.
 
@@ -120,6 +125,7 @@ class RustClient:
         :param local_path: Path to the local file to upload.
         :param multipart_chunksize: The size of the multipart chunks.
         :param max_concurrency: The maximum number of concurrent operations.
+        :return: The number of bytes downloaded.
         """
         ...
 

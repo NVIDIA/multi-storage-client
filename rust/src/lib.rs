@@ -465,14 +465,16 @@ impl RustClient {
         self.refresh_store_if_needed()?;
         let store = Arc::clone(&*self.store.read().unwrap());
         let path = Path::from(path);
-        let payload = PutPayload::from_bytes(data.into_inner());
+        let data_bytes = data.into_inner();
+        let bytes_written = data_bytes.len() as u64;
+        let payload = PutPayload::from_bytes(data_bytes);
 
         future_into_py(py, async move {
             store
                 .put(&path, payload)
                 .await
                 .map_err(StorageError::from)?;
-            Ok(())
+            Ok(bytes_written)
         })
     }
 
@@ -519,11 +521,12 @@ impl RustClient {
 
         future_into_py(py, async move {
             let data = fs::read(local_path).await.map_err(StorageError::from)?;
+            let bytes_uploaded = data.len() as u64;
             store
                 .put(&remote_path, data.into())
                 .await
                 .map_err(StorageError::from)?;
-            Ok(())
+            Ok(bytes_uploaded)
         })
     }
 
@@ -542,10 +545,11 @@ impl RustClient {
         future_into_py(py, async move {
             let result = store.get(&remote_path).await.map_err(StorageError::from)?;
             let data = result.bytes().await.map_err(StorageError::from)?;
+            let bytes_downloaded = data.len() as u64;
             fs::write(&local_path, data)
                 .await
                 .map_err(StorageError::from)?;
-            Ok(())
+            Ok(bytes_downloaded)
         })
     }
 
@@ -567,6 +571,7 @@ impl RustClient {
 
         future_into_py(py, async move {
             let mut file = tokio::fs::File::open(local_path).await.map_err(StorageError::from)?;
+            let file_size = file.metadata().await.map_err(StorageError::from)?.len();
 
             let upload = store.put_multipart(&remote_path).await.map_err(StorageError::from)?;
             let mut writer = WriteMultipart::new_with_chunk_size(upload, chunksize);
@@ -583,7 +588,7 @@ impl RustClient {
 
             writer.finish().await.map_err(StorageError::from)?;
 
-            Ok(())
+            Ok(file_size)
         })
     }
 
@@ -600,6 +605,7 @@ impl RustClient {
         let store = Arc::clone(&*self.store.read().unwrap());
         let remote_path: Path = Path::from(remote_path);
         let data_bytes = data.into_inner();
+        let bytes_uploaded = data_bytes.len() as u64;
         let chunksize = multipart_chunksize.unwrap_or(self.multipart_chunksize);
         let concurrency = max_concurrency.unwrap_or(self.max_concurrency);
 
@@ -610,7 +616,7 @@ impl RustClient {
                     .put(&remote_path, payload)
                     .await
                     .map_err(StorageError::from)?;
-                return Ok(());
+                return Ok(bytes_uploaded);
             }
 
             let upload = store.put_multipart(&remote_path).await.map_err(StorageError::from)?;
@@ -629,7 +635,7 @@ impl RustClient {
 
             writer.finish().await.map_err(StorageError::from)?;
 
-            Ok(())
+            Ok(bytes_uploaded)
         })
     }
 
@@ -720,7 +726,7 @@ impl RustClient {
 
             temp_file.persist(&local_path).map_err(StorageError::from)?;
             
-            Ok(())
+            Ok(total_size)
         })
     }
 
