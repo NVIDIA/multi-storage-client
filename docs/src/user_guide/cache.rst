@@ -35,6 +35,7 @@ an absolute filesystem path, and the size should be a positive integer with a un
      size: 500G
      location: /path/to/msc_cache
      check_source_version: true   # validate remote object version before serving cached copy
+     cache_line_size: 64M         # size of chunks for partial file caching
 
 ``check_source_version`` replaces the older ``use_etag`` flag (still accepted
 for backward-compatibility).  The default is ``true`` (MSC validates the
@@ -44,6 +45,111 @@ for performance reasons or when the storage backend lacks a versioning
 mechanism.
 
 For detailed configuration options, see :doc:`/references/configuration`
+
+********************
+Partial File Caching
+********************
+
+MSC supports partial file caching, which allows efficient caching of large files by downloading and storing them in smaller chunks. This is particularly useful for large files where you only need to access specific portions.
+
+**Key Features:**
+
+* **Chunk-based Storage**: Large files are automatically split into configurable chunks (default 64MB) and stored separately in the cache.
+* **Range Request Optimization**: When reading specific byte ranges, MSC only downloads the necessary chunks, not the entire file.
+
+**Configuration:**
+
+The ``cache_line_size`` parameter controls the size of each chunk. This should be set based on your typical access patterns:
+
+.. code-block:: yaml
+   :caption: Example configuration for partial file caching.
+
+   cache:
+     size: 500G
+     location: /path/to/msc_cache
+     cache_line_size: 64M    # 64MB chunks
+     check_source_version: true
+
+**Usage:**
+
+Partial file caching is automatically enabled when using ``client.read()`` with range:
+
+.. code-block:: python
+   :caption: Using partial file caching with range reads.
+
+   from multistorageclient import StorageClient, StorageClientConfig
+   from multistorageclient.types import Range
+   
+   # Create a storage client with configuration
+   config = StorageClientConfig.from_file()  # or from_dict()
+   client = StorageClient(config=config, profile="your_profile")
+   
+   # This will only download the necessary chunks for the specified range
+   data = client.read("path/to/large_file.bin", 
+                     byte_range=Range(offset=1024*1024, size=512*1024))  # 512KB read from 1MB offset
+   
+   # For full file access, use client.open() with prefetch_file parameter
+   with client.open("path/to/large_file.bin", prefetch_file=False) as f:
+       # This will use partial file caching instead of downloading the entire file
+       data = f.read(1024*1024)  # Read 1MB
+
+**Source Version Validation:**
+
+The ``client.read()`` method supports source version validation through the ``check_source_version`` parameter. For most use cases, you can control source version checking entirely through the cache configuration:
+
+.. code-block:: yaml
+   :caption: Controlling source version validation via cache config.
+
+   cache:
+     check_source_version: false  # Disable validation globally for performance
+     # or
+     check_source_version: true   # Enable validation globally for data consistency
+
+When using ``SourceVersionCheckMode.INHERIT`` (the default), the cache configuration setting is used. You only need to explicitly specify ``ENABLE`` or ``DISABLE`` when you want to override the cache config for specific calls.
+
+.. code-block:: python
+   :caption: Using source version validation in range reads.
+
+   from multistorageclient.types import SourceVersionCheckMode
+   
+   # Use cache configuration setting (default - recommended for most cases)
+   data = client.read("path/to/file.bin", 
+                     byte_range=Range(offset=0, size=1024))
+   # Equivalent to: check_source_version=SourceVersionCheckMode.INHERIT
+   
+   # Override cache config for specific calls when needed
+   # Always validate source version (may require HEAD request)
+   data = client.read("path/to/file.bin", 
+                     byte_range=Range(offset=0, size=1024),
+                     check_source_version=SourceVersionCheckMode.ENABLE)
+   
+   # Skip source version validation for performance
+   data = client.read("path/to/file.bin", 
+                     byte_range=Range(offset=0, size=1024),
+                     check_source_version=SourceVersionCheckMode.DISABLE)
+
+**Prefetch File Control:**
+
+The ``prefetch_file`` parameter in ``client.open()`` controls whether the entire file is downloaded upfront or uses partial file caching:
+
+.. code-block:: python
+   :caption: Controlling file prefetch behavior.
+
+   # Download entire file upfront (default behavior)
+   with client.open("path/to/large_file.bin", prefetch_file=True) as f:
+       data = f.read(1024*1024)  # Fast local read after download
+   
+   # Use partial file caching - only download chunks as needed
+   with client.open("path/to/large_file.bin", prefetch_file=False) as f:
+       data = f.read(1024*1024)  # Downloads only necessary chunks
+       f.seek(1024*1024*100)     # Seek to different position
+       more_data = f.read(1024*1024)  # Downloads additional chunks as needed
+
+**When to use each approach:**
+
+* **prefetch_file=True** (default): Use when you expect to read most or all of the file. The entire file is downloaded once, then all subsequent reads are served from local cache at maximum speed.
+
+* **prefetch_file=False**: Use for large files where you only need specific portions, or when you want to start processing data immediately without waiting for the full download. This enables partial file caching with chunk-based downloads.
 
 *************************
 Cache Directory Structure
@@ -104,6 +210,8 @@ is set to ``fifo`` with a refresh interval of 300 seconds.
 Best Practices
 **************
 
+**Full File Caching:**
+
 Configure MSC cache when your workload performs **frequent** small range-reads on objects. This is particularly common in:
 
 * **ML Training Workloads**: Machine learning training often involves reading large amount of data files and selecting random samples from different parts of the file, resulting in many small range-read operations. By caching the entire object upfront, these expensive network round-trips are eliminated, and subsequent sample reads are served directly from local storage at much higher speeds.
@@ -112,13 +220,36 @@ Configure MSC cache when your workload performs **frequent** small range-reads o
 
 * **Random Access Patterns**: Any workload that requires random access to different parts of large files frequently will benefit significantly from caching, as the alternative would be numerous individual range requests to remote storage.
 
-The cache transforms what would be hundreds or thousands of small, high-latency network requests into a single bulk download followed by fast local file system access.
+**Partial File Caching:**
 
-.. note:: Cache the file if you anticipate reading more than 50% of it, as this threshold ensures that the benefits of local access outweigh the cost of downloading the entire file upfront.
+For large files where you only need to access specific portions, use partial file caching with range reads:
+
+* **Large Dataset Access**: When working with very large datasets (hundreds of GB or TB), use ``client.read()`` with ``byte_range`` to only download the chunks you need.
+
+* **Sparse File Access**: For files where you only read small portions scattered throughout the file, partial file caching is more efficient than downloading the entire file.
+
+* **Streaming Workloads**: When processing large files sequentially in chunks, partial file caching allows you to process data as it's downloaded without waiting for the entire file.
+
+**Performance Considerations:**
+
+* **Full File Caching** (``prefetch_file=True`` with ``client.open()``):  The cache transforms what would be hundreds or thousands of small, high-latency network requests into a single bulk download followed by fast local file system access.
+
+* **Partial File Caching** (``prefetch_file=False`` with ``client.open()``): Use for large files with sparse access patterns. Set ``cache_line_size`` based on your typical read sizes - smaller chunks (e.g., 16MB) for fine-grained access, larger chunks (e.g., 128MB) for coarser access patterns.
+
+* **Source Version Validation**: This feature can be turned on and off via the cache config using ``check_source_version: true/false``. For fine-grained tuning, use ``SourceVersionCheckMode.DISABLE`` for maximum performance when you can tolerate potentially stale data, or when the data doesn't change (gives best performance). Use ``SourceVersionCheckMode.ENABLE`` when data consistency is critical.
+
+* **Prefetch File Strategy**: 
+  - Use ``prefetch_file=True`` for sequential reads or when you need the entire file
+  - Use ``prefetch_file=False`` for random access patterns or when you want to start processing immediately
+  - Combine with appropriate ``cache_line_size`` for optimal performance
 
 
 ***********
 Limitations
 ***********
 
-* **Inefficient for large files with sparse access**: The cache always downloads entire files, making it inefficient for large files when your workload only reads small portions at a time. For such cases, you can disable the read cache for specific files using ``msc.open(..., disable_read_cache=True)``.
+* **Full file caching inefficiency**: Traditional full file caching downloads entire files, which can be inefficient for large files when your workload only reads small portions at a time. For such cases, use partial file caching with ``client.read()`` and ``byte_range``, or use ``client.open(..., prefetch_file=False)`` to enable chunk-based caching.
+
+* **Chunk size tuning**: The effectiveness of partial file caching depends on choosing an appropriate ``cache_line_size``. Too small chunks increase overhead, while too large chunks reduce the benefits of partial caching.
+
+* **Network dependency**: Initial chunk downloads still require network access. For completely offline scenarios, ensure all required chunks are pre-cached.
