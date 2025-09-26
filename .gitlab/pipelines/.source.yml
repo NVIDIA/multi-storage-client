@@ -12,6 +12,9 @@ stages:
   - 💿
 
 default:
+  tags:
+    - cd-r.platform.hardware/x86-64.12
+    - cd-r.platform.supervisor/linux.sysbox-runc.docker-engine
   # Using this instead of nixos/nix:latest to handle hardcoded dynamic linker paths.
   image: debian:unstable-slim
   before_script:

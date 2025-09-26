@@ -12,6 +12,9 @@ stages:
   - 💿
 
 default:
+  tags:
+    - cd-r.platform.hardware/x86-64.12
+    - cd-r.platform.supervisor/linux.sysbox-runc.docker-engine
   # This is a very minimal Linux with just Nix. It's not NixOS.
   image: nixos/nix:latest
   before_script:
