@@ -108,3 +108,97 @@ def test_huggingface_get_object(profile_name):
 
     except Exception as e:
         pytest.skip(f"get_object test skipped: {e}")
+
+
+@pytest.mark.parametrize("profile_name", ["test-hf-private-dataset"])
+def test_huggingface_download_write(profile_name):
+    """Test downloading existing file, re-uploading it, and downloading again to verify integrity."""
+    profile = profile_name
+    client, _ = msc.resolve_storage_client(f"msc://{profile}/")
+
+    original_filename = "small_file_0.parquet"
+    copy_filename = "test_copy_small_file.parquet"
+
+    try:
+        original_content = client.read(original_filename)
+        assert len(original_content) > 0, "Original file should have content"
+        assert original_content.startswith(b"PAR1"), "Should be a valid parquet file"
+
+        client.write(copy_filename, original_content)
+
+        copy_content = client.read(copy_filename)
+        assert copy_content == original_content, "Copy should be identical to original"
+        assert len(copy_content) == len(original_content), "Copy size should match original size"
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".parquet") as temp_file:
+            temp_path = temp_file.name
+
+        try:
+            client.download_file(copy_filename, temp_path)
+            download_size = os.path.getsize(temp_path)
+            assert download_size == len(original_content), (
+                f"File download size should match, {download_size}, {len(original_content)}"
+            )
+
+            with open(temp_path, "rb") as f:
+                file_content = f.read()
+                assert file_content == original_content, "File content should match original"
+
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+    except Exception as e:
+        pytest.fail(f"Download-upload-download cycle test failed: {e} ")
+
+
+@pytest.mark.parametrize("profile_name", ["test-hf-private-dataset"])
+def test_huggingface_download_upload_file(profile_name):
+    """Test downloading existing file, re-uploading it using upload_file, and downloading again to verify integrity."""
+    profile = profile_name
+    client, _ = msc.resolve_storage_client(f"msc://{profile}/")
+
+    # Use an existing file from the repository
+    original_filename = "small_file_0.parquet"
+    copy_filename = "test_copy_upload_file.parquet"
+
+    try:
+        original_content = client.read(original_filename)
+        assert len(original_content) > 0, "Original file should have content"
+        assert original_content.startswith(b"PAR1"), "Should be a valid parquet file"
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".parquet") as temp_upload_file:
+            temp_upload_path = temp_upload_file.name
+            temp_upload_file.write(original_content)
+
+        try:
+            client.upload_file(copy_filename, temp_upload_path)
+
+            copy_content = client.read(copy_filename)
+            assert copy_content == original_content, "Copy should be identical to original"
+            assert len(copy_content) == len(original_content), "Copy size should match original size"
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".parquet") as temp_download_file:
+                temp_download_path = temp_download_file.name
+
+            try:
+                client.download_file(copy_filename, temp_download_path)
+                download_size = os.path.getsize(temp_download_path)
+                assert download_size == len(original_content), (
+                    f"File download size should match, {download_size}, {len(original_content)}"
+                )
+
+                with open(temp_download_path, "rb") as f:
+                    file_content = f.read()
+                    assert file_content == original_content, "File content should match original"
+
+            finally:
+                if os.path.exists(temp_download_path):
+                    os.unlink(temp_download_path)
+
+        finally:
+            if os.path.exists(temp_upload_path):
+                os.unlink(temp_upload_path)
+
+    except Exception as e:
+        pytest.fail(f"Download-upload_file-download cycle test failed: {e}")

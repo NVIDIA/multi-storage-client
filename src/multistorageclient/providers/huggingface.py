@@ -13,11 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
 import os
 import shutil
 import tempfile
 from collections.abc import Iterator, Sequence
-from io import TextIOBase
 from typing import IO, Optional, Union
 
 import opentelemetry.metrics as api_metrics
@@ -160,9 +160,54 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         :param if_none_match: Optional ETag for conditional uploads (not supported by HuggingFace).
         :param attributes: Optional attributes for the object (not supported by HuggingFace).
         :return: Data size in bytes.
-        :raises NotImplementedError: This method is not yet implemented.
+        :raises RuntimeError: If HuggingFace client is not initialized or API errors occur.
+        :raises ValueError: If conditional upload parameters are provided (not supported).
         """
-        raise NotImplementedError("HuggingFace provider not fully implemented yet")
+        if not self._hf_client:
+            raise RuntimeError("HuggingFace client not initialized")
+
+        if if_match is not None or if_none_match is not None:
+            raise ValueError(
+                "HuggingFace provider does not support conditional uploads. "
+                "if_match and if_none_match parameters are not supported."
+            )
+
+        if attributes is not None:
+            raise ValueError(
+                "HuggingFace provider does not support custom object attributes. "
+                "Use commit messages or repository metadata instead."
+            )
+
+        try:
+            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                temp_file.write(body)
+                temp_file_path = temp_file.name
+
+            try:
+                self._hf_client.upload_file(
+                    path_or_fileobj=temp_file_path,
+                    path_in_repo=path,
+                    repo_id=self._repository_id,
+                    repo_type=self._repo_type,
+                    revision=self._repo_revision,
+                    commit_message=f"Upload {path}",
+                    commit_description=None,
+                    create_pr=False,
+                )
+
+                return len(body)
+
+            finally:
+                os.unlink(temp_file_path)
+
+        except (RepositoryNotFoundError, RevisionNotFoundError) as e:
+            raise FileNotFoundError(
+                f"Repository or revision not found: {self._repository_id}@{self._repo_revision}"
+            ) from e
+        except HfHubHTTPError as e:
+            raise RuntimeError(f"HuggingFace API error during upload of {path}: {e}") from e
+        except Exception as e:
+            raise RuntimeError(f"Unexpected error during upload of {path}: {e}") from e
 
     def _get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
         """
@@ -267,9 +312,72 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         :param f: File path or file object to upload.
         :param attributes: Optional attributes for the file (not supported by HuggingFace).
         :return: Data size in bytes.
-        :raises NotImplementedError: This method is not yet implemented.
+        :raises RuntimeError: If HuggingFace client is not initialized or API errors occur.
+        :raises ValueError: If custom attributes are provided (not supported).
         """
-        raise NotImplementedError("HuggingFace provider not fully implemented yet")
+        if not self._hf_client:
+            raise RuntimeError("HuggingFace client not initialized")
+
+        if attributes is not None:
+            raise ValueError(
+                "HuggingFace provider does not support custom file attributes. "
+                "Use commit messages or repository metadata instead."
+            )
+
+        try:
+            if isinstance(f, str):
+                file_size = os.path.getsize(f)
+
+                self._hf_client.upload_file(
+                    path_or_fileobj=f,
+                    path_in_repo=remote_path,
+                    repo_id=self._repository_id,
+                    repo_type=self._repo_type,
+                    revision=self._repo_revision,
+                    commit_message=f"Upload {remote_path}",
+                    commit_description=None,
+                    create_pr=False,
+                )
+
+                return file_size
+
+            else:
+                content = f.read()
+
+                if isinstance(content, str):
+                    content_bytes = content.encode("utf-8")
+                else:
+                    content_bytes = content
+
+                # Create temporary file since HfAPI.upload_file requires BinaryIO, not generic IO
+                with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                    temp_file.write(content_bytes)
+                    temp_file_path = temp_file.name
+
+                try:
+                    self._hf_client.upload_file(
+                        path_or_fileobj=temp_file_path,
+                        path_in_repo=remote_path,
+                        repo_id=self._repository_id,
+                        repo_type=self._repo_type,
+                        revision=self._repo_revision,
+                        commit_message=f"Upload {remote_path}",
+                        create_pr=False,
+                    )
+
+                    return len(content_bytes)
+
+                finally:
+                    os.unlink(temp_file_path)
+
+        except (RepositoryNotFoundError, RevisionNotFoundError) as e:
+            raise FileNotFoundError(
+                f"Repository or revision not found: {self._repository_id}@{self._repo_revision}"
+            ) from e
+        except HfHubHTTPError as e:
+            raise RuntimeError(f"HuggingFace API error during upload of {remote_path}: {e}") from e
+        except Exception as e:
+            raise RuntimeError(f"Unexpected error during upload of {remote_path}: {e}") from e
 
     def _download_file(self, remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> int:
         """
@@ -315,7 +423,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
 
                     with open(downloaded_path, "rb") as src:
                         data = src.read()
-                        if isinstance(f, TextIOBase):
+                        if isinstance(f, io.TextIOBase):
                             f.write(data.decode("utf-8"))
                         else:
                             f.write(data)
