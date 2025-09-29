@@ -31,8 +31,6 @@ class RmAction(Action):
         return "Delete files or directories"
 
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
-        parser.formatter_class = argparse.RawDescriptionHelpFormatter
-
         parser.add_argument(
             "--debug",
             action="store_true",

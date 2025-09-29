@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import os
 import random
 import string
@@ -22,6 +23,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+import yaml
 
 import multistorageclient as msc
 
@@ -444,3 +446,37 @@ def test_rm_command_with_progress(run_cli):
         # Test with progress
         stdout, _ = run_cli("rm", "-y", "--recursive", f"{test_dir}")
         assert "5/5" in stdout
+
+
+def test_config_validate_command(run_cli):
+    """Test config validate command with YAML output."""
+    test_config = {
+        "profiles": {"test-profile": {"storage_provider": {"type": "file", "options": {"base_path": "/tmp/test"}}}}
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml") as f:
+        yaml.dump(test_config, f, default_flow_style=False)
+
+        stdout, stderr = run_cli("config", "validate", "--config-file", f.name)
+
+        config = yaml.safe_load(stdout)
+        assert "profiles" in config
+        assert "test-profile" in config["profiles"]
+        assert config["profiles"]["test-profile"] == test_config["profiles"]["test-profile"]
+
+
+def test_config_validate_command_json_format(run_cli):
+    """Test config validate command with JSON output format."""
+    test_config = {
+        "profiles": {"json-test": {"storage_provider": {"type": "s3", "options": {"base_path": "test-bucket"}}}}
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml") as f:
+        yaml.dump(test_config, f, default_flow_style=False)
+
+        stdout, stderr = run_cli("config", "validate", "--config-file", f.name, "--format", "json")
+
+        config = json.loads(stdout)
+        assert "profiles" in config
+        assert "json-test" in config["profiles"]
+        assert config["profiles"]["json-test"] == test_config["profiles"]["json-test"]

@@ -23,6 +23,7 @@ The ``msc help`` command displays general help information and available command
    msc help <command>
 
    commands:
+   config   MSC configuration management commands
    glob     Find files using Unix-style wildcard patterns with optional attribute filtering
    help     Display help for commands
    ls       List files and directories with optional attribute filtering
@@ -130,6 +131,49 @@ The ``msc glob`` command finds files in a storage service using Unix-style wildc
 .. note::
    The ``msc glob`` command works by first listing all files in the specified directory using the equivalent of ``msc ls``, then applying the glob pattern as a post-filter to the results. This means that glob patterns are evaluated locally after retrieving the file listing from the storage service.  To reduce number of HEAD requests, either opt in to use metadata provider or use ``msc glob`` for only a specific pattern of files.
 
+
+**********
+msc config
+**********
+
+The ``msc config`` command provides configuration management utilities for MSC. Currently, it supports the ``validate`` subcommand to validate and display the resolved MSC configuration.
+
+.. code-block:: text
+  :caption: config validate command help output
+
+  $ msc config validate --help
+  usage: msc config validate [-h] [--format {json,yaml}]
+                             [--config-file CONFIG_FILE_PATH]
+
+  options:
+    -h, --help            show this help message and exit
+    --format {json,yaml}  Output format (default: yaml)
+    --config-file CONFIG_FILE_PATH
+                          Path to a specific config file (overrides default
+                          search paths)
+
+  examples:
+    # Validate and print resolved MSC configuration based on default search path
+    msc config validate
+
+    # Validate and print resolved MSC configuration based on specific config file
+    msc config validate --config-file /path/to/config.yaml
+
+.. code-block:: text
+  :caption: Validate and display configuration in YAML format
+
+  $ msc config validate
+  profiles:
+    local:
+      storage_provider:
+        type: file
+        options:
+          base_path: /home/user/
+    s3-bucket:
+      storage_provider:
+        type: s3
+        options:
+          base_path: my-bucket
 
 ******
 msc rm

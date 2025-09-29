@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from .action import ActionRegistry, MSCArgumentParser
+from .config import ConfigAction
 from .glob import GlobAction
 from .help import HelpAction
 from .ls import LsAction
@@ -23,6 +24,7 @@ from .sync import SyncAction
 __all__ = [
     "ActionRegistry",
     "MSCArgumentParser",
+    "ConfigAction",
     "HelpAction",
     "SyncAction",
     "GlobAction",

@@ -32,8 +32,6 @@ class SyncAction(Action):
         return "Synchronize files from the source storage to the target storage"
 
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
-        parser.formatter_class = argparse.RawDescriptionHelpFormatter
-
         parser.add_argument(
             "--delete-unmatched-files",
             action="store_true",

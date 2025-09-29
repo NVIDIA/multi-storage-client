@@ -31,8 +31,6 @@ class GlobAction(Action):
         return "Find files using Unix-style wildcard patterns with optional attribute filtering"
 
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
-        parser.formatter_class = argparse.RawDescriptionHelpFormatter
-
         parser.add_argument(
             "--attribute-filter-expression",
             "-e",

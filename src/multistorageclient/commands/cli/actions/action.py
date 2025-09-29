@@ -19,7 +19,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 
-class MSCHelpFormatter(argparse.HelpFormatter):
+class MSCHelpFormatter(argparse.RawDescriptionHelpFormatter):
     """
     Help message formatter for MSC CLI.
     """

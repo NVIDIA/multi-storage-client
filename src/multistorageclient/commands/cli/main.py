@@ -18,7 +18,16 @@ import sys
 
 import multistorageclient as msc
 
-from .actions import ActionRegistry, GlobAction, HelpAction, LsAction, MSCArgumentParser, RmAction, SyncAction
+from .actions import (
+    ActionRegistry,
+    ConfigAction,
+    GlobAction,
+    HelpAction,
+    LsAction,
+    MSCArgumentParser,
+    RmAction,
+    SyncAction,
+)
 
 
 def create_parser() -> MSCArgumentParser:
@@ -49,6 +58,7 @@ def main() -> int:
 
     # Register commands with instances
     registry.register_action(HelpAction(registry))
+    registry.register_action(ConfigAction())
     registry.register_action(SyncAction())
     registry.register_action(GlobAction())
     registry.register_action(LsAction())
@@ -79,8 +89,8 @@ def main() -> int:
     cmd_parser = MSCArgumentParser(prog=f"msc {args.command}", description=action.help())
     action.setup_parser(cmd_parser)
 
-    # Check if --help is in the subcommand arguments
-    if "--help" in args.args or "-h" in args.args:
+    # Check if --help is requested for the parent command (not a subcommand)
+    if args.args == ["--help"] or args.args == ["-h"]:
         cmd_parser.print_help()
         return 0
 

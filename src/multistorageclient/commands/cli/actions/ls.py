@@ -34,8 +34,6 @@ class LsAction(Action):
         return "List files and directories with optional attribute filtering"
 
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
-        parser.formatter_class = argparse.RawDescriptionHelpFormatter
-
         parser.add_argument(
             "--attribute-filter-expression",
             "-e",
