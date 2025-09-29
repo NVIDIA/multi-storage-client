@@ -16,6 +16,17 @@
       repo = "nixpkgs";
       ref = "refs/heads/nixos-unstable";
     };
+
+    # Python 3.9 (EOL October 2025) was dropped early for NixOS 25.05.
+    #
+    # https://github.com/NixOS/nixpkgs/pull/397258
+    nixpkgs-python39 = {
+      type = "github";
+      owner = "NixOS";
+      repo = "nixpkgs";
+      # Commit right before drop.
+      rev = "1076d576f5e8916f240d094a3c381d3e121800ba";
+    };
   };
 
   outputs =
@@ -45,7 +56,8 @@
         let
           # Attribute set of development shell name to Python package.
           devShellPythonPackages = with inputs.nixpkgs.legacyPackages.${system}; {
-            default = python310;
+            default = inputs.nixpkgs-python39.legacyPackages.${system}.python39;
+            "python3.9" = inputs.nixpkgs-python39.legacyPackages.${system}.python39;
             "python3.10" = python310;
             "python3.11" = python311;
             "python3.12" = python312;

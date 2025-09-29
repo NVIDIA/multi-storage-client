@@ -13,13 +13,14 @@ authors = [
 ]
 license = "Apache-2.0"
 readme = "README.md"
-requires-python = ">=3.10,<4"
+requires-python = ">=3.9,<4"
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: Implementation :: PyPy",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -84,7 +85,11 @@ hydra-core = [
     "hydra-core>=1,<2"
 ]
 numpy = [
-    "numpy>=2.1,<3"
+    "numpy>=2,<2.1; python_version == '3.9'",
+    "numpy>=2.1,<3; python_version >= '3.10'"
+]
+ray = [
+    "ray>=2.48,<3"
 ]
 torch = [
     "torch>=2.8,<3"
@@ -93,10 +98,9 @@ xarray = [
     "xarray>=2024.07.0"
 ]
 zarr = [
-    "zarr>=2.18.3,<3"
-]
-ray = [
-    "ray>=2.48,<3"
+    "zarr>=2.18.2,<3; python_version == '3.9'",
+    "zarr>=2.18.3,<3; python_version == '3.10'",
+    "zarr>=2.18.7,<3; python_version >= '3.11'"
 ]
 
 [dependency-groups]
@@ -148,12 +152,6 @@ output = ".reports/unit/coverage.xml"
 features = ["pyo3/extension-module"]
 manifest-path = "rust/Cargo.toml"
 python-packages = ["multistorageclient", "multistorageclient_rust", "hydra_plugins"]
-
-[tool.pip-licenses]
-format = "markdown"
-order = "license"
-output-file = ".licenses.md"
-with-urls = true
 
 [tool.poetry]
 packages = [
