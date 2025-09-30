@@ -18,7 +18,7 @@ from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import IO, Any, Optional, Union
+from typing import IO, Any, Optional, Tuple, Union
 
 from dateutil.parser import parse as dateutil_parser
 
@@ -492,7 +492,8 @@ class PreconditionFailedError(Exception):
 
 
 class NotModifiedError(Exception):
-    """Raised when a conditional operation fails because the resource has not been modified.
+    """
+    Raised when a conditional operation fails because the resource has not been modified.
 
     This typically occurs when using if-none-match with a specific generation/etag
     and the resource's current generation/etag matches the specified one.
@@ -502,7 +503,9 @@ class NotModifiedError(Exception):
 
 
 class SourceVersionCheckMode(Enum):
-    """Enum for controlling source version checking behavior."""
+    """
+    Enum for controlling source version checking behavior.
+    """
 
     INHERIT = "inherit"  # Inherit from configuration (cache config)
     ENABLE = "enable"  # Always check source version
@@ -511,7 +514,9 @@ class SourceVersionCheckMode(Enum):
 
 @dataclass
 class Replica:
-    """A tier of storage that can be used to store data."""
+    """
+    A tier of storage that can be used to store data.
+    """
 
     replica_profile: str
     read_priority: int
@@ -537,3 +542,16 @@ class ExecutionMode(Enum):
 
     LOCAL = "local"
     RAY = "ray"
+
+
+class PatternType(Enum):
+    """
+    Type of pattern operation for include/exclude filtering.
+    """
+
+    INCLUDE = "include"
+    EXCLUDE = "exclude"
+
+
+# Type alias for pattern matching
+PatternList = list[Tuple[PatternType, str]]

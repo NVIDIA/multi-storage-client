@@ -13,8 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import fnmatch
 import hashlib
 import importlib
+import logging
 import math
 import multiprocessing
 import os
@@ -27,10 +29,12 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 from lark import Lark, Transformer
 from wcmatch import glob as wcmatch_glob
 
-from .types import ExecutionMode, ObjectMetadata
+from .types import ExecutionMode, ObjectMetadata, PatternList, PatternType
 
 if TYPE_CHECKING:
     from .client import StorageClient
+
+logger = logging.getLogger(__name__)
 
 
 def split_path(path: str) -> tuple[str, str]:
@@ -544,8 +548,11 @@ def matches_attribute_filter_expression(
     return evaluator(obj_metadata.metadata)
 
 
-# Null implementation of StorageClient, where any call to list returns an empty list,
 class NullStorageClient:
+    """
+    Null implementation of StorageClient, where any call to list returns an empty list.
+    """
+
     def list(self, **kwargs: Any) -> Iterator[ObjectMetadata]:
         return iter([])
 
@@ -557,3 +564,96 @@ class NullStorageClient:
 
     def _is_posix_file_storage_provider(self) -> bool:
         return True
+
+
+class PatternMatcher:
+    """
+    A pattern matcher that implements AWS S3 sync-style include/exclude filtering.
+
+    This class provides functionality to filter file paths based on glob patterns, following the same logic as AWS S3 sync:
+    1. All files are included by default
+    2. Exclude patterns are applied first
+    3. Include patterns are applied after exclusions to re-include specific files
+
+    The patterns support AWS S3 compatible glob syntax:
+    - * matches everything
+    - ? matches any single character
+    - [sequence] matches any character in sequence
+    - [!sequence] matches any character not in sequence
+    """
+
+    patterns: PatternList
+
+    def __init__(self, ordered_patterns: PatternList):
+        """
+        Create a PatternMatcher from an ordered list of pattern operations.
+
+        :param ordered_patterns: List of (PatternType, pattern) tuples in order
+        :return: PatternMatcher instance
+        """
+        self.patterns = ordered_patterns.copy()
+
+    def should_include_file(self, file_path: str) -> bool:
+        """
+        Determine if a file should be included based on the include/exclude patterns.
+
+        The logic follows AWS S3 sync behavior with proper ordering:
+        1. Determine initial state based on pattern types
+        2. Apply patterns in order - later patterns override earlier ones
+        3. Each pattern either includes or excludes the file if it matches
+
+        :param file_path: The file path to check (relative to the sync root)
+        :return: True if the file should be included, False otherwise
+        """
+        # Determine initial state based on pattern types
+        has_exclude_patterns = any(pt == PatternType.EXCLUDE for pt, _ in self.patterns)
+        has_include_patterns = any(pt == PatternType.INCLUDE for pt, _ in self.patterns)
+
+        if has_include_patterns and not has_exclude_patterns:
+            # If we have ONLY include patterns (no exclude patterns),
+            # start with all files excluded and only include those that match
+            included = False
+        else:
+            # If we have exclude patterns OR no patterns at all,
+            # start with all files included and exclude those that match exclude patterns
+            included = True
+
+        # Apply patterns in order - later patterns override earlier ones
+        for pattern_type, pattern in self.patterns:
+            if self._matches_pattern(file_path, pattern):
+                if pattern_type == PatternType.EXCLUDE:
+                    logger.debug(f"File {file_path} excluded by pattern: {pattern}")
+                    included = False
+                elif pattern_type == PatternType.INCLUDE:
+                    logger.debug(f"File {file_path} included by pattern: {pattern}")
+                    included = True
+
+        logger.debug(f"File {file_path} final decision: {'included' if included else 'excluded'}")
+        return included
+
+    def _matches_pattern(self, file_path: str, pattern: str) -> bool:
+        """
+        Check if a file path matches a glob pattern.
+
+        This method uses standard fnmatch patterns compatible with AWS S3 sync.
+
+        :param file_path: The file path to check
+        :param pattern: The glob pattern to match against
+        :return: True if the path matches the pattern, False otherwise
+        """
+        # Use standard fnmatch for AWS S3 compatible patterns
+        return fnmatch.fnmatch(file_path, pattern)
+
+    def has_patterns(self) -> bool:
+        """
+        Check if any include or exclude patterns are configured.
+
+        :return: True if any patterns are configured, False otherwise
+        """
+        return bool(self.patterns)
+
+    def __repr__(self) -> str:
+        """
+        String representation of the pattern matcher.
+        """
+        return f"PatternMatcher(patterns={self.patterns})"

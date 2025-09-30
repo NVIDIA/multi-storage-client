@@ -30,7 +30,7 @@ from filelock import FileLock
 from .constants import MEMORY_LOAD_LIMIT
 from .progress_bar import ProgressBar
 from .types import ExecutionMode, ObjectMetadata
-from .utils import calculate_worker_processes_and_threads
+from .utils import PatternMatcher, calculate_worker_processes_and_threads
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +88,7 @@ class ProducerThread(threading.Thread):
         file_queue: _Queue,
         num_workers: int,
         delete_unmatched_files: bool = False,
+        pattern_matcher: Optional[PatternMatcher] = None,
     ):
         super().__init__(daemon=True)
         self.source_client = source_client
@@ -98,6 +99,7 @@ class ProducerThread(threading.Thread):
         self.file_queue = file_queue
         self.num_workers = num_workers
         self.delete_unmatched_files = delete_unmatched_files
+        self.pattern_matcher = pattern_matcher
         self.error = None
 
     def _match_file_metadata(self, source_info: ObjectMetadata, target_info: ObjectMetadata) -> bool:
@@ -125,9 +127,11 @@ class ProducerThread(threading.Thread):
                     target_key = target_file.key[len(self.target_path) :].lstrip("/")
 
                     if source_key < target_key:
-                        self.file_queue.put((_SyncOp.ADD, source_file))
+                        # Check if file should be included based on patterns
+                        if not self.pattern_matcher or self.pattern_matcher.should_include_file(source_key):
+                            self.file_queue.put((_SyncOp.ADD, source_file))
+                            total_count += 1
                         source_file = next(source_iter, None)
-                        total_count += 1
                     elif source_key > target_key:
                         if self.delete_unmatched_files:
                             self.file_queue.put((_SyncOp.DELETE, target_file))
@@ -136,7 +140,9 @@ class ProducerThread(threading.Thread):
                     else:
                         # Both exist, compare metadata
                         if not self._match_file_metadata(source_file, target_file):
-                            self.file_queue.put((_SyncOp.ADD, source_file))
+                            # Check if file should be included based on patterns
+                            if not self.pattern_matcher or self.pattern_matcher.should_include_file(source_key):
+                                self.file_queue.put((_SyncOp.ADD, source_file))
                         else:
                             self.progress.update_progress()
 
@@ -144,9 +150,12 @@ class ProducerThread(threading.Thread):
                         target_file = next(target_iter, None)
                         total_count += 1
                 elif source_file:
-                    self.file_queue.put((_SyncOp.ADD, source_file))
+                    source_key = source_file.key[len(self.source_path) :].lstrip("/")
+                    # Check if file should be included based on patterns
+                    if not self.pattern_matcher or self.pattern_matcher.should_include_file(source_key):
+                        self.file_queue.put((_SyncOp.ADD, source_file))
+                        total_count += 1
                     source_file = next(source_iter, None)
-                    total_count += 1
                 else:
                     if self.delete_unmatched_files:
                         self.file_queue.put((_SyncOp.DELETE, target_file))
@@ -218,7 +227,11 @@ class SyncManager:
     """
 
     def __init__(
-        self, source_client: "StorageClient", source_path: str, target_client: "StorageClient", target_path: str
+        self,
+        source_client: "StorageClient",
+        source_path: str,
+        target_client: "StorageClient",
+        target_path: str,
     ):
         self.source_client = source_client
         self.target_client = target_client
@@ -236,6 +249,7 @@ class SyncManager:
         description: str = "Syncing",
         num_worker_processes: Optional[int] = None,
         delete_unmatched_files: bool = False,
+        pattern_matcher: Optional[PatternMatcher] = None,
     ):
         """
         Synchronize objects from source to target storage location.
@@ -254,8 +268,13 @@ class SyncManager:
         :param description: Description text shown in the progress bar.
         :param num_worker_processes: Number of worker processes to use. If None, automatically determined based on available CPU cores.
         :param delete_unmatched_files: If True, files present in target but not in source will be deleted from target.
+        :param pattern_matcher: PatternMatcher instance for include/exclude filtering. If None, all files are included.
         """
         logger.debug(f"Starting sync operation {description}")
+
+        # Use provided pattern matcher for include/exclude filtering
+        if pattern_matcher and pattern_matcher.has_patterns():
+            logger.debug(f"Using pattern filtering: {pattern_matcher}")
 
         # Attempt to balance the number of worker processes and threads.
         num_worker_processes, num_worker_threads = calculate_worker_processes_and_threads(
@@ -297,6 +316,7 @@ class SyncManager:
             file_queue,
             num_workers,
             delete_unmatched_files,
+            pattern_matcher,
         )
         producer_thread.start()
 

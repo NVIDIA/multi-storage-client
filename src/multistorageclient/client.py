@@ -37,11 +37,12 @@ from .types import (
     MSC_PROTOCOL,
     ExecutionMode,
     ObjectMetadata,
+    PatternList,
     Range,
     Replica,
     SourceVersionCheckMode,
 )
-from .utils import NullStorageClient, join_paths
+from .utils import NullStorageClient, PatternMatcher, join_paths
 
 logger = logging.getLogger(__name__)
 
@@ -702,6 +703,7 @@ class StorageClient:
         description: str = "Syncing",
         num_worker_processes: Optional[int] = None,
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
+        patterns: Optional[PatternList] = None,
     ) -> None:
         """
         Syncs files from the source storage client to "path/".
@@ -713,7 +715,11 @@ class StorageClient:
         :param description: Description of sync process for logging purposes.
         :param num_worker_processes: The number of worker processes to use.
         :param execution_mode: The execution mode to use. Currently supports "local" and "ray".
+        :param patterns: PatternList for include/exclude filtering. If None, all files are included.
         """
+        # Create internal PatternMatcher from patterns if provided
+        pattern_matcher = PatternMatcher(patterns) if patterns else None
+
         # Disable the replica manager during sync
         if not isinstance(source_client, NullStorageClient) and source_client._replica_manager:
             source_client = StorageClient(source_client._config)
@@ -726,6 +732,7 @@ class StorageClient:
             description=description,
             num_worker_processes=num_worker_processes,
             delete_unmatched_files=delete_unmatched_files,
+            pattern_matcher=pattern_matcher,
         )
 
     def sync_replicas(
@@ -736,6 +743,7 @@ class StorageClient:
         description: str = "Syncing replica",
         num_worker_processes: Optional[int] = None,
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
+        patterns: Optional[PatternList] = None,
     ) -> None:
         """
         Sync files from the source storage client to target replicas.
@@ -746,6 +754,7 @@ class StorageClient:
         :param description: Description of sync process for logging purposes.
         :param num_worker_processes: The number of worker processes to use.
         :param execution_mode: The execution mode to use. Currently supports "local" and "ray".
+        :param patterns: PatternList for include/exclude filtering. If None, all files are included.
         """
         if not self._replicas:
             logger.warning(
@@ -779,4 +788,5 @@ class StorageClient:
                 description=f"{description} ({replica.profile})",
                 num_worker_processes=num_worker_processes,
                 execution_mode=execution_mode,
+                patterns=patterns,
             )

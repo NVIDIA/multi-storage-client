@@ -21,11 +21,55 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import List, Optional, Tuple
 
 import pytest
 import yaml
 
 import multistorageclient as msc
+
+
+def create_test_files_with_random_structure(
+    source_dir: str, num_files: int = 200, file_extensions: Optional[List[str]] = None
+) -> List[Tuple[str, str, str, str]]:
+    """
+    Create test files with random 2-level directory structure.
+
+    Args:
+        source_dir: Base directory to create files in
+        num_files: Number of files to create
+        file_extensions: List of file extensions to use. If None, uses .txt
+
+    Returns:
+        List of tuples containing (level1, level2, filename, content) for each created file
+    """
+    if file_extensions is None:
+        file_extensions = ["txt"]
+
+    created_files = []
+
+    for i in range(num_files):
+        # Generate random 2-level directory structure
+        level1 = "".join(random.choices(string.ascii_lowercase, k=5))
+        level2 = "".join(random.choices(string.ascii_lowercase, k=5))
+
+        # Create directory path
+        dir_path = Path(source_dir) / level1 / level2
+        dir_path.mkdir(parents=True, exist_ok=True)
+
+        # Create file with random content
+        extension = random.choice(file_extensions)
+        filename = f"file_{i:03d}.{extension}"
+        file_path = dir_path / filename
+        content = f"Content for file {i} in {level1}/{level2}\n" + "".join(
+            random.choices(string.ascii_letters + string.digits, k=100)
+        )
+        file_path.write_text(content)
+
+        # Store for verification
+        created_files.append((level1, level2, filename, content))
+
+    return created_files
 
 
 @pytest.fixture
@@ -105,29 +149,7 @@ def test_sync_without_replicas(run_cli):
 def test_sync_command_with_real_files(run_cli):
     with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
         # Create about 200 files in random 2-level directories
-        # Store created file paths for verification
-        created_files = []
-
-        # Create directories and files
-        for i in range(200):
-            # Generate random 2-level directory structure
-            level1 = "".join(random.choices(string.ascii_lowercase, k=5))
-            level2 = "".join(random.choices(string.ascii_lowercase, k=5))
-
-            # Create directory path
-            dir_path = Path(source_dir) / level1 / level2
-            dir_path.mkdir(parents=True, exist_ok=True)
-
-            # Create file with random content
-            filename = f"file_{i:03d}.txt"
-            file_path = dir_path / filename
-            content = f"Content for file {i} in {level1}/{level2}\n" + "".join(
-                random.choices(string.ascii_letters + string.digits, k=100)
-            )
-            file_path.write_text(content)
-
-            # Store for verification
-            created_files.append((level1, level2, filename, content))
+        created_files = create_test_files_with_random_structure(source_dir, num_files=200)
 
         # Run the sync command
         stdout, stderr = run_cli("sync", "--verbose", source_dir, "--target-url", target_dir)
@@ -140,6 +162,32 @@ def test_sync_command_with_real_files(run_cli):
             assert target_file.read_text() == content, f"Content mismatch for {target_file}"
 
         assert "200/200" in stdout
+        assert "Synchronizing files from" in stdout
+        assert "Synchronization completed successfully" in stdout
+
+
+def test_sync_command_with_real_files_and_patterns(run_cli):
+    with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
+        # Create about 200 files in random 2-level directories with mixed extensions
+        created_files = create_test_files_with_random_structure(
+            source_dir, num_files=200, file_extensions=["txt", "bin"]
+        )
+
+        # Run the sync command
+        stdout, stderr = run_cli("sync", "--verbose", source_dir, "--target-url", target_dir, "--include", "*.txt")
+
+        # verify all the files that are txt are copied
+        total_txt_files = 0
+        for level1, level2, filename, content in created_files:
+            target_file = Path(target_dir) / level1 / level2 / filename
+            if filename.endswith(".txt"):
+                total_txt_files += 1
+                assert target_file.exists(), f"Target file {target_file} does not exist"
+                assert target_file.read_text() == content, f"Content mismatch for {target_file}"
+            else:
+                assert not target_file.exists(), f"Target file {target_file} should not exist"
+
+        assert f"{total_txt_files}/{total_txt_files}" in stdout
         assert "Synchronizing files from" in stdout
         assert "Synchronization completed successfully" in stdout
 

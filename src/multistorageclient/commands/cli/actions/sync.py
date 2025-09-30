@@ -15,11 +15,25 @@
 
 import argparse
 import sys
+from typing import Optional
 
 import multistorageclient as msc
-from multistorageclient.types import ExecutionMode
+from multistorageclient.types import ExecutionMode, PatternList, PatternType
 
 from .action import Action
+
+
+class OrderedPatternAction(argparse.Action):
+    """Custom action to capture the order of include/exclude patterns."""
+
+    def __init__(self, option_strings, dest, pattern_type, **kwargs):
+        self.pattern_type = pattern_type
+        super().__init__(option_strings, dest, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        if not hasattr(namespace, "ordered_patterns"):
+            namespace.ordered_patterns = []
+        namespace.ordered_patterns.append((self.pattern_type, values))
 
 
 class SyncAction(Action):
@@ -54,6 +68,18 @@ class SyncAction(Action):
             "--replica-indices",
             help="The indices (comma separated list) of the replicas to sync to. If not provided, will sync to all the replicas. Index starts from 0.",
         )
+        parser.add_argument(
+            "--include",
+            action=OrderedPatternAction,
+            pattern_type=PatternType.INCLUDE,
+            help="Include only files that match the specified pattern. Can be used multiple times. Supports AWS S3 compatible glob patterns (*, ?, [sequence], [!sequence]).",
+        )
+        parser.add_argument(
+            "--exclude",
+            action=OrderedPatternAction,
+            pattern_type=PatternType.EXCLUDE,
+            help="Exclude files that match the specified pattern. Can be used multiple times. Supports AWS S3 compatible glob patterns (*, ?, [sequence], [!sequence]).",
+        )
         parser.add_argument("source_url", help="The path or URL for the source storage (POSIX path or msc:// URL)")
 
         # Add examples as description
@@ -86,6 +112,22 @@ class SyncAction(Action):
 
   # Sync to specific replicas, index starts from 0
   msc sync msc://source-profile/data --replica-indices "0,1"
+
+  # Sync only specific file types
+  msc sync msc://source-profile/data --include "*.jpg" --include "*.png" --target-url msc://target-profile/data
+
+  # Sync all files except certain types
+  msc sync msc://source-profile/data --exclude "*.tmp" --exclude "*.log" --target-url msc://target-profile/data
+
+  # Sync with complex patterns (exclude all, then include specific types)
+  msc sync msc://source-profile/data --exclude "*" --include "*.jpg" --include "*.png" --target-url msc://target-profile/data
+
+  # Order matters! Later patterns override earlier ones
+  msc sync msc://source-profile/data --exclude "*" --include "*.txt" --target-url msc://target-profile/data  # Only .txt files
+  msc sync msc://source-profile/data --include "*.txt" --exclude "*" --target-url msc://target-profile/data  # No files (exclude overrides include)
+
+  # Sync with directory patterns (AWS S3 compatible)
+  msc sync msc://source-profile/data --include "images/*.jpg" --exclude "temp/*" --target-url msc://target-profile/data
 """
 
     def run(self, args: argparse.Namespace) -> int:
@@ -108,8 +150,18 @@ class SyncAction(Action):
             execution_mode = ExecutionMode.LOCAL
 
         try:
+            # Create ordered pattern list if patterns are provided
+            ordered_patterns = getattr(args, "ordered_patterns", [])
+            patterns: Optional[PatternList] = ordered_patterns if ordered_patterns else None
+
             if args.target_url:
-                msc.sync(args.source_url, args.target_url, args.delete_unmatched_files, execution_mode=execution_mode)
+                msc.sync(
+                    args.source_url,
+                    args.target_url,
+                    args.delete_unmatched_files,
+                    execution_mode=execution_mode,
+                    patterns=patterns,
+                )
             else:
                 try:
                     replica_indices = (
@@ -126,6 +178,7 @@ class SyncAction(Action):
                     replica_indices=replica_indices,
                     delete_unmatched_files=args.delete_unmatched_files,
                     execution_mode=execution_mode,
+                    patterns=patterns,
                 )
             if args.verbose:
                 print("Synchronization completed successfully")

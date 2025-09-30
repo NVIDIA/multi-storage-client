@@ -23,7 +23,7 @@ from .client import StorageClient
 from .config import DEFAULT_POSIX_PROFILE_NAME, SUPPORTED_IMPLICIT_PROFILE_PROTOCOLS, StorageClientConfig
 from .file import ObjectFile, PosixFile
 from .telemetry import Telemetry
-from .types import MSC_PROTOCOL, ExecutionMode, ObjectMetadata
+from .types import MSC_PROTOCOL, ExecutionMode, ObjectMetadata, PatternList
 
 _TELEMETRY: Optional[Telemetry] = None
 _TELEMETRY_LOCK = threading.Lock()
@@ -304,6 +304,7 @@ def sync(
     target_url: str,
     delete_unmatched_files: bool = False,
     execution_mode: ExecutionMode = ExecutionMode.LOCAL,
+    patterns: Optional[PatternList] = None,
 ) -> None:
     """
     Syncs files from the source storage to the target storage.
@@ -312,11 +313,17 @@ def sync(
     :param target_url: The URL for the target storage.
     :param delete_unmatched_files: Whether to delete files at the target that are not present at the source.
     :param execution_mode: The execution mode to use. Currently supports "local" and "ray".
+    :param patterns: PatternList for include/exclude filtering. If None, all files are included.
     """
     source_client, source_path = resolve_storage_client(source_url)
     target_client, target_path = resolve_storage_client(target_url)
     target_client.sync_from(
-        source_client, source_path, target_path, delete_unmatched_files, execution_mode=execution_mode
+        source_client,
+        source_path,
+        target_path,
+        delete_unmatched_files,
+        execution_mode=execution_mode,
+        patterns=patterns,
     )
 
 
@@ -325,6 +332,7 @@ def sync_replicas(
     replica_indices: Optional[list[int]] = None,
     delete_unmatched_files: bool = False,
     execution_mode: ExecutionMode = ExecutionMode.LOCAL,
+    patterns: Optional[PatternList] = None,
 ) -> None:
     """
     Syncs files from the source storage to all the replicas.
@@ -333,6 +341,7 @@ def sync_replicas(
     :param replica_indices: Specify the indices of the replicas to sync to. If not provided, all replicas will be synced. Index starts from 0.
     :param delete_unmatched_files: Whether to delete files at the replicas that are not present at the source.
     :param execution_mode: The execution mode to use. Currently supports "local" and "ray".
+    :param patterns: PatternList for include/exclude filtering. If None, all files are included.
     """
     source_client, source_path = resolve_storage_client(source_url)
     source_client.sync_replicas(
@@ -340,6 +349,7 @@ def sync_replicas(
         replica_indices=replica_indices,
         delete_unmatched_files=delete_unmatched_files,
         execution_mode=execution_mode,
+        patterns=patterns,
     )
 
 

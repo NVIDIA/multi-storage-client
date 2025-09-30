@@ -261,6 +261,12 @@ Transfer files between different object storage locations:
 
   $ msc sync msc://profile1/prefix --target-url msc://profile2/prefix
 
+Include and exclude files:
+
+.. code-block:: shell
+
+  $ msc sync msc://profile/prefix --target-url /path/to/dataset --include "*.txt" --exclude "*.bin"
+
 Sync with cleanup (removes files in target not in source):
 
 .. code-block:: shell
