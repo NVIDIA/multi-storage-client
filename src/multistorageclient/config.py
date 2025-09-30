@@ -19,7 +19,6 @@ import os
 import tempfile
 from collections import defaultdict
 from collections.abc import Sequence
-from multiprocessing import current_process
 from pathlib import Path
 from typing import Any, Iterable, Optional
 from urllib.parse import urlparse
@@ -33,7 +32,7 @@ from .instrumentation import setup_opentelemetry
 from .providers.manifest_metadata import ManifestMetadataProvider
 from .rclone import read_rclone_config
 from .schema import validate_config
-from .telemetry import Telemetry, TelemetryMode
+from .telemetry import Telemetry
 from .telemetry import init as telemetry_init
 from .telemetry.attributes.base import AttributesProvider
 from .types import (
@@ -291,22 +290,9 @@ class StorageClientConfigLoader:
                 try:
                     # Try to create a telemetry instance with the default mode heuristic.
                     telemetry = telemetry_init()
-                except (AssertionError, OSError, RuntimeError, ValueError):
-                    try:
-                        if current_process().daemon:
-                            # Daemons can't have child processes.
-                            #
-                            # Try to create a telemetry instance in local mode.
-                            #
-                            # ⚠️ This may cause CPU contention if the current process is compute-intensive
-                            # and a high collect and/or export frequency is used due to global interpreter lock (GIL).
-                            telemetry = telemetry_init(mode=TelemetryMode.LOCAL)
-                        else:
-                            # Try to create a telemetry instance in server mode.
-                            telemetry = telemetry_init(mode=TelemetryMode.SERVER)
-                    except (AssertionError, OSError, RuntimeError, ValueError):
-                        # Don't throw on telemetry init failures.
-                        logger.error("Failed to automatically create telemetry instance!", exc_info=True)
+                except Exception:
+                    # Don't throw on telemetry init failures.
+                    logger.error("Failed to automatically create telemetry instance!", exc_info=True)
 
             if "metrics" in self._opentelemetry_dict:
                 if telemetry is not None:

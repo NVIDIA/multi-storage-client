@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import multiprocessing
 import os
 import pickle
 import sys
@@ -1669,7 +1668,7 @@ def test_telemetry_init_manual() -> None:
         assert config.metric_attributes_providers is not None
 
 
-def _test_telemetry_init_automatic() -> None:
+def test_telemetry_init_automatic() -> None:
     with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
         profile = "data"
         config_dict = {
@@ -1690,27 +1689,3 @@ def _test_telemetry_init_automatic() -> None:
         assert config.metric_gauges is not None
         assert config.metric_counters is not None
         assert config.metric_attributes_providers is not None
-
-
-def test_telemetry_init_automatic_main() -> None:
-    _test_telemetry_init_automatic()
-
-
-def _test_telemetry_init_automatic_child_parent(daemon: bool) -> None:
-    context = multiprocessing.get_context(method="spawn")
-    process = context.Process(target=_test_telemetry_init_automatic, daemon=daemon)
-    process.start()
-    process.join()
-
-
-@pytest.mark.parametrize(argnames=["daemon"], argvalues=[[True], [False]])
-def test_telemetry_init_automatic_child(daemon: bool) -> None:
-    # Create a 2-deep process tree so the leaf process has a parent process without a telemetry instance in server mode.
-    #
-    # Use spawn so the proxy object caches aren't inherited by child processes.
-    #
-    # This is to force test the fallback path.
-    context = multiprocessing.get_context(method="spawn")
-    process = context.Process(target=_test_telemetry_init_automatic_child_parent, kwargs={"daemon": daemon})
-    process.start()
-    process.join()

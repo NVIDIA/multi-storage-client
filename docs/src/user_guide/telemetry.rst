@@ -76,15 +76,9 @@ If the default telemetry provider creation doesn't behave as desired, you can ma
 
    # Create a telemetry provider instance.
    #
-   # Returns a proxy object by default to make the OpenTelemetry Python SDK work
-   # correctly with Python multiprocessing.
-   #
-   # When on the main process, this creates a Python multiprocessing manager server
-   # listening on 127.0.0.1:{dynamic port based on the current process PID}
-   # and connects to it.
-   #
-   # When in a child process, this connects to the Python multiprocessing manager server
-   # listening on 127.0.0.1:{dynamic port based on the parent process PID}.
+   # Based on the mode, this may create a Python multiprocessing manager server
+   # listening on 127.0.0.1:{dynamic port based on the process ID} to make the
+   # OpenTelemetry Python SDK work correctly with Python multiprocessing.
    #
    # The telemetry mode and address can be provided as function parameters.
    # See the API reference for more details.

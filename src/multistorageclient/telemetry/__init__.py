@@ -21,7 +21,7 @@ import logging
 import multiprocessing
 import multiprocessing.managers
 import threading
-from typing import Any, Optional, Union
+from typing import Any, Literal, Optional, Union
 
 import opentelemetry.metrics as api_metrics
 import opentelemetry.trace as api_trace
@@ -490,6 +490,16 @@ class TelemetryMode(enum.Enum):
     CLIENT = "client"
 
 
+def _telemetry_proxies_key(
+    mode: Literal[TelemetryMode.SERVER, TelemetryMode.CLIENT], address: Union[str, tuple[str, int]]
+) -> str:
+    """
+    Get the key for the _TELEMETRY_PROXIES dictionary.
+    """
+    init_options = {"mode": mode.value, "address": address}
+    return json.dumps(init_options, sort_keys=True)
+
+
 def _telemetry_manager_server_port(process_id: int) -> int:
     """
     Get the default telemetry manager server port.
@@ -511,106 +521,151 @@ def _telemetry_manager_server_port(process_id: int) -> int:
     return (2**15 + 2**14) + (process_id % ((2**16) - (2**15 + 2**14)))
 
 
-def init(
-    mode: TelemetryMode = TelemetryMode.SERVER if multiprocessing.parent_process() is None else TelemetryMode.CLIENT,
-    address: Optional[Union[str, tuple[str, int]]] = None,
-) -> Telemetry:
+def _init_server(address: Optional[Union[str, tuple[str, int]]] = None) -> Telemetry:
     """
-    Create or return an existing :py:class:`Telemetry` instance or :py:class:`Telemetry` proxy object.
-
-    :param mode: How to create a :py:class:`Telemetry` object. Defaults to :py:const:`TelemetryMode.SERVER`/:py:const:`TelemetryMode.CLIENT` if the current process is a main/child Python process.
-    :param address: Telemetry IPC server address. Passed directly to a :py:class:`multiprocessing.managers.BaseManager`. Ignored if the mode is :py:const:`TelemetryMode.LOCAL`.
-    :return: A telemetry instance.
+    Start + connect to a telemetry IPC server.
     """
-
     global _TELEMETRY_PROXIES
     global _TELEMETRY_PROXIES_LOCK
 
-    if mode == TelemetryMode.LOCAL:
-        return _init()
-    elif mode == TelemetryMode.SERVER:
-        address = address or ("127.0.0.1", _telemetry_manager_server_port(process_id=psutil.Process().pid))
+    address = address or ("127.0.0.1", _telemetry_manager_server_port(process_id=psutil.Process().pid))
+    telemetry_proxies_key = _telemetry_proxies_key(mode=TelemetryMode.SERVER, address=address)
 
-        init_options = {"mode": mode.value, "address": address}
-        init_options_json = json.dumps(init_options, sort_keys=True)
+    with _TELEMETRY_PROXIES_LOCK:
+        if telemetry_proxies_key in _TELEMETRY_PROXIES:
+            return _TELEMETRY_PROXIES[telemetry_proxies_key]
+        else:
+            telemetry_manager = TelemetryManager(
+                address=address,
+                # Use spawn instead of the platform-specific default (may be fork) to avoid aforementioned issues with fork.
+                ctx=multiprocessing.get_context(method="spawn"),
+            )
+
+            logger.debug(f"Creating telemetry manager server at {telemetry_manager.address}.")
+            try:
+                telemetry_manager.start()
+                atexit.register(telemetry_manager.shutdown)
+                logger.debug(f"Started telemetry manager server at {telemetry_manager.address}.")
+            except Exception as e:
+                logger.debug(
+                    f"Failed to create telemetry manager server at {telemetry_manager.address}!", exc_info=True
+                )
+                raise e
+
+            logger.debug(f"Connecting to telemetry manager server at {telemetry_manager.address}.")
+            try:
+                telemetry_manager.connect()
+                logger.debug(f"Connected to telemetry manager server at {telemetry_manager.address}.")
+                return _TELEMETRY_PROXIES.setdefault(telemetry_proxies_key, telemetry_manager.Telemetry())  # pyright: ignore [reportAttributeAccessIssue]
+            except Exception as e:
+                logger.debug(
+                    f"Failed to connect to telemetry manager server at {telemetry_manager.address}!", exc_info=True
+                )
+                raise e
+
+
+def _init_client(address: Optional[Union[str, tuple[str, int]]] = None) -> Telemetry:
+    """
+    Connect to a telemetry IPC server.
+    """
+    global _TELEMETRY_PROXIES
+    global _TELEMETRY_PROXIES_LOCK
+
+    candidate_addresses: list[Union[str, tuple[str, int]]] = []
+
+    if address is not None:
+        candidate_addresses = [address]
+    else:
+        current_process = psutil.Process()
+        # Python processes from leaf to root.
+        python_process_ancestry: list[psutil.Process] = [
+            current_process,
+            # Try the default telemetry manager server port for all ancestor process IDs.
+            #
+            # psutil is used since multiprocessing only exposes the parent process.
+            #
+            # We can't use `itertools.takewhile(lambda ancestor_process: ancestor_process.name() == current_process.name(), ...)`
+            # to limit ourselves to ancestor Python processes by process name since some may not be named
+            # `python{optional version}` in some cases (e.g. may be named `pytest`).
+            *current_process.parents(),
+        ]
+        # Try to connect from leaf to root.
+        candidate_addresses = [
+            ("127.0.0.1", _telemetry_manager_server_port(process_id=process.pid)) for process in python_process_ancestry
+        ]
+
+    for candidate_address in candidate_addresses:
+        telemetry_proxies_key = _telemetry_proxies_key(mode=TelemetryMode.CLIENT, address=candidate_address)
 
         with _TELEMETRY_PROXIES_LOCK:
-            if init_options_json in _TELEMETRY_PROXIES:
-                return _TELEMETRY_PROXIES[init_options_json]
+            if telemetry_proxies_key in _TELEMETRY_PROXIES:
+                return _TELEMETRY_PROXIES[telemetry_proxies_key]
             else:
-                telemetry_manager = TelemetryManager(
-                    address=address,
-                    # Use spawn instead of the platform-specific default (may be fork) to avoid aforementioned issues with fork.
-                    ctx=multiprocessing.get_context(method="spawn"),
-                )
-
-                logger.debug(f"Creating telemetry manager server at {telemetry_manager.address}.")
-                try:
-                    telemetry_manager.start()
-                    atexit.register(telemetry_manager.shutdown)
-                    logger.debug(f"Started telemetry manager server at {telemetry_manager.address}.")
-                except Exception as e:
-                    logger.error(
-                        f"Failed to create telemetry manager server at {telemetry_manager.address}!", exc_info=True
-                    )
-                    raise e
+                telemetry_manager = TelemetryManager(address=candidate_address)
 
                 logger.debug(f"Connecting to telemetry manager server at {telemetry_manager.address}.")
                 try:
                     telemetry_manager.connect()
                     logger.debug(f"Connected to telemetry manager server at {telemetry_manager.address}.")
-                    return _TELEMETRY_PROXIES.setdefault(init_options_json, telemetry_manager.Telemetry())  # pyright: ignore [reportAttributeAccessIssue]
-                except Exception as e:
-                    logger.error(
-                        f"Failed to connect to telemetry manager server at {telemetry_manager.address}!", exc_info=True
+                    return _TELEMETRY_PROXIES.setdefault(telemetry_proxies_key, telemetry_manager.Telemetry())  # pyright: ignore [reportAttributeAccessIssue]
+                except Exception:
+                    logger.debug(
+                        f"Failed to connect to telemetry manager server at {telemetry_manager.address}!",
+                        exc_info=True,
                     )
-                    raise e
-    elif mode == TelemetryMode.CLIENT:
-        candidate_addresses: list[Union[str, tuple[str, int]]] = []
 
-        if address is not None:
-            candidate_addresses = [address]
+    raise ConnectionError(f"Failed to connect to telemetry manager server at any of {candidate_addresses}!")
+
+
+def init(
+    mode: Optional[TelemetryMode] = None,
+    address: Optional[Union[str, tuple[str, int]]] = None,
+) -> Telemetry:
+    """
+    Create or return an existing :py:class:`Telemetry` instance or :py:class:`Telemetry` proxy object.
+
+    :param mode: How to create a :py:class:`Telemetry` object. If ``None``, the default heuristic chooses a mode based on the presence of telemetry IPC servers in the process tree.
+    :param address: Telemetry IPC server address. Passed directly to a :py:class:`multiprocessing.managers.BaseManager`. Ignored if the mode is :py:const:`TelemetryMode.LOCAL`.
+    :return: A telemetry instance.
+    """
+
+    if mode is None:
+        # Main process.
+        if multiprocessing.parent_process() is None:
+            # Daemons can't have child processes.
+            #
+            # Try to create a telemetry instance in local mode.
+            #
+            # ⚠️ This may cause CPU contention if the current process is compute-intensive
+            # and a high collect and/or export frequency is used due to global interpreter lock (GIL).
+            if multiprocessing.current_process().daemon:
+                return _init()
+            # Start + connect to a telemetry IPC server.
+            else:
+                return _init_server(address=address)
+        # Child process.
         else:
-            current_process = psutil.Process()
-            # Python processes from leaf to root.
-            python_process_ancestry: list[psutil.Process] = [
-                current_process,
-                # Try the default telemetry manager server port for all ancestor process IDs.
+            # Connect to a telemetry IPC server.
+            try:
+                return _init_client(address=address)
+            # No existing telemetry IPC server.
+            except ConnectionError:
+                # Daemons can't have child processes.
                 #
-                # psutil is used since multiprocessing only exposes the parent process.
+                # Try to create a telemetry instance in local mode.
                 #
-                # We can't use `itertools.takewhile(lambda ancestor_process: ancestor_process.name() == current_process.name(), ...)`
-                # to limit ourselves to ancestor Python processes by process name since some may not be named
-                # `python{optional version}` in some cases (e.g. may be named `pytest`).
-                *current_process.parents(),
-            ]
-            # Try to connect from leaf to root.
-            candidate_addresses = [
-                ("127.0.0.1", _telemetry_manager_server_port(process_id=process.pid))
-                for process in python_process_ancestry
-            ]
-
-        for candidate_address in candidate_addresses:
-            init_options = {"mode": mode.value, "address": candidate_address}
-            init_options_json = json.dumps(init_options, sort_keys=True)
-
-            with _TELEMETRY_PROXIES_LOCK:
-                if init_options_json in _TELEMETRY_PROXIES:
-                    return _TELEMETRY_PROXIES[init_options_json]
+                # ⚠️ This may cause CPU contention if the current process is compute-intensive
+                # and a high collect and/or export frequency is used due to global interpreter lock (GIL).
+                if multiprocessing.current_process().daemon:
+                    return _init()
+                # Start + connect to a telemetry IPC server.
                 else:
-                    telemetry_manager = TelemetryManager(address=candidate_address)
-
-                    logger.debug(f"Connecting to telemetry manager server at {telemetry_manager.address}.")
-                    try:
-                        telemetry_manager.connect()
-                        logger.debug(f"Connected to telemetry manager server at {telemetry_manager.address}.")
-                        return _TELEMETRY_PROXIES.setdefault(init_options_json, telemetry_manager.Telemetry())  # pyright: ignore [reportAttributeAccessIssue]
-                    except Exception:
-                        logger.debug(
-                            f"Failed to connect to telemetry manager server at {telemetry_manager.address}!",
-                            exc_info=True,
-                        )
-
-        raise ConnectionError(f"Failed to connect to telemetry manager server at any of {candidate_addresses}!")
+                    return _init_server(address=address)
+    elif mode == TelemetryMode.LOCAL:
+        return _init()
+    elif mode == TelemetryMode.SERVER:
+        return _init_server(address=address)
+    elif mode == TelemetryMode.CLIENT:
+        return _init_client(address=address)
     else:
         raise ValueError(f"Unsupported telemetry mode: {mode}")

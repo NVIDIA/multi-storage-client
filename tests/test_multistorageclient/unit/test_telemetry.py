@@ -29,7 +29,7 @@ from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemory
 from test_multistorageclient.unit.utils.telemetry.trace.export import InMemorySpanExporter
 
 
-def test_telemetry_local_objects():
+def test_telemetry_init_local() -> None:
     opentelemetry_config = {
         "metrics": {"exporter": {"type": telemetry._fully_qualified_name(InMemoryMetricExporter)}},
         "traces": {"exporter": {"type": telemetry._fully_qualified_name(InMemorySpanExporter)}},
@@ -124,7 +124,7 @@ def test_telemetry_local_objects():
             active_span.add_event("event")
 
 
-def test_telemetry_manager_server_port():
+def test_telemetry_manager_server_port() -> None:
     # Make sure the port is in the dynamic/private/ephemeral port range.
     port = telemetry._telemetry_manager_server_port(process_id=psutil.Process().pid)
     assert (2**15 + 2**14) <= port
@@ -132,7 +132,7 @@ def test_telemetry_manager_server_port():
 
 
 # Invoke in a separate process.
-def _test_telemetry_proxy_objects_client(
+def _test_telemetry_init_client(
     opentelemetry_config: dict[str, Any],
     # Make sure caching works across processes.
     #
@@ -154,7 +154,7 @@ def _test_telemetry_proxy_objects_client(
     tracer_provider_proxy_repr: str,
     tracer_referent_str: str,
     tracer_proxy_repr: str,
-):
+) -> None:
     telemetry_resources: telemetry.Telemetry = telemetry.init(mode=telemetry.TelemetryMode.CLIENT)
     assert isinstance(telemetry_resources, BaseProxy)
 
@@ -220,7 +220,7 @@ def _test_telemetry_proxy_objects_client(
 
 
 @pytest.mark.parametrize(argnames=["process_start_method"], argvalues=[["fork"], ["spawn"]])
-def test_telemetry_proxy_objects(process_start_method: str):
+def test_telemetry_init_server_client(process_start_method: str) -> None:
     opentelemetry_config = {
         "metrics": {"exporter": {"type": telemetry._fully_qualified_name(InMemoryMetricExporter)}},
         "traces": {"exporter": {"type": telemetry._fully_qualified_name(InMemorySpanExporter)}},
@@ -286,7 +286,7 @@ def test_telemetry_proxy_objects(process_start_method: str):
     pool = Pool(context=get_context(method=process_start_method))
 
     pool.apply(
-        _test_telemetry_proxy_objects_client,
+        _test_telemetry_init_client,
         kwds={
             "opentelemetry_config": opentelemetry_config,
             "telemetry_resources_referent_str": str(telemetry_resources),
@@ -305,3 +305,32 @@ def test_telemetry_proxy_objects(process_start_method: str):
             "tracer_proxy_repr": repr(tracer),
         },
     )
+
+
+def _test_telemetry_init_automatic() -> None:
+    telemetry.init()
+
+
+def test_telemetry_init_automatic_main() -> None:
+    _test_telemetry_init_automatic()
+
+
+def _test_telemetry_init_automatic_child_parent(daemon: bool) -> None:
+    context = get_context(method="spawn")
+    process = context.Process(target=_test_telemetry_init_automatic, daemon=daemon)
+    process.start()
+    process.join()
+
+
+@pytest.mark.parametrize(argnames=["daemon"], argvalues=[[True], [False]])
+def test_telemetry_init_automatic_child(daemon: bool) -> None:
+    # Create a 2-deep process tree so the leaf process has a parent process without a telemetry instance in server mode.
+    #
+    # Use spawn so the proxy object caches aren't inherited by child processes.
+    #
+    # This is to force test the fallback path. Note that we can't ensure the main test process doesn't have a
+    # telemetry IPC server created by other tests, so we don't check if the resulting telemetry instance is a proxy object.
+    context = get_context(method="spawn")
+    process = context.Process(target=_test_telemetry_init_automatic_child_parent, kwargs={"daemon": daemon})
+    process.start()
+    process.join()
