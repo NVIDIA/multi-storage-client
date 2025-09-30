@@ -227,26 +227,28 @@ def verify_storage_provider(storage_client: msc.StorageClient, prefix: str) -> N
     wait(waitable=lambda: storage_client.list(prefix), should_wait=len_should_wait(expected_len=0))
 
     # test directories
-    storage_client.write(f"{prefix}/dir1/dir2/", b"")
-    assert storage_client.info(path=f"{prefix}/dir1/dir2").type == "directory"
-    assert storage_client.info(path=f"{prefix}/dir1/dir2").content_length == 0
+    # HuggingFace handles directories implicitly, skip tests
+    if not is_huggingface_provider_by_class(storage_client):
+        storage_client.write(f"{prefix}/dir1/dir2/", b"")
+        assert storage_client.info(path=f"{prefix}/dir1/dir2").type == "directory"
+        assert storage_client.info(path=f"{prefix}/dir1/dir2").content_length == 0
 
-    directories = list(storage_client.list(prefix=f"{prefix}/dir1/", include_directories=True))
-    assert len(directories) == 1
-    assert directories[0].key == f"{prefix}/dir1/dir2"
-    assert directories[0].type == "directory"
+        directories = list(storage_client.list(prefix=f"{prefix}/dir1/", include_directories=True))
+        assert len(directories) == 1
+        assert directories[0].key == f"{prefix}/dir1/dir2"
+        assert directories[0].type == "directory"
 
-    directories = list(storage_client.list(prefix=f"{prefix}/dir1/", include_directories=False))
-    assert len(directories) == 0
+        directories = list(storage_client.list(prefix=f"{prefix}/dir1/", include_directories=False))
+        assert len(directories) == 0
 
-    # delete directory with recursive flag will return an ValueError
-    with pytest.raises(ValueError, match=".*is a directory.*"):
-        storage_client.delete(f"{prefix}/dir1/dir2/")
+        # delete directory with recursive flag will return an ValueError
+        with pytest.raises(ValueError, match=".*is a directory.*"):
+            storage_client.delete(f"{prefix}/dir1/dir2/")
 
-    # delete directory with recursive flag = True
-    storage_client.delete(f"{prefix}/dir1/dir2/", recursive=True)
+        # delete directory with recursive flag = True
+        storage_client.delete(f"{prefix}/dir1/dir2/", recursive=True)
 
-    wait(waitable=lambda: storage_client.list(prefix), should_wait=len_should_wait(expected_len=1))
+        wait(waitable=lambda: storage_client.list(prefix), should_wait=len_should_wait(expected_len=1))
 
 
 def verify_attributes(storage_client: msc.StorageClient, prefix: str) -> None:
@@ -910,3 +912,13 @@ def test_on_demand_replica_fetch_with_cache_using_read(profile: str):
 
     # Clean up
     _do_cleanup(client, prefix + "/")
+
+
+def is_huggingface_provider_by_class(storage_client: msc.StorageClient) -> bool:
+    """
+    Check if the storage client is using the HuggingFace provider by class name.
+
+    :param storage_client: The storage client to check
+    :return: True if using HuggingFace provider, False otherwise
+    """
+    return storage_client._storage_provider.__class__.__name__ == "HuggingFaceStorageProvider"

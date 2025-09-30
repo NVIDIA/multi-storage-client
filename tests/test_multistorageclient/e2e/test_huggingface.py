@@ -13,192 +13,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import io
-import os
-import tempfile
 
 import pytest
 
-import multistorageclient as msc
-from multistorageclient.types import Range
-
-
-@pytest.mark.parametrize("profile_name", ["test-hf-public-model"])
-def test_huggingface_public_model_download(profile_name):
-    """Test downloading files from a public HuggingFace model repository."""
-    profile = profile_name
-    client, _ = msc.resolve_storage_client(f"msc://{profile}/")
-
-    test_file = "config.json"
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as temp_file:
-        temp_path = temp_file.name
-
-    try:
-        client.download_file(test_file, temp_path)
-
-        assert os.path.exists(temp_path), f"Downloaded file {temp_path} should exist"
-        file_size = os.path.getsize(temp_path)
-        assert file_size > 0, f"Downloaded file should have content, got {file_size} bytes"
-
-        with open(temp_path, "r") as f:
-            content = f.read()
-            assert '"model_type"' in content or '"architectures"' in content, "Should be a valid model config"
-
-    finally:
-        if os.path.exists(temp_path):
-            os.unlink(temp_path)
+import test_multistorageclient.e2e.common as common
 
 
 @pytest.mark.parametrize("profile_name", ["test-hf-private-dataset"])
-def test_huggingface_download(profile_name):
-    """Test downloading from a HuggingFace repository with XET enabled."""
-    profile = profile_name
-    client, _ = msc.resolve_storage_client(f"msc://{profile}/")
-
-    test_file = "small_file_0.parquet"
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".parquet") as temp_file:
-        temp_path = temp_file.name
-
+def test_hf_shortcuts(profile_name):
+    """Test HuggingFace using common shortcuts test pattern."""
     try:
-        client.download_file(test_file, temp_path)
-
-        assert os.path.exists(temp_path), "Downloaded file should exist"
-        assert os.path.getsize(temp_path) > 0, "Downloaded file should have content"
-
-        binary_buffer = io.BytesIO()
-        client.download_file(test_file, binary_buffer)
-
-        data = binary_buffer.getvalue()
-
-        assert len(data) > 0, "The binary buffer should not be empty"
-        assert data.startswith(b"PAR1"), "Content should be a valid parquet file"
-
+        common.test_shortcuts(profile_name)
     except Exception as e:
-        pytest.skip(f"XET-enabled repository test skipped: {e}")
-    finally:
-        if os.path.exists(temp_path):
-            os.unlink(temp_path)
+        pytest.skip(f"HuggingFace shortcuts test skipped: {e}")
 
 
 @pytest.mark.parametrize("profile_name", ["test-hf-private-dataset"])
-def test_huggingface_get_object(profile_name):
-    """Test getting an object from a private HuggingFace dataset."""
-    profile = profile_name
-    client, _ = msc.resolve_storage_client(f"msc://{profile}/")
-
-    # Use a small file from the XET-enabled repository
-    test_file = "small_file_0.parquet"
-
+def test_hf_storage_client(profile_name):
+    """Test HuggingFace using common storage client test pattern."""
     try:
-        # Get the object as bytes
-        data = client.read(test_file)
-
-        # Verify we got bytes data
-        assert isinstance(data, bytes), "get_object should return bytes"
-        assert len(data) > 0, f"Object should have content, got {len(data)} bytes"
-
-        # Verify it's a valid parquet file
-        assert data.startswith(b"PAR1"), "Content should be a valid parquet file"
-
-        # This should raise ValueError since HuggingFace doesn't support range reads
-        with pytest.raises(ValueError, match="HuggingFace provider does not support partial range reads"):
-            client.read(test_file, byte_range=Range(0, 100))
-
+        common.test_storage_client(profile_name)
     except Exception as e:
-        pytest.skip(f"get_object test skipped: {e}")
-
-
-@pytest.mark.parametrize("profile_name", ["test-hf-private-dataset"])
-def test_huggingface_download_write(profile_name):
-    """Test downloading existing file, re-uploading it, and downloading again to verify integrity."""
-    profile = profile_name
-    client, _ = msc.resolve_storage_client(f"msc://{profile}/")
-
-    original_filename = "small_file_0.parquet"
-    copy_filename = "test_copy_small_file.parquet"
-
-    try:
-        original_content = client.read(original_filename)
-        assert len(original_content) > 0, "Original file should have content"
-        assert original_content.startswith(b"PAR1"), "Should be a valid parquet file"
-
-        client.write(copy_filename, original_content)
-
-        copy_content = client.read(copy_filename)
-        assert copy_content == original_content, "Copy should be identical to original"
-        assert len(copy_content) == len(original_content), "Copy size should match original size"
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".parquet") as temp_file:
-            temp_path = temp_file.name
-
-        try:
-            client.download_file(copy_filename, temp_path)
-            download_size = os.path.getsize(temp_path)
-            assert download_size == len(original_content), (
-                f"File download size should match, {download_size}, {len(original_content)}"
-            )
-
-            with open(temp_path, "rb") as f:
-                file_content = f.read()
-                assert file_content == original_content, "File content should match original"
-
-        finally:
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
-
-    except Exception as e:
-        pytest.fail(f"Download-upload-download cycle test failed: {e} ")
-
-
-@pytest.mark.parametrize("profile_name", ["test-hf-private-dataset"])
-def test_huggingface_download_upload_file(profile_name):
-    """Test downloading existing file, re-uploading it using upload_file, and downloading again to verify integrity."""
-    profile = profile_name
-    client, _ = msc.resolve_storage_client(f"msc://{profile}/")
-
-    # Use an existing file from the repository
-    original_filename = "small_file_0.parquet"
-    copy_filename = "test_copy_upload_file.parquet"
-
-    try:
-        original_content = client.read(original_filename)
-        assert len(original_content) > 0, "Original file should have content"
-        assert original_content.startswith(b"PAR1"), "Should be a valid parquet file"
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".parquet") as temp_upload_file:
-            temp_upload_path = temp_upload_file.name
-            temp_upload_file.write(original_content)
-
-        try:
-            client.upload_file(copy_filename, temp_upload_path)
-
-            copy_content = client.read(copy_filename)
-            assert copy_content == original_content, "Copy should be identical to original"
-            assert len(copy_content) == len(original_content), "Copy size should match original size"
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".parquet") as temp_download_file:
-                temp_download_path = temp_download_file.name
-
-            try:
-                client.download_file(copy_filename, temp_download_path)
-                download_size = os.path.getsize(temp_download_path)
-                assert download_size == len(original_content), (
-                    f"File download size should match, {download_size}, {len(original_content)}"
-                )
-
-                with open(temp_download_path, "rb") as f:
-                    file_content = f.read()
-                    assert file_content == original_content, "File content should match original"
-
-            finally:
-                if os.path.exists(temp_download_path):
-                    os.unlink(temp_download_path)
-
-        finally:
-            if os.path.exists(temp_upload_path):
-                os.unlink(temp_upload_path)
-
-    except Exception as e:
-        pytest.fail(f"Download-upload_file-download cycle test failed: {e}")
+        pytest.skip(f"HuggingFace storage client test skipped: {e}")

@@ -21,17 +21,13 @@ from collections.abc import Iterator, Sequence
 from typing import IO, Optional, Union
 
 import opentelemetry.metrics as api_metrics
-from huggingface_hub import HfApi
-from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError, RevisionNotFoundError
+from huggingface_hub import CommitOperationCopy, HfApi, hf_hub_url
+from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError, RepositoryNotFoundError, RevisionNotFoundError
+from huggingface_hub.hf_api import RepoFile, RepoFolder
 
 from ..telemetry import Telemetry
 from ..telemetry.attributes.base import AttributesProvider
-from ..types import (
-    Credentials,
-    CredentialsProvider,
-    ObjectMetadata,
-    Range,
-)
+from ..types import AWARE_DATETIME_MIN, Credentials, CredentialsProvider, ObjectMetadata, Range
 from .base import BaseStorageProvider
 
 PROVIDER = "huggingface"
@@ -58,7 +54,7 @@ class HuggingFaceCredentialsProvider(CredentialsProvider):
         """
         return Credentials(
             access_key="",
-            secret_key="",  # HF only uses access token
+            secret_key="",
             token=self.token,
             expiration=None,
         )
@@ -142,7 +138,6 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
 
         return HfApi(token=token)
 
-    # Abstract method implementations - minimal stubs for now
     def _put_object(
         self,
         path: str,
@@ -161,6 +156,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         :param attributes: Optional attributes for the object (not supported by HuggingFace).
         :return: Data size in bytes.
         :raises RuntimeError: If HuggingFace client is not initialized or API errors occur.
+        :raises ValueError: If client attempts to create a directory.
         :raises ValueError: If conditional upload parameters are provided (not supported).
         """
         if not self._hf_client:
@@ -176,6 +172,12 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
             raise ValueError(
                 "HuggingFace provider does not support custom object attributes. "
                 "Use commit messages or repository metadata instead."
+            )
+
+        if path.endswith("/"):
+            raise ValueError(
+                "HuggingFace Storage Provider does not support explicit directory creation. "
+                "Directories are created implicitly when files are uploaded to paths within them."
             )
 
         try:
@@ -255,14 +257,49 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
 
     def _copy_object(self, src_path: str, dest_path: str) -> int:
         """
-        Copies an object within the HuggingFace repository.
+        Copies an object within the HuggingFace repository using server-side copy.
+
+        .. note::
+            Copy behavior is size-dependent: files ≥10MB are copied remotely via
+            metadata (LFS), while files <10MB are downloaded and re-uploaded.
 
         :param src_path: The source path of the object to copy.
         :param dest_path: The destination path for the copied object.
         :return: Data size in bytes.
-        :raises NotImplementedError: This method is not yet implemented.
+        :raises RuntimeError: If HuggingFace client is not initialized or API errors occur.
+        :raises FileNotFoundError: If the source file doesn't exist.
         """
-        raise NotImplementedError("HuggingFace provider not fully implemented yet")
+        if not self._hf_client:
+            raise RuntimeError("HuggingFace client not initialized")
+
+        src_object = self._get_object_metadata(src_path)
+
+        try:
+            operations = [
+                CommitOperationCopy(
+                    src_path_in_repo=src_path,
+                    path_in_repo=dest_path,
+                )
+            ]
+
+            self._hf_client.create_commit(
+                repo_id=self._repository_id,
+                operations=operations,
+                commit_message=f"Copy {src_path} to {dest_path}",
+                repo_type=self._repo_type,
+                revision=self._repo_revision,
+            )
+
+            return src_object.content_length
+
+        except (RepositoryNotFoundError, RevisionNotFoundError) as e:
+            raise FileNotFoundError(
+                f"Repository or revision not found: {self._repository_id}@{self._repo_revision}"
+            ) from e
+        except HfHubHTTPError as e:
+            raise RuntimeError(f"HuggingFace API error during copy from {src_path} to {dest_path}: {e}") from e
+        except Exception as e:
+            raise RuntimeError(f"Unexpected error during copy from {src_path} to {dest_path}: {e}") from e
 
     def _delete_object(self, path: str, if_match: Optional[str] = None) -> None:
         """
@@ -270,9 +307,33 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
 
         :param path: The path of the object to delete from the repository.
         :param if_match: Optional ETag for conditional deletion (not supported by HuggingFace).
-        :raises NotImplementedError: This method is not yet implemented.
+        :raises RuntimeError: If HuggingFace client is not initialized or API errors occur.
+        :raises ValueError: If conditional deletion parameters are provided (not supported).
+        :raises FileNotFoundError: If the file doesn't exist in the repository.
         """
-        raise NotImplementedError("HuggingFace provider not fully implemented yet")
+        if not self._hf_client:
+            raise RuntimeError("HuggingFace client not initialized")
+
+        if if_match is not None:
+            raise ValueError(
+                "HuggingFace provider does not support conditional deletion. if_match parameter is not supported."
+            )
+
+        try:
+            self._hf_client.delete_file(
+                path_in_repo=path,
+                repo_id=self._repository_id,
+                repo_type=self._repo_type,
+                revision=self._repo_revision,
+                commit_message=f"Delete {path}",
+            )
+
+        except (RepositoryNotFoundError, RevisionNotFoundError) as e:
+            raise FileNotFoundError(
+                f"Repository or revision not found: {self._repository_id}@{self._repo_revision}"
+            ) from e
+        except Exception as e:
+            raise RuntimeError(f"Unexpected error during deletion of {path}: {e}") from e
 
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         """
@@ -281,9 +342,76 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         :param path: The path of the object to get metadata for.
         :param strict: Whether to raise an error if the object doesn't exist.
         :return: Metadata about the object.
-        :raises NotImplementedError: This method is not yet implemented.
+        :raises RuntimeError: If HuggingFace client is not initialized or API errors occur.
+        :raises FileNotFoundError: If the file doesn't exist and strict=True.
         """
-        raise NotImplementedError("HuggingFace provider not fully implemented yet")
+        if not self._hf_client:
+            raise RuntimeError("HuggingFace client not initialized")
+
+        try:
+            file_url = hf_hub_url(
+                repo_id=self._repository_id,
+                filename=path,
+                repo_type=self._repo_type,
+                revision=self._repo_revision,
+            )
+
+            token = None
+            if self._credentials_provider:
+                creds = self._credentials_provider.get_credentials()
+                token = creds.token
+
+            file_metadata = self._hf_client.get_hf_file_metadata(
+                url=file_url,
+                token=token,
+            )
+
+            last_modified = AWARE_DATETIME_MIN
+            if hasattr(file_metadata, "commit_hash") and file_metadata.commit_hash:
+                try:
+                    commits = list(
+                        self._hf_client.list_repo_commits(
+                            repo_id=self._repository_id,
+                            repo_type=self._repo_type,
+                            revision=self._repo_revision,
+                        )
+                    )
+                    if commits:
+                        target_commit_id = file_metadata.commit_hash
+                        for commit in commits:
+                            if commit.commit_id == target_commit_id:
+                                last_modified = commit.created_at
+                                break
+                except Exception:
+                    pass
+
+            return ObjectMetadata(
+                key=path,
+                type="file",
+                content_length=file_metadata.size or 0,
+                last_modified=last_modified,
+                etag=file_metadata.etag,
+                content_type=None,
+                storage_class=None,
+                metadata=None,
+            )
+
+        except EntryNotFoundError as e:
+            if strict:
+                if self._is_dir(path):
+                    return ObjectMetadata(
+                        key=path,
+                        type="directory",
+                        content_length=0,
+                        last_modified=AWARE_DATETIME_MIN,
+                    )
+            raise FileNotFoundError(f"File not found in HuggingFace repository: {path}") from e
+        except (RepositoryNotFoundError, RevisionNotFoundError) as e:
+            raise FileNotFoundError(
+                f"Repository or revision not found: {self._repository_id}@{self._repo_revision}"
+            ) from e
+        except Exception as e:
+            raise RuntimeError(f"Unexpected error getting metadata for {path}: {e}") from e
 
     def _list_objects(
         self,
@@ -300,9 +428,74 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         :param end_at: The key to end listing at (not supported by HuggingFace).
         :param include_directories: Whether to include directories in the listing.
         :return: An iterator over object metadata for objects under the specified path.
-        :raises NotImplementedError: This method is not yet implemented.
+        :raises RuntimeError: If HuggingFace client is not initialized or API errors occur.
+        :raises ValueError: If start_after or end_at parameters are provided (not supported).
         """
-        raise NotImplementedError("HuggingFace provider not fully implemented yet")
+        if not self._hf_client:
+            raise RuntimeError("HuggingFace client not initialized")
+
+        if start_after is not None or end_at is not None:
+            raise ValueError(
+                "HuggingFace provider does not support pagination with start_after or end_at parameters. "
+                "These parameters are not supported by the HuggingFace Hub API."
+            )
+
+        try:
+            repo_items = self._hf_client.list_repo_tree(
+                repo_id=self._repository_id,
+                path_in_repo=os.path.dirname(path),
+                repo_type=self._repo_type,
+                revision=self._repo_revision,
+                expand=True,
+                recursive=True,
+            )
+
+            for item in repo_items:
+                if not item.path.startswith(os.path.dirname(path)):
+                    continue
+
+                if include_directories and isinstance(item, RepoFolder):
+                    last_modified = AWARE_DATETIME_MIN
+                    if hasattr(item, "last_commit") and item.last_commit:
+                        last_modified = item.last_commit.date
+
+                    yield ObjectMetadata(
+                        key=item.path,
+                        type="directory",
+                        content_length=0,
+                        last_modified=last_modified,
+                        etag=None,
+                        content_type=None,
+                        storage_class=None,
+                        metadata=None,
+                    )
+
+                elif isinstance(item, RepoFile):
+                    last_modified = AWARE_DATETIME_MIN
+                    if hasattr(item, "last_commit") and item.last_commit:
+                        last_modified = item.last_commit.date
+
+                    yield ObjectMetadata(
+                        key=item.path,
+                        type="file",
+                        content_length=item.size,
+                        last_modified=last_modified,
+                        etag=None,
+                        content_type=None,
+                        storage_class=None,
+                        metadata=None,
+                    )
+        except (RepositoryNotFoundError, RevisionNotFoundError) as e:
+            raise FileNotFoundError(
+                f"Repository or revision not found: {self._repository_id}@{self._repo_revision}"
+            ) from e
+        # if an entry wasn't found, we can effectively treat this as an empty directory since HF creates/deletes directories implicitly.
+        except EntryNotFoundError:
+            pass
+        except HfHubHTTPError as e:
+            raise RuntimeError(f"HuggingFace API error during listing of {path}: {e}") from e
+        except Exception as e:
+            raise RuntimeError(f"Unexpected error during listing of {path}: {e}") from e
 
     def _upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, str]] = None) -> int:
         """
@@ -313,6 +506,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         :param attributes: Optional attributes for the file (not supported by HuggingFace).
         :return: Data size in bytes.
         :raises RuntimeError: If HuggingFace client is not initialized or API errors occur.
+        :raises ValueError: If client attempts to create a directory.
         :raises ValueError: If custom attributes are provided (not supported).
         """
         if not self._hf_client:
@@ -322,6 +516,12 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
             raise ValueError(
                 "HuggingFace provider does not support custom file attributes. "
                 "Use commit messages or repository metadata instead."
+            )
+
+        if remote_path.endswith("/"):
+            raise ValueError(
+                "HuggingFace Storage Provider does not support explicit directory creation. "
+                "Directories are created implicitly when files are uploaded to paths within them."
             )
 
         try:
@@ -436,3 +636,29 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
             raise RuntimeError(f"HuggingFace API error during download: {e}") from e
         except Exception as e:
             raise RuntimeError(f"Unexpected error during download: {e}") from e
+
+    def _is_dir(self, path: str) -> bool:
+        """
+        Helper method to check if a path could be a directory by looking for files with that prefix.
+
+        :param path: The path to check.
+        :return: True if the path appears to be a directory (has files under it).
+        """
+        try:
+            file_paths = [
+                file.path
+                for file in self._hf_client.list_repo_tree(
+                    repo_id=self._repository_id,
+                    path_in_repo=os.path.dirname(path),
+                    repo_type=self._repo_type,
+                    revision=self._repo_revision,
+                    expand=True,
+                    recursive=True,
+                )
+            ]
+
+            path_prefix = path.rstrip("/") + "/"
+            return any(f.startswith(path_prefix) for f in file_paths)
+
+        except Exception:
+            return False
