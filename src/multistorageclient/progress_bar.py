@@ -5,6 +5,28 @@ from typing import Any
 from tqdm import tqdm
 
 
+class CappedProgressBar(tqdm):
+    """
+    Custom tqdm that caps percentage at 99.9% unless truly complete.
+    """
+
+    def __init__(self, *args, **kwargs):
+        """
+        Initialize the capped progress bar.
+        """
+        super().__init__(*args, **kwargs)
+
+    @staticmethod
+    def format_meter(n, total, **kwargs):
+        """
+        Override format_meter to cap percentage at 99.9% unless truly complete.
+        """
+        result = tqdm.format_meter(n, total, **kwargs)
+        if total and total > 0 and n < total:
+            result = result.replace("100.0%", "99.9%")
+        return result
+
+
 class ProgressBar:
     def __init__(self, desc: str, show_progress: bool, total_items: int = 0):
         # If the env var is defined, always suppress the progress bar
@@ -17,7 +39,7 @@ class ProgressBar:
 
         # Initialize progress bar based on the 'total_items' provided at creation.
         bar_format = "{desc}: {percentage:3.1f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}{postfix}]"
-        self.pbar = tqdm(
+        self.pbar = CappedProgressBar(
             total=total_items, desc=desc, bar_format=bar_format, file=sys.stdout, dynamic_ncols=True, position=0
         )
 

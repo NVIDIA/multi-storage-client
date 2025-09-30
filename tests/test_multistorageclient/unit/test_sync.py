@@ -462,3 +462,10 @@ def test_progress_bar_update_in_producer_thread_with_deletion():
     assert progress.pbar is not None
     assert progress.pbar.total == len(target_files)
     assert progress.pbar.n == 0
+
+
+def test_progress_bar_capped_percentage():
+    progress = ProgressBar(desc="Syncing", show_progress=True)
+    progress.update_total(100_000)
+    progress.update_progress(99_999)
+    assert "99.9%" in str(progress.pbar)
