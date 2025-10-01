@@ -24,6 +24,7 @@ from typing import TypeVar
 import pytest
 
 import multistorageclient as msc
+from multistorageclient.providers.huggingface import HuggingFaceStorageProvider
 from multistorageclient.types import MSC_PROTOCOL, ExecutionMode, SourceVersionCheckMode
 
 logger = logging.getLogger(__name__)
@@ -228,7 +229,7 @@ def verify_storage_provider(storage_client: msc.StorageClient, prefix: str) -> N
 
     # test directories
     # HuggingFace handles directories implicitly, skip tests
-    if not is_huggingface_provider_by_class(storage_client):
+    if not isinstance(storage_client._storage_provider, HuggingFaceStorageProvider):
         storage_client.write(f"{prefix}/dir1/dir2/", b"")
         assert storage_client.info(path=f"{prefix}/dir1/dir2").type == "directory"
         assert storage_client.info(path=f"{prefix}/dir1/dir2").content_length == 0
@@ -912,13 +913,3 @@ def test_on_demand_replica_fetch_with_cache_using_read(profile: str):
 
     # Clean up
     _do_cleanup(client, prefix + "/")
-
-
-def is_huggingface_provider_by_class(storage_client: msc.StorageClient) -> bool:
-    """
-    Check if the storage client is using the HuggingFace provider by class name.
-
-    :param storage_client: The storage client to check
-    :return: True if using HuggingFace provider, False otherwise
-    """
-    return storage_client._storage_provider.__class__.__name__ == "HuggingFaceStorageProvider"
