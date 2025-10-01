@@ -76,6 +76,10 @@ Providers
    :members:
    :undoc-members:
 
+.. automodule:: multistorageclient.providers.huggingface
+   :members:
+   :undoc-members:
+
 *********
 Telemetry
 *********

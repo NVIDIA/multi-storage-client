@@ -8,7 +8,7 @@ MSC has 3 main concepts:
 
    storage service
       A service that stores objects/files such as AWS S3, Azure Blob Storage, Google Cloud Storage (GCS),
-      NVIDIA AIStore, Oracle Cloud Infrastructure (OCI) Object Storage, POSIX file systems, and more.
+      NVIDIA AIStore, Oracle Cloud Infrastructure (OCI) Object Storage, POSIX file systems, HuggingFace, and more.
 
    provider
       A provider implements generic object/file operations such as create, read, update, delete, and list

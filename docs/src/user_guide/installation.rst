@@ -38,6 +38,9 @@ into MSC's operations and performance, making it harder to debug issues and opti
    # Oracle Cloud Infrastructure (OCI) Object Storage.
    pip install "multi-storage-client[oci]"
 
+   # HuggingFace
+   pip install "multi-storage-client[huggingface]"
+
 MSC also implements adapters to let higher-level libraries like fsspec or PyTorch work wth the MSC.
 Likewise, there are extras for each higher level library.
 

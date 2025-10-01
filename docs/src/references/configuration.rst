@@ -277,6 +277,48 @@ Options: See parameters in :py:class:`multistorageclient.providers.ais.AIStoreSt
 
 .. _rust-client-reference:
 
+``huggingface``
+---------------
+
+HuggingFace Storage Provider.
+
+Options: See parameters in :py:class:`multistorageclient.providers.huggingface.HuggingFaceStorageProvider`.
+
+.. code-block:: yaml
+   :caption: Example configuration.
+
+   profiles:
+     my-profile:
+       storage_provider:
+         type: huggingface
+         options:
+           repository_id: my-repository-id
+           repo_type: my-repo-type
+           repo_revision: my-repo-revision
+           base_path: base-path
+
+.. note::
+
+   The HuggingFace provider leverages HuggingFace Hub's built-in transfer mechanisms 
+   for optimal performance. The HuggingFace SDK (0.34.4) does not provide API-level 
+   control over the underlying data transfer mechanisms, instead allowing configuration 
+   through environment variables. MSC does not manipulate these variables to maintain 
+   debuggability and avoid conflicts in multi-threaded/multi-processing setups.
+
+   As of May 23rd, 2025, XET-enabled repositories are the default for all new users 
+   and organizations. When the HuggingFace provider is used with XET-enabled repositories, 
+   it will automatically utilize `hf_xet <https://github.com/huggingface/xet-core>`_ 
+   for efficient data transfer. Users can disable this behavior by setting 
+   ``HF_HUB_DISABLE_XET=1``.
+
+   Alternatively, users can set ``HF_HUB_ENABLE_HF_TRANSFER=1`` to use 
+   `hf_transfer <https://github.com/huggingface/hf_transfer>`_. Based on our 
+   performance evaluation, ``hf_xet`` provides optimal performance for download 
+   operations, while ``hf_transfer`` provides optimal performance for upload 
+   operations.
+
+   For detailed configuration instructions, see the `HuggingFace documentation <https://huggingface.co/docs/huggingface_hub/en/guides/download#faster-downloads>`_.
+
 ``rust_client`` (experimental)
 ------------------------------
 
