@@ -443,6 +443,34 @@ def file_tracer(func: Callable) -> Callable:
     return wrapper
 
 
+def file_metrics(operation):
+    """
+    Decorator to emit metrics for PosixFile I/O operations.
+
+    This decorator wraps file I/O methods to emit metrics through the storage provider's
+    _emit_metrics infrastructure. It tracks latency, data size, data rate, and request/response
+    counts for file operations.
+
+    :param operation: The operation type (BaseStorageProvider._Operation.READ or WRITE)
+    :return: Decorated function that emits metrics
+
+    Usage:
+        @file_metrics(operation=BaseStorageProvider._Operation.READ)
+        def read(self, size: int = -1) -> Any:
+            return self._file.read(size)
+    """
+
+    def decorator(func: Callable) -> Callable:
+        @wraps(func)
+        def wrapper(self, *args: Any, **kwargs: Any) -> Any:
+            storage_provider = self._storage_client._storage_provider
+            return storage_provider._emit_metrics(operation=operation, f=lambda: func(self, *args, **kwargs))
+
+        return wrapper
+
+    return decorator
+
+
 def _generic_tracer(func: Callable, class_name: str) -> Callable:
     @wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:

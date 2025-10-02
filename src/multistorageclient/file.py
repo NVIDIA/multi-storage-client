@@ -34,8 +34,10 @@ from .instrumentation.utils import (
     DEFAULT_ATTRIBUTES,
     TRACER,
     collect_default_attributes,
+    file_metrics,
     file_tracer,
 )
+from .providers.base import BaseStorageProvider
 from .types import Range, SourceVersionCheckMode
 from .utils import validate_attributes
 
@@ -636,6 +638,9 @@ class PosixFile(IO):
         for k, v in collect_default_attributes().items():
             self._trace_span.set_attribute(k, v)
 
+        # Store storage_client for emitting metrics
+        self._storage_client = storage_client
+
         # If metadata provider is enabled, use the realpath to get the physical path for the storage provider.
         if storage_client._metadata_provider:
             realpath, exists = storage_client._metadata_provider.realpath(path)
@@ -674,6 +679,7 @@ class PosixFile(IO):
         return self._file.closed
 
     @file_tracer
+    @file_metrics(operation=BaseStorageProvider._Operation.READ)
     def read(self, size: int = -1) -> Any:
         return self._file.read(size)
 
@@ -693,10 +699,12 @@ class PosixFile(IO):
         return self._file.tell()
 
     @file_tracer
+    @file_metrics(operation=BaseStorageProvider._Operation.READ)
     def readline(self, size: int = -1) -> Any:
         return self._file.readline(size)
 
     @file_tracer
+    @file_metrics(operation=BaseStorageProvider._Operation.READ)
     def readlines(self, hint: int = -1) -> list[Any]:
         return self._file.readlines()
 
@@ -728,14 +736,17 @@ class PosixFile(IO):
         return self._file.fileno()
 
     @file_tracer
+    @file_metrics(operation=BaseStorageProvider._Operation.WRITE)
     def write(self, b: Any) -> int:
         return self._file.write(b)
 
     @file_tracer
+    @file_metrics(operation=BaseStorageProvider._Operation.WRITE)
     def writelines(self, lines: Any) -> None:
         self._file.writelines(lines)
 
     @file_tracer
+    @file_metrics(operation=BaseStorageProvider._Operation.WRITE)
     def truncate(self, size: Optional[int] = None) -> int:
         return self._file.truncate(size)
 
@@ -744,12 +755,14 @@ class PosixFile(IO):
         self._file.flush()
 
     @file_tracer
+    @file_metrics(operation=BaseStorageProvider._Operation.READ)
     def readinto(self, b: Any) -> int:
         if hasattr(self._file, "readinto"):
             return self._file.readinto(b)  # type: ignore
         raise io.UnsupportedOperation(f"readinto operation is not supported on file {self._file.name}")
 
     @file_tracer
+    @file_metrics(operation=BaseStorageProvider._Operation.READ)
     def readall(self) -> Any:
         return self.read(-1)
 

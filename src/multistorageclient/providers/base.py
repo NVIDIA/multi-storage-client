@@ -167,9 +167,22 @@ class BaseStorageProvider(StorageProvider):
                 # For _get_object.
                 if isinstance(result, bytes):
                     data_size = len(result)
+                # For text mode file operations (read/readline in text mode)
+                elif isinstance(result, str):
+                    if result.isascii():
+                        data_size = len(result)
+                    else:
+                        # For non-ASCII strings, we need to encode them to bytes and then get the length
+                        data_size = len(result.encode())
                 # For _put_object + _copy_object + _upload_file + _download_file (return the data size).
                 elif isinstance(result, int):
                     data_size = result
+                # For operations like readlines() that return list[bytes] or list[str]
+                elif isinstance(result, list) and len(result) > 0:
+                    if isinstance(result[0], bytes):
+                        data_size = sum(len(item) for item in result)
+                    elif isinstance(result[0], str):
+                        data_size = sum(len(item) if item.isascii() else len(item.encode()) for item in result)
 
                 if data_size is not None:
                     if metric_data_size is not None:
