@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib.util
 import io
 import os
 import shutil
@@ -29,6 +30,13 @@ from ..types import AWARE_DATETIME_MIN, Credentials, CredentialsProvider, Object
 from .base import BaseStorageProvider
 
 PROVIDER = "huggingface"
+
+HF_TRANSFER_UNAVAILABLE_ERROR_MESSAGE = (
+    "Fast transfer using 'hf_transfer' is enabled (HF_HUB_ENABLE_HF_TRANSFER=1) "
+    "but 'hf_transfer' package is not available in your environment. "
+    "Either install hf_transfer with 'pip install hf_transfer' or "
+    "disable it by setting HF_HUB_ENABLE_HF_TRANSFER=0"
+)
 
 
 class HuggingFaceCredentialsProvider(CredentialsProvider):
@@ -102,6 +110,8 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         if not repository_id or "/" not in repository_id:
             raise ValueError(f"Invalid repository_id '{repository_id}'. Expected format: 'username/repo-name'")
 
+        self._validate_hf_transfer_availability()
+
         super().__init__(
             base_path=base_path,
             provider_name=PROVIDER,
@@ -132,6 +142,19 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
             token = creds.token
 
         return HfApi(token=token)
+
+    def _validate_hf_transfer_availability(self) -> None:
+        """
+        Validates that hf_transfer is available if it's enabled via environment variables.
+
+        Raises:
+            ValueError: If hf_transfer is enabled but not available.
+        """
+        # Check if hf_transfer is enabled via environment variable
+        hf_transfer_enabled = os.environ.get("HF_HUB_ENABLE_HF_TRANSFER", "").lower() in ("1", "on", "true", "yes")
+
+        if hf_transfer_enabled and importlib.util.find_spec("hf_transfer") is None:
+            raise ValueError(HF_TRANSFER_UNAVAILABLE_ERROR_MESSAGE)
 
     def _put_object(
         self,

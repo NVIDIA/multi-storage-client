@@ -74,7 +74,8 @@ oci = [
     "oci>=2.150,<3"
 ]
 huggingface = [
-    "huggingface_hub>=0.34.4,<1"
+    "huggingface_hub>=0.34.4,<1",
+    "hf_transfer>=0.1.9"
 ]
 
 # Higher-level libraries.
