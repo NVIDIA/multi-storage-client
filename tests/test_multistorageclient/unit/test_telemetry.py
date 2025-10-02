@@ -319,7 +319,7 @@ def _test_telemetry_init_automatic_child_parent(daemon: bool) -> None:
     context = get_context(method="spawn")
     process = context.Process(target=_test_telemetry_init_automatic, daemon=daemon)
     process.start()
-    process.join()
+    process.join(timeout=5)
 
 
 @pytest.mark.parametrize(argnames=["daemon"], argvalues=[[True], [False]])
@@ -333,4 +333,4 @@ def test_telemetry_init_automatic_child(daemon: bool) -> None:
     context = get_context(method="spawn")
     process = context.Process(target=_test_telemetry_init_automatic_child_parent, kwargs={"daemon": daemon})
     process.start()
-    process.join()
+    process.join(timeout=10)

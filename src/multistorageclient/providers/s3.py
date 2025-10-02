@@ -18,12 +18,11 @@ import io
 import os
 import tempfile
 import time
-from collections.abc import Callable, Iterator, Sequence, Sized
+from collections.abc import Callable, Iterator, Sized
 from typing import IO, Any, Optional, TypeVar, Union
 
 import boto3
 import botocore
-import opentelemetry.metrics as api_metrics
 from boto3.s3.transfer import TransferConfig
 from botocore.credentials import RefreshableCredentials
 from botocore.exceptions import ClientError, IncompleteReadError, ReadTimeoutError, ResponseStreamingError
@@ -34,7 +33,6 @@ from multistorageclient_rust import RustClient, RustRetryableError
 from ..instrumentation.utils import set_span_attribute
 from ..rust_utils import run_async_rust_client_method
 from ..telemetry import Telemetry
-from ..telemetry.attributes.base import AttributesProvider
 from ..types import (
     AWARE_DATETIME_MIN,
     Credentials,
@@ -124,9 +122,8 @@ class S3StorageProvider(BaseStorageProvider):
         endpoint_url: str = "",
         base_path: str = "",
         credentials_provider: Optional[CredentialsProvider] = None,
-        metric_counters: dict[Telemetry.CounterName, api_metrics.Counter] = {},
-        metric_gauges: dict[Telemetry.GaugeName, api_metrics._Gauge] = {},
-        metric_attributes_providers: Sequence[AttributesProvider] = (),
+        config_dict: Optional[dict[str, Any]] = None,
+        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -136,16 +133,14 @@ class S3StorageProvider(BaseStorageProvider):
         :param endpoint_url: The custom endpoint URL for the S3 service.
         :param base_path: The root prefix path within the S3 bucket where all operations will be scoped.
         :param credentials_provider: The provider to retrieve S3 credentials.
-        :param metric_counters: Metric counters.
-        :param metric_gauges: Metric gauges.
-        :param metric_attributes_providers: Metric attributes providers.
+        :param config_dict: Resolved MSC config.
+        :param telemetry_provider: A function that provides a telemetry instance.
         """
         super().__init__(
             base_path=base_path,
             provider_name=PROVIDER,
-            metric_counters=metric_counters,
-            metric_gauges=metric_gauges,
-            metric_attributes_providers=metric_attributes_providers,
+            config_dict=config_dict,
+            telemetry_provider=telemetry_provider,
         )
 
         self._region_name = region_name

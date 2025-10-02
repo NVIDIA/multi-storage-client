@@ -44,7 +44,7 @@ def test_pickle_file_open(temp_data_store_type: type[tempdatastore.TemporaryData
                     },
                 },
                 profile=profile,
-                telemetry=telemetry.init(),
+                telemetry_provider=telemetry.init,
             )
         )
 
@@ -72,10 +72,9 @@ def test_pickle_file_open(temp_data_store_type: type[tempdatastore.TemporaryData
         storage_client_copy_1 = pickle.loads(pickle.dumps(storage_client))
 
         # Open the file for reads (bytes) and read via pickled client.
-        with storage_client_copy_1.open(path=file_path) as file:
-            assert file.read() == file_body_bytes
+        assert storage_client_copy_1.read(path=file_path) == file_body_bytes
 
-        # Check if telemetry objects were pickled.
+        # Check if telemetry objects were restored.
         assert len(storage_client_copy_1._storage_provider._metric_gauges) > 0
         assert len(storage_client_copy_1._storage_provider._metric_counters) > 0
         assert len(storage_client_copy_1._storage_provider._metric_attributes_providers) > 0
@@ -84,10 +83,9 @@ def test_pickle_file_open(temp_data_store_type: type[tempdatastore.TemporaryData
         storage_client_copy_2 = pickle.loads(pickle.dumps(storage_client_copy_1))
 
         # Open the file for reads (bytes) and read via re-pickled client.
-        with storage_client_copy_2.open(path=file_path) as file:
-            assert file.read() == file_body_bytes
+        assert storage_client_copy_2.read(path=file_path) == file_body_bytes
 
-        # Check if telemetry objects were re-pickled.
+        # Check if telemetry objects were restored.
         assert len(storage_client_copy_2._storage_provider._metric_gauges) > 0
         assert len(storage_client_copy_2._storage_provider._metric_counters) > 0
         assert len(storage_client_copy_2._storage_provider._metric_attributes_providers) > 0

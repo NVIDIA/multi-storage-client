@@ -13,12 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 import mmap
 
 import pytest
 
+import multistorageclient.telemetry as telemetry
 import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
 from multistorageclient import StorageClient, StorageClientConfig
+from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
 
 
 @pytest.mark.parametrize(
@@ -36,7 +39,21 @@ def test_file_open(temp_data_store_type: type[tempdatastore.TemporaryDataStore])
         profile = "data"
         storage_client = StorageClient(
             config=StorageClientConfig.from_dict(
-                config_dict={"profiles": {profile: temp_data_store.profile_config_dict()}}, profile=profile
+                config_dict={
+                    "profiles": {profile: temp_data_store.profile_config_dict()},
+                    "opentelemetry": {
+                        "metrics": {
+                            "attributes": [
+                                {"type": "static", "options": {"attributes": {"cluster": "local"}}},
+                                {"type": "host", "options": {"attributes": {"node": "name"}}},
+                                {"type": "process", "options": {"attributes": {"process": "pid"}}},
+                            ],
+                            "exporter": {"type": telemetry._fully_qualified_name(InMemoryMetricExporter)},
+                        },
+                    },
+                },
+                profile=profile,
+                telemetry_provider=functools.partial(telemetry.init, mode=telemetry.TelemetryMode.LOCAL),
             )
         )
 

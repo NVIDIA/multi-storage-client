@@ -74,27 +74,27 @@ If the default telemetry provider creation doesn't behave as desired, you can ma
    import multistorageclient
    import multistorageclient.telemetry
 
-   # Create a telemetry provider instance.
-   #
-   # Based on the mode, this may create a Python multiprocessing manager server
-   # listening on 127.0.0.1:{dynamic port based on the process ID} to make the
-   # OpenTelemetry Python SDK work correctly with Python multiprocessing.
-   #
-   # The telemetry mode and address can be provided as function parameters.
-   # See the API reference for more details.
-   telemetry = multistorageclient.telemetry.init()
+   # Create a telemetry provider.
+   def telemetry_provider() -> multistorageclient.telemetry.Telemetry:
+       # Based on the mode, this may create a Python multiprocessing manager server
+       # listening on 127.0.0.1:{dynamic port based on the process ID} to make the
+       # OpenTelemetry Python SDK work correctly with Python multiprocessing.
+       #
+       # The telemetry mode and address can be provided as function parameters.
+       # See the API reference for more details.
+       return multistorageclient.telemetry.init()
 
-   # Directly create a storage client with the telemetry provider instance and open an object/file.
+   # Directly create a storage client with the telemetry provider and open an object/file.
    client = multistorageclient.StorageClient(
        config=multistorageclient.StorageClientConfig.from_file(
            profile="data",
-           telemetry=telemetry
+           telemetry_provider=telemetry_provider
        )
    )
    client.open("file.txt")
 
-   # Set the telemetry provider instance to use when MSC shortcuts create storage clients.
-   multistorageclient.set_telemetry(telemetry=telemetry)
+   # Set the telemetry provider to use when MSC shortcuts create storage clients.
+   multistorageclient.set_telemetry(telemetry_provider=telemetry_provider)
 
    # Use an MSC shortcut to create a storage client for a profile and open an object/file.
    multistorageclient.open("msc://data/file.txt")

@@ -44,7 +44,7 @@ def test_gcs_conditional_put(profile_name):
     # GCS uses NotModifiedError for if_none_match with specific etag (304)
     # GCS does not support if_none_match="*" and raises RuntimeError
     common.test_conditional_put(
-        storage_provider=client._storage_provider,
+        storage_client=client,
         if_none_match_error_type=RuntimeError,
         if_match_error_type=PreconditionFailedError,
         if_none_match_specific_error_type=NotModifiedError,  # if-none-match = ETag

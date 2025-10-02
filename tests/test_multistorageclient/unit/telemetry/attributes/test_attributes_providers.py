@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 import hashlib
 import os
 
@@ -164,7 +165,7 @@ def test_storage_client_with_attributes_providers():
                         }
                     },
                 },
-                telemetry=telemetry.init(mode=telemetry.TelemetryMode.LOCAL),
+                telemetry_provider=functools.partial(telemetry.init, mode=telemetry.TelemetryMode.LOCAL),
             )
         )
 

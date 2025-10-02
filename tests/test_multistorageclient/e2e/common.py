@@ -19,7 +19,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import Callable, Iterable
-from typing import TypeVar
+from typing import Optional, TypeVar
 
 import pytest
 
@@ -581,16 +581,16 @@ def test_attributes(profile: str):
 
 
 def test_conditional_put(
-    storage_provider,
-    if_none_match_error_type,
-    if_match_error_type,
-    if_none_match_specific_error_type=None,
-    supports_if_none_match_star=True,
-):
+    storage_client: msc.StorageClient,
+    if_none_match_error_type: type[Exception],
+    if_match_error_type: type[Exception],
+    if_none_match_specific_error_type: Optional[type[Exception]] = None,
+    supports_if_none_match_star: bool = True,
+) -> None:
     """Test conditional PUT operations using if-match and if-none-match conditions.
 
     Args:
-        storage_provider: The storage provider to test
+        storage_client: The storage client to test
         if_none_match_error_type: The error type expected when if_none_match="*" fails
         if_match_error_type: The error type expected when if_match fails
         if_none_match_specific_error_type: The error type expected when if_none_match with specific etag fails
@@ -598,6 +598,8 @@ def test_conditional_put(
     """
     key = f"test-conditional-put-{uuid.uuid4()}"
     data = b"test data"
+
+    storage_provider = storage_client._storage_provider
 
     try:
         # First test if_none_match="*" - this should either succeed or raise NotImplementedError

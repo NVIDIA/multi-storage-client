@@ -17,16 +17,14 @@ import io
 import os
 import shutil
 import tempfile
-from collections.abc import Iterator, Sequence
-from typing import IO, Optional, Union
+from collections.abc import Callable, Iterator
+from typing import IO, Any, Optional, Union
 
-import opentelemetry.metrics as api_metrics
 from huggingface_hub import CommitOperationCopy, HfApi, hf_hub_url
 from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError, RepositoryNotFoundError, RevisionNotFoundError
 from huggingface_hub.hf_api import RepoFile, RepoFolder
 
 from ..telemetry import Telemetry
-from ..telemetry.attributes.base import AttributesProvider
 from ..types import AWARE_DATETIME_MIN, Credentials, CredentialsProvider, ObjectMetadata, Range
 from .base import BaseStorageProvider
 
@@ -80,9 +78,8 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         base_path: str = "",
         repo_revision: str = "main",
         credentials_provider: Optional[CredentialsProvider] = None,
-        metric_counters: dict[Telemetry.CounterName, api_metrics.Counter] = {},
-        metric_gauges: dict[Telemetry.GaugeName, api_metrics._Gauge] = {},
-        metric_attributes_providers: Sequence[AttributesProvider] = (),
+        config_dict: Optional[dict[str, Any]] = None,
+        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
     ):
         """
         Initializes the :py:class:`HuggingFaceStorageProvider` with repository information and optional credentials provider.
@@ -92,9 +89,8 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         :param base_path: The root prefix path within the repository where all operations will be scoped.
         :param repo_revision: The git revision (branch, tag, or commit) to use. Defaults to 'main'.
         :param credentials_provider: The provider to retrieve HuggingFace credentials.
-        :param metric_counters: Metric counters.
-        :param metric_gauges: Metric gauges.
-        :param metric_attributes_providers: Metric attributes providers.
+        :param config_dict: Resolved MSC config.
+        :param telemetry_provider: A function that provides a telemetry instance.
         """
 
         # Validate repo_type
@@ -109,9 +105,8 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         super().__init__(
             base_path=base_path,
             provider_name=PROVIDER,
-            metric_counters=metric_counters,
-            metric_gauges=metric_gauges,
-            metric_attributes_providers=metric_attributes_providers,
+            config_dict=config_dict,
+            telemetry_provider=telemetry_provider,
         )
 
         self._repository_id = repository_id

@@ -13,17 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import json
 import logging
 import os
 import tempfile
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Iterable, Optional
 from urllib.parse import urlparse
 
-import opentelemetry.metrics as api_metrics
 import yaml
 
 from .cache import DEFAULT_CACHE_LINE_SIZE, DEFAULT_CACHE_SIZE, CacheManager
@@ -34,7 +34,6 @@ from .rclone import read_rclone_config
 from .schema import validate_config
 from .telemetry import Telemetry
 from .telemetry import init as telemetry_init
-from .telemetry.attributes.base import AttributesProvider
 from .types import (
     DEFAULT_RETRY_ATTEMPTS,
     DEFAULT_RETRY_DELAY,
@@ -57,15 +56,6 @@ PROTOCOL_TO_PROVIDER_TYPE_MAPPING = {
     "gs": "gcs",
     "ais": "ais",
     "file": "file",
-}
-
-_TELEMETRY_ATTRIBUTES_PROVIDER_MAPPING = {
-    "environment_variables": "multistorageclient.telemetry.attributes.environment_variables.EnvironmentVariablesAttributesProvider",
-    "host": "multistorageclient.telemetry.attributes.host.HostAttributesProvider",
-    "msc_config": "multistorageclient.telemetry.attributes.msc_config.MSCConfigAttributesProvider",
-    "process": "multistorageclient.telemetry.attributes.process.ProcessAttributesProvider",
-    "static": "multistorageclient.telemetry.attributes.static.StaticAttributesProvider",
-    "thread": "multistorageclient.telemetry.attributes.thread.ThreadAttributesProvider",
 }
 
 
@@ -212,13 +202,12 @@ DEFAULT_CACHE_REFRESH_INTERVAL = 300
 
 class StorageClientConfigLoader:
     _provider_bundle: Optional[ProviderBundle]
+    _resolved_config_dict: dict[str, Any]
     _profiles: dict[str, Any]
     _profile: str
     _profile_dict: dict[str, Any]
     _opentelemetry_dict: Optional[dict[str, Any]]
-    _metric_gauges: Optional[dict[Telemetry.GaugeName, api_metrics._Gauge]]
-    _metric_counters: Optional[dict[Telemetry.CounterName, api_metrics.Counter]]
-    _metric_attributes_providers: Optional[Sequence[AttributesProvider]]
+    _telemetry_provider: Optional[Callable[[], Telemetry]]
     _cache_dict: Optional[dict[str, Any]]
 
     def __init__(
@@ -226,10 +215,7 @@ class StorageClientConfigLoader:
         config_dict: dict[str, Any],
         profile: str = DEFAULT_POSIX_PROFILE_NAME,
         provider_bundle: Optional[ProviderBundle] = None,
-        telemetry: Optional[Telemetry] = None,
-        metric_gauges: Optional[dict[Telemetry.GaugeName, api_metrics._Gauge]] = None,
-        metric_counters: Optional[dict[Telemetry.CounterName, api_metrics.Counter]] = None,
-        metric_attributes_providers: Optional[Sequence[AttributesProvider]] = None,
+        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
     ) -> None:
         """
         Initializes a :py:class:`StorageClientConfigLoader` to create a
@@ -239,16 +225,14 @@ class StorageClientConfigLoader:
         :param config_dict: Dictionary of configuration options.
         :param profile: Name of profile in ``config_dict`` to use to build configuration.
         :param provider_bundle: Optional pre-built :py:class:`multistorageclient.types.ProviderBundle`, takes precedence over ``config_dict``.
-        :param telemetry: Optional telemetry instance to use, takes precedence over ``metric_gauges``, ``metric_counters``, and ``metric_attributes_providers``.
-        :param metric_gauges: Optional metric gauges to use.
-        :param metric_counters: Optional metric counters to use.
-        :param metric_attributes_providers: Optional metric attributes providers to use.
+        :param telemetry_provider: A function that provides a telemetry instance. The function must be defined at the top level of a module to work with pickling.
         """
         # ProviderBundle takes precedence
         self._provider_bundle = provider_bundle
 
         # Interpolates all environment variables into actual values.
         config_dict = expand_env_vars(config_dict)
+        self._resolved_config_dict = config_dict
 
         self._profiles = config_dict.get("profiles", {})
 
@@ -275,64 +259,11 @@ class StorageClientConfigLoader:
         self._profile_dict = profile_dict
 
         self._opentelemetry_dict = config_dict.get("opentelemetry", None)
-
-        self._metric_gauges = metric_gauges
-        self._metric_counters = metric_counters
-        self._metric_attributes_providers = metric_attributes_providers
-        if self._opentelemetry_dict is not None:
-            # Try to create a telemetry instance only if no telemetry instance or OpenTelemetry instruments are provided (e.g. when unpickling).
-            #
-            # Multiprocessing unpickles during the Python interpreter's bootstrap phase for new processes.
-            # New processes (e.g. multiprocessing manager server) can't be created during this phase.
-            if telemetry is None and not any(
-                (self._metric_gauges, self._metric_counters, self._metric_attributes_providers)
-            ):
-                try:
-                    # Try to create a telemetry instance with the default mode heuristic.
-                    telemetry = telemetry_init()
-                except Exception:
-                    # Don't throw on telemetry init failures.
-                    logger.error("Failed to automatically create telemetry instance!", exc_info=True)
-
-            if "metrics" in self._opentelemetry_dict:
-                if telemetry is not None:
-                    self._metric_gauges = {}
-                    for name in Telemetry.GaugeName:
-                        gauge = telemetry.gauge(config=self._opentelemetry_dict["metrics"], name=name)
-                        if gauge is not None:
-                            self._metric_gauges[name] = gauge
-                    self._metric_counters = {}
-                    for name in Telemetry.CounterName:
-                        counter = telemetry.counter(config=self._opentelemetry_dict["metrics"], name=name)
-                        if counter is not None:
-                            self._metric_counters[name] = counter
-
-                    if "attributes" in self._opentelemetry_dict["metrics"]:
-                        attributes_providers: list[AttributesProvider] = []
-                        attributes_provider_configs: list[dict[str, Any]] = self._opentelemetry_dict["metrics"][
-                            "attributes"
-                        ]
-                        for config in attributes_provider_configs:
-                            attributes_provider_type: str = config["type"]
-                            attributes_provider_fully_qualified_name = _TELEMETRY_ATTRIBUTES_PROVIDER_MAPPING.get(
-                                attributes_provider_type, attributes_provider_type
-                            )
-                            attributes_provider_module_name, attributes_provider_class_name = (
-                                attributes_provider_fully_qualified_name.rsplit(".", 1)
-                            )
-                            cls = import_class(attributes_provider_class_name, attributes_provider_module_name)
-                            attributes_provider_options = config.get("options", {})
-                            if (
-                                attributes_provider_fully_qualified_name
-                                == _TELEMETRY_ATTRIBUTES_PROVIDER_MAPPING["msc_config"]
-                            ):
-                                attributes_provider_options["config_dict"] = config_dict
-                            attributes_provider: AttributesProvider = cls(**attributes_provider_options)
-                            attributes_providers.append(attributes_provider)
-                        self._metric_attributes_providers = tuple(attributes_providers)
-                elif not any([metric_gauges, metric_counters, metric_attributes_providers]):
-                    # TODO: Remove "beta" from the log once legacy metrics are removed.
-                    logger.error("No telemetry instance! Disabling beta metrics.")
+        # Multiprocessing unpickles during the Python interpreter's bootstrap phase for new processes.
+        # New processes (e.g. multiprocessing manager server) can't be created during this phase.
+        #
+        # Pass thunks everywhere instead for lazy telemetry initialization.
+        self._telemetry_provider = telemetry_provider or telemetry_init
 
         self._cache_dict = config_dict.get("cache", None)
 
@@ -351,12 +282,11 @@ class StorageClientConfigLoader:
             )
         if credentials_provider:
             storage_options["credentials_provider"] = credentials_provider
-        if self._metric_gauges is not None:
-            storage_options["metric_gauges"] = self._metric_gauges
-        if self._metric_counters is not None:
-            storage_options["metric_counters"] = self._metric_counters
-        if self._metric_attributes_providers is not None:
-            storage_options["metric_attributes_providers"] = self._metric_attributes_providers
+        if self._resolved_config_dict is not None:
+            # Make a deep copy to drop any external references which may be mutated or cause infinite recursion.
+            storage_options["config_dict"] = copy.deepcopy(self._resolved_config_dict)
+        if self._telemetry_provider is not None:
+            storage_options["telemetry_provider"] = self._telemetry_provider
         class_name = STORAGE_PROVIDER_MAPPING[storage_provider_name]
         module_name = ".providers"
         cls = import_class(class_name, module_name, PACKAGE_NAME)
@@ -682,9 +612,7 @@ class StorageClientConfigLoader:
             cache_config=cache_config,
             cache_manager=cache_manager,
             retry_config=retry_config,
-            metric_gauges=self._metric_gauges,
-            metric_counters=self._metric_counters,
-            metric_attributes_providers=self._metric_attributes_providers,
+            telemetry_provider=self._telemetry_provider,
             replicas=bundle.replicas,
             autocommit_config=autocommit_config,
         )
@@ -838,9 +766,7 @@ class StorageClientConfig:
     cache_config: Optional[CacheConfig]
     cache_manager: Optional[CacheManager]
     retry_config: Optional[RetryConfig]
-    metric_gauges: Optional[dict[Telemetry.GaugeName, api_metrics._Gauge]]
-    metric_counters: Optional[dict[Telemetry.CounterName, api_metrics.Counter]]
-    metric_attributes_providers: Optional[Sequence[AttributesProvider]]
+    telemetry_provider: Optional[Callable[[], Telemetry]]
     replicas: list[Replica]
     autocommit_config: Optional[AutoCommitConfig]
 
@@ -855,9 +781,7 @@ class StorageClientConfig:
         cache_config: Optional[CacheConfig] = None,
         cache_manager: Optional[CacheManager] = None,
         retry_config: Optional[RetryConfig] = None,
-        metric_gauges: Optional[dict[Telemetry.GaugeName, api_metrics._Gauge]] = None,
-        metric_counters: Optional[dict[Telemetry.CounterName, api_metrics.Counter]] = None,
-        metric_attributes_providers: Optional[Sequence[AttributesProvider]] = None,
+        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
         replicas: Optional[list[Replica]] = None,
         autocommit_config: Optional[AutoCommitConfig] = None,
     ):
@@ -870,46 +794,52 @@ class StorageClientConfig:
         self.cache_config = cache_config
         self.cache_manager = cache_manager
         self.retry_config = retry_config
-        self.metric_gauges = metric_gauges
-        self.metric_counters = metric_counters
-        self.metric_attributes_providers = metric_attributes_providers
+        self.telemetry_provider = telemetry_provider
         self.replicas = replicas
         self.autocommit_config = autocommit_config
 
     @staticmethod
     def from_json(
-        config_json: str, profile: str = DEFAULT_POSIX_PROFILE_NAME, telemetry: Optional[Telemetry] = None
+        config_json: str,
+        profile: str = DEFAULT_POSIX_PROFILE_NAME,
+        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
     ) -> "StorageClientConfig":
         """
         Load a storage client configuration from a JSON string.
 
         :param config_json: Configuration JSON string.
         :param profile: Profile to use.
-        :param telemetry: Telemetry instance to use.
+        :param telemetry_provider: A function that provides a telemetry instance. The function must be defined at the top level of a module to work with pickling.
         """
         config_dict = json.loads(config_json)
-        return StorageClientConfig.from_dict(config_dict=config_dict, profile=profile, telemetry=telemetry)
+        return StorageClientConfig.from_dict(
+            config_dict=config_dict, profile=profile, telemetry_provider=telemetry_provider
+        )
 
     @staticmethod
     def from_yaml(
-        config_yaml: str, profile: str = DEFAULT_POSIX_PROFILE_NAME, telemetry: Optional[Telemetry] = None
+        config_yaml: str,
+        profile: str = DEFAULT_POSIX_PROFILE_NAME,
+        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
     ) -> "StorageClientConfig":
         """
         Load a storage client configuration from a YAML string.
 
         :param config_yaml: Configuration YAML string.
         :param profile: Profile to use.
-        :param telemetry: Telemetry instance to use.
+        :param telemetry_provider: A function that provides a telemetry instance. The function must be defined at the top level of a module to work with pickling.
         """
         config_dict = yaml.safe_load(config_yaml)
-        return StorageClientConfig.from_dict(config_dict=config_dict, profile=profile, telemetry=telemetry)
+        return StorageClientConfig.from_dict(
+            config_dict=config_dict, profile=profile, telemetry_provider=telemetry_provider
+        )
 
     @staticmethod
     def from_dict(
         config_dict: dict[str, Any],
         profile: str = DEFAULT_POSIX_PROFILE_NAME,
         skip_validation: bool = False,
-        telemetry: Optional[Telemetry] = None,
+        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
     ) -> "StorageClientConfig":
         """
         Load a storage client configuration from a Python dictionary.
@@ -917,14 +847,16 @@ class StorageClientConfig:
         :param config_dict: Configuration Python dictionary.
         :param profile: Profile to use.
         :param skip_validation: Skip configuration schema validation.
-        :param telemetry: Telemetry instance to use.
+        :param telemetry_provider: A function that provides a telemetry instance. The function must be defined at the top level of a module to work with pickling.
         """
         # Validate the config file with predefined JSON schema
         if not skip_validation:
             validate_config(config_dict)
 
         # Load config
-        loader = StorageClientConfigLoader(config_dict=config_dict, profile=profile, telemetry=telemetry)
+        loader = StorageClientConfigLoader(
+            config_dict=config_dict, profile=profile, telemetry_provider=telemetry_provider
+        )
         config = loader.build_config()
         config._config_dict = config_dict
 
@@ -934,14 +866,14 @@ class StorageClientConfig:
     def from_file(
         config_file_paths: Optional[Iterable[str]] = None,
         profile: str = DEFAULT_POSIX_PROFILE_NAME,
-        telemetry: Optional[Telemetry] = None,
+        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
     ) -> "StorageClientConfig":
         """
         Load a storage client configuration from the first file found.
 
         :param config_file_paths: Configuration file search paths. If omitted, the default search paths are used (see :py:meth:`StorageClientConfig.read_msc_config`).
         :param profile: Profile to use.
-        :param telemetry: Telemetry instance to use.
+        :param telemetry_provider: A function that provides a telemetry instance. The function must be defined at the top level of a module to work with pickling.
         """
         msc_config_dict, msc_config_file = StorageClientConfig.read_msc_config(config_file_paths=config_file_paths)
         # Parse rclone config file.
@@ -957,7 +889,9 @@ class StorageClientConfig:
 
         # Check if profile is in merged_profiles
         if profile in merged_profiles:
-            return StorageClientConfig.from_dict(config_dict=merged_config, profile=profile, telemetry=telemetry)
+            return StorageClientConfig.from_dict(
+                config_dict=merged_config, profile=profile, telemetry_provider=telemetry_provider
+            )
         else:
             # Check if profile is the default profile or an implicit profile
             if profile == DEFAULT_POSIX_PROFILE_NAME:
@@ -988,15 +922,17 @@ class StorageClientConfig:
                 merged_config["profiles"][profile] = implicit_profile_config["profiles"][profile]
             # the config is already validated while reading, skip the validation for implicit profiles which start profile with "_"
             return StorageClientConfig.from_dict(
-                config_dict=merged_config, profile=profile, skip_validation=True, telemetry=telemetry
+                config_dict=merged_config, profile=profile, skip_validation=True, telemetry_provider=telemetry_provider
             )
 
     @staticmethod
     def from_provider_bundle(
-        config_dict: dict[str, Any], provider_bundle: ProviderBundle, telemetry: Optional[Telemetry] = None
+        config_dict: dict[str, Any],
+        provider_bundle: ProviderBundle,
+        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
     ) -> "StorageClientConfig":
         loader = StorageClientConfigLoader(
-            config_dict=config_dict, provider_bundle=provider_bundle, telemetry=telemetry
+            config_dict=config_dict, provider_bundle=provider_bundle, telemetry_provider=telemetry_provider
         )
         config = loader.build_config()
         config._config_dict = None  # Explicitly mark as None to avoid confusing pickling errors
@@ -1099,9 +1035,7 @@ class StorageClientConfig:
         loader = StorageClientConfigLoader(
             config_dict=config_dict,
             profile=state["profile"],
-            metric_gauges=state["metric_gauges"],
-            metric_counters=state["metric_counters"],
-            metric_attributes_providers=state["metric_attributes_providers"],
+            telemetry_provider=state["telemetry_provider"],
         )
         new_config = loader.build_config()
         self.profile = new_config.profile
@@ -1111,9 +1045,7 @@ class StorageClientConfig:
         self.cache_config = new_config.cache_config
         self.cache_manager = new_config.cache_manager
         self.retry_config = new_config.retry_config
-        self.metric_gauges = new_config.metric_gauges
-        self.metric_counters = new_config.metric_counters
-        self.metric_attributes_providers = new_config.metric_attributes_providers
+        self.telemetry_provider = new_config.telemetry_provider
         self._config_dict = config_dict
         self.replicas = new_config.replicas
         self.autocommit_config = new_config.autocommit_config

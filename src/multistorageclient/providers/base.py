@@ -16,11 +16,12 @@
 import importlib.metadata as importlib_metadata
 import logging
 import os
+import threading
 import time
 from abc import abstractmethod
 from collections.abc import Callable, Iterator, Sequence
 from enum import Enum
-from typing import IO, Optional, TypeVar, Union, cast
+from typing import IO, Any, Optional, TypeVar, Union, cast
 
 import opentelemetry.metrics as api_metrics
 import opentelemetry.util.types as api_types
@@ -33,6 +34,7 @@ from ..utils import (
     create_attribute_filter_evaluator,
     extract_prefix_from_glob,
     glob,
+    import_class,
     insert_directories,
     matches_attribute_filter_expression,
 )
@@ -40,6 +42,15 @@ from ..utils import (
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
+
+_TELEMETRY_ATTRIBUTES_PROVIDER_MAPPING = {
+    "environment_variables": "multistorageclient.telemetry.attributes.environment_variables.EnvironmentVariablesAttributesProvider",
+    "host": "multistorageclient.telemetry.attributes.host.HostAttributesProvider",
+    "msc_config": "multistorageclient.telemetry.attributes.msc_config.MSCConfigAttributesProvider",
+    "process": "multistorageclient.telemetry.attributes.process.ProcessAttributesProvider",
+    "static": "multistorageclient.telemetry.attributes.static.StaticAttributesProvider",
+    "thread": "multistorageclient.telemetry.attributes.thread.ThreadAttributesProvider",
+}
 
 
 @instrumented
@@ -80,29 +91,96 @@ class BaseStorageProvider(StorageProvider):
 
     _base_path: str
     _provider_name: str
-    _metric_gauges: dict[Telemetry.GaugeName, api_metrics._Gauge]
-    _metric_counters: dict[Telemetry.CounterName, api_metrics.Counter]
+
+    _config_dict: Optional[dict[str, Any]]
+    _telemetry_provider: Optional[Callable[[], Telemetry]]
+
+    _metric_init_event: threading.Event
+    _metric_gauges: dict[Telemetry.GaugeName, Optional[api_metrics._Gauge]]
+    _metric_counters: dict[Telemetry.CounterName, Optional[api_metrics.Counter]]
     _metric_attributes_providers: Sequence[AttributesProvider]
+    _metric_init_lock: threading.Lock
 
     def __init__(
         self,
         base_path: str,
         provider_name: str,
-        metric_gauges: dict[Telemetry.GaugeName, api_metrics._Gauge] = {},
-        metric_counters: dict[Telemetry.CounterName, api_metrics.Counter] = {},
-        metric_attributes_providers: Sequence[AttributesProvider] = (),
+        config_dict: Optional[dict[str, Any]] = None,
+        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
     ):
         self._base_path = base_path
         self._provider_name = provider_name
 
-        self._metric_gauges = metric_gauges
-        self._metric_counters = metric_counters
-        self._metric_attributes_providers = metric_attributes_providers
+        self._config_dict = config_dict
+        self._telemetry_provider = telemetry_provider
+
+        self._metric_init_event = threading.Event()
+        self._metric_gauges = {}
+        self._metric_counters = {}
+        self._metric_attributes_providers = ()
+        self._metric_init_lock = threading.Lock()
 
         self._metric_helper = StorageProviderMetricsHelper()
 
     def __str__(self) -> str:
         return self._provider_name
+
+    def _init_metrics(self) -> None:
+        """
+        Initialize metrics.
+
+        Multiprocessing unpickles during the Python interpreter's bootstrap phase for new processes.
+        New processes (e.g. multiprocessing manager server) can't be created during this phase.
+
+        The telemetry provider is a thunk to defer telemetry initialization. Evaluate the thunk
+        and cache the instruments to avoid IPC and lock contention.
+        """
+        with self._metric_init_lock:
+            if not self._metric_init_event.is_set():
+                if self._config_dict is not None and self._telemetry_provider is not None:
+                    opentelemetry_config: Optional[dict[str, Any]] = self._config_dict.get("opentelemetry")
+                    if opentelemetry_config is not None:
+                        try:
+                            telemetry = self._telemetry_provider()
+
+                            metrics_config: Optional[dict[str, Any]] = opentelemetry_config.get("metrics")
+                            if metrics_config is not None:
+                                for name in Telemetry.GaugeName:
+                                    self._metric_gauges[name] = telemetry.gauge(config=metrics_config, name=name)
+                                for name in Telemetry.CounterName:
+                                    self._metric_counters[name] = telemetry.counter(config=metrics_config, name=name)
+
+                                attributes_provider_configs: Optional[list[dict[str, Any]]] = metrics_config.get(
+                                    "attributes"
+                                )
+                                if attributes_provider_configs is not None:
+                                    attributes_providers: list[AttributesProvider] = []
+                                    for config in attributes_provider_configs:
+                                        attributes_provider_type: str = config["type"]
+                                        attributes_provider_fully_qualified_name = (
+                                            _TELEMETRY_ATTRIBUTES_PROVIDER_MAPPING.get(
+                                                attributes_provider_type, attributes_provider_type
+                                            )
+                                        )
+                                        attributes_provider_module_name, attributes_provider_class_name = (
+                                            attributes_provider_fully_qualified_name.rsplit(".", 1)
+                                        )
+                                        cls = import_class(
+                                            attributes_provider_class_name, attributes_provider_module_name
+                                        )
+                                        attributes_provider_options = config.get("options", {})
+                                        if (
+                                            attributes_provider_fully_qualified_name
+                                            == _TELEMETRY_ATTRIBUTES_PROVIDER_MAPPING["msc_config"]
+                                        ):
+                                            attributes_provider_options["config_dict"] = self._config_dict
+                                        attributes_provider: AttributesProvider = cls(**attributes_provider_options)
+                                        attributes_providers.append(attributes_provider)
+                                    self._metric_attributes_providers = tuple(attributes_providers)
+                        except Exception:
+                            # TODO: Remove "beta" from the log once legacy metrics are removed.
+                            logger.error("Failed to setup telemetry! Disabling beta telemetry.")
+                self._metric_init_event.set()
 
     def _emit_metrics(self, operation: _Operation, f: Callable[[], _T]) -> _T:
         """
@@ -112,6 +190,10 @@ class BaseStorageProvider(StorageProvider):
         :param operation: Operation being performed.
         :return: Function result.
         """
+        # Check if metrics were initialized without locking to avoid lock contention post-initialization.
+        if not self._metric_init_event.is_set():
+            self._init_metrics()
+
         metric_latency = self._metric_gauges.get(Telemetry.GaugeName.LATENCY)
         metric_data_size = self._metric_gauges.get(Telemetry.GaugeName.DATA_SIZE)
         metric_data_rate = self._metric_gauges.get(Telemetry.GaugeName.DATA_RATE)

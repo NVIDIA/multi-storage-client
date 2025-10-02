@@ -44,8 +44,6 @@ from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemory
     ],
 )
 def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDataStore], with_cache: bool):
-    telemetry_resources: telemetry.Telemetry = telemetry.init(mode=telemetry.TelemetryMode.LOCAL)
-
     with temp_data_store_type() as temp_data_store:
         profile = "data"
         config_dict = {
@@ -73,7 +71,9 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
 
         storage_client = StorageClient(
             config=StorageClientConfig.from_dict(
-                config_dict=config_dict, profile=profile, telemetry=telemetry_resources
+                config_dict=config_dict,
+                profile=profile,
+                telemetry_provider=functools.partial(telemetry.init, mode=telemetry.TelemetryMode.LOCAL),
             )
         )
 

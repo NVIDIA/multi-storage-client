@@ -1660,12 +1660,10 @@ def test_telemetry_init_manual() -> None:
         config = StorageClientConfig.from_dict(
             config_dict=config_dict,
             profile=profile,
-            telemetry=telemetry.init(mode=telemetry.TelemetryMode.LOCAL),
+            telemetry_provider=lambda: telemetry.init(mode=telemetry.TelemetryMode.LOCAL),
         )
         assert config is not None
-        assert config.metric_gauges is not None
-        assert config.metric_counters is not None
-        assert config.metric_attributes_providers is not None
+        assert config.telemetry_provider is not None
 
 
 def test_telemetry_init_automatic() -> None:
@@ -1686,6 +1684,4 @@ def test_telemetry_init_automatic() -> None:
         }
         config = StorageClientConfig.from_dict(config_dict=config_dict, profile=profile)
         assert config is not None
-        assert config.metric_gauges is not None
-        assert config.metric_counters is not None
-        assert config.metric_attributes_providers is not None
+        assert config.telemetry_provider is not None

@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 import os
 import random
 import uuid
@@ -27,8 +28,6 @@ from multistorageclient.constants import MEMORY_LOAD_LIMIT
 
 @pytest.fixture(scope="session")
 def storage_client() -> StorageClient:
-    telemetry_resources = telemetry.init(mode=telemetry.TelemetryMode.LOCAL)
-
     with tempdatastore.TemporaryAWSS3Bucket() as temp_data_store:
         profile = "data"
         config_dict = {
@@ -60,7 +59,9 @@ def storage_client() -> StorageClient:
         }
         storage_client = StorageClient(
             config=StorageClientConfig.from_dict(
-                config_dict=config_dict, profile=profile, telemetry=telemetry_resources
+                config_dict=config_dict,
+                profile=profile,
+                telemetry_provider=functools.partial(telemetry.init, mode=telemetry.TelemetryMode.LOCAL),
             )
         )
         yield storage_client

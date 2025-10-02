@@ -15,7 +15,7 @@
 
 import os
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any, Optional, Union
 from urllib.parse import ParseResult, urlparse
 
@@ -25,34 +25,34 @@ from .file import ObjectFile, PosixFile
 from .telemetry import Telemetry
 from .types import MSC_PROTOCOL, ExecutionMode, ObjectMetadata, PatternList
 
-_TELEMETRY: Optional[Telemetry] = None
-_TELEMETRY_LOCK = threading.Lock()
+_TELEMETRY_PROVIDER: Optional[Callable[[], Telemetry]] = None
+_TELEMETRY_PROVIDER_LOCK = threading.Lock()
 _STORAGE_CLIENT_CACHE: dict[str, StorageClient] = {}
 _STORAGE_CLIENT_CACHE_LOCK = threading.Lock()
 
 
-def get_telemetry() -> Optional[Telemetry]:
+def get_telemetry_provider() -> Optional[Callable[[], Telemetry]]:
     """
-    Get the :py:class:``Telemetry`` instance to use for storage clients created by shortcuts.
+    Get the function used to create :py:class:``Telemetry`` instances for storage clients created by shortcuts.
 
-    :return: A telemetry instance.
+    :return: A function that provides a telemetry instance.
     """
-    global _TELEMETRY
+    global _TELEMETRY_PROVIDER
 
-    return _TELEMETRY
+    return _TELEMETRY_PROVIDER
 
 
-def set_telemetry(telemetry: Optional[Telemetry]) -> None:
+def set_telemetry_provider(telemetry_provider: Optional[Callable[[], Telemetry]]) -> None:
     """
-    Set the :py:class:``Telemetry`` instance to use for storage clients created by shortcuts.
+    Set the function used to create :py:class:``Telemetry`` instances for storage clients created by shortcuts.
 
-    :param telemetry: A telemetry instance.
+    :param telemetry_provider: A function that provides a telemetry instance. The function must be defined at the top level of a module to work with pickling.
     """
-    global _TELEMETRY
-    global _TELEMETRY_LOCK
+    global _TELEMETRY_PROVIDER
+    global _TELEMETRY_PROVIDER_LOCK
 
-    with _TELEMETRY_LOCK:
-        _TELEMETRY = telemetry
+    with _TELEMETRY_PROVIDER_LOCK:
+        _TELEMETRY_PROVIDER = telemetry_provider
 
 
 def _build_full_path(original_url: str, pr: ParseResult) -> str:
@@ -192,7 +192,9 @@ def resolve_storage_client(url: str) -> tuple[StorageClient, str]:
         if profile in _STORAGE_CLIENT_CACHE:
             return _STORAGE_CLIENT_CACHE[profile], path
         else:
-            client = StorageClient(config=StorageClientConfig.from_file(profile=profile, telemetry=get_telemetry()))
+            client = StorageClient(
+                config=StorageClientConfig.from_file(profile=profile, telemetry_provider=get_telemetry_provider())
+            )
             _STORAGE_CLIENT_CACHE[profile] = client
 
     return client, path

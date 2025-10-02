@@ -43,7 +43,7 @@ def test_s3_conditional_put(profile_name):
     # S3 uses PreconditionFailedError for both if_none_match="*" and if_match failures
     # and NotImplementedError for if_none_match with specific etag
     common.test_conditional_put(
-        storage_provider=client._storage_provider,
+        storage_client=client,
         if_none_match_error_type=PreconditionFailedError,
         if_match_error_type=PreconditionFailedError,
         if_none_match_specific_error_type=NotImplementedError,
