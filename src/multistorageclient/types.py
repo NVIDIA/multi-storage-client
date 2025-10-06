@@ -465,7 +465,7 @@ class RetryConfig:
 
     #: The number of attempts before giving up. Must be at least 1.
     attempts: int = DEFAULT_RETRY_ATTEMPTS
-    #: The delay (in seconds) between retry attempts. Must be a non-negative value.
+    #: The base delay (in seconds) for exponential backoff. Must be a non-negative value.
     delay: float = DEFAULT_RETRY_DELAY
 
     def __post_init__(self) -> None:

@@ -70,6 +70,10 @@ Each profile in the configuration defines how to interact with storage services 
   * Configure one or more *replica profiles* that the current profile can
     read from and write to opportunistically (see :doc:`/user_guide/replicas`).
 
+* ``retry``
+
+  * Configures the retry strategy for the profile.
+
 .. code-block:: yaml
    :caption: Profile schema.
 
@@ -109,6 +113,13 @@ Each profile in the configuration defines how to interact with storage services 
    replicas:
      - replica_profile: <string>   # Name of another profile acting as replica
        read_priority: <int>        # Required. Lower = preferred (1 = highest)
+
+   # Optional. Retry configuration
+   retry:
+     # Optional. Number of attempts before giving up. Must be at least 1.
+     attempts: <int>
+     # Optional. Base delay (in seconds) for exponential backoff with a multiplier of 2. Must be a non-negative value.
+     delay: <float>
 
 .. note::
    The configuration follows a consistent pattern across different providers:
@@ -446,6 +457,30 @@ Options: See parameters in :py:class:`multistorageclient.providers.azure.StaticA
 Static credentials provider for NVIDIA AIStore.
 
 Options: See parameters in :py:class:`multistorageclient.providers.ais.StaticAISCredentialProvider`.
+
+Retry
+=====
+
+MSC will retry on errors classified as ``RetryableError`` (see :py:class:`multistorageclient.types.RetryableError`) in addition to the retry logic of the underlying CSP native SDKs.
+
+Options: See parameters in :py:class:`multistorageclient.types.RetryConfig`.
+
+The retry strategy uses exponential backoff: the delay is multiplied by 2 for each subsequent attempt, and a random jitter of 0 to 1 second is added to the delay.
+
+.. code-block:: yaml
+   :caption: Example configuration.
+
+    profiles:
+      my_profile:
+        storage_provider:
+          type: s3
+          options:
+            base_path: my-bucket
+        retry:
+          attempts: 3
+          delay: 1.0
+
+In the example above, the retry will wait for 1.0, 2.0, 4.0 seconds before giving up, with a jitter of 0-1 second added to the delay each time.
 
 *****
 Cache
