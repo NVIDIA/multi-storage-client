@@ -48,20 +48,25 @@ stop-storage-systems:
     # Stop storage systems.
     #
     # Azurite's process commands are `node` instead of `azurite`. Find by port instead.
-    for PID in $(lsof -i :10000-10002 -c fake-gcs-server -c minio -t); do kill -s KILL $PID; done
+    for PID in $(lsof -i :10000-10002 -c aisnode -c fake-gcs-server -c minio -t); do kill -s KILL $PID; done
     # Remove sandbox directories.
-    -rm -rf .{azurite,fake-gcs-server,minio}/sandbox
+    -rm -rf .{aistore,azurite,fake-gcs-server,minio}/sandbox
 
 # Start storage systems.
 start-storage-systems: stop-storage-systems
     # Create sandbox directories.
-    mkdir --parents .{azurite,fake-gcs-server,minio}/sandbox
+    mkdir --parents .{aistore,azurite,fake-gcs-server,minio}/sandbox
+    # Set up AIStore sandbox directory.
+    cd .aistore && ./prepare_sandbox.sh
 
     # Ports used by storage systems:
+    # - AIStore         -> 9080, 10080, 51080
     # - Azurite         -> 10000-10002
     # - fake-gcs-server -> 4443
     # - MinIO           -> 9000
 
+    # Start AIStore.
+    cd .aistore/sandbox && aisnode -config ais.json -local_config ais_local.json -loopback -role target &
     # Start Azurite.
     cd .azurite/sandbox && azurite --inMemoryPersistence --silent --skipApiVersionCheck &
     # Start fake-gcs-server.
@@ -69,6 +74,8 @@ start-storage-systems: stop-storage-systems
     # Start MinIO.
     cd .minio/sandbox && minio server --config ../minio.yaml --quiet &
 
+    # Wait for AIStore.
+    echo "TODO: AIStore health check"
     # Wait for Azurite.
     timeout 30s bash -c "until netcat --zero localhost 10000; do sleep 1; done"
     # Wait for fake-gcs-server.

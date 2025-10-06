@@ -48,6 +48,83 @@
       genSystemAttrs = f: inputs.nixpkgs.lib.attrsets.genAttrs systems f;
     in
     {
+      # Packages.
+      #
+      # For `nix build`.
+      packages = genSystemAttrs (system: {
+        aistore =
+          with inputs.nixpkgs.legacyPackages.${system};
+          buildGoModule (finalAttrs: {
+            pname = "aistore";
+            version = "1.3.31";
+
+            src = fetchFromGitHub {
+              owner = "NVIDIA";
+              repo = "aistore";
+              tag = "v${finalAttrs.version}";
+              hash = "sha256-/IS4DKz5lJXFW42iFxrIPPhbKWniGl5xl7zKaeMwGrQ=";
+            };
+
+            vendorHash = "sha256-klbd5WwvsAGSEspOPfGFyqSS6XMCa9R256nXfd1V7c4=";
+
+            # Exclude `cmd/cli` and `cmd/ishard` which are separate Go modules.
+            #
+            # https://github.com/NVIDIA/aistore/tree/v1.3.31/cmd
+            subPackages = [
+              "cmd/aisinit"
+              "cmd/aisloader"
+              "cmd/aisnode"
+              "cmd/aisnodeprofile"
+              "cmd/authn"
+              "cmd/xmeta"
+            ];
+
+            # Needed for version strings.
+            #
+            # https://github.com/NVIDIA/aistore/blob/v1.3.31/Makefile#L80
+            ldflags =
+              let
+                ldflagsPackageVariablePrefix = "main";
+              in
+              [
+                "-X ${ldflagsPackageVariablePrefix}.build=v${finalAttrs.version}"
+                "-X ${ldflagsPackageVariablePrefix}.buildtime=1970-01-01T00:00:00-00:00"
+              ];
+
+            tags = [
+              # Backends.
+              #
+              # https://github.com/NVIDIA/aistore/blob/v1.3.31/docs/build_tags.md
+              "aws"
+              "azure"
+              "gcp"
+              "ht"
+              "oci"
+              # Monotonic time.
+              #
+              # https://github.com/NVIDIA/aistore/blob/v1.3.31/Makefile#L86
+              "mono"
+            ];
+
+            doInstallCheck = true;
+
+            nativeInstallCheckInputs = [
+              versionCheckHook
+            ];
+
+            versionCheckProgram = "${builtins.placeholder "out"}/bin/aisnode";
+
+            versionCheckProgramArg = "-h";
+
+            meta = {
+              description = "Scalable storage for AI applications";
+              homepage = "https://github.com/NVIDIA/aistore";
+              license = lib.licenses.mit;
+              mainProgram = "aisnode";
+            };
+          });
+      });
+
       # Development shells.
       #
       # For `nix develop` and direnv's `use flake`.
@@ -102,6 +179,7 @@
                 # Pyright.
                 pyright
                 # Storage systems.
+                inputs.self.packages.${system}.aistore
                 azurite
                 fake-gcs-server
                 minio
