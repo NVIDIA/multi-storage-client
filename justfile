@@ -18,14 +18,14 @@ help:
 prepare-toolchain:
     # Add compiler targets.
     rustup target add {{compiler-targets}}
-    # Run tests.
-    cd rust && cargo test
     # Prepare the virtual environment.
     if [[ -z "${CI:-}" ]]; then \
         uv sync --all-extras --python {{python-binary}} && uv run --python {{python-binary}} maturin develop --release; \
     else \
         uv sync --all-extras --locked --python {{python-binary}}; \
     fi
+    # Run Rust tests.
+    cd rust && cargo test
 
 # Start the Python REPL.
 start-repl: prepare-toolchain
