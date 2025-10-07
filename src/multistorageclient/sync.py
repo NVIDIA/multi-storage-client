@@ -89,6 +89,7 @@ class ProducerThread(threading.Thread):
         num_workers: int,
         delete_unmatched_files: bool = False,
         pattern_matcher: Optional[PatternMatcher] = None,
+        preserve_source_attributes: bool = False,
     ):
         super().__init__(daemon=True)
         self.source_client = source_client
@@ -100,6 +101,7 @@ class ProducerThread(threading.Thread):
         self.num_workers = num_workers
         self.delete_unmatched_files = delete_unmatched_files
         self.pattern_matcher = pattern_matcher
+        self.preserve_source_attributes = preserve_source_attributes
         self.error = None
 
     def _match_file_metadata(self, source_info: ObjectMetadata, target_info: ObjectMetadata) -> bool:
@@ -111,7 +113,9 @@ class ProducerThread(threading.Thread):
 
     def run(self):
         try:
-            source_iter = iter(self.source_client.list(prefix=self.source_path))
+            source_iter = iter(
+                self.source_client.list(prefix=self.source_path, show_attributes=self.preserve_source_attributes)
+            )
             target_iter = iter(self.target_client.list(prefix=self.target_path))
             total_count = 0
 
@@ -250,6 +254,7 @@ class SyncManager:
         num_worker_processes: Optional[int] = None,
         delete_unmatched_files: bool = False,
         pattern_matcher: Optional[PatternMatcher] = None,
+        preserve_source_attributes: bool = False,
     ):
         """
         Synchronize objects from source to target storage location.
@@ -269,6 +274,13 @@ class SyncManager:
         :param num_worker_processes: Number of worker processes to use. If None, automatically determined based on available CPU cores.
         :param delete_unmatched_files: If True, files present in target but not in source will be deleted from target.
         :param pattern_matcher: PatternMatcher instance for include/exclude filtering. If None, all files are included.
+        :param preserve_source_attributes: Whether to preserve source file metadata attributes during synchronization.
+            When False (default), only file content is copied. When True, custom metadata attributes are also preserved.
+
+            .. warning::
+                **Performance Impact**: When enabled without a ``metadata_provider`` configured, this will make a HEAD
+                request for each object to retrieve attributes, which can significantly impact performance on large-scale
+                sync operations. For production use at scale, configure a ``metadata_provider`` in your storage profile.
         """
         logger.debug(f"Starting sync operation {description}")
 
@@ -317,6 +329,7 @@ class SyncManager:
             num_workers,
             delete_unmatched_files,
             pattern_matcher,
+            preserve_source_attributes,
         )
         producer_thread.start()
 
@@ -561,14 +574,18 @@ def _sync_worker_process(
 
                     if file_metadata.content_length < MEMORY_LOAD_LIMIT:
                         file_content = source_client.read(file_metadata.key)
-                        target_client.write(target_file_path, file_content)
+                        target_client.write(target_file_path, file_content, attributes=file_metadata.metadata)
                     else:
                         with tempfile.NamedTemporaryFile(delete=False) as temp_file:
                             temp_filename = temp_file.name
 
                         try:
                             source_client.download_file(remote_path=file_metadata.key, local_path=temp_filename)
-                            target_client.upload_file(remote_path=target_file_path, local_path=temp_filename)
+                            target_client.upload_file(
+                                remote_path=target_file_path,
+                                local_path=temp_filename,
+                                attributes=file_metadata.metadata,
+                            )
                         finally:
                             os.remove(temp_filename)  # Ensure the temporary file is removed
 

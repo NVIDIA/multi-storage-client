@@ -313,6 +313,141 @@ def test_sync_replicas(temp_data_store_type: type[tempdatastore.TemporaryDataSto
         assert len([f for f in files if f.key.endswith(".lock")]) == 0
 
 
+def test_sync_with_attributes_posix():
+    """Test that metadata attributes are copied during sync operations with POSIX storage."""
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    source_profile = "source-local"
+    target_profile = "target-local"
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as temp_source_data_store,
+        tempdatastore.TemporaryPOSIXDirectory() as temp_target_data_store,
+    ):
+        config.setup_msc_config(
+            config_dict={
+                "profiles": {
+                    source_profile: temp_source_data_store.profile_config_dict(),
+                    target_profile: temp_target_data_store.profile_config_dict(),
+                }
+            }
+        )
+
+        source_msc_url = f"msc://{source_profile}/source-with-attrs"
+        target_msc_url = f"msc://{target_profile}/target-with-attrs"
+
+        # Create files with custom attributes
+        # POSIX supports custom attributes via extended attributes (xattr)
+        test_files = {
+            "small_file.txt": ("small content", {"env": "test", "version": "1.0"}),
+            "medium_file.txt": ("m" * 1000, {"env": "prod", "version": "2.0", "team": "ml"}),
+            "large_file.txt": ("l" * (MEMORY_LOAD_LIMIT + 1024), {"env": "staging", "priority": "high"}),
+        }
+
+        source_client, source_path = msc.resolve_storage_client(source_msc_url)
+
+        # Write files with attributes
+        for filename, (content, attrs) in test_files.items():
+            file_path = os.path.join(source_path, filename)
+            source_client.write(file_path, content.encode("utf-8"), attributes=attrs)
+
+        time.sleep(1)  # Ensure timestamps are clear
+
+        # Sync from source to target with attributes enabled
+        print(f"Syncing from {source_msc_url} to {target_msc_url}")
+        source_client, source_path = msc.resolve_storage_client(source_msc_url)
+        target_client, target_path = msc.resolve_storage_client(target_msc_url)
+        target_client.sync_from(source_client, source_path, target_path, preserve_source_attributes=True)
+
+        # Verify files and their attributes on target
+        target_client, target_path = msc.resolve_storage_client(target_msc_url)
+
+        for filename, (content, expected_attrs) in test_files.items():
+            target_file_path = os.path.join(target_path, filename)
+
+            # Verify file exists and content is correct
+            assert target_client.is_file(target_file_path), f"File {filename} not found at target"
+            actual_content = target_client.read(target_file_path).decode("utf-8")
+            assert actual_content == content, f"Content mismatch for {filename}"
+
+            # Verify attributes are preserved via xattr
+            metadata = target_client.info(target_file_path)
+            assert metadata.metadata is not None, f"No metadata found for {filename}"
+
+            for key, expected_value in expected_attrs.items():
+                assert key in metadata.metadata, f"Attribute '{key}' missing for {filename}"
+                assert metadata.metadata[key] == expected_value, (
+                    f"Attribute '{key}' value mismatch for {filename}: "
+                    f"expected '{expected_value}', got '{metadata.metadata.get(key)}'"
+                )
+
+        print("All attributes verified successfully!")
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[[tempdatastore.TemporaryAWSS3Bucket]],
+)
+def test_sync_from_with_attributes(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """Test that metadata attributes are copied during sync_from operations."""
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    obj_profile = "s3-sync"
+    with temp_data_store_type() as temp_data_store:
+        config.setup_msc_config(
+            config_dict={
+                "profiles": {
+                    obj_profile: temp_data_store.profile_config_dict(),
+                }
+            }
+        )
+
+        source_msc_url = f"msc://{obj_profile}/source-attrs"
+        target_msc_url = f"msc://{obj_profile}/target-attrs"
+
+        # Create files with custom attributes
+        test_files = {
+            "data/file1.txt": ("content1", {"type": "data", "classification": "public"}),
+            "data/file2.txt": ("c" * 5000, {"type": "data", "classification": "private"}),
+            "logs/file3.txt": ("l" * (MEMORY_LOAD_LIMIT + 500), {"type": "log", "retention": "30d"}),
+        }
+
+        source_client, source_path = msc.resolve_storage_client(source_msc_url)
+        target_client, target_path = msc.resolve_storage_client(target_msc_url)
+
+        # Write files with attributes
+        for filename, (content, attrs) in test_files.items():
+            file_path = os.path.join(source_path, filename)
+            source_client.write(file_path, content.encode("utf-8"), attributes=attrs)
+
+        time.sleep(1)
+
+        # Use sync_from instead of sync with attributes enabled
+        print(f"Using sync_from to sync {source_msc_url} to {target_msc_url}")
+        target_client.sync_from(source_client, source_path, target_path, preserve_source_attributes=True)
+
+        # Verify files and their attributes on target
+        for filename, (content, expected_attrs) in test_files.items():
+            target_file_path = os.path.join(target_path, filename)
+
+            # Verify file exists and content is correct
+            assert target_client.is_file(target_file_path), f"File {filename} not found at target"
+            actual_content = target_client.read(target_file_path).decode("utf-8")
+            assert actual_content == content, f"Content mismatch for {filename}"
+
+            # Verify attributes are preserved
+            metadata = target_client.info(target_file_path)
+            assert metadata.metadata is not None, f"No metadata found for {filename}"
+
+            for key, expected_value in expected_attrs.items():
+                assert key in metadata.metadata, f"Attribute '{key}' missing for {filename}"
+                assert metadata.metadata[key] == expected_value, (
+                    f"Attribute '{key}' value mismatch for {filename}: "
+                    f"expected '{expected_value}', got '{metadata.metadata.get(key)}'"
+                )
+
+        print("All attributes verified successfully in sync_from!")
+
+
 class MockStorageClient:
     def list(self, **kwargs):
         raise Exception("No Such Method")

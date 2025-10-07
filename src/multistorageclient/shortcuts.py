@@ -307,6 +307,7 @@ def sync(
     delete_unmatched_files: bool = False,
     execution_mode: ExecutionMode = ExecutionMode.LOCAL,
     patterns: Optional[PatternList] = None,
+    preserve_source_attributes: bool = False,
 ) -> None:
     """
     Syncs files from the source storage to the target storage.
@@ -316,6 +317,13 @@ def sync(
     :param delete_unmatched_files: Whether to delete files at the target that are not present at the source.
     :param execution_mode: The execution mode to use. Currently supports "local" and "ray".
     :param patterns: PatternList for include/exclude filtering. If None, all files are included.
+    :param preserve_source_attributes: Whether to preserve source file metadata attributes during synchronization.
+        When False (default), only file content is copied. When True, custom metadata attributes are also preserved.
+
+        .. warning::
+            **Performance Impact**: When enabled without a ``metadata_provider`` configured, this will make a HEAD
+            request for each object to retrieve attributes, which can significantly impact performance on large-scale
+            sync operations. For production use at scale, configure a ``metadata_provider`` in your storage profile.
     """
     source_client, source_path = resolve_storage_client(source_url)
     target_client, target_path = resolve_storage_client(target_url)
@@ -326,6 +334,7 @@ def sync(
         delete_unmatched_files,
         execution_mode=execution_mode,
         patterns=patterns,
+        preserve_source_attributes=preserve_source_attributes,
     )
 
 

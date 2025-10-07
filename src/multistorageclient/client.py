@@ -704,6 +704,7 @@ class StorageClient:
         num_worker_processes: Optional[int] = None,
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
         patterns: Optional[PatternList] = None,
+        preserve_source_attributes: bool = False,
     ) -> None:
         """
         Syncs files from the source storage client to "path/".
@@ -716,6 +717,13 @@ class StorageClient:
         :param num_worker_processes: The number of worker processes to use.
         :param execution_mode: The execution mode to use. Currently supports "local" and "ray".
         :param patterns: PatternList for include/exclude filtering. If None, all files are included.
+        :param preserve_source_attributes: Whether to preserve source file metadata attributes during synchronization.
+            When False (default), only file content is copied. When True, custom metadata attributes are also preserved.
+
+            .. warning::
+                **Performance Impact**: When enabled without a ``metadata_provider`` configured, this will make a HEAD
+                request for each object to retrieve attributes, which can significantly impact performance on large-scale
+                sync operations. For production use at scale, configure a ``metadata_provider`` in your storage profile.
         """
         # Create internal PatternMatcher from patterns if provided
         pattern_matcher = PatternMatcher(patterns) if patterns else None
@@ -733,6 +741,7 @@ class StorageClient:
             num_worker_processes=num_worker_processes,
             delete_unmatched_files=delete_unmatched_files,
             pattern_matcher=pattern_matcher,
+            preserve_source_attributes=preserve_source_attributes,
         )
 
     def sync_replicas(
