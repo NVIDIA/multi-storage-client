@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Awaitable
+from typing import Any
 
 class RustClient:
     """
@@ -30,7 +30,7 @@ class RustClient:
         """
         ...
 
-    async def put(self, path: str, data: bytes) -> Awaitable[int]:
+    async def put(self, path: str, data: bytes) -> int:
         """
         Upload data to the object store at the specified path.
         :param path: The remote object path in the storage backend.
@@ -39,7 +39,7 @@ class RustClient:
         """
         ...
 
-    async def get(self, path: str, start: int | None = ..., end: int | None = ...) -> Awaitable[bytes]:
+    async def get(self, path: str, start: int | None = ..., end: int | None = ...) -> bytes:
         """
         Download data from the object store at the specified path.
         :param path: The remote object path in the storage backend.
@@ -49,7 +49,7 @@ class RustClient:
         """
         ...
 
-    async def upload(self, local_path: str, remote_path: str) -> Awaitable[int]:
+    async def upload(self, local_path: str, remote_path: str) -> int:
         """
         Upload a local file to the object store.
         :param local_path: Path to the local file to upload.
@@ -58,7 +58,7 @@ class RustClient:
         """
         ...
 
-    async def download(self, remote_path: str, local_path: str) -> Awaitable[int]:
+    async def download(self, remote_path: str, local_path: str) -> int:
         """
         Download an object from the store and save it to a local file.
         :param remote_path: The remote object path in the storage backend.
@@ -73,7 +73,7 @@ class RustClient:
         remote_path: str,
         multipart_chunksize: int | None = ...,
         max_concurrency: int | None = ...,
-    ) -> Awaitable[int]:
+    ) -> int:
         """
         Upload a local file to the object store using multipart upload.
 
@@ -91,7 +91,7 @@ class RustClient:
 
     async def upload_multipart_from_bytes(
         self, remote_path: str, data: bytes, multipart_chunksize: int | None = ..., max_concurrency: int | None = ...
-    ) -> Awaitable[int]:
+    ) -> int:
         """
         Upload data to the object store at the specified remote_path using multipart upload.
 
@@ -113,7 +113,7 @@ class RustClient:
         local_path: str,
         multipart_chunksize: int | None = ...,
         max_concurrency: int | None = ...,
-    ) -> Awaitable[int]:
+    ) -> int:
         """
         Download an object from the store and save it to a local file using multipart download.
 
@@ -136,7 +136,7 @@ class RustClient:
         end: int | None = ...,
         multipart_chunksize: int | None = ...,
         max_concurrency: int | None = ...,
-    ) -> Awaitable[bytes]:
+    ) -> bytes:
         """
         Download an object from the store and return it as bytes using multipart download.
 

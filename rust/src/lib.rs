@@ -194,6 +194,21 @@ fn build_s3_store<'a>(configs: Option<&'a HashMap<String, ConfigValue>>) -> PyRe
     if let Some(token_val) = configs.get("token") {
         builder = builder.with_token(token_val.to_string());
     }
+    if let Some(skip_signature) = configs.get("skip_signature") {
+        match skip_signature {
+            ConfigValue::Boolean(b) => {
+                if *b {
+                    builder = builder.with_skip_signature(true);
+                }
+            }
+            ConfigValue::String(s) => {
+                if s.parse::<bool>().unwrap_or(false) {
+                    builder = builder.with_skip_signature(true);
+                }
+            }
+            _ => {}
+        }
+    }
 
     // Configure retry
     builder = builder.with_retry(RetryConfig::default());

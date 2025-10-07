@@ -177,6 +177,8 @@ class S3StorageProvider(BaseStorageProvider):
                 rust_client_options["read_timeout"] = kwargs["read_timeout"]
             if "connect_timeout" in kwargs:
                 rust_client_options["connect_timeout"] = kwargs["connect_timeout"]
+            if self._signature_version == "UNSIGNED":
+                rust_client_options["skip_signature"] = True
             self._rust_client = self._create_rust_client(rust_client_options)
 
     def _is_directory_bucket(self, bucket: str) -> bool:
@@ -284,6 +286,8 @@ class S3StorageProvider(BaseStorageProvider):
                 configs["max_pool_connections"] = rust_client_options["max_pool_connections"]
             if "multipart_chunksize" in rust_client_options:
                 configs["multipart_chunksize"] = rust_client_options["multipart_chunksize"]
+            if "skip_signature" in rust_client_options:
+                configs["skip_signature"] = rust_client_options["skip_signature"]
 
         return RustClient(
             provider=PROVIDER,

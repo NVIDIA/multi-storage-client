@@ -395,3 +395,26 @@ async def test_rustclient_explicit_multipart_chunksize(temp_data_store_type: Typ
 
         # Delete the file.
         storage_client.delete(path=large_file_path)
+
+
+@pytest.mark.asyncio
+async def test_rustclient_public_bucket():
+    # Create a RustClient with skip_signature enabled on a public bucket
+    rust_client = RustClient(
+        provider="s3",
+        configs={
+            "bucket": "noaa-ghcn-pds",
+            "region_name": "us-east-1",
+            "skip_signature": True,
+        },
+        credentials_provider=None,
+    )
+
+    # Test that we can list objects using the Rust client directly
+    objects = rust_client.list_recursive(["csv/"], limit=10).objects
+    assert len(objects) > 0, "Should be able to list objects from public bucket"
+
+    if objects:
+        first_object = objects[0]
+        data = await rust_client.get(first_object.key, start=0, end=100)
+        assert len(data) > 0, "Should be able to read data from public bucket"
