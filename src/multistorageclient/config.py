@@ -36,6 +36,7 @@ from .telemetry import Telemetry
 from .telemetry import init as telemetry_init
 from .types import (
     DEFAULT_RETRY_ATTEMPTS,
+    DEFAULT_RETRY_BACKOFF_MULTIPLIER,
     DEFAULT_RETRY_DELAY,
     MSC_PROTOCOL,
     AutoCommitConfig,
@@ -586,9 +587,14 @@ class StorageClientConfigLoader:
         if retry_config_dict:
             attempts = retry_config_dict.get("attempts", DEFAULT_RETRY_ATTEMPTS)
             delay = retry_config_dict.get("delay", DEFAULT_RETRY_DELAY)
-            retry_config = RetryConfig(attempts=attempts, delay=delay)
+            backoff_multiplier = retry_config_dict.get("backoff_multiplier", DEFAULT_RETRY_BACKOFF_MULTIPLIER)
+            retry_config = RetryConfig(attempts=attempts, delay=delay, backoff_multiplier=backoff_multiplier)
         else:
-            retry_config = RetryConfig(attempts=DEFAULT_RETRY_ATTEMPTS, delay=DEFAULT_RETRY_DELAY)
+            retry_config = RetryConfig(
+                attempts=DEFAULT_RETRY_ATTEMPTS,
+                delay=DEFAULT_RETRY_DELAY,
+                backoff_multiplier=DEFAULT_RETRY_BACKOFF_MULTIPLIER,
+            )
 
         # autocommit options
         autocommit_config = AutoCommitConfig()

@@ -118,8 +118,10 @@ Each profile in the configuration defines how to interact with storage services 
    retry:
      # Optional. Number of attempts before giving up. Must be at least 1.
      attempts: <int>
-     # Optional. Base delay (in seconds) for exponential backoff with a multiplier of 2. Must be a non-negative value.
+     # Optional. Base delay (in seconds) for exponential backoff. Must be a non-negative value.
      delay: <float>
+     # Optional. Backoff multiplier for exponential backoff. Must be at least 1.0.
+     backoff_multiplier: <float>
 
 .. note::
    The configuration follows a consistent pattern across different providers:
@@ -465,7 +467,7 @@ MSC will retry on errors classified as ``RetryableError`` (see :py:class:`multis
 
 Options: See parameters in :py:class:`multistorageclient.types.RetryConfig`.
 
-The retry strategy uses exponential backoff: the delay is multiplied by 2 for each subsequent attempt, and a random jitter of 0 to 1 second is added to the delay.
+The retry strategy uses exponential backoff: the delay is multiplied by the backoff multiplier raised to the power of the attempt number for each subsequent attempt, and a random jitter of 0 to 1 second is added to the delay.
 
 .. code-block:: yaml
    :caption: Example configuration.
@@ -479,8 +481,11 @@ The retry strategy uses exponential backoff: the delay is multiplied by 2 for ea
         retry:
           attempts: 3
           delay: 1.0
+          backoff_multiplier: 2.0
 
 In the example above, the retry will wait for 1.0, 2.0, 4.0 seconds before giving up, with a jitter of 0-1 second added to the delay each time.
+
+The exponential backoff delay calculation is: ``delay * (backoff_multiplier ** attempt)`` where attempt starts at 0. The ``backoff_multiplier`` defaults to 2.0 if not specified.
 
 *****
 Cache

@@ -27,6 +27,7 @@ MSC_PROTOCOL = MSC_PROTOCOL_NAME + "://"
 
 DEFAULT_RETRY_ATTEMPTS = 3
 DEFAULT_RETRY_DELAY = 1.0
+DEFAULT_RETRY_BACKOFF_MULTIPLIER = 2.0
 
 # datetime.min is a naive datetime.
 #
@@ -467,12 +468,16 @@ class RetryConfig:
     attempts: int = DEFAULT_RETRY_ATTEMPTS
     #: The base delay (in seconds) for exponential backoff. Must be a non-negative value.
     delay: float = DEFAULT_RETRY_DELAY
+    #: The backoff multiplier for exponential backoff. Must be at least 1.0.
+    backoff_multiplier: float = DEFAULT_RETRY_BACKOFF_MULTIPLIER
 
     def __post_init__(self) -> None:
         if self.attempts < 1:
             raise ValueError("Attempts must be at least 1.")
         if self.delay < 0:
             raise ValueError("Delay must be a non-negative number.")
+        if self.backoff_multiplier < 1.0:
+            raise ValueError("Backoff multiplier must be at least 1.0.")
 
 
 class RetryableError(Exception):

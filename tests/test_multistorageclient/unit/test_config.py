@@ -391,12 +391,14 @@ def test_load_retry_config() -> None:
             retry:
               attempts: 4
               delay: 0.5
+              backoff_multiplier: 3.0
         """
     )
 
     storage_client = StorageClient(config)
     assert storage_client._retry_config.attempts == 4
     assert storage_client._retry_config.delay == 0.5
+    assert storage_client._retry_config.backoff_multiplier == 3.0
 
     config = StorageClientConfig.from_yaml(
         """
@@ -412,6 +414,27 @@ def test_load_retry_config() -> None:
     storage_client = StorageClient(config)
     assert storage_client._retry_config.attempts == 3
     assert storage_client._retry_config.delay == 1.0
+    assert storage_client._retry_config.backoff_multiplier == 2.0
+
+    # Test partial config - only attempts and delay specified
+    config = StorageClientConfig.from_yaml(
+        """
+        profiles:
+          default:
+            storage_provider:
+              type: file
+              options:
+                base_path: /
+            retry:
+              attempts: 5
+              delay: 2.0
+        """
+    )
+
+    storage_client = StorageClient(config)
+    assert storage_client._retry_config.attempts == 5
+    assert storage_client._retry_config.delay == 2.0
+    assert storage_client._retry_config.backoff_multiplier == 2.0
 
     with pytest.raises(ValueError) as e:
         config = StorageClientConfig.from_yaml(
@@ -429,6 +452,24 @@ def test_load_retry_config() -> None:
         )
 
     assert "Attempts must be at least 1." in str(e), f"Unexpected error message: {str(e)}"
+
+    with pytest.raises(ValueError) as e:
+        config = StorageClientConfig.from_yaml(
+            """
+            profiles:
+              default:
+                storage_provider:
+                  type: file
+                  options:
+                    base_path: /
+                retry:
+                  attempts: 3
+                  delay: 0.5
+                  backoff_multiplier: 0.5
+            """
+        )
+
+    assert "Backoff multiplier must be at least 1.0." in str(e), f"Unexpected error message: {str(e)}"
 
 
 def test_s3_storage_provider_on_public_bucket() -> None:

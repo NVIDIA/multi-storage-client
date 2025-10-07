@@ -34,18 +34,17 @@ def retry(func: Callable) -> Callable:
         if retry_config is None:
             return func(*args, **kwargs)
 
-        delay = retry_config.delay
         for attempt in range(retry_config.attempts):
             try:
                 return func(*args, **kwargs)
             except RetryableError as e:
                 logging.warning("Attempt %d failed for %s: %s", attempt + 1, func.__name__, e)
-                # Exponential backoff
-                delay *= 2**attempt
-                # Add random jitter
-                delay += random.uniform(0, 1)
                 if attempt < retry_config.attempts - 1:
-                    time.sleep(retry_config.delay)
+                    # Calculate exponential backoff with multiplier
+                    delay = retry_config.delay * (retry_config.backoff_multiplier**attempt)
+                    # Add random jitter
+                    delay += random.uniform(0, 1)
+                    time.sleep(delay)
                 else:
                     logging.error("All retry attempts failed for %s", func.__name__)
                     raise

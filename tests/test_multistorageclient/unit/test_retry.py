@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from typing import Optional
+from unittest.mock import patch
 
 import pytest
 
@@ -98,3 +99,46 @@ def test_retry_decorator_outside_storage_client():
 
     assert "Simulated connection time out error." in str(e), f"Unexpected error message: {str(e)}"
     assert fake_storage_provider.attempts == 1
+
+
+def test_retry_with_custom_backoff_multiplier():
+    config = StorageClientConfig.from_json(
+        """{
+        "profiles": {
+            "default": {
+                "storage_provider": {
+                    "type": "file",
+                    "options": {
+                        "base_path": "/"
+                    }
+                },
+                "retry": {
+                    "attempts": 3,
+                    "delay": 1.0,
+                    "backoff_multiplier": 3.0
+                }
+            }
+        }
+    }"""
+    )
+
+    storage_client = StorageClient(config)
+    storage_client._storage_provider = FakeStorageProvider(error_count=4)
+
+    sleep_times = []
+
+    def mock_sleep(seconds):
+        sleep_times.append(seconds)
+
+    with patch("time.sleep", side_effect=mock_sleep):
+        with pytest.raises(RetryableError):
+            storage_client.read("some_path")
+
+    # We should have 2 sleep calls (attempts 0 and 1, but not on the final failure at attempt 2)
+    assert len(sleep_times) == 2
+
+    # First retry: delay * (3.0 ** 0) + jitter = 1.0 + jitter
+    # Second retry: delay * (3.0 ** 1) + jitter = 3.0 + jitter
+    # Jitter is between 0 and 1 second
+    assert 1.0 <= sleep_times[0] <= 2.0, f"First sleep time {sleep_times[0]} should be between 1.0 and 2.0"
+    assert 3.0 <= sleep_times[1] <= 4.0, f"Second sleep time {sleep_times[1]} should be between 3.0 and 4.0"
