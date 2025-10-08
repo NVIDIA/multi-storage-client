@@ -19,8 +19,7 @@ import logging
 import os
 import shutil
 import tempfile
-import time
-from collections.abc import Callable, Iterator, Sized
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from enum import Enum
 from io import BytesIO, StringIO
@@ -116,57 +115,27 @@ class PosixFileStorageProvider(BaseStorageProvider):
             telemetry_provider=telemetry_provider,
         )
 
-    def _collect_metrics(
+    def _translate_errors(
         self,
         func: Callable[[], _T],
         operation: str,
         path: str,
-        put_object_size: Optional[int] = None,
-        get_object_size: Optional[int] = None,
     ) -> _T:
         """
-        Collects and records performance metrics around file operations such as PUT, GET, DELETE, etc.
-
-        This method wraps an file operation and measures the time it takes to complete, along with recording
-        the size of the object if applicable.
+        Translates errors like timeouts and client errors.
 
         :param func: The function that performs the actual file operation.
         :param operation: The type of operation being performed (e.g., "PUT", "GET", "DELETE").
         :param path: The path to the object.
-        :param put_object_size: The size of the object being uploaded, if applicable (for PUT operations).
-        :param get_object_size: The size of the object being downloaded, if applicable (for GET operations).
 
         :return: The result of the file operation, typically the return value of the `func` callable.
         """
-        start_time = time.time()
-        status_code = 200
-
-        object_size = None
-        if operation == "PUT":
-            object_size = put_object_size
-        elif operation == "GET" and get_object_size is not None:
-            object_size = get_object_size
-
         try:
-            result = func()
-            if operation == "GET" and object_size is None and isinstance(result, Sized):
-                object_size = len(result)
-            return result
-        except FileNotFoundError as error:
-            status_code = 404
-            raise error
+            return func()
+        except FileNotFoundError:
+            raise
         except Exception as error:
-            status_code = -1
             raise RuntimeError(f"Failed to {operation} object(s) at {path}, error: {error}") from error
-        finally:
-            elapsed_time = time.time() - start_time
-            self._metric_helper.record_duration(
-                elapsed_time, provider=self._provider_name, operation=operation, bucket="", status_code=status_code
-            )
-            if object_size:
-                self._metric_helper.record_object_size(
-                    object_size, provider=self._provider_name, operation=operation, bucket="", status_code=status_code
-                )
 
     def _put_object(
         self,
@@ -181,7 +150,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
             atomic_write(source=BytesIO(body), destination=path, attributes=attributes)
             return len(body)
 
-        return self._collect_metrics(_invoke_api, operation="PUT", path=path, put_object_size=len(body))
+        return self._translate_errors(_invoke_api, operation="PUT", path=path)
 
     def _get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
         def _invoke_api() -> bytes:
@@ -193,7 +162,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
                 with open(path, "rb") as f:
                     return f.read()
 
-        return self._collect_metrics(_invoke_api, operation="GET", path=path)
+        return self._translate_errors(_invoke_api, operation="GET", path=path)
 
     def _copy_object(self, src_path: str, dest_path: str) -> int:
         src_object = self._get_object_metadata(src_path)
@@ -204,19 +173,14 @@ class PosixFileStorageProvider(BaseStorageProvider):
 
             return src_object.content_length
 
-        return self._collect_metrics(
-            _invoke_api,
-            operation="COPY",
-            path=src_path,
-            put_object_size=src_object.content_length,
-        )
+        return self._translate_errors(_invoke_api, operation="COPY", path=src_path)
 
     def _delete_object(self, path: str, if_match: Optional[str] = None) -> None:
         def _invoke_api() -> None:
             if os.path.exists(path) and os.path.isfile(path):
                 os.remove(path)
 
-        return self._collect_metrics(_invoke_api, operation="DELETE", path=path)
+        return self._translate_errors(_invoke_api, operation="DELETE", path=path)
 
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         is_dir = os.path.isdir(path)
@@ -242,7 +206,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
                 metadata=metadata_dict if metadata_dict else None,
             )
 
-        return self._collect_metrics(_invoke_api, operation="HEAD", path=path)
+        return self._translate_errors(_invoke_api, operation="HEAD", path=path)
 
     def _list_objects(
         self,
@@ -264,7 +228,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
 
             yield from self._explore_directory(dir_path, start_after, end_at, include_directories)
 
-        return self._collect_metrics(_invoke_api, operation="LIST", path=path)
+        return self._translate_errors(_invoke_api, operation="LIST", path=path)
 
     def _explore_directory(
         self, dir_path: str, start_after: Optional[str], end_at: Optional[str], include_directories: bool
@@ -338,7 +302,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
 
             return filesize
 
-        return self._collect_metrics(_invoke_api, operation="PUT", path=remote_path, put_object_size=filesize)
+        return self._translate_errors(_invoke_api, operation="PUT", path=remote_path)
 
     def _download_file(self, remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> int:
         filesize = metadata.content_length if metadata else os.path.getsize(remote_path)
@@ -352,7 +316,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
 
                 return filesize
 
-            return self._collect_metrics(_invoke_api, operation="GET", path=remote_path, get_object_size=filesize)
+            return self._translate_errors(_invoke_api, operation="GET", path=remote_path)
         elif isinstance(f, StringIO):
 
             def _invoke_api() -> int:
@@ -362,7 +326,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
 
                 return filesize
 
-            return self._collect_metrics(_invoke_api, operation="GET", path=remote_path, get_object_size=filesize)
+            return self._translate_errors(_invoke_api, operation="GET", path=remote_path)
         else:
 
             def _invoke_api() -> int:
@@ -372,7 +336,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
 
                 return filesize
 
-            return self._collect_metrics(_invoke_api, operation="GET", path=remote_path, get_object_size=filesize)
+            return self._translate_errors(_invoke_api, operation="GET", path=remote_path)
 
     def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
         pattern = self._prepend_base_path(pattern)

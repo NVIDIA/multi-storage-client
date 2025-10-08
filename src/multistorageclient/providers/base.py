@@ -26,7 +26,7 @@ from typing import IO, Any, Optional, TypeVar, Union, cast
 import opentelemetry.metrics as api_metrics
 import opentelemetry.util.types as api_types
 
-from ..instrumentation.utils import StorageProviderMetricsHelper, instrumented
+from ..instrumentation.utils import instrumented
 from ..telemetry import Telemetry
 from ..telemetry.attributes.base import AttributesProvider, collect_attributes
 from ..types import ObjectMetadata, Range, StorageProvider
@@ -120,8 +120,6 @@ class BaseStorageProvider(StorageProvider):
         self._metric_attributes_providers = ()
         self._metric_init_lock = threading.Lock()
 
-        self._metric_helper = StorageProviderMetricsHelper()
-
     def __str__(self) -> str:
         return self._provider_name
 
@@ -178,8 +176,7 @@ class BaseStorageProvider(StorageProvider):
                                         attributes_providers.append(attributes_provider)
                                     self._metric_attributes_providers = tuple(attributes_providers)
                         except Exception:
-                            # TODO: Remove "beta" from the log once legacy metrics are removed.
-                            logger.error("Failed to setup telemetry! Disabling beta telemetry.")
+                            logger.warning("Failed to setup metrics! Disabling metrics.", exc_info=True)
                 self._metric_init_event.set()
 
     def _emit_metrics(self, operation: _Operation, f: Callable[[], _T]) -> _T:

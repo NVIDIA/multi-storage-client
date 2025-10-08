@@ -17,79 +17,17 @@
 
 import os
 import time
-from collections.abc import Callable, Mapping, MutableMapping
+from collections.abc import Callable, Mapping
 from functools import wraps
-from typing import Any, Optional, Union
+from typing import Any
 
-from opentelemetry import metrics, trace
-from opentelemetry.metrics import get_meter_provider
+from opentelemetry import trace
 from opentelemetry.trace import StatusCode, Tracer, set_span_in_context
 
-from . import HAS_OBSERVABILITY_DEPS
-
-# import optional dependencies if dependencies are available
-if HAS_OBSERVABILITY_DEPS:
-    import datasketches
-    from opentelemetry.sdk.metrics import MeterProvider as SdkMeterProvider
-
-METER = metrics.get_meter("opentelemetry.instrumentation.multistorageclient")
 TRACER: Tracer = trace.get_tracer("opentelemetry.instrumentation.multistorageclient")
 
 MB = 1024 * 1024
 TRACE_INACTIVITY_TIMEOUT_IN_SECONDS = 0.1
-
-DURATION_HISTOGRAM = METER.create_histogram(
-    name="storageclient_api_duration",
-    unit="ms",
-    description="Measures the duration of storage operations (e.g., GET, PUT, LIST) in milliseconds.",
-)
-
-OBJECT_SIZE_HISTOGRAM = METER.create_histogram(
-    name="storageclient_object_size",
-    unit="mb",
-    description="Tracks the size of objects involved in storage operations (e.g., GET, PUT) in megabytes.",
-)
-
-DURATION_P50_GAUGE = METER.create_gauge(
-    name="storageclient_api_duration_p50",
-    unit="ms",
-    description="Measures the P50 duration of storage operations (e.g., GET, PUT, LIST) in milliseconds.",
-)
-
-DURATION_P99_GAUGE = METER.create_gauge(
-    name="storageclient_api_duration_p99",
-    unit="ms",
-    description="Measures the P99 duration of storage operations (e.g., GET, PUT, LIST) in milliseconds.",
-)
-
-DURATION_P999_GAUGE = METER.create_gauge(
-    name="storageclient_api_duration_p999",
-    unit="ms",
-    description="Measures the P99.9 duration of storage operations (e.g., GET, PUT, LIST) in milliseconds.",
-)
-
-OBJECT_SIZE_P50_GAUGE = METER.create_gauge(
-    name="storageclient_object_size_p50",
-    unit="mb",
-    description="Tracks the P50 size of objects involved in storage operations (e.g., GET, PUT) in megabytes.",
-)
-
-OBJECT_SIZE_P99_GAUGE = METER.create_gauge(
-    name="storageclient_object_size_p99",
-    unit="mb",
-    description="Tracks the P99 size of objects involved in storage operations (e.g., GET, PUT) in megabytes.",
-)
-
-OBJECT_SIZE_P999_GAUGE = METER.create_gauge(
-    name="storageclient_object_size_p999",
-    unit="mb",
-    description="Tracks the P99.9 size of objects involved in storage operations (e.g., GET, PUT) in megabytes.",
-)
-
-CACHE_MANAGER_COUNTER = METER.create_counter(
-    name="storageclient_cache_manager_count",
-    description="Counts the number of operations (e.g., SET, READ, OPEN, DELETE) in cache manager.",
-)
 
 
 class AttributeProvider:
@@ -176,167 +114,6 @@ def collect_default_attributes(  # pylint: disable=dangerous-default-value
 
 
 DEFAULT_ATTRIBUTES = collect_default_attributes()
-
-
-class TDigestPercentiles:
-    """
-    A class that tracks percentiles using `datasketches.tdigest_float` and updates corresponding
-    OpenTelemetry Gauges for the 50th, 99th, and 99.9th percentiles.
-    """
-
-    def __init__(self, p50_gauge: metrics._Gauge, p99_gauge: metrics._Gauge, p999_gauge: metrics._Gauge):
-        self._tdigests: MutableMapping[tuple, Any] = {}
-        self._p50_gauge = p50_gauge
-        self._p99_gauge = p99_gauge
-        self._p999_gauge = p999_gauge
-
-    def record(self, amount: Union[int, float], attributes: Optional[Mapping[str, Any]] = None) -> None:
-        """
-        Records an amount into the T-digest for the specified attribute combination and updates
-        the P50, P99, and P99.9 gauges accordingly.
-        """
-        if not HAS_OBSERVABILITY_DEPS:
-            return
-
-        if not attributes:
-            attributes = {}
-        # Record the amount into the specific tdigest for this attribute combination
-        tdigest = self._get_tdigest(attributes)
-        tdigest.update(amount)
-
-        # Update gauges
-        self._p50_gauge.set(tdigest.get_quantile(0.50), attributes)
-        self._p99_gauge.set(tdigest.get_quantile(0.99), attributes)
-        self._p999_gauge.set(tdigest.get_quantile(0.999), attributes)
-
-    def _get_tdigest(self, attributes: Optional[Mapping[str, Any]] = None) -> Any:
-        # Create a key based on the attributes (sorted for consistent keys)
-        if not attributes:
-            attributes = {}
-        attributes_key = tuple(sorted(attributes.items())) if attributes else tuple()
-
-        # Get or create a tdigest for this specific attribute combination
-        if attributes_key not in self._tdigests:
-            self._tdigests[attributes_key] = datasketches.tdigest_float()  # pyright: ignore [reportAttributeAccessIssue]
-
-        return self._tdigests[attributes_key]
-
-    def _serialize_tdigests(self) -> Mapping[tuple, bytes]:
-        """Serialize tdigests objects into bytes."""
-        m = {}
-        for k, v in self._tdigests.items():
-            m[k] = v.serialize()
-        return m
-
-    def _deserialize_tdigests(self, tdigests: Mapping[tuple, bytes]) -> MutableMapping[tuple, Any]:
-        """Deserialize tdigests objects from bytes."""
-
-        m = {}
-        for k, v in tdigests.items():
-            m[k] = datasketches.tdigest_float.deserialize(v)  # pyright: ignore [reportAttributeAccessIssue]
-        return m
-
-    def __setstate__(self, state: dict[str, Any]) -> None:
-        self._tdigests = self._deserialize_tdigests(state["_tdigests"])
-        self._p50_gauge = state["_p50_gauge"]
-        self._p99_gauge = state["_p99_gauge"]
-        self._p999_gauge = state["_p999_gauge"]
-
-    def __getstate__(self) -> dict[str, Any]:
-        state = self.__dict__.copy()
-        state["_tdigests"] = self._serialize_tdigests()
-        return state
-
-
-class StorageProviderMetricsHelper:
-    """
-    A helper class to record metrics for duration and object size using histograms.
-    """
-
-    def __init__(self, attributes: Mapping[str, Any] = DEFAULT_ATTRIBUTES):
-        """
-        Initializes the MetricHelper with optional default attributes for metrics.
-
-        :param attributes: A dictionary of default attributes to be used when recording metrics.
-        """
-        self._duration_histogram = DURATION_HISTOGRAM
-        self._duration_percentiles = TDigestPercentiles(DURATION_P50_GAUGE, DURATION_P99_GAUGE, DURATION_P999_GAUGE)
-
-        self._object_size_histogram = OBJECT_SIZE_HISTOGRAM
-        self._object_size_percentiles = TDigestPercentiles(
-            OBJECT_SIZE_P50_GAUGE, OBJECT_SIZE_P99_GAUGE, OBJECT_SIZE_P999_GAUGE
-        )
-
-        self._attributes = attributes
-
-    def _merge_attributes(self, attributes: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
-        """
-        Merges default attributes with provided attributes.
-        """
-        if not attributes:
-            attributes = {}
-        return {**self._attributes, **attributes}
-
-    def record_duration(
-        self, duration: Union[int, float], provider: str, operation: str, bucket: str, status_code: int
-    ) -> None:
-        """
-        Records the duration for a given operation with specified attributes.
-
-        :param duration: The duration value in seconds.
-        :param provider: The storage provider name (e.g., s3, gcs).
-        :param operation: The operation being performed (e.g., GET, PUT, LIST).
-        :param bucket: The name of the storage bucket involved.
-        :param status_code: The HTTP status code of the operation.
-        """
-        if not self._is_metrics_enabled():
-            return
-
-        attributes = {
-            "provider": provider,
-            "operation": operation,
-            "bucket": bucket,
-            "status_code": status_code,
-            "proc_id": os.getpid(),
-        }
-        duration_ms = duration * 1000
-        self._duration_histogram.record(duration_ms, attributes=self._merge_attributes(attributes))
-        self._duration_percentiles.record(duration_ms, attributes=self._merge_attributes(attributes))
-
-    def record_object_size(
-        self, object_size: Union[int, float], provider: str, operation: str, bucket: str, status_code: int
-    ) -> None:
-        """
-        Records the object size for a given operation with specified attributes.
-
-        :param object_size: The size of the object in bytes.
-        :param provider: The storage provider name (e.g., s3, gcs).
-        :param operation: The operation being performed (e.g., GET, PUT, LIST).
-        :param bucket: The name of the storage bucket involved.
-        :param status_code: The HTTP status code of the operation.
-        """
-        if not self._is_metrics_enabled():
-            return
-
-        attributes = {
-            "provider": provider,
-            "operation": operation,
-            "bucket": bucket,
-            "status_code": status_code,
-            "proc_id": os.getpid(),
-        }
-        object_size_mb = object_size / MB
-        self._object_size_histogram.record(object_size_mb, attributes=self._merge_attributes(attributes))
-        self._object_size_percentiles.record(object_size_mb, attributes=self._merge_attributes(attributes))
-
-    def _is_metrics_enabled(self) -> bool:
-        """
-        Checks if metrics are enabled.
-
-        Returns:
-            bool: True if metrics are enabled, False otherwise.
-        """
-        return HAS_OBSERVABILITY_DEPS and isinstance(get_meter_provider(), SdkMeterProvider)
 
 
 def _get_span_attribute(span: Any, key: str, default: Any = 0) -> Any:
@@ -510,38 +287,6 @@ def instrumented(cls: Any) -> Any:
             decorated = _generic_tracer(attr_value, class_name)
             setattr(cls, attr_name, decorated)
     return cls
-
-
-class CacheManagerMetricsHelper:
-    """
-    A helper class to record metrics for cache manager.
-    """
-
-    def __init__(self, attributes: Mapping[str, Any] = DEFAULT_ATTRIBUTES) -> None:
-        self._attributes = attributes
-        self._counter = CACHE_MANAGER_COUNTER
-
-    def _merge_attributes(self, attributes: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
-        """
-        Merges default attributes with provided attributes.
-        """
-        if not attributes:
-            attributes = {}
-        return {**self._attributes, **attributes}
-
-    def increase(self, operation: str, success: bool) -> None:
-        """
-        Increases the counter of a given operation with specified attributes.
-
-        :param operation: The operation being performed (e.g., SET, READ).
-        :param success: True if the operation succeeds.
-        """
-        attributes = {
-            "operation": operation,
-            "success": success,
-            "proc_id": os.getpid(),
-        }
-        self._counter.add(1, attributes=self._merge_attributes(attributes))
 
 
 def set_span_attribute(attribute_name: str, attribute_value: Any) -> None:

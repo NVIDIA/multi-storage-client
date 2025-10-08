@@ -20,7 +20,6 @@ import threading
 import time
 import uuid
 from datetime import datetime
-from unittest.mock import MagicMock
 
 import pytest
 import xattr
@@ -272,30 +271,6 @@ def test_cache_manager_refresh_cache(tmpdir):
 
     # Clean up
     shutil.rmtree(cache_dir)
-
-
-def test_cache_manager_metrics(profile_name, tmpdir, cache_manager):
-    # Mock the metrics helper in the backend
-    cache_manager._metrics_helper = MagicMock()
-
-    test_uuid = str(uuid.uuid4())
-    file = tmpdir.join(profile_name, "test_file.txt")
-    file.write("cached data")
-
-    cache_manager.set(f"bucket/{test_uuid}/test_file.txt", str(file))
-    cache_manager._metrics_helper.increase.assert_called_with(operation="SET", success=True)
-
-    cache_manager.read(f"bucket/{test_uuid}/test_file.txt")
-    cache_manager._metrics_helper.increase.assert_called_with(operation="READ", success=True)
-
-    cache_manager.read(f"bucket/{test_uuid}/test_file_not_exist.txt")
-    cache_manager._metrics_helper.increase.assert_called_with(operation="READ", success=False)
-
-    cache_manager.open(f"bucket/{test_uuid}/test_file.txt")
-    cache_manager._metrics_helper.increase.assert_called_with(operation="OPEN", success=True)
-
-    cache_manager.open(f"bucket/{test_uuid}/test_file_not_exist.txt")
-    cache_manager._metrics_helper.increase.assert_called_with(operation="OPEN", success=False)
 
 
 @pytest.fixture

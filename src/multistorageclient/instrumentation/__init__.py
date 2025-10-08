@@ -19,18 +19,13 @@ import logging
 import threading
 from typing import Any, Optional, Union
 
-from opentelemetry import metrics, trace
+from opentelemetry import trace
+
+from ..utils import import_class
 
 # Try importing optional observability dependencies
 try:
-    import datasketches  # noqa: F401
     import requests
-    from opentelemetry.sdk.metrics import MeterProvider
-    from opentelemetry.sdk.metrics.export import (
-        ConsoleMetricExporter,
-        PeriodicExportingMetricReader,
-    )
-    from opentelemetry.sdk.metrics.view import ExplicitBucketHistogramAggregation, View
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
@@ -85,8 +80,6 @@ try:
 except ImportError:
     HAS_OBSERVABILITY_DEPS = False
 
-from ..utils import import_class
-
 _TRACE_SAMPLER_MODULE_NAME = "opentelemetry.sdk.trace.sampling"
 
 _OTEL_TRACE_EXPORTER_MAPPING = {
@@ -94,20 +87,7 @@ _OTEL_TRACE_EXPORTER_MAPPING = {
     "otlp": "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter",
 }
 
-_OTEL_METRIC_EXPORTER_MAPPING = {
-    "console": "opentelemetry.sdk.metrics.export.ConsoleMetricExporter",
-    "otlp": "opentelemetry.exporter.otlp.proto.http.metric_exporter.OTLPMetricExporter",
-    # "Private" until it's decided whether this will be official.
-    "_otlp_msal": "multistorageclient.telemetry.metrics.exporters.otlp_msal._OTLPMSALMetricExporter",
-}
-
-
 _IS_SETUP_DONE = False
-
-
-LATENCY_HISTOGRAM_BUCKETS = [0, 100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600, 51200, 102400]
-
-OBJECT_SIZE_HISTOGRAM_BUCKETS = [0, 10, 20, 40, 80, 160, 320, 640, 1280, 2560, 5120]
 
 MAX_RETRIES = 5
 BACKOFF_FACTOR = 0.5
@@ -132,7 +112,6 @@ def _setup_opentelemetry_impl(config: dict[str, Any]) -> None:
 
         if config:
             trace_config_dict = config.get("traces", None)
-            metric_config_dict = config.get("metrics", None)
 
             if trace_config_dict is not None:
                 # exporter
@@ -174,38 +153,6 @@ def _setup_opentelemetry_impl(config: dict[str, Any]) -> None:
                 tracer_provider = TracerProvider(resource=_RESOURCE, sampler=sampler)
                 tracer_provider.add_span_processor(span_processor)
                 trace.set_tracer_provider(tracer_provider)
-
-            if metric_config_dict is not None:
-                metric_exporter_dict = metric_config_dict.get("exporter", None)
-                if metric_config_dict:
-                    exporter_type = metric_exporter_dict["type"]
-                    module_name, class_name = _OTEL_METRIC_EXPORTER_MAPPING.get(exporter_type, exporter_type).rsplit(
-                        ".", 1
-                    )
-                    options = metric_exporter_dict.get("options", {})
-                    auth_dict = metric_exporter_dict.get("auth", {})
-                    auth_provider = AccessTokenProviderFactory.create_access_token_provider(auth_dict)
-                    if exporter_type == "otlp":
-                        options["session"] = create_session(auth_provider)
-                    cls = import_class(class_name, module_name)
-                    exporter = cls(**options)
-                else:
-                    exporter = ConsoleMetricExporter()
-
-                # set up meter provider for current process
-                metric_reader = PeriodicExportingMetricReader(exporter)
-                custom_views = [
-                    View(
-                        instrument_name="storageclient_api_duration",
-                        aggregation=ExplicitBucketHistogramAggregation(LATENCY_HISTOGRAM_BUCKETS),
-                    ),
-                    View(
-                        instrument_name="storageclient_object_size",
-                        aggregation=ExplicitBucketHistogramAggregation(OBJECT_SIZE_HISTOGRAM_BUCKETS),
-                    ),
-                ]
-                meter_provider = MeterProvider(resource=_RESOURCE, metric_readers=[metric_reader], views=custom_views)
-                metrics.set_meter_provider(meter_provider)
 
             # Only set the _IS_SETUP_DONE = true if the providers are successfully set once
             _IS_SETUP_DONE = True

@@ -30,7 +30,6 @@ from filelock import BaseFileLock, FileLock, Timeout
 from .caching.cache_config import CacheConfig
 from .caching.cache_item import CacheItem
 from .caching.eviction_policy import FIFO, LRU, NO_EVICTION, RANDOM, EvictionPolicyFactory
-from .instrumentation.utils import CacheManagerMetricsHelper
 from .types import Range, SourceVersionCheckMode
 
 DEFAULT_CACHE_SIZE = "10G"
@@ -58,7 +57,6 @@ class CacheManager:
         self._cache_config = cache_config
         self._max_cache_size = cache_config.size_bytes()
         self._last_refresh_time = datetime.now()
-        self._metrics_helper = CacheManagerMetricsHelper()
         self._cache_refresh_interval = cache_config.eviction_policy.refresh_interval
 
         # Range cache configuration
@@ -236,24 +234,19 @@ class CacheManager:
             return self._read_range(cache_path, byte_range, storage_provider, source_version, key)  # type: ignore[arg-type]
 
         # Full-file cached read (existing behavior)
-        success = True
         try:
-            try:
-                if self.contains(key=key, source_version=source_version):
-                    file_path = self._get_cache_file_path(key)
-                    with open(file_path, "rb") as fp:
-                        data = fp.read()
-                    # Update access time based on eviction policy
-                    self._update_access_time(file_path)
-                    return data
-            except OSError:
-                pass
+            if self.contains(key=key, source_version=source_version):
+                file_path = self._get_cache_file_path(key)
+                with open(file_path, "rb") as fp:
+                    data = fp.read()
+                # Update access time based on eviction policy
+                self._update_access_time(file_path)
+                return data
+        except OSError:
+            pass
 
-            # cache miss
-            success = False
-            return None
-        finally:
-            self._metrics_helper.increase(operation="READ", success=success)
+        # cache miss
+        return None
 
     def open(
         self,
@@ -263,66 +256,54 @@ class CacheManager:
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
     ) -> Optional[Any]:
         """Open a file from the cache and return the file object."""
-        success = True
         try:
-            try:
-                if self.contains(key=key, check_source_version=check_source_version, source_version=source_version):
-                    file_path = self._get_cache_file_path(key)
-                    # Update access time based on eviction policy
-                    self._update_access_time(file_path)
-                    return open(file_path, mode)
-            except OSError:
-                pass
+            if self.contains(key=key, check_source_version=check_source_version, source_version=source_version):
+                file_path = self._get_cache_file_path(key)
+                # Update access time based on eviction policy
+                self._update_access_time(file_path)
+                return open(file_path, mode)
+        except OSError:
+            pass
 
-            # cache miss
-            success = False
-            return None
-        finally:
-            self._metrics_helper.increase(operation="OPEN", success=success)
+        # cache miss
+        return None
 
     def set(self, key: str, source: Union[str, bytes], source_version: Optional[str] = None) -> None:
         """Store a file in the cache."""
-        success = True
-        try:
-            file_path = self._get_cache_file_path(key)
-            # Ensure the directory exists
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        file_path = self._get_cache_file_path(key)
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
-            if isinstance(source, str):
-                # Move the file to the cache directory
-                os.rename(src=source, dst=file_path)
-            else:
-                # Create a temporary file and move the file to the cache directory
-                with tempfile.NamedTemporaryFile(
-                    mode="wb", delete=False, dir=os.path.dirname(file_path), prefix="."
-                ) as temp_file:
-                    temp_file_path = temp_file.name
-                    temp_file.write(source)
-                os.rename(src=temp_file_path, dst=file_path)
+        if isinstance(source, str):
+            # Move the file to the cache directory
+            os.rename(src=source, dst=file_path)
+        else:
+            # Create a temporary file and move the file to the cache directory
+            with tempfile.NamedTemporaryFile(
+                mode="wb", delete=False, dir=os.path.dirname(file_path), prefix="."
+            ) as temp_file:
+                temp_file_path = temp_file.name
+                temp_file.write(source)
+            os.rename(src=temp_file_path, dst=file_path)
 
-            # Set extended attribute (e.g., ETag)
-            if source_version:
-                try:
-                    xattr.setxattr(file_path, "user.etag", source_version.encode("utf-8"))
-                except OSError as e:
-                    logging.warning(f"Failed to set xattr on {file_path}: {e}")
+        # Set extended attribute (e.g., ETag)
+        if source_version:
+            try:
+                xattr.setxattr(file_path, "user.etag", source_version.encode("utf-8"))
+            except OSError as e:
+                logging.warning(f"Failed to set xattr on {file_path}: {e}")
 
-            # Make the file read-only for all users
-            self._make_readonly(file_path)
+        # Make the file read-only for all users
+        self._make_readonly(file_path)
 
-            # Update access time if applicable
-            self._update_access_time(file_path)
+        # Update access time if applicable
+        self._update_access_time(file_path)
 
-            # Refresh cache after a few minutes
-            if self._should_refresh_cache():
-                thread = threading.Thread(target=self.refresh_cache)
-                thread.daemon = True
-                thread.start()
-        except Exception:
-            success = False
-            raise
-        finally:
-            self._metrics_helper.increase(operation="SET", success=success)
+        # Refresh cache after a few minutes
+        if self._should_refresh_cache():
+            thread = threading.Thread(target=self.refresh_cache)
+            thread.daemon = True
+            thread.start()
 
     def contains(
         self,
@@ -361,10 +342,7 @@ class CacheManager:
 
     def delete(self, key: str) -> None:
         """Delete a file from the cache."""
-        try:
-            self.delete_file(key)
-        finally:
-            self._metrics_helper.increase(operation="DELETE", success=True)
+        self.delete_file(key)
 
     def cache_size(self) -> int:
         """Return the current size of the cache in bytes."""

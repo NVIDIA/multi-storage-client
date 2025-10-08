@@ -17,8 +17,7 @@ import codecs
 import io
 import os
 import tempfile
-import time
-from collections.abc import Callable, Iterator, Sized
+from collections.abc import Callable, Iterator
 from typing import IO, Any, Optional, TypeVar, Union
 
 import boto3
@@ -307,53 +306,32 @@ class S3StorageProvider(BaseStorageProvider):
             "expiry_time": credentials.expiration,
         }
 
-    def _collect_metrics(
+    def _translate_errors(
         self,
         func: Callable[[], _T],
         operation: str,
         bucket: str,
         key: str,
-        put_object_size: Optional[int] = None,
-        get_object_size: Optional[int] = None,
     ) -> _T:
         """
-        Collects and records performance metrics around S3 operations such as PUT, GET, DELETE, etc.
+        Translates errors like timeouts and client errors.
 
-        This method wraps an S3 operation and measures the time it takes to complete, along with recording
-        the size of the object if applicable. It handles errors like timeouts and client errors and ensures
-        proper logging of duration and object size.
+        TODO: Remove tracing from this method.
 
         :param func: The function that performs the actual S3 operation.
         :param operation: The type of operation being performed (e.g., "PUT", "GET", "DELETE").
         :param bucket: The name of the S3 bucket involved in the operation.
         :param key: The key of the object within the S3 bucket.
-        :param put_object_size: The size of the object being uploaded, if applicable (for PUT operations).
-        :param get_object_size: The size of the object being downloaded, if applicable (for GET operations).
 
         :return: The result of the S3 operation, typically the return value of the `func` callable.
         """
-        # Import the span attribute helper
-        from ..instrumentation.utils import set_span_attribute
-
         # Set basic operation attributes
         set_span_attribute("s3_operation", operation)
         set_span_attribute("s3_bucket", bucket)
         set_span_attribute("s3_key", key)
 
-        start_time = time.time()
-        status_code = 200
-
-        object_size = None
-        if operation == "PUT":
-            object_size = put_object_size
-        elif operation == "GET" and get_object_size:
-            object_size = get_object_size
-
         try:
-            result = func()
-            if operation == "GET" and object_size is None and isinstance(result, Sized):
-                object_size = len(result)
-            return result
+            return func()
         except ClientError as error:
             status_code = error.response["ResponseMetadata"]["HTTPStatusCode"]
             request_id = error.response["ResponseMetadata"].get("RequestId")
@@ -399,45 +377,22 @@ class S3StorageProvider(BaseStorageProvider):
                     f"Failed to {operation} object(s) at {bucket}/{key}. {error_info}, "
                     f"error_type: {type(error).__name__}"
                 ) from error
-        except FileNotFoundError as error:
-            status_code = -1
-            raise error
+        except FileNotFoundError:
+            raise
         except (ReadTimeoutError, IncompleteReadError, ResponseStreamingError) as error:
-            status_code = -1
             raise RetryableError(
                 f"Failed to {operation} object(s) at {bucket}/{key} due to network timeout or incomplete read. "
                 f"error_type: {type(error).__name__}"
             ) from error
         except RustRetryableError as error:
-            status_code = -1
             raise RetryableError(
                 f"Failed to {operation} object(s) at {bucket}/{key} due to exhausted retries from Rust. "
                 f"error_type: {type(error).__name__}"
             ) from error
         except Exception as error:
-            status_code = -1
             raise RuntimeError(
                 f"Failed to {operation} object(s) at {bucket}/{key}, error type: {type(error).__name__}, error: {error}"
             ) from error
-        finally:
-            elapsed_time = time.time() - start_time
-
-            set_span_attribute("status_code", status_code)
-
-            # Record metrics
-            self._metric_helper.record_duration(
-                elapsed_time, provider=self._provider_name, operation=operation, bucket=bucket, status_code=status_code
-            )
-            if object_size:
-                self._metric_helper.record_object_size(
-                    object_size,
-                    provider=self._provider_name,
-                    operation=operation,
-                    bucket=bucket,
-                    status_code=status_code,
-                )
-
-                set_span_attribute("object_size", object_size)
 
     def _put_object(
         self,
@@ -492,7 +447,7 @@ class S3StorageProvider(BaseStorageProvider):
 
             return len(body)
 
-        return self._collect_metrics(_invoke_api, operation="PUT", bucket=bucket, key=key, put_object_size=len(body))
+        return self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
 
     def _get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
         bucket, key = split_path(path)
@@ -519,7 +474,7 @@ class S3StorageProvider(BaseStorageProvider):
 
             return response["Body"].read()
 
-        return self._collect_metrics(_invoke_api, operation="GET", bucket=bucket, key=key)
+        return self._translate_errors(_invoke_api, operation="GET", bucket=bucket, key=key)
 
     def _copy_object(self, src_path: str, dest_path: str) -> int:
         src_bucket, src_key = split_path(src_path)
@@ -540,13 +495,7 @@ class S3StorageProvider(BaseStorageProvider):
 
             return src_object.content_length
 
-        return self._collect_metrics(
-            _invoke_api,
-            operation="COPY",
-            bucket=dest_bucket,
-            key=dest_key,
-            put_object_size=src_object.content_length,
-        )
+        return self._translate_errors(_invoke_api, operation="COPY", bucket=dest_bucket, key=dest_key)
 
     def _delete_object(self, path: str, if_match: Optional[str] = None) -> None:
         bucket, key = split_path(path)
@@ -561,7 +510,7 @@ class S3StorageProvider(BaseStorageProvider):
             # Extract and set x-trans-id if present
             _extract_x_trans_id(response)
 
-        return self._collect_metrics(_invoke_api, operation="DELETE", bucket=bucket, key=key)
+        return self._translate_errors(_invoke_api, operation="DELETE", bucket=bucket, key=key)
 
     def _is_dir(self, path: str) -> bool:
         # Ensure the path ends with '/' to mimic a directory
@@ -579,7 +528,7 @@ class S3StorageProvider(BaseStorageProvider):
             # Check if there are any contents or common prefixes
             return bool(response.get("Contents", []) or response.get("CommonPrefixes", []))
 
-        return self._collect_metrics(_invoke_api, operation="LIST", bucket=bucket, key=key)
+        return self._translate_errors(_invoke_api, operation="LIST", bucket=bucket, key=key)
 
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         bucket, key = split_path(path)
@@ -616,7 +565,7 @@ class S3StorageProvider(BaseStorageProvider):
                 )
 
             try:
-                return self._collect_metrics(_invoke_api, operation="HEAD", bucket=bucket, key=key)
+                return self._translate_errors(_invoke_api, operation="HEAD", bucket=bucket, key=key)
             except FileNotFoundError as error:
                 if strict:
                     # If the object does not exist on the given path, we will append a trailing slash and
@@ -683,7 +632,7 @@ class S3StorageProvider(BaseStorageProvider):
                     else:
                         return
 
-        return self._collect_metrics(_invoke_api, operation="LIST", bucket=bucket, key=prefix)
+        return self._translate_errors(_invoke_api, operation="LIST", bucket=bucket, key=prefix)
 
     def _upload_file(
         self,
@@ -733,9 +682,7 @@ class S3StorageProvider(BaseStorageProvider):
 
                 return file_size
 
-            return self._collect_metrics(
-                _invoke_api, operation="PUT", bucket=bucket, key=key, put_object_size=file_size
-            )
+            return self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
         else:
             # Upload small files
             f.seek(0, io.SEEK_END)
@@ -773,9 +720,7 @@ class S3StorageProvider(BaseStorageProvider):
 
                 return file_size
 
-            return self._collect_metrics(
-                _invoke_api, operation="PUT", bucket=bucket, key=key, put_object_size=file_size
-            )
+            return self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
 
     def _download_file(self, remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> int:
         if metadata is None:
@@ -820,9 +765,7 @@ class S3StorageProvider(BaseStorageProvider):
 
                 return metadata.content_length
 
-            return self._collect_metrics(
-                _invoke_api, operation="GET", bucket=bucket, key=key, get_object_size=metadata.content_length
-            )
+            return self._translate_errors(_invoke_api, operation="GET", bucket=bucket, key=key)
         else:
             # Download small files
             if metadata.content_length <= self._transfer_config.multipart_threshold:
@@ -854,6 +797,4 @@ class S3StorageProvider(BaseStorageProvider):
 
                 return metadata.content_length
 
-            return self._collect_metrics(
-                _invoke_api, operation="GET", bucket=bucket, key=key, get_object_size=metadata.content_length
-            )
+            return self._translate_errors(_invoke_api, operation="GET", bucket=bucket, key=key)

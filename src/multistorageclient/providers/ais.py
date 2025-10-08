@@ -15,8 +15,7 @@
 
 import io
 import os
-import time
-from collections.abc import Callable, Iterator, Sized
+from collections.abc import Callable, Iterator
 from typing import IO, Any, Optional, TypeVar, Union
 
 from aistore.sdk import Client
@@ -151,46 +150,26 @@ class AIStoreStorageProvider(BaseStorageProvider):
             self.client = Client(endpoint=endpoint, retry=client_retry)
         self.provider = provider
 
-    def _collect_metrics(
+    def _translate_errors(
         self,
         func: Callable[[], _T],
         operation: str,
         bucket: str,
         key: str,
-        put_object_size: Optional[int] = None,
-        get_object_size: Optional[int] = None,
     ) -> _T:
         """
-        Collects and records performance metrics around object storage operations
-        such as ``PUT``, ``GET``, ``DELETE``, etc.
-
-        This method wraps an object storage operation and measures the time it takes to complete, along with recording
-        the size of the object if applicable. It handles errors like timeouts and client errors and ensures
-        proper logging of duration and object size.
+        Translates errors like timeouts and client errors.
 
         :param func: The function that performs the actual object storage operation.
         :param operation: The type of operation being performed (e.g., ``PUT``, ``GET``, ``DELETE``).
         :param bucket: The name of the object storage bucket involved in the operation.
         :param key: The key of the object within the object storage bucket.
-        :param put_object_size: The size of the object being uploaded, if applicable (for ``PUT`` operations).
-        :param get_object_size: The size of the object being downloaded, if applicable (for ``GET`` operations).
 
         :return: The result of the object storage operation, typically the return value of the `func` callable.
         """
-        start_time = time.time()
-        status_code = 200
-
-        object_size = None
-        if operation == "PUT":
-            object_size = put_object_size
-        elif operation == "GET" and get_object_size:
-            object_size = get_object_size
 
         try:
-            result = func()
-            if operation == "GET" and object_size is None and isinstance(result, Sized):
-                object_size = len(result)
-            return result
+            return func()
         except AISError as error:
             status_code = error.status_code
             error_info = f"status_code: {status_code}, message: {error.message}"
@@ -204,23 +183,9 @@ class AIStoreStorageProvider(BaseStorageProvider):
                     f"Failed to {operation} object(s) at {bucket}/{key}, error type: {type(error).__name__}"
                 ) from error
         except Exception as error:
-            status_code = -1
             raise RuntimeError(
                 f"Failed to {operation} object(s) at {bucket}/{key}, error type: {type(error).__name__}, error: {error}"
             ) from error
-        finally:
-            elapsed_time = time.time() - start_time
-            self._metric_helper.record_duration(
-                elapsed_time, provider=self._provider_name, operation=operation, bucket=bucket, status_code=status_code
-            )
-            if object_size:
-                self._metric_helper.record_object_size(
-                    object_size,
-                    provider=self._provider_name,
-                    operation=operation,
-                    bucket=bucket,
-                    status_code=status_code,
-                )
 
     def _put_object(
         self,
@@ -242,7 +207,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
 
             return len(body)
 
-        return self._collect_metrics(_invoke_api, operation="PUT", bucket=bucket, key=key, put_object_size=len(body))
+        return self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
 
     def _get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
         bucket, key = split_path(path)
@@ -259,7 +224,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
                 reader = obj.get()
             return reader.read_all()
 
-        return self._collect_metrics(_invoke_api, operation="GET", bucket=bucket, key=key)
+        return self._translate_errors(_invoke_api, operation="GET", bucket=bucket, key=key)
 
     def _copy_object(self, src_path: str, dest_path: str) -> int:
         raise AttributeError("AIStore does not support copy operations")
@@ -275,7 +240,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
             # Perform deletion
             obj.delete()
 
-        return self._collect_metrics(_invoke_api, operation="DELETE", bucket=bucket, key=key)
+        return self._translate_errors(_invoke_api, operation="DELETE", bucket=bucket, key=key)
 
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         bucket, key = split_path(path)
@@ -307,7 +272,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
                     metadata=props.custom_metadata,
                 )
 
-            return self._collect_metrics(_invoke_api, operation="HEAD", bucket=bucket, key=key)
+            return self._translate_errors(_invoke_api, operation="HEAD", bucket=bucket, key=key)
 
     def _list_objects(
         self,
@@ -339,7 +304,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
                 elif end_at is not None and end_at < key:
                     return
 
-        return self._collect_metrics(_invoke_api, operation="LIST", bucket=bucket, key=prefix)
+        return self._translate_errors(_invoke_api, operation="LIST", bucket=bucket, key=prefix)
 
     def _upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, str]] = None) -> int:
         file_size: int = 0

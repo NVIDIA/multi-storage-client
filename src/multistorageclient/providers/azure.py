@@ -16,8 +16,7 @@
 import io
 import os
 import tempfile
-import time
-from collections.abc import Callable, Iterator, Sized
+from collections.abc import Callable, Iterator
 from typing import IO, Any, Optional, TypeVar, Union
 
 from azure.core import MatchConditions
@@ -138,45 +137,25 @@ class AzureBlobStorageProvider(BaseStorageProvider):
                 self._credentials_provider.refresh_credentials()
                 self._blob_service_client = self._create_blob_service_client()
 
-    def _collect_metrics(
+    def _translate_errors(
         self,
         func: Callable[[], _T],
         operation: str,
         container: str,
         blob: str,
-        put_object_size: Optional[int] = None,
-        get_object_size: Optional[int] = None,
     ) -> _T:
         """
-        Collects and records performance metrics around Azure operations such as PUT, GET, DELETE, etc.
+        Translates errors like timeouts and client errors.
 
-        This method wraps an Azure operation and measures the time it takes to complete, along with recording
-        the size of the object if applicable. It handles errors like timeouts and client errors and ensures
-        proper logging of duration and object size.
-
-        :param func: The function that performs the actual GCS operation.
+        :param func: The function that performs the actual Azure Blob Storage operation.
         :param operation: The type of operation being performed (e.g., "PUT", "GET", "DELETE").
         :param container: The name of the Azure container involved in the operation.
         :param blob: The name of the blob within the Azure container.
-        :param put_object_size: The size of the object being uploaded, if applicable (for PUT operations).
-        :param get_object_size: The size of the object being downloaded, if applicable (for GET operations).
 
-        :return The result of the GCS operation, typically the return value of the `func` callable.
+        :return The result of the Azure Blob Storage operation, typically the return value of the `func` callable.
         """
-        start_time = time.time()
-        status_code = 200
-
-        object_size = None
-        if operation == "PUT":
-            object_size = put_object_size
-        elif operation == "GET" and get_object_size:
-            object_size = get_object_size
-
         try:
-            result = func()
-            if operation == "GET" and object_size is None and isinstance(result, Sized):
-                object_size = len(result)
-            return result
+            return func()
         except HttpResponseError as error:
             status_code = error.status_code if error.status_code else -1
             error_info = f"status_code: {error.status_code}, reason: {error.reason}"
@@ -190,31 +169,12 @@ class AzureBlobStorageProvider(BaseStorageProvider):
             else:
                 raise RuntimeError(f"Failed to {operation} object(s) at {container}/{blob}. {error_info}") from error
         except AzureError as error:
-            status_code = -1
             error_info = f"message: {error.message}"
             raise RuntimeError(f"Failed to {operation} object(s) at {container}/{blob}. {error_info}") from error
         except Exception as error:
-            status_code = -1
             raise RuntimeError(
                 f"Failed to {operation} object(s) at {container}/{blob}. error_type: {type(error).__name__}, error: {error}"
             ) from error
-        finally:
-            elapsed_time = time.time() - start_time
-            self._metric_helper.record_duration(
-                elapsed_time,
-                provider=self._provider_name,
-                operation=operation,
-                bucket=container,
-                status_code=status_code,
-            )
-            if object_size:
-                self._metric_helper.record_object_size(
-                    object_size,
-                    provider=self._provider_name,
-                    operation=operation,
-                    bucket=container,
-                    status_code=status_code,
-                )
 
     def _put_object(
         self,
@@ -262,9 +222,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
 
             return len(body)
 
-        return self._collect_metrics(
-            _invoke_api, operation="PUT", container=container_name, blob=blob_name, put_object_size=len(body)
-        )
+        return self._translate_errors(_invoke_api, operation="PUT", container=container_name, blob=blob_name)
 
     def _get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
         container_name, blob_name = split_path(path)
@@ -278,7 +236,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
                 stream = blob_client.download_blob()
             return stream.readall()
 
-        return self._collect_metrics(_invoke_api, operation="GET", container=container_name, blob=blob_name)
+        return self._translate_errors(_invoke_api, operation="GET", container=container_name, blob=blob_name)
 
     def _copy_object(self, src_path: str, dest_path: str) -> int:
         src_container, src_blob = split_path(src_path)
@@ -294,13 +252,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
 
             return src_object.content_length
 
-        return self._collect_metrics(
-            _invoke_api,
-            operation="COPY",
-            container=src_container,
-            blob=src_blob,
-            put_object_size=src_object.content_length,
-        )
+        return self._translate_errors(_invoke_api, operation="COPY", container=src_container, blob=src_blob)
 
     def _delete_object(self, path: str, if_match: Optional[str] = None) -> None:
         container_name, blob_name = split_path(path)
@@ -315,7 +267,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
                 # No if_match provided, perform unconditional deletion
                 blob_client.delete_blob()
 
-        return self._collect_metrics(_invoke_api, operation="DELETE", container=container_name, blob=blob_name)
+        return self._translate_errors(_invoke_api, operation="DELETE", container=container_name, blob=blob_name)
 
     def _is_dir(self, path: str) -> bool:
         # Ensure the path ends with '/' to mimic a directory
@@ -331,7 +283,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
             # Check if there are any contents or common prefixes
             return any(True for _ in blobs)
 
-        return self._collect_metrics(_invoke_api, operation="LIST", container=container_name, blob=prefix)
+        return self._translate_errors(_invoke_api, operation="LIST", container=container_name, blob=prefix)
 
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         container_name, blob_name = split_path(path)
@@ -364,7 +316,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
                 )
 
             try:
-                return self._collect_metrics(_invoke_api, operation="HEAD", container=container_name, blob=blob_name)
+                return self._translate_errors(_invoke_api, operation="HEAD", container=container_name, blob=blob_name)
             except FileNotFoundError as error:
                 if strict:
                     # If the object does not exist on the given path, we will append a trailing slash and
@@ -427,7 +379,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
                     elif end_at is not None and end_at < key:
                         return
 
-        return self._collect_metrics(_invoke_api, operation="LIST", container=container_name, blob=prefix)
+        return self._translate_errors(_invoke_api, operation="LIST", container=container_name, blob=prefix)
 
     def _upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, str]] = None) -> int:
         container_name, blob_name = split_path(remote_path)
@@ -445,9 +397,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
 
                 return file_size
 
-            return self._collect_metrics(
-                _invoke_api, operation="PUT", container=container_name, blob=blob_name, put_object_size=file_size
-            )
+            return self._translate_errors(_invoke_api, operation="PUT", container=container_name, blob=blob_name)
         else:
             # Convert StringIO to BytesIO before upload
             if isinstance(f, io.StringIO):
@@ -465,9 +415,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
 
                 return file_size
 
-            return self._collect_metrics(
-                _invoke_api, operation="PUT", container=container_name, blob=blob_name, put_object_size=file_size
-            )
+            return self._translate_errors(_invoke_api, operation="PUT", container=container_name, blob=blob_name)
 
     def _download_file(self, remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> int:
         if metadata is None:
@@ -490,13 +438,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
 
                 return metadata.content_length
 
-            return self._collect_metrics(
-                _invoke_api,
-                operation="GET",
-                container=container_name,
-                blob=blob_name,
-                get_object_size=metadata.content_length,
-            )
+            return self._translate_errors(_invoke_api, operation="GET", container=container_name, blob=blob_name)
         else:
 
             def _invoke_api() -> int:
@@ -509,10 +451,4 @@ class AzureBlobStorageProvider(BaseStorageProvider):
 
                 return metadata.content_length
 
-            return self._collect_metrics(
-                _invoke_api,
-                operation="GET",
-                container=container_name,
-                blob=blob_name,
-                get_object_size=metadata.content_length,
-            )
+            return self._translate_errors(_invoke_api, operation="GET", container=container_name, blob=blob_name)

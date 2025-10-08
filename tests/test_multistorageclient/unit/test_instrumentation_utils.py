@@ -88,41 +88,6 @@ def test_instrumented_when_observability_not_available(patch_observability_not_a
     assert obj.test_method() == "test"
 
 
-def test_storage_provider_metrics_helper_when_observability_not_available(patch_observability_not_available):
-    """Test that StorageProviderMetricsHelper skips advanced metrics when optional observability deps are not available"""
-    helper = instrument_utils.StorageProviderMetricsHelper()
-    # Should not raise any errors
-    helper.record_duration(1.0, "s3", "GET", "test-bucket", 200)
-    helper.record_object_size(1024, "s3", "GET", "test-bucket", 200)
-    # Metrics should be disabled
-    assert not helper._is_metrics_enabled()
-
-
-def test_cache_manager_metrics_helper_when_observability_not_available(patch_observability_not_available):
-    """Test that CacheManagerMetricsHelper skips advanced metrics when optional observability deps are not available"""
-    helper = instrument_utils.CacheManagerMetricsHelper()
-    # Should not raise any errors
-    helper.increase("SET", True)
-
-
-def test_storage_provider_metrics_helper_when_observability_available(reset_observability_state):
-    """Test that StorageProviderMetricsHelper uses advanced metrics when optional observability deps are available"""
-    helper = instrument_utils.StorageProviderMetricsHelper()
-    # Should have the required attributes
-    assert hasattr(helper, "_duration_histogram")
-    assert hasattr(helper, "_duration_percentiles")
-    assert hasattr(helper, "_object_size_histogram")
-    assert hasattr(helper, "_object_size_percentiles")
-
-
-def test_cache_manager_metrics_helper_when_observability_available(reset_observability_state):
-    """Test that CacheManagerMetricsHelper uses advanced metrics when optional observability deps are available"""
-    helper = instrument_utils.CacheManagerMetricsHelper()
-    # Should have the required attributes
-    assert hasattr(helper, "_counter")
-    assert hasattr(helper, "_attributes")
-
-
 def test_generic_tracer_when_observability_available(reset_observability_state):
     """Test that _generic_tracer works with advanced tracing when optional observability deps are available"""
 

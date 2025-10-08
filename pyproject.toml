@@ -50,7 +50,6 @@ documentation = "https://nvidia.github.io/multi-storage-client/"
 observability-otel = [
     "opentelemetry-sdk>=1.24,<2",
     "opentelemetry-exporter-otlp-proto-http>=1.24,<2",
-    "datasketches>=5.2,<6"
 ]
 
 msal = [

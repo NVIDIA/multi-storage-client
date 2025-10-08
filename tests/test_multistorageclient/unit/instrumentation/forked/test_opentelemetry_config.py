@@ -14,15 +14,8 @@
 # limitations under the License.
 
 import pytest
-from opentelemetry import metrics, trace
-from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.metrics._internal import _ProxyMeterProvider
-from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import (
-    ConsoleMetricExporter,
-    PeriodicExportingMetricReader,
-)
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 from opentelemetry.sdk.trace.sampling import ALWAYS_OFF, DEFAULT_ON
@@ -45,7 +38,7 @@ def test_default_config() -> None:
     _ = StorageClientConfig.from_dict(
         {
             "profiles": {"default": {"storage_provider": {"type": "file", "options": {"base_path": "/"}}}},
-            "opentelemetry": {"traces": {}, "metrics": {}},
+            "opentelemetry": {"traces": {}},
         }
     )
 
@@ -57,14 +50,6 @@ def test_default_config() -> None:
     span_processor = tracer_provider._active_span_processor._span_processors[0]
     assert isinstance(span_processor, BatchSpanProcessor)
     assert isinstance(span_processor.span_exporter, ConsoleSpanExporter)
-
-    # metrics
-    meter_provider: MeterProvider = metrics.get_meter_provider()  # pyright: ignore [reportAssignmentType]
-    assert len(meter_provider._all_metric_readers) == 1
-
-    reader = next(iter(meter_provider._all_metric_readers))
-    assert isinstance(reader, PeriodicExportingMetricReader)
-    assert isinstance(reader._exporter, ConsoleMetricExporter)
 
 
 @pytest.mark.forked
@@ -82,17 +67,12 @@ def test_invalid_config() -> None:
     tracer_provider: TracerProvider = trace.get_tracer_provider()  # pyright: ignore [reportAssignmentType]
     assert isinstance(tracer_provider, ProxyTracerProvider)
 
-    # metrics
-    meter_provider: MeterProvider = metrics.get_meter_provider()  # pyright: ignore [reportAssignmentType]
-    assert isinstance(meter_provider, _ProxyMeterProvider)
-
 
 @pytest.mark.forked
 def test_otlp_config() -> None:
     multistorageclient.instrumentation._IS_SETUP_DONE = False
 
     trace_endpoint = "localhost:4718/v1/traces"
-    metrics_endpoint = "localhost:4718/metrics"
 
     config_dict = {
         "profiles": {"default": {"storage_provider": {"type": "file", "options": {"base_path": "/"}}}},
@@ -113,12 +93,6 @@ def test_otlp_config() -> None:
                 },
                 "sampler": {"type": "ALWAYS_OFF", "options": {}},
             },
-            "metrics": {
-                "exporter": {
-                    "type": "otlp",
-                    "options": {"endpoint": f"{metrics_endpoint}"},
-                }
-            },
         },
     }
 
@@ -138,14 +112,3 @@ def test_otlp_config() -> None:
     adapter = exporter._session.adapters["https://"]
     assert isinstance(adapter, multistorageclient.instrumentation.CustomHTTPAdapter)
     assert isinstance(adapter.auth_provider, AzureAccessTokenProvider)
-
-    # metrics
-    meter_provider: MeterProvider = metrics.get_meter_provider()  # pyright: ignore [reportAssignmentType]
-    assert len(meter_provider._all_metric_readers) == 1
-
-    reader = next(iter(meter_provider._all_metric_readers))
-    assert isinstance(reader, PeriodicExportingMetricReader)
-
-    exporter = reader._exporter
-    assert isinstance(exporter, OTLPMetricExporter)
-    assert exporter._endpoint == metrics_endpoint
