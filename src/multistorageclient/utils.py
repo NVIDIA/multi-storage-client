@@ -14,7 +14,6 @@
 # limitations under the License.
 
 import fnmatch
-import hashlib
 import importlib
 import logging
 import math
@@ -125,19 +124,6 @@ def import_class(class_name: str, module_name: str, package_name: Optional[str] 
 
     cls = getattr(module, class_name)
     return cls
-
-
-def cache_key(path: str) -> str:
-    """
-    Generate a unique cache key based on the provided file path using a fast hashing algorithm.
-
-    :param path: The file path for which to generate the cache key.
-
-    :return: A hexadecimal string representing the hashed value of the file path, to be used as a cache key.
-    """
-    md5 = hashlib.md5()
-    md5.update(path.encode("utf-8"))
-    return md5.hexdigest()
 
 
 def join_paths(base: str, path: str) -> str:
