@@ -446,6 +446,7 @@ class S3StorageProvider(BaseStorageProvider):
         if_match: Optional[str] = None,
         if_none_match: Optional[str] = None,
         attributes: Optional[dict[str, str]] = None,
+        content_type: Optional[str] = None,
     ) -> int:
         """
         Uploads an object to the specified S3 path.
@@ -455,11 +456,14 @@ class S3StorageProvider(BaseStorageProvider):
         :param if_match: Optional If-Match header value. Use "*" to only upload if the object doesn't exist.
         :param if_none_match: Optional If-None-Match header value. Use "*" to only upload if the object doesn't exist.
         :param attributes: Optional attributes to attach to the object.
+        :param content_type: Optional Content-Type header value.
         """
         bucket, key = split_path(path)
 
         def _invoke_api() -> int:
             kwargs = {"Bucket": bucket, "Key": key, "Body": body}
+            if content_type:
+                kwargs["ContentType"] = content_type
             if self._is_directory_bucket(bucket):
                 kwargs["StorageClass"] = EXPRESS_ONEZONE_STORAGE_CLASS
             if if_match:
@@ -470,7 +474,8 @@ class S3StorageProvider(BaseStorageProvider):
             if validated_attributes:
                 kwargs["Metadata"] = validated_attributes
 
-            rust_unsupported_feature_keys = {"Metadata", "StorageClass", "IfMatch", "IfNoneMatch"}
+            # TODO(NGCDP-5804): Add support to update ContentType header in Rust client
+            rust_unsupported_feature_keys = {"Metadata", "StorageClass", "IfMatch", "IfNoneMatch", "ContentType"}
             if (
                 self._rust_client
                 # Rust client doesn't support creating objects with trailing /, see https://github.com/apache/arrow-rs/issues/7026
@@ -680,7 +685,13 @@ class S3StorageProvider(BaseStorageProvider):
 
         return self._collect_metrics(_invoke_api, operation="LIST", bucket=bucket, key=prefix)
 
-    def _upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, str]] = None) -> int:
+    def _upload_file(
+        self,
+        remote_path: str,
+        f: Union[str, IO],
+        attributes: Optional[dict[str, str]] = None,
+        content_type: Optional[str] = None,
+    ) -> int:
         file_size: int = 0
 
         if isinstance(f, str):
@@ -689,16 +700,18 @@ class S3StorageProvider(BaseStorageProvider):
 
             # Upload small files
             if file_size <= self._transfer_config.multipart_threshold:
-                if self._rust_client and not attributes:
+                if self._rust_client and not attributes and not content_type:
                     run_async_rust_client_method(self._rust_client, "upload", f, key)
                 else:
                     with open(f, "rb") as fp:
-                        self._put_object(remote_path, fp.read(), attributes=attributes)
+                        self._put_object(remote_path, fp.read(), attributes=attributes, content_type=content_type)
                 return file_size
 
             # Upload large files using TransferConfig
             def _invoke_api() -> int:
                 extra_args = {}
+                if content_type:
+                    extra_args["ContentType"] = content_type
                 if self._is_directory_bucket(bucket):
                     extra_args["StorageClass"] = EXPRESS_ONEZONE_STORAGE_CLASS
                 validated_attributes = validate_attributes(attributes)
@@ -731,9 +744,11 @@ class S3StorageProvider(BaseStorageProvider):
 
             if file_size <= self._transfer_config.multipart_threshold:
                 if isinstance(f, io.StringIO):
-                    self._put_object(remote_path, f.read().encode("utf-8"), attributes=attributes)
+                    self._put_object(
+                        remote_path, f.read().encode("utf-8"), attributes=attributes, content_type=content_type
+                    )
                 else:
-                    self._put_object(remote_path, f.read(), attributes=attributes)
+                    self._put_object(remote_path, f.read(), attributes=attributes, content_type=content_type)
                 return file_size
 
             # Upload large files using TransferConfig
@@ -741,6 +756,8 @@ class S3StorageProvider(BaseStorageProvider):
 
             def _invoke_api() -> int:
                 extra_args = {}
+                if content_type:
+                    extra_args["ContentType"] = content_type
                 if self._is_directory_bucket(bucket):
                     extra_args["StorageClass"] = EXPRESS_ONEZONE_STORAGE_CLASS
                 validated_attributes = validate_attributes(attributes)

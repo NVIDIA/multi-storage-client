@@ -198,6 +198,41 @@ Options: See parameters in :py:class:`multistorageclient.providers.s8k.S8KStorag
            region_name: us-east-1
            endpoint_url: https://s8k.example.com
 
+Content Type Inference
+^^^^^^^^^^^^^^^^^^^^^^
+
+The S8K storage provider supports automatic MIME type inference from file extensions through the ``infer_content_type`` option.
+When enabled, files are uploaded with appropriate ``Content-Type`` headers based on their extensions (e.g., ``.wav`` → ``audio/x-wav``,
+``.mp3`` → ``audio/mpeg``, ``.json`` → ``application/json``).
+
+This is particularly useful for serving media files directly from object storage, as browsers can play audio/video files inline rather
+than downloading them when the correct content type is set.
+
+.. code-block:: yaml
+   :caption: Example configuration with content type inference enabled.
+
+   profiles:
+     my-profile:
+       storage_provider:
+         type: s8k
+         options:
+           base_path: my-bucket
+           region_name: us-east-1
+           endpoint_url: https://s8k.example.com
+           infer_content_type: true  # Enable automatic MIME type inference
+
+.. note::
+   Content type inference is **disabled by default** (``infer_content_type: false``). When disabled, boto3's default
+   behavior applies, which typically results in ``application/octet-stream`` for most files.
+
+.. note::
+   **Performance Considerations**: Content type inference uses Python's built-in ``mimetypes`` module, which is fast
+   (dictionary lookup). However, the inference only occurs during write operations (``upload_file``, ``write``, ``put_object``),
+   so there is no impact on read performance.
+
+If a file extension is not recognized, no ``Content-Type`` header is explicitly set, and boto3 will use its default behavior
+which typically results in ``application/octet-stream``.
+
 ``azure``
 ---------
 
