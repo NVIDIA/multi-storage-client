@@ -20,7 +20,7 @@ import tempfile
 from collections.abc import Callable, Iterator
 from typing import IO, Any, Optional, Union
 
-from huggingface_hub import CommitOperationCopy, HfApi, hf_hub_url
+from huggingface_hub import CommitOperationCopy, HfApi
 from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError, RepositoryNotFoundError, RevisionNotFoundError
 from huggingface_hub.hf_api import RepoFile, RepoFolder
 
@@ -344,63 +344,48 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
             raise RuntimeError("HuggingFace client not initialized")
 
         try:
-            file_url = hf_hub_url(
+            items = self._hf_client.get_paths_info(
                 repo_id=self._repository_id,
-                filename=path,
+                paths=[path],
                 repo_type=self._repo_type,
                 revision=self._repo_revision,
+                expand=True,
             )
 
-            token = None
-            if self._credentials_provider:
-                creds = self._credentials_provider.get_credentials()
-                token = creds.token
+            if not items:
+                raise FileNotFoundError(f"File not found in HuggingFace repository: {path}")
 
-            file_metadata = self._hf_client.get_hf_file_metadata(
-                url=file_url,
-                token=token,
-            )
+            item = items[0]
 
             last_modified = AWARE_DATETIME_MIN
-            if hasattr(file_metadata, "commit_hash") and file_metadata.commit_hash:
-                try:
-                    commits = list(
-                        self._hf_client.list_repo_commits(
-                            repo_id=self._repository_id,
-                            repo_type=self._repo_type,
-                            revision=self._repo_revision,
-                        )
-                    )
-                    if commits:
-                        target_commit_id = file_metadata.commit_hash
-                        for commit in commits:
-                            if commit.commit_id == target_commit_id:
-                                last_modified = commit.created_at
-                                break
-                except Exception:
-                    pass
+            if hasattr(item, "last_commit") and item.last_commit:
+                last_modified = item.last_commit.date
 
             return ObjectMetadata(
-                key=path,
-                type="file",
-                content_length=file_metadata.size or 0,
+                key=item.path,
+                type="file" if isinstance(item, RepoFile) else "directory",
+                content_length=item.size if isinstance(item, RepoFile) else 0,
                 last_modified=last_modified,
-                etag=file_metadata.etag,
+                etag=None,  # Can be obtained via a separate call to get_hf_file_metadata
                 content_type=None,
                 storage_class=None,
                 metadata=None,
             )
-
-        except EntryNotFoundError as e:
+        except FileNotFoundError as error:
             if strict:
-                if self._is_dir(path):
+                dir_path = path.rstrip("/") + "/"
+                if self._is_dir(dir_path):
                     return ObjectMetadata(
-                        key=path,
+                        key=dir_path,
                         type="directory",
                         content_length=0,
                         last_modified=AWARE_DATETIME_MIN,
+                        etag=None,
+                        content_type=None,
+                        storage_class=None,
+                        metadata=None,
                     )
-            raise FileNotFoundError(f"File not found in HuggingFace repository: {path}") from e
+            raise error
         except (RepositoryNotFoundError, RevisionNotFoundError) as e:
             raise FileNotFoundError(
                 f"Repository or revision not found: {self._repository_id}@{self._repo_revision}"
@@ -634,26 +619,31 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
 
     def _is_dir(self, path: str) -> bool:
         """
-        Helper method to check if a path could be a directory by looking for files with that prefix.
+        Helper method to check if a path is a directory.
 
         :param path: The path to check.
         :return: True if the path appears to be a directory (has files under it).
         """
+        path = path.rstrip("/")
+        if not path:
+            # The root of the repo is always a directory
+            return True
+
         try:
-            file_paths = [
-                file.path
-                for file in self._hf_client.list_repo_tree(
-                    repo_id=self._repository_id,
-                    path_in_repo=os.path.dirname(path),
-                    repo_type=self._repo_type,
-                    revision=self._repo_revision,
-                    expand=True,
-                    recursive=True,
-                )
-            ]
+            path_info = self._hf_client.get_paths_info(
+                repo_id=self._repository_id,
+                paths=[path],
+                repo_type=self._repo_type,
+                revision=self._repo_revision,
+            )[0]
 
-            path_prefix = path.rstrip("/") + "/"
-            return any(f.startswith(path_prefix) for f in file_paths)
+            return isinstance(path_info, RepoFolder)
 
-        except Exception:
+        except (RepositoryNotFoundError, RevisionNotFoundError) as e:
+            raise FileNotFoundError(
+                f"Repository or revision not found: {self._repository_id}@{self._repo_revision}"
+            ) from e
+        except IndexError:
             return False
+        except Exception as e:
+            raise Exception(f"Unexpected error: {e}")
