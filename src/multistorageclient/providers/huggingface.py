@@ -16,7 +16,6 @@
 import importlib.util
 import io
 import os
-import shutil
 import tempfile
 from collections.abc import Callable, Iterator
 from typing import IO, Any, Optional, Union
@@ -198,6 +197,8 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
                 "Directories are created implicitly when files are uploaded to paths within them."
             )
 
+        path = self._normalize_path(path)
+
         try:
             with tempfile.NamedTemporaryFile(delete=False) as temp_file:
                 temp_file.write(body)
@@ -251,6 +252,8 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
                 "To read the entire file, call get_object() without the byte_range parameter."
             )
 
+        path = self._normalize_path(path)
+
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
                 downloaded_path = self._hf_client.hf_hub_download(
@@ -289,6 +292,9 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         """
         if not self._hf_client:
             raise RuntimeError("HuggingFace client not initialized")
+
+        src_path = self._normalize_path(src_path)
+        dest_path = self._normalize_path(dest_path)
 
         src_object = self._get_object_metadata(src_path)
 
@@ -337,6 +343,8 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
                 "HuggingFace provider does not support conditional deletion. if_match parameter is not supported."
             )
 
+        path = self._normalize_path(path)
+
         try:
             self._hf_client.delete_file(
                 path_in_repo=path,
@@ -365,6 +373,8 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         """
         if not self._hf_client:
             raise RuntimeError("HuggingFace client not initialized")
+
+        path = self._normalize_path(path)
 
         try:
             items = self._hf_client.get_paths_info(
@@ -442,6 +452,8 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
                 "HuggingFace provider does not support pagination with start_after or end_at parameters. "
                 "These parameters are not supported by the HuggingFace Hub API."
             )
+
+        path = self._normalize_path(path)
 
         try:
             repo_items = self._hf_client.list_repo_tree(
@@ -527,6 +539,8 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
                 "Directories are created implicitly when files are uploaded to paths within them."
             )
 
+        remote_path = self._normalize_path(remote_path)
+
         try:
             if isinstance(f, str):
                 file_size = os.path.getsize(f)
@@ -594,23 +608,25 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         if not self._hf_client:
             raise RuntimeError("HuggingFace client not initialized")
 
+        remote_path = self._normalize_path(remote_path)
+
         try:
             if isinstance(f, str):
-                if os.path.dirname(f):
-                    os.makedirs(os.path.dirname(f), exist_ok=True)
+                parent_dir = os.path.dirname(f)
+                if parent_dir:
+                    os.makedirs(parent_dir, exist_ok=True)
 
-                target_dir = os.path.dirname(f)
-
+                target_dir = parent_dir if parent_dir else "."
                 downloaded_path = self._hf_client.hf_hub_download(
                     repo_id=self._repository_id,
                     filename=remote_path,
                     repo_type=self._repo_type,
                     revision=self._repo_revision,
-                    local_dir=target_dir if target_dir else None,
+                    local_dir=target_dir,
                 )
 
                 if os.path.abspath(downloaded_path) != os.path.abspath(f):
-                    shutil.move(downloaded_path, f)
+                    os.rename(downloaded_path, f)
 
                 return os.path.getsize(f)
 
@@ -670,3 +686,10 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
             return False
         except Exception as e:
             raise Exception(f"Unexpected error: {e}")
+
+    def _normalize_path(self, path: str) -> str:
+        """
+        Normalize path for HuggingFace API by removing leading slashes.
+        HuggingFace expects relative paths within repositories.
+        """
+        return path.lstrip("/")
