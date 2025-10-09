@@ -145,6 +145,10 @@ async def test_rustclient_basic_operations(temp_data_store_type: Type[tempdatast
         storage_client.delete(path=file_path)
         storage_client.delete(path=large_file_path)
 
+        # Test get a non-existent file
+        with pytest.raises(FileNotFoundError):
+            await rust_client.get(file_path)
+
 
 @pytest.mark.parametrize(
     argnames=["temp_data_store_type"],

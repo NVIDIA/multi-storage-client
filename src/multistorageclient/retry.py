@@ -48,6 +48,11 @@ def retry(func: Callable) -> Callable:
                 else:
                     logging.error("All retry attempts failed for %s", func.__name__)
                     raise
+            except FileNotFoundError as e:
+                # FileNotFoundError is expected in many scenarios (e.g., zarr probing for metadata files)
+                # Log at debug level to avoid cluttering logs with expected 404s
+                logging.debug("File not found for %s: %s", func.__name__, e)
+                raise
             except Exception as e:
                 logging.error("Non-retryable error occurred for %s: %s", func.__name__, e)
                 raise

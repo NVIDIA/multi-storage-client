@@ -142,3 +142,45 @@ def test_retry_with_custom_backoff_multiplier():
     # Jitter is between 0 and 1 second
     assert 1.0 <= sleep_times[0] <= 2.0, f"First sleep time {sleep_times[0]} should be between 1.0 and 2.0"
     assert 3.0 <= sleep_times[1] <= 4.0, f"Second sleep time {sleep_times[1]} should be between 3.0 and 4.0"
+
+
+def test_file_not_found_error_logging(caplog):
+    """Test that FileNotFoundError is logged at DEBUG level, not ERROR level."""
+    import logging
+
+    config = StorageClientConfig.from_json(
+        """{
+        "profiles": {
+            "default": {
+                "storage_provider": {
+                    "type": "file",
+                    "options": {
+                        "base_path": "/"
+                    }
+                }
+            }
+        }
+    }"""
+    )
+
+    storage_client = StorageClient(config)
+
+    class FileNotFoundStorageProvider:
+        def __init__(self):
+            self._retry_config = storage_client._retry_config
+
+        @retry
+        def get_object(self, path: str, byte_range: Optional[Range] = None):
+            raise FileNotFoundError(f"Object {path} not found")
+
+    storage_client._storage_provider = FileNotFoundStorageProvider()
+
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(FileNotFoundError):
+            storage_client.read("nonexistent_file.txt")
+
+    error_logs = [record for record in caplog.records if record.levelname == "ERROR"]
+    assert len(error_logs) == 0, "FileNotFoundError should not be logged at ERROR level"
+
+    debug_logs = [record for record in caplog.records if record.levelname == "DEBUG" and "not found" in record.message]
+    assert len(debug_logs) > 0, "FileNotFoundError should be logged at DEBUG level"

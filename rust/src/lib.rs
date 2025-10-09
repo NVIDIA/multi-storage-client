@@ -54,13 +54,19 @@ pub enum StorageError {
     TempFileError(#[from] tempfile::PersistError),
     #[error("Connection error: {0}")]
     RetryExhaustedError(String),
+    #[error("Object not found: {0}")]
+    NotFound(String),
 }
 
 impl From<object_store::Error> for StorageError {
     fn from(err: object_store::Error) -> Self {
         let error_msg = format_error_chain(&err);
         
-        if error_msg.contains("HTTP error: error sending request") || 
+        if error_msg.contains("not found") ||
+           error_msg.contains("404 Not Found") ||
+           error_msg.contains("NoSuchKey") {
+            StorageError::NotFound(error_msg)
+        } else if error_msg.contains("HTTP error: error sending request") ||
            error_msg.contains("HTTP error: request or response body error") {
             StorageError::RetryExhaustedError(error_msg)
         } else {
@@ -89,6 +95,9 @@ impl From<StorageError> for PyErr {
             }
             StorageError::RetryExhaustedError(msg) => {
                 RustRetryableError::new_err(msg)
+            }
+            StorageError::NotFound(msg) => {
+                pyo3::exceptions::PyFileNotFoundError::new_err(msg)
             }
             _ => {
                 pyo3::exceptions::PyRuntimeError::new_err(err.to_string())
