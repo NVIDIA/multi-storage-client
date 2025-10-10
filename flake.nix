@@ -56,20 +56,23 @@
           with inputs.nixpkgs.legacyPackages.${system};
           buildGoModule (finalAttrs: {
             pname = "aistore";
-            version = "1.3.31";
+            version = "1.4.1-dev";
 
             src = fetchFromGitHub {
               owner = "NVIDIA";
               repo = "aistore";
-              tag = "v${finalAttrs.version}";
-              hash = "sha256-/IS4DKz5lJXFW42iFxrIPPhbKWniGl5xl7zKaeMwGrQ=";
+              # 1.4.0 is broken for Darwin due to missing platform-specific functions.
+              #
+              # https://github.com/NVIDIA/aistore/commit/2ca4149a254293289152390818210d42555be721
+              rev = "2ca4149a254293289152390818210d42555be721";
+              hash = "sha256-6fGxqQKFB7Ccmevg3HBNHuSw069o+akPypwXVMEX0OU=";
             };
 
-            vendorHash = "sha256-klbd5WwvsAGSEspOPfGFyqSS6XMCa9R256nXfd1V7c4=";
+            vendorHash = "sha256-BbSIWf6bdeupPttq2fphoxA4wpJOa0dnv0VqS0Yc9sg=";
 
             # Exclude `cmd/cli` and `cmd/ishard` which are separate Go modules.
             #
-            # https://github.com/NVIDIA/aistore/tree/v1.3.31/cmd
+            # https://github.com/NVIDIA/aistore/tree/v1.4.0/cmd
             subPackages = [
               "cmd/aisinit"
               "cmd/aisloader"
@@ -81,7 +84,7 @@
 
             # Needed for version strings.
             #
-            # https://github.com/NVIDIA/aistore/blob/v1.3.31/Makefile#L80
+            # https://github.com/NVIDIA/aistore/blob/v1.4.0/Makefile#L80
             ldflags =
               let
                 ldflagsPackageVariablePrefix = "main";
@@ -94,7 +97,7 @@
             tags = [
               # Backends.
               #
-              # https://github.com/NVIDIA/aistore/blob/v1.3.31/docs/build_tags.md
+              # https://github.com/NVIDIA/aistore/blob/v1.4.0/docs/build_tags.md
               "aws"
               "azure"
               "gcp"
@@ -102,7 +105,7 @@
               "oci"
               # Monotonic time.
               #
-              # https://github.com/NVIDIA/aistore/blob/v1.3.31/Makefile#L86
+              # https://github.com/NVIDIA/aistore/blob/v1.4.0/Makefile#L86
               "mono"
             ];
 
@@ -157,7 +160,7 @@
                 # Nix is dynamically linked on some systems. If we set LD_LIBRARY_PATH,
                 # running Nix commands with the system-installed Nix may fail due to mismatched library versions.
                 nix
-                nixfmt-rfc-style
+                nixfmt
                 # Utilities.
                 coreutils
                 curl

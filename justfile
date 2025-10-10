@@ -68,7 +68,7 @@ start-storage-systems: stop-storage-systems
     # Start AIStore.
     cd .aistore/sandbox && aisnode -config ais.json -local_config ais_local.json -loopback -role target &
     # Start Azurite.
-    cd .azurite/sandbox && azurite --inMemoryPersistence --silent --skipApiVersionCheck &
+    cd .azurite/sandbox && azurite --disableTelemetry --inMemoryPersistence --silent --skipApiVersionCheck &
     # Start fake-gcs-server.
     cd .fake-gcs-server/sandbox && TZ="UTC" fake-gcs-server -backend memory -log-level error -scheme http &
     # Start MinIO.

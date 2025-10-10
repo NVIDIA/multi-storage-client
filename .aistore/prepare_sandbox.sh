@@ -31,10 +31,16 @@ cat > ${SANDBOX_ABSOLUTE_PATH}/ais.json << END_OF_FILE
         "enabled": false,
         "disk_only": false
     },
+    "chunks": {
+        "objsize_limit": "0",
+        "chunk_size": "1GiB",
+        "checkpoint_every": 0,
+        "flags": 0
+    },
     "log": {
         "level": "3",
-        "max_size": "4mb",
-        "max_total": "128mb",
+        "max_size": "10mb",
+        "max_total": "256mb",
         "flush_time": "60s",
         "stats_time": "60s"
     },
@@ -69,7 +75,9 @@ cat > ${SANDBOX_ABSOLUTE_PATH}/ais.json << END_OF_FILE
         "cleanupwm": 65,
         "lowwm": 75,
         "highwm": 90,
-        "out_of_space": 95
+        "out_of_space": 95,
+        "batch_size": 32768,
+        "dont_cleanup_time": "120m"
     },
     "lru": {
         "dont_evict_time": "120m",
@@ -79,6 +87,7 @@ cat > ${SANDBOX_ABSOLUTE_PATH}/ais.json << END_OF_FILE
     "disk": {
         "iostat_time_long": "2s",
         "iostat_time_short": "100ms",
+        "iostat_time_smooth": "8s",
         "disk_util_low_wm": 20,
         "disk_util_high_wm": 80,
         "disk_util_max_wm": 95
