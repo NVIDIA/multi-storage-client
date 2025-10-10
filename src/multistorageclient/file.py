@@ -114,6 +114,10 @@ class RemoteFileReader(IO[bytes]):
         data = self._storage_client.read(
             self._remote_path, byte_range=bytes_range, check_source_version=self._check_source_version
         )
+        # If the storage client is using the Rust client, convert the Rust bytes-like buffer to Python bytes
+        # to support Python bytes operations like startswith()
+        if self._storage_client._is_rust_client_enabled() and hasattr(data, "to_bytes"):
+            data = data.to_bytes()
         # Update the position by the number of bytes read
         bytes_read = len(data)
         self._pos += bytes_read
