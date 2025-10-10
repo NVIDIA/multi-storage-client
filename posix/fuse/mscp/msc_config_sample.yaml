@@ -1,0 +1,28 @@
+profiles:
+  my_dataset:
+    storage_provider:
+      type: s3
+      options:
+        base_path: dataset1
+        endpoint_url: "http://minio:9000"
+        region_name: us-east-1
+    credentials_provider:
+      type: S3Credentials
+      options:
+        access_key: minioadmin
+        secret_key: minioadmin
+  my_checkpoints:
+    storage_provider:
+      type: s3
+      options:
+        base_path: checkpoints2
+        endpoint_url: "http://minio:9000"
+        region_name: us-east-1
+    credentials_provider:
+      type: S3Credentials
+      options:
+        access_key: minioadmin
+        secret_key: minioadmin
+posix:
+  mountpoint: /mnt
+  auto_sighup_interval: 10 # seconds

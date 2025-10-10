@@ -1,0 +1,142 @@
+version: "2"
+run:
+  concurrency: 8
+  go: 1.23.5
+  tests: true
+linters:
+  default: none
+  enable:
+    - asciicheck
+    - bodyclose
+    - canonicalheader
+    - copyloopvar
+    - depguard
+    - dogsled
+    - dupl
+    - durationcheck
+    - errcheck
+    # - fatcontext
+    - gochecksumtype
+    - gocritic
+    - goheader
+    - gomoddirectives
+    - goprintffuncname
+    - gosec
+    - govet
+    - importas
+    - ineffassign
+    - intrange
+    - misspell
+    - nilnesserr
+    - nolintlint
+    - perfsprint
+    - prealloc
+    - protogetter
+    - reassign
+    # - revive
+    - staticcheck
+    - unconvert
+    # - unparam
+    # - unused
+    - whitespace
+  settings:
+    depguard:
+      rules:
+        main:
+          deny:
+            - pkg: io/ioutil
+              desc: 'replaced by io and os packages since Go 1.16: https://tip.golang.org/doc/go1.16#ioutil'
+            - pkg: math/rand$
+              desc: '`math/rand` package has been deprecated use `math/rand/v2`'
+    dogsled:
+      max-blank-identifiers: 3
+    dupl:
+      threshold: 1000
+    errcheck:
+      check-type-assertions: false
+      check-blank: true
+    gocritic:
+      disabled-checks:
+        - unnamedResult
+      enabled-tags:
+        - performance
+        - style
+    gosec:
+      excludes:
+        - G115
+        - G402
+        - G404
+    govet:
+      disable:
+        - fieldalignment
+        - shadow
+      enable-all: true
+    misspell:
+      locale: US
+    prealloc:
+      simple: true
+      range-loops: true
+      for-loops: true
+    revive:
+      severity: warning
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: early-return
+        - name: error-naming
+        - name: error-strings
+        - name: exported
+        - name: if-return
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: modifies-value-receiver
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: string-of-int
+        - name: superfluous-else
+        - name: time-naming
+        - name: var-naming
+        - name: var-declaration
+        - name: unconditional-recursion
+        - name: unexported-naming
+        - name: unexported-return
+        - name: unnecessary-stmt
+        - name: unreachable-code
+        - name: unused-parameter
+        - name: unused-receiver
+        - name: waitgroup-by-value
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+        text: Error return value of
+      - linters:
+          - gocritic
+        text: block doesn't have definitions
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

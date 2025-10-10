@@ -1,0 +1,27 @@
+mscp_version: 1
+backends: [
+  {
+    dir_name: minio,
+    bucket_container_name: dev,
+    backend_type: S3,
+    S3: {
+      access_key_id: minioadmin,
+      secret_access_key: minioadmin,
+      region: us-east-1,
+      endpoint: "minio:9000",
+      allow_http: true,
+    },
+  },
+  {
+    dir_name: ais,
+    bucket_container_name: dev,
+    backend_type: S3,
+    S3: {
+      access_key_id: minioadmin,
+      secret_access_key: minioadmin,
+      region: us-east-1,
+      endpoint: "ais:8080/s3",
+      allow_http: true,
+    },
+  },
+]

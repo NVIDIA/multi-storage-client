@@ -1,0 +1,47 @@
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: mscp_minio
+    expose:
+      - 9000
+      - 9001
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    command: server /data --console-address ":9001"
+  ais:
+    build:
+      context: ../../..
+      dockerfile: posix/fuse/mscp/Dockerfile
+      target: ais
+    container_name: mscp_ais
+    expose:
+      - 8080
+      - 8081
+    depends_on:
+      - minio
+    environment:
+      - S3_ENDPOINT=http://minio:9000
+    command: [ "/root/deploy_1_1.sh" ]
+  dev:
+    build:
+      context: ../../..
+      dockerfile: posix/fuse/mscp/Dockerfile
+      target: dev
+    container_name: mscp_dev
+    depends_on:
+      - minio
+      - ais
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - '/dev/fuse'
+    privileged: true
+    volumes:
+      - type: bind
+        source: ../../..
+        target: /multi-storage-client
+    environment:
+      - AIS_ENDPOINT=http://ais:8080
+      - MSC_CONFIG=./mscp_config_dev.yaml
+    command: [ "sleep", "infinity" ]

@@ -1,0 +1,2 @@
+binary-artifact/msc-posix-linux-amd64 filter=lfs diff=lfs merge=lfs -text
+binary-artifact/msc-posix-linux-arm64 filter=lfs diff=lfs merge=lfs -text
