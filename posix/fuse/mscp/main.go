@@ -8,6 +8,16 @@ import (
 	"time"
 )
 
+// `main` is the entrypoint for the FUSE file system daemon. It parses the
+// command line. Help text will be output if explicitly requested or the
+// command line arguments are not understood. In other cases, it requires
+// a successful parsing of the configuration file whose location is
+// determined in the initGlobals() call. Next, the FUSE file system is
+// initialized and the configuration file specified backends are mounted
+// beneath the root of the FUSE file system. The daemon then enters a loop
+// until receiving a SIGINT or SIGTERM. Either periodically or in response
+// to a SIGHUP, the configuration file is re-read and the list of backends
+// is adjusted based on any changes detected.
 func main() {
 	var (
 		displayHelp         bool
@@ -39,18 +49,13 @@ func main() {
 
 	if displayHelp {
 		fmt.Printf("usage: %s [{-?|-h|help|-help|--help|-v|-version|--version} | <config-file>]\n", os.Args[0])
-		fmt.Printf("  where a <config-file>, ending in suffix .yaml or .json is to be found while searching:\n")
+		fmt.Printf("  where a <config-file>, ending in suffix .yaml, .yml, or .json is to be found while searching:\n")
 		fmt.Printf("    ${MSC_CONFIG}\n")
-		fmt.Printf("    ${XDG_CONFIG_HOME}/msc/config.yaml\n")
-		fmt.Printf("    ${XDG_CONFIG_HOME}/msc/config.json\n")
-		fmt.Printf("    ${HOME}/.msc_config.yaml\n")
-		fmt.Printf("    ${HOME}/.msc_config.json\n")
-		fmt.Printf("    ${HOME}/.config/msc/config.yaml\n")
-		fmt.Printf("    ${HOME}/.config/msc/config.json\n")
-		fmt.Printf("    ${XDG_CONFIG_DIRS:-/etc/xdg}/msc/config.yaml\n")
-		fmt.Printf("    ${XDG_CONFIG_DIRS:-/etc/xdg}/msc/config.json\n")
-		fmt.Printf("    /etc/msc_config.yaml\n")
-		fmt.Printf("    /etc/msc_config.json\n")
+		fmt.Printf("    ${XDG_CONFIG_HOME}/msc/config.{yaml|yml|json}\n")
+		fmt.Printf("    ${HOME}/.msc_config.{yaml|yml|json}\n")
+		fmt.Printf("    ${HOME}/.config/msc/config.{yaml|yml|json}\n")
+		fmt.Printf("    ${XDG_CONFIG_DIRS:-/etc/xdg}/msc/config.{yaml|yml|json}\n")
+		fmt.Printf("    /etc/msc_config.{yaml|yml|json}\n")
 		fmt.Printf("version:\n")
 		fmt.Printf("  %s\n", GitTag)
 		os.Exit(0)
@@ -105,7 +110,7 @@ func main() {
 				globals.logger.Printf("parsing config-file (\"%s\") failed: %v", globals.configFilePath, err)
 			}
 
-			processNextToUnmountList()
+			processToUnmountList()
 
 			processToMountList()
 		case <-ticker.C:

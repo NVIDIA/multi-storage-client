@@ -4,6 +4,10 @@ import (
 	"fmt"
 )
 
+// `fetch` is run in a goroutine for an allocated cacheLineStruct that
+// is to be populated with a portion of the object's contents. Completion of
+// the fetch operation is indicated by signaling as done the sync.WaitGroup
+// in the cacheLineStruct itself.
 func (cacheLine *cacheLineStruct) fetch() {
 	var (
 		backend        *backendStruct
@@ -67,7 +71,7 @@ func (cacheLine *cacheLineStruct) fetch() {
 	cacheLine.Done()
 }
 
-// touch is called while globals.Lock() is held to update the placement of
+// `touch` is called while globals.Lock() is held to update the placement of
 // a cacheLineStruct on globals.{clean|dirty}CacheLineLRU if it is currently
 // on either.
 func (cacheLine *cacheLineStruct) touch() {

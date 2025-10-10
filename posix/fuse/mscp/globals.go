@@ -23,6 +23,7 @@ type backendConfigAzureStruct struct{} // not currently supported
 type backendConfigGCPStruct struct{}   // not currently supported
 type backendConfigOCIStruct struct{}   // not currently supported
 
+// `backendConfigS3Struct` describes a backend's S3-specific settings.
 type backendConfigS3Struct struct {
 	// From <config-file>
 	accessKeyID               string        // JSON/YAML "access_key_id"                required
@@ -40,6 +41,8 @@ type backendConfigS3Struct struct {
 	retryDelay []time.Duration //              Delay slice indexed by RetryDelay()'s attempt arg - 1
 }
 
+// `backendStruct` contains the generic backend's settings and runtime
+// particulars as well is references to backendType-specific details.
 type backendStruct struct {
 	// From <config-file>
 	dirName                     string      // JSON/YAML "dir_name"                       required
@@ -66,6 +69,7 @@ type backendStruct struct {
 	mounted     bool                    //     If false, backendStruct.dirName not in fuseRootDirInodeMAP
 }
 
+// `configStruct` describes the global configuration settings as well as the array of backendStruct's configured.
 type configStruct struct {
 	mscpVersion                 uint64                    // JSON/YAML "mscp_version"                    default:0
 	mountName                   string                    // JSON/YAML "mountname"                       default:"msc-posix"
@@ -111,6 +115,7 @@ const (
 	NewChildDirEntOffsetMask = uint64(1) << 63
 )
 
+// `fhStruct` contains the state of a file handle for an inode.
 type fhStruct struct {
 	nonce uint64
 	inode *inodeStruct
@@ -145,16 +150,18 @@ const (
 	CacheLineDirty
 )
 
+// `cacheLineStruct` contains both the stat and content of a cache line used to hold file inode content.
 type cacheLineStruct struct {
 	sync.WaitGroup               // Waiters should not block while holding globals.Lock
-	listElement    *list.Element // If state == CacheLineClean, link into globals.cleanCacheLineLRU; if state == DirtyLineClean, link into globals.dirtyCacheLineLRU; otherwise == nil
+	listElement    *list.Element // If state == CacheLineClean, link into globals.cleanCacheLineLRU; if state == CacheLineDirty, link into globals.dirtyCacheLineLRU; otherwise == nil
 	state          uint8         // One of CacheLine*; determines membership in one of globals.inboundCacheLineCount, globals.cleanCacheLineLRU, globals.outboundCacheLineCount, or globals.dirtyCacheLineLRU
 	inodeNumber    uint64        // Reference to an inodeStruct.inodeNumber
-	lineNumber     uint64        // Identifies file/object range covered by content as up to [lineNumber * globals.config.cacheLineSize:(lineNumber - 1) * global.config.cacheLineSize)
+	lineNumber     uint64        // Identifies file/object range covered by content as up to [lineNumber * globals.config.cacheLineSize:(lineNumber + 1) * global.config.cacheLineSize)
 	eTag           string        // If state == CacheLineClean, value of inodeStruct.eTag when when fetched from backend; Otherwise, == ""
-	content        []byte        // File/Object content for the range (up to) [lineNumber * globals.config.cacheLineSize:(lineNumber - 1) * global.config.cacheLineSize)
+	content        []byte        // File/Object content for the range (up to) [lineNumber * globals.config.cacheLineSize:(lineNumber + 1) * global.config.cacheLineSize)
 }
 
+// `inodeStruct` contains the state of an inode.
 type inodeStruct struct {
 	inodeNumber       uint64                      // Note that, other than the FUSERootDir, any reference to a backend object path migtht change this value
 	inodeType         uint32                      // One of FileObject, FUSERootDir, BackendRootDir, or PseudoDir
@@ -176,6 +183,7 @@ type inodeStruct struct {
 	cache             map[uint64]*cacheLineStruct // [inodeType == FileObject] Key == file offset / globals.config.cacheLineSize
 }
 
+// `globalsStruct` is the sync.Mutex protected global data structure under which all details about daemon state are tracked.
 type globalsStruct struct {
 	sync.Mutex                                       //
 	logger                 *log.Logger               //
@@ -201,6 +209,7 @@ type globalsStruct struct {
 
 var globals globalsStruct
 
+// `initGlobals` initializes the globalsStruct and locates the configuration file's path.
 func initGlobals() {
 	var (
 		homeEnv                         = os.Getenv("HOME")
@@ -239,6 +248,10 @@ func initGlobals() {
 				globals.configFilePath = xdgConfigHomeEnv + "/msc/config.yaml"
 				break
 			}
+			if checkForFile(xdgConfigHomeEnv + "/msc/config.yml") {
+				globals.configFilePath = xdgConfigHomeEnv + "/msc/config.yml"
+				break
+			}
 			if checkForFile(xdgConfigHomeEnv + "/msc/config.json") {
 				globals.configFilePath = xdgConfigHomeEnv + "/msc/config.json"
 				break
@@ -250,6 +263,10 @@ func initGlobals() {
 				globals.configFilePath = homeEnv + "/.msc_config.yaml"
 				break
 			}
+			if checkForFile(homeEnv + "/.msc_config.yml") {
+				globals.configFilePath = homeEnv + "/.msc_config.yml"
+				break
+			}
 			if checkForFile(homeEnv + "/.msc_config.json") {
 				globals.configFilePath = homeEnv + "/.msc_config.json"
 				break
@@ -257,6 +274,10 @@ func initGlobals() {
 
 			if checkForFile(homeEnv + "/.config/msc/config.yaml") {
 				globals.configFilePath = homeEnv + "/.config/msc/config.yaml"
+				break
+			}
+			if checkForFile(homeEnv + "/.config/msc/config.yml") {
+				globals.configFilePath = homeEnv + "/.config/msc/config.yml"
 				break
 			}
 			if checkForFile(homeEnv + "/.config/msc/config.json") {
@@ -270,6 +291,10 @@ func initGlobals() {
 				globals.configFilePath = "/etc/xdg/msc/config.yaml"
 				break
 			}
+			if checkForFile("/etc/xdg/msc/config.yml") {
+				globals.configFilePath = "/etc/xdg/msc/config.yml"
+				break
+			}
 			if checkForFile("/etc/xdg/msc/config.json") {
 				globals.configFilePath = "/etc/xdg/msc/config.json"
 				break
@@ -279,6 +304,11 @@ func initGlobals() {
 			for _, xdgConfigDir = range strings.Split(xdgConfigDirsEnv, ":") {
 				if checkForFile(xdgConfigDir + "/msc/config.yaml") {
 					globals.configFilePath = xdgConfigDir + "/msc/config.yaml"
+					xdgConfigDirContainedConfigFile = true
+					break
+				}
+				if checkForFile(xdgConfigDir + "/msc/config.yml") {
+					globals.configFilePath = xdgConfigDir + "/msc/config.yml"
 					xdgConfigDirContainedConfigFile = true
 					break
 				}
@@ -295,6 +325,10 @@ func initGlobals() {
 
 		if checkForFile("/etc/msc_config.yaml") {
 			globals.configFilePath = "/etc/msc_config.yaml"
+			break
+		}
+		if checkForFile("/etc/msc_config.yml") {
+			globals.configFilePath = "/etc/msc_config.yml"
 			break
 		}
 		if checkForFile("/etc/msc_config.json") {
@@ -314,14 +348,15 @@ func initGlobals() {
 	globals.errChan = make(chan error, 1)
 }
 
+// `checkForFile` indicates whether or not a file exists at filePath.
 func checkForFile(filePath string) (ok bool) {
 	fileInfo, err := os.Stat(filePath)
 	ok = (err == nil && !fileInfo.IsDir())
 	return
 }
 
-// fetchNonce is called while globals.Lock is held to grep the next
-// "number only used once" value. The presumption here is that a
+// `fetchNonce` is called while globals.Lock is held to grep the next
+// `number only used once` value. The presumption here is that a
 // simple incrementing uint64 would take many centuries to wrap
 // around to zero that returned values from this func will never
 // replicate earlier returned values.

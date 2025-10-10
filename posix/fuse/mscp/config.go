@@ -14,11 +14,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// `parseAny` provides a convenient test for the existence of a
+// key string in the map.
 func parseAny(m map[string]interface{}, key string) (ok bool) {
 	_, ok = m[key]
 	return
 }
 
+// `parseBool` fetches what is expected to be a bool value for the
+// specified key from the map. If the key is missing and a non-nil
+// dflt is provided, the func will return this dflt.
 func parseBool(m map[string]interface{}, key string, dflt interface{}) (b, ok bool) {
 	var (
 		v interface{}
@@ -40,14 +45,24 @@ func parseBool(m map[string]interface{}, key string, dflt interface{}) (b, ok bo
 	return
 }
 
+// `parseFloat64` fetches what is expected to be a float64 value for the
+// specified key from the map. If the key is missing and a non-nil
+// dflt is provided, the func will return this dflt.
 func parseFloat64(m map[string]interface{}, key string, dflt interface{}) (f float64, ok bool) {
 	var (
+		i int
 		v interface{}
 	)
 
 	v, ok = m[key]
 	if ok {
 		f, ok = v.(float64)
+		if !ok {
+			i, ok = v.(int)
+			if ok {
+				f = float64(i)
+			}
+		}
 		return
 	}
 
@@ -61,6 +76,10 @@ func parseFloat64(m map[string]interface{}, key string, dflt interface{}) (f flo
 	return
 }
 
+// `parseMilliseconds` fetches what is expected to be a uint64 value for the
+// specified key from the map converting it to a time.Duration assuming the
+// uint64 specifies a number of milliseconds. If the key is missing and a
+// non-nil dflt is provided, the func will return this dflt.
 func parseMilliseconds(m map[string]interface{}, key string, dflt interface{}) (d time.Duration, ok bool) {
 	var (
 		dDflt   time.Duration
@@ -86,6 +105,10 @@ func parseMilliseconds(m map[string]interface{}, key string, dflt interface{}) (
 	return
 }
 
+// `parseSeconds` fetches what is expected to be a uint64 value for the
+// specified key from the map converting it to a time.Duration assuming the
+// uint64 specifies a number of seconds. If the key is missing and a
+// non-nil dflt is provided, the func will return this dflt.
 func parseSeconds(m map[string]interface{}, key string, dflt interface{}) (d time.Duration, ok bool) {
 	var (
 		dDflt   time.Duration
@@ -111,6 +134,11 @@ func parseSeconds(m map[string]interface{}, key string, dflt interface{}) (d tim
 	return
 }
 
+// `parseString` fetches what is expected to be a string value for the
+// specified key from the map. If the key is missing and a non-nil
+// dflt is provided, the dflt value will be used. In either case of
+// a value to be returned, it will be expanded with environment variable
+// substitutions, if any, before being returned.
 func parseString(m map[string]interface{}, key string, dflt interface{}) (s string, ok bool) {
 	var (
 		v interface{}
@@ -138,6 +166,9 @@ func parseString(m map[string]interface{}, key string, dflt interface{}) (s stri
 	return
 }
 
+// `parseUint64` fetches what is expected to be a uint64 value for the
+// specified key from the map. If the key is missing and a non-nil
+// dflt is provided, the func will return this dflt.
 func parseUint64(m map[string]interface{}, key string, dflt interface{}) (u uint64, ok bool) {
 	var (
 		f float64
@@ -176,6 +207,11 @@ func parseUint64(m map[string]interface{}, key string, dflt interface{}) (u uint
 	return
 }
 
+// `checkConfigFile` parses globals.configFilePath in either JSON or YAML
+// format following either the MSC Python-compatible or MSC POSIX-specific
+// specification. Upon success, it will also populate both the
+// globals.backendsToUnmount and globals.backendsToMount lists in the
+// case where an existing configuration is being updated.
 func checkConfigFile() (err error) {
 	var (
 		backendAsInterface                                interface{}
@@ -251,7 +287,7 @@ func checkConfigFile() (err error) {
 			err = fmt.Errorf("unable to parse config-file \"%s\" as JSON (err: %v)", globals.configFilePath, err)
 			return
 		}
-	case ".yaml":
+	case ".yaml", ".yml":
 		err = yaml.Unmarshal(configFileContent, &configFileMap)
 		if err != nil {
 			err = fmt.Errorf("unable to parse config-file \"%s\" as YAML (err: %v)", globals.configFilePath, err)

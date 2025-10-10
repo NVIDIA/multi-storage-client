@@ -20,9 +20,9 @@ that will search an ordered sequence of configuration file as described
 [here](https://nvidia.github.io/multi-storage-client/user_guide/quickstart.html#file-based).
 Alternatively, the POSIX Multi-Storage Client may be invoked with a single
 argument that explicitly specifies the path to the configuration file to
-be used. In either case, the configuration file may be in `.yaml` or `.json`
-format. The complete reference documentation for the configuration file's
-contents is described
+be used. In either case, the configuration file may be in `YAML` or `JSON`
+format (as indicated by the file's extension (i.e. `.yaml`, `.yml`, or `.json`).
+The complete reference documentation for the configuration file's contents is described
 [here](https://nvidia.github.io/multi-storage-client/references/configuration.html).
 
 As may be desireable, such configuration files may prefer to reference

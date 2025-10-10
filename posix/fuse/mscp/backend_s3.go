@@ -18,11 +18,15 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
+// `s3ContextStruct` holds the S3-specific backend details.
 type s3ContextStruct struct {
 	backend  *backendStruct
 	s3Client *s3.Client
 }
 
+// `setupS3Context` establishes the S3 client context. Once set up, each
+// method defined in the `backendConfigIf` interafce may be invoked.
+// Note that there is no `destroyContext` counterpart.
 func (backend *backendStruct) setupS3Context() (err error) {
 	var (
 		backendS3     = backend.backendTypeSpecifics.(*backendConfigS3Struct)
@@ -100,6 +104,9 @@ func (backend *backendStruct) setupS3Context() (err error) {
 	return
 }
 
+// `IsErrorRetryable` is an aws.Retryer callback that returns whether or not a
+// request that fails should be retried. See
+// https://pkg.go.dev/github.com/aws/aws-sdk-go-v2/aws/retry#AdaptiveMode.IsErrorRetryable.
 func (backend *backendStruct) IsErrorRetryable(err error) bool {
 	var (
 		httpErr           *awshttp.ResponseError
@@ -128,10 +135,16 @@ func (backend *backendStruct) IsErrorRetryable(err error) bool {
 	}
 }
 
+// `MaxAttempts` is an aws.Retryer callback that returns the maximum number of attempts
+// (including the initial attempt) to be made for a retryable request.
+// See https://pkg.go.dev/github.com/aws/aws-sdk-go-v2/aws/retry#Standard.MaxAttempts.
 func (backend *backendStruct) MaxAttempts() int {
 	return len(backend.backendTypeSpecifics.(*backendConfigS3Struct).retryDelay) + 1
 }
 
+// `RetryDelay` is an aws.Retryer callback that returns the delay before a previously
+// failed request should be retried.
+// See https://pkg.go.dev/github.com/aws/aws-sdk-go-v2/aws/retry#Standard.RetryDelay.
 func (backend *backendStruct) RetryDelay(attempt int, _ error) (time.Duration, error) {
 	if (attempt < 1) || (attempt > len(backend.backendTypeSpecifics.(*backendConfigS3Struct).retryDelay)) {
 		return time.Duration(0), fmt.Errorf("unexpected attempt: %v (should have been in [1:%v])", attempt, len(backend.backendTypeSpecifics.(*backendConfigS3Struct).retryDelay))
@@ -140,24 +153,37 @@ func (backend *backendStruct) RetryDelay(attempt int, _ error) (time.Duration, e
 	return backend.backendTypeSpecifics.(*backendConfigS3Struct).retryDelay[attempt-1], nil
 }
 
+// `GetRetryToken` is an aws.Retryer callback that returns a func used to additionally
+// apply a retry `cost` for performing a retry of a previously failed request.
+// See https://pkg.go.dev/github.com/aws/aws-sdk-go-v2/aws/retry#Standard.GetRetryToken.
 func (backend *backendStruct) GetRetryToken(ctx context.Context, opErr error) (releaseToken func(error) error, err error) {
 	return func(error) error {
 		return nil
 	}, nil
 }
 
+// `GetInitialToken` is an aws.Retryer callback that returns a func used to additionally
+// apply an initial `cost` for performing a retry of a previously failed request.
+// See https://pkg.go.dev/github.com/aws/aws-sdk-go-v2/aws/retry#Standard.GetRetryToken.
+// Note that this callback has been deprecated but is provided here to satisfy the
+// requirements of a custom aws.Retryer interface.
 func (backend *backendStruct) GetInitialToken() (releaseToken func(error) error) {
 	return func(error) error {
 		return nil
 	}
 }
 
+// `GetAttemptToken` is an aws.Retryer callback that returns a func used to additionally
+// apply a `cost` for performing a retry of a previously failed request.
+// See https://pkg.go.dev/github.com/aws/aws-sdk-go-v2/aws/retry#AdaptiveMode.GetAttemptToken.
 func (backend *backendStruct) GetAttemptToken(context.Context) (func(error) error, error) {
 	return func(error) error {
 		return nil
 	}, nil
 }
 
+// `deleteFile` is called to remove a "file" at the specified path.
+// If a `subdirectory` or nothing is found at that path, an error will be returned.
 func (s3Context *s3ContextStruct) deleteFile(deleteFileInput *deleteFileInputStruct) (deleteFileOutput *deleteFileOutputStruct, err error) {
 	var (
 		backend             = s3Context.backend
@@ -220,6 +246,10 @@ func (s3Context *s3ContextStruct) deleteFile(deleteFileInput *deleteFileInputStr
 	return
 }
 
+// `listDirectory` is called to fetch a `page` of the `directory` at the specified path.
+// An empty continuationToken or empty list of directory elements (`subdirectories` and `files`)
+// indicates the `directory` has been completely enumerated. An error is returned if either the
+// specified path is not a `directory` or non-existent.
 func (s3Context *s3ContextStruct) listDirectory(listDirectoryInput *listDirectoryInputStruct) (listDirectoryOutput *listDirectoryOutputStruct, err error) {
 	var (
 		backend               = s3Context.backend
@@ -301,6 +331,8 @@ func (s3Context *s3ContextStruct) listDirectory(listDirectoryInput *listDirector
 	return
 }
 
+// `readFile` is called to read a range of a `file` at the specified path.
+// An error is returned if either the specified path is not a `file` or non-existent.
 func (s3Context *s3ContextStruct) readFile(readFileInput *readFileInputStruct) (readFileOutput *readFileOutputStruct, err error) {
 	var (
 		backend            = s3Context.backend
@@ -382,6 +414,8 @@ func (s3Context *s3ContextStruct) readFile(readFileInput *readFileInputStruct) (
 	return
 }
 
+// `statDirectory` is called to verify that the specified path refers to a `directory`.
+// An error is returned if either the specified path is not a `directory` or non-existent.
 func (s3Context *s3ContextStruct) statDirectory(statDirectoryInput *statDirectoryInputStruct) (statDirectoryOutput *statDirectoryOutputStruct, err error) {
 	var (
 		backend               = s3Context.backend
@@ -432,6 +466,8 @@ func (s3Context *s3ContextStruct) statDirectory(statDirectoryInput *statDirector
 	return
 }
 
+// `statFile` is called to fetch the `file` metadata at the specified path.
+// An error is returned if either the specified path is not a `file` or non-existent.
 func (s3Context *s3ContextStruct) statFile(statFileInput *statFileInputStruct) (statFileOutput *statFileOutputStruct, err error) {
 	var (
 		backend            = s3Context.backend

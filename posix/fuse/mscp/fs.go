@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+// `initFS` initializes the root of the FUSE file system.
 func initFS() {
 	var (
 		timeNow time.Time
@@ -59,6 +60,7 @@ func initFS() {
 	globals.Unlock()
 }
 
+// `drainFS` awaits all backend/asynchronous traffic to complete before
 func drainFS() {
 	var (
 		dirName string
@@ -74,11 +76,14 @@ func drainFS() {
 		globals.backendsToUnmount[dirName] = backend
 	}
 
-	processNextToUnmountListAlreadyLocked()
+	processToUnmountListAlreadyLocked()
 
 	globals.Unlock()
 }
 
+// `processToMountList` creates a backend subdirectory of the FUSE
+// file system's root directory that maps to each backend on the
+// globals.backendsToMount list.
 func processToMountList() {
 	var (
 		backend *backendStruct
@@ -142,13 +147,18 @@ func processToMountList() {
 	globals.Unlock()
 }
 
-func processNextToUnmountList() {
+// `processToUnmountList` is called to remove each backend subdirectory of the FUSE
+// file system's root directory found on the globals.backendsToUnmount list.
+func processToUnmountList() {
 	globals.Lock()
-	processNextToUnmountListAlreadyLocked()
+	processToUnmountListAlreadyLocked()
 	globals.Unlock()
 }
 
-func processNextToUnmountListAlreadyLocked() {
+// `processToUnmountListAlreadyLocked` is called while globals.Lock() is held to
+// remove each backend subdirectory of the FUSE file system's root directory found
+// on the globals.backendsToUnmount list.
+func processToUnmountListAlreadyLocked() {
 	var (
 		backend *backendStruct
 		dirName string
@@ -173,6 +183,8 @@ func processNextToUnmountListAlreadyLocked() {
 	}
 }
 
+// `inodeMapEmpty` is called to remove all inodes for a particular
+// backend from globals.inodeMap and globals.inodeLRU (if present).
 func (backend *backendStruct) inodeMapEmpty() {
 	var (
 		inode *inodeStruct
@@ -189,7 +201,7 @@ func (backend *backendStruct) inodeMapEmpty() {
 	clear(backend.inodeMap)
 }
 
-// createPseudoDirInode is called while globals.Lock() is held to create a new PsuedoDir inodeStruct.
+// `createPseudoDirInode` is called while globals.Lock() is held to create a new PsuedoDir inodeStruct.
 func (parentInode *inodeStruct) createPseudoDirInode(isVirt bool, basename string) (pseudoDirInode *inodeStruct) {
 	var (
 		ok      bool
@@ -244,7 +256,7 @@ func (parentInode *inodeStruct) createPseudoDirInode(isVirt bool, basename strin
 	return
 }
 
-// createFileObjectInode is called while globals.Lock() is held to create a new FileObject inodeStruct.
+// `createFileObjectInode` is called while globals.Lock() is held to create a new FileObject inodeStruct.
 func (parentInode *inodeStruct) createFileObjectInode(isVirt bool, basename string, size uint64, eTag string, mTime time.Time) (fileObjectInode *inodeStruct) {
 	var (
 		ok      bool
@@ -296,6 +308,9 @@ func (parentInode *inodeStruct) createFileObjectInode(isVirt bool, basename stri
 	return
 }
 
+// `isEvictable` reports whether or not an inode is evictable.
+// This information is used to either populate the inode
+// on globals.inodeLRU or not.
 func (inode *inodeStruct) isEvictable() (evictable bool) {
 	switch inode.inodeType {
 	case FileObject:
@@ -314,6 +329,9 @@ func (inode *inodeStruct) isEvictable() (evictable bool) {
 	return
 }
 
+// `touch` is called to conditionially update an inode's mTime and/or
+// lTime and, if the inode is on globals.inodeLRU, move it to the
+// `MRU` end.
 func (inode *inodeStruct) touch(mTimeAsInterface, lTimeAsInterface interface{}) {
 	var (
 		ok bool
@@ -345,6 +363,9 @@ func (inode *inodeStruct) touch(mTimeAsInterface, lTimeAsInterface interface{}) 
 	}
 }
 
+// `inodeEvictor` is a goroutine that periodically monitors the globals.inodeLRU
+// and will evict those inodes that are evictable, in "LRU" sequence, that have
+// exceeded their retention time (i.e. globals.config.evictableInodeTTL).
 func inodeEvictor() {
 	var (
 		listElement *list.Element
@@ -402,7 +423,7 @@ func inodeEvictor() {
 	}
 }
 
-// findChildInode is called while globals.Lock() is held to locate the child's inodeStruct.
+// `findChildInode` is called while globals.Lock() is held to locate the child's inodeStruct.
 func (parentInode *inodeStruct) findChildInode(basename string) (childInode *inodeStruct, ok bool) {
 	var (
 		childInodeNumber   uint64
@@ -576,6 +597,7 @@ func (parentInode *inodeStruct) findChildInode(basename string) (childInode *ino
 	return
 }
 
+// `findChildDirInode` is called to locate, or create if missing, a child directory inodeStruct.
 func (parentInode *inodeStruct) findChildDirInode(basename string) (childDirInode *inodeStruct) {
 	var (
 		dirPath string
@@ -636,6 +658,7 @@ func (parentInode *inodeStruct) findChildDirInode(basename string) (childDirInod
 	return
 }
 
+// `findChildFileInode` is called to locate, or create if missing, a child file inodeStruct.
 func (parentInode *inodeStruct) findChildFileInode(basename, eTag string, mTime time.Time, size uint64) (childFileInode *inodeStruct) {
 	var (
 		filePath string
