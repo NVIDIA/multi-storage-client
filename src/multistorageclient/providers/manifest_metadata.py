@@ -15,17 +15,17 @@
 
 from __future__ import annotations  # Enables forward references in type hints
 
-import io
 import json
 import logging
 import os
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from ..types import MetadataProvider, ObjectMetadata, StorageProvider
 from ..utils import create_attribute_filter_evaluator, glob, matches_attribute_filter_expression
+from .manifest_formats import ManifestFormat, get_format_handler
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,6 @@ DEFAULT_MANIFEST_BASE_DIR = ".msc_manifests"
 MANIFEST_INDEX_FILENAME = "msc_manifest_index.json"
 MANIFEST_PARTS_CHILD_DIR = "parts"
 MANIFEST_PART_PREFIX = "msc_manifest_part"
-MANIFEST_PART_SUFFIX = ".jsonl"  # Suffix for the manifest part files
 SEQUENCE_PADDING = 6  # Define padding for the sequence number (e.g., 6 for "000001")
 
 
@@ -77,38 +76,27 @@ class Manifest:
     version: str
     #: References to manifest parts.
     parts: list[ManifestPartReference]
+    #: Format of manifest parts (jsonl or parquet).
+    format: str = "jsonl"
 
     @staticmethod
     def from_dict(data: dict) -> "Manifest":
         """
         Creates a Manifest instance from a dictionary (parsed from JSON).
         """
-        # Perform any necessary validation here
         try:
             version = data["version"]
             parts = [ManifestPartReference.from_dict(part) for part in data["parts"]]
+            format = data.get("format", "jsonl")
         except KeyError as e:
             raise ValueError("Invalid manifest data: Missing required field") from e
 
-        return Manifest(version=version, parts=parts)
+        return Manifest(version=version, parts=parts, format=format)
 
     def to_json(self) -> str:
-        # Convert dataclass to dict and parts to JSON-compatible format
         data = asdict(self)
         data["parts"] = [part.to_dict() for part in self.parts]
         return json.dumps(data)
-
-
-def _metadata_to_manifest_dict(metadata: ObjectMetadata) -> dict:
-    """
-    Convert an ObjectMetadata instance to a dictionary suitable with manifest format,
-    replacing 'content_length' with 'size_bytes' and removing 'content_length'.
-    """
-    metadata_dict = metadata.to_dict()
-    # Pop out content_length, store it in size_bytes
-    size_bytes = metadata_dict.pop("content_length", None)
-    metadata_dict["size_bytes"] = size_bytes
-    return metadata_dict
 
 
 class ManifestMetadataProvider(MetadataProvider):
@@ -118,14 +106,22 @@ class ManifestMetadataProvider(MetadataProvider):
     _pending_removes: set[str]
     _manifest_path: str
     _writable: bool
+    _format: Union[ManifestFormat, str]
 
-    def __init__(self, storage_provider: StorageProvider, manifest_path: str, writable: bool = False) -> None:
+    def __init__(
+        self,
+        storage_provider: StorageProvider,
+        manifest_path: str,
+        writable: bool = False,
+        manifest_format: Union[ManifestFormat, str] = ManifestFormat.JSONL,
+    ) -> None:
         """
         Creates a :py:class:`ManifestMetadataProvider`.
 
         :param storage_provider: Storage provider.
         :param manifest_path: Main manifest file path.
         :param writable: If true, allows modifications and new manifests to be written.
+        :param manifest_format: Format for manifest parts. Defaults to ManifestFormat.JSONL.
         """
         self._storage_provider = storage_provider
         self._files = {}
@@ -133,6 +129,9 @@ class ManifestMetadataProvider(MetadataProvider):
         self._pending_removes = set()
         self._manifest_path = manifest_path
         self._writable = writable
+        self._format = (
+            manifest_format if isinstance(manifest_format, ManifestFormat) else ManifestFormat(manifest_format)
+        )
 
         self._load_manifest(storage_provider, self._manifest_path)
 
@@ -195,6 +194,7 @@ class ManifestMetadataProvider(MetadataProvider):
                     storage_provider=storage_provider,
                     manifest_base=manifest_base,
                     manifest_part_reference=manifest_part_reference,
+                    manifest_format=manifest.format,
                 )
 
                 for object_metadatum in object_metadata:
@@ -203,7 +203,11 @@ class ManifestMetadataProvider(MetadataProvider):
             raise NotImplementedError(f"Manifest file type {file_type} is not supported.")
 
     def _load_manifest_part_file(
-        self, storage_provider: StorageProvider, manifest_base: str, manifest_part_reference: ManifestPartReference
+        self,
+        storage_provider: StorageProvider,
+        manifest_base: str,
+        manifest_part_reference: ManifestPartReference,
+        manifest_format: Union[ManifestFormat, str] = ManifestFormat.JSONL,
     ) -> list[ObjectMetadata]:
         """
         Loads a manifest part.
@@ -211,30 +215,32 @@ class ManifestMetadataProvider(MetadataProvider):
         :param storage_provider: Storage provider.
         :param manifest_base: Manifest file base path. Prepend to manifest part reference paths.
         :param manifest_part_reference: Manifest part reference.
+        :param manifest_format: Format of the manifest part (jsonl or parquet).
         """
-        object_metadata = []
-
         if not os.path.isabs(manifest_part_reference.path):
             remote_path = os.path.join(manifest_base, manifest_part_reference.path)
         else:
             remote_path = manifest_part_reference.path
         manifest_part_file_content = storage_provider.get_object(remote_path)
 
-        # The manifest part is a JSON lines file. Each line is a JSON-serialized ObjectMetadata.
-        for line in io.TextIOWrapper(io.BytesIO(manifest_part_file_content), encoding="utf-8"):
-            object_metadatum_dict = json.loads(line)
-            object_metadatum_dict["content_length"] = object_metadatum_dict.pop("size_bytes")
-            object_metadatum = ObjectMetadata.from_dict(object_metadatum_dict)
-            object_metadata.append(object_metadatum)
+        _, ext = os.path.splitext(remote_path)
+        detected_format = ext[1:] if ext else manifest_format
 
-        return object_metadata
+        format_handler = get_format_handler(detected_format)
+        return format_handler.read_part(manifest_part_file_content)
 
-    def _write_manifest_files(self, storage_provider: StorageProvider, object_metadata: list[ObjectMetadata]) -> None:
+    def _write_manifest_files(
+        self,
+        storage_provider: StorageProvider,
+        object_metadata: list[ObjectMetadata],
+        manifest_format: Union[ManifestFormat, str] = ManifestFormat.JSONL,
+    ) -> None:
         """
         Writes the main manifest and its part files.
 
         :param storage_provider: The storage provider to use for writing.
         :param object_metadata: objects to include in manifest.
+        :param manifest_format: Format for manifest parts. Defaults to ManifestFormat.JSONL.
         """
         if not object_metadata:
             return
@@ -255,24 +261,25 @@ class ManifestMetadataProvider(MetadataProvider):
         current_time = datetime.now(timezone.utc)
         current_time_str = current_time.isoformat(timespec="seconds")
         manifest_folderpath = os.path.join(manifest_base_path, DEFAULT_MANIFEST_BASE_DIR, current_time_str)
-        # We currently write only one part by default
+
+        format_handler = get_format_handler(manifest_format)
+        suffix = format_handler.get_file_suffix()
+
+        # We currently write only one part by default.
         part_sequence_number = 1
         manifest_part_file_path = os.path.join(
             MANIFEST_PARTS_CHILD_DIR,
-            f"{MANIFEST_PART_PREFIX}{part_sequence_number:0{SEQUENCE_PADDING}}{MANIFEST_PART_SUFFIX}",
+            f"{MANIFEST_PART_PREFIX}{part_sequence_number:0{SEQUENCE_PADDING}}{suffix}",
         )
 
-        manifest = Manifest(version="1", parts=[ManifestPartReference(path=manifest_part_file_path)])
-
-        # Write single manifest part with metadata as JSON lines (each object on a new line)
-        manifest_part_content = "\n".join(
-            [json.dumps(_metadata_to_manifest_dict(metadata)) for metadata in object_metadata]
-        )
-        storage_provider.put_object(
-            os.path.join(manifest_folderpath, manifest_part_file_path), manifest_part_content.encode("utf-8")
+        format_value = manifest_format.value if isinstance(manifest_format, ManifestFormat) else manifest_format
+        manifest = Manifest(
+            version="1", parts=[ManifestPartReference(path=manifest_part_file_path)], format=format_value
         )
 
-        # Write the main manifest file
+        manifest_part_content = format_handler.write_part(object_metadata)
+        storage_provider.put_object(os.path.join(manifest_folderpath, manifest_part_file_path), manifest_part_content)
+
         manifest_file_path = os.path.join(manifest_folderpath, MANIFEST_INDEX_FILENAME)
         manifest_content = manifest.to_json()
         storage_provider.put_object(manifest_file_path, manifest_content.encode("utf-8"))
@@ -418,4 +425,4 @@ class ManifestMetadataProvider(MetadataProvider):
             )
             for file_path, metadata in self._files.items()
         ]
-        self._write_manifest_files(self._storage_provider, object_metadata)
+        self._write_manifest_files(self._storage_provider, object_metadata, manifest_format=self._format)

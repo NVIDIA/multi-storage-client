@@ -76,6 +76,9 @@ huggingface = [
     "huggingface_hub>=0.34.4,<1",
     "hf_transfer>=0.1.9"
 ]
+parquet = [
+    "pyarrow>=21.0"
+]
 
 # Higher-level libraries.
 fsspec = [

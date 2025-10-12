@@ -21,6 +21,7 @@ from multistorageclient.types import ObjectMetadata
 from multistorageclient.utils import calculate_worker_processes_and_threads
 
 from .. import StorageClient
+from ..providers.manifest_formats import ManifestFormat
 from ..providers.manifest_metadata import DEFAULT_MANIFEST_BASE_DIR, ManifestMetadataProvider
 
 
@@ -44,6 +45,7 @@ class ManifestMetadataGenerator:
         data_storage_client: StorageClient,
         manifest_storage_client: StorageClient,
         partition_keys: Optional[list[str]] = None,
+        manifest_format: ManifestFormat = ManifestFormat.JSONL,
     ) -> None:
         """
         Generates a file metadata manifest.
@@ -57,23 +59,20 @@ class ManifestMetadataGenerator:
            .msc_manifests/
            ├── msc_manifest_index.json
            └── parts/
-               ├── msc_manifest_part000001.jsonl
+               ├── msc_manifest_part000001.jsonl (or .parquet)
                ├── ...
-               └── msc_manifest_part999999.jsonl
+               └── msc_manifest_part999999.jsonl (or .parquet)
 
         :param data_storage_client: Storage client for reading data objects.
         :param manifest_storage_client: Storage client for writing manifest objects.
         :param partition_keys: Optional list of keys to partition the listing operation. If provided, objects will be listed concurrently using these keys as boundaries.
+        :param manifest_format: Format for manifest parts. Defaults to ManifestFormat.JSONL.
         """
-        # Get respective StorageProviders. A StorageClient will always have a StorageProvider
-        # TODO: Cleanup by exposing APIs from the client
         data_storage_provider = data_storage_client._storage_provider
         manifest_storage_provider = manifest_storage_client._storage_provider
 
-        # Create a ManifestMetadataProvider for writing manifest, configure manifest storage provider
-        # TODO(NGCDP-3018): Opportunity to split up the responsibilities of MetadataProvider
         manifest_metadata_provider = ManifestMetadataProvider(
-            storage_provider=manifest_storage_provider, manifest_path="", writable=True
+            storage_provider=manifest_storage_provider, manifest_path="", writable=True, manifest_format=manifest_format
         )
 
         if partition_keys is not None:

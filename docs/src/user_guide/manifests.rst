@@ -10,18 +10,23 @@ A common approach is to prepare a manifest that includes metadata (e.g. object/f
 Manifest Format
 ***************
 
-The MSC supports a **manifest index** (JSON) that references one or more **parts manifests** (JSONL). The main manifest or manifest index:
+The MSC supports a **manifest index** (JSON) that references one or more **parts manifests**. The main manifest or manifest index:
 
 * Declares a version.
 * Lists each part manifest, including its path.
+* Specifies the format of the manifest parts (JSONL or Parquet).
 
-The parts manifests are stored in JSON Lines (``.jsonl``) format, where each line is a separate object’s metadata. JSONL is more scalable than a single JSON array for large manifests because each line can be processed incrementally, avoiding excessive memory usage.
+The parts manifests can be stored in either:
+
+* **JSON Lines (JSONL)** format (``.jsonl``): Each line is a separate object's metadata. JSONL is more scalable than a single JSON array for large manifests because each line can be processed incrementally, avoiding excessive memory usage.
+* **Parquet** format (``.parquet``): A columnar storage format that provides efficient compression and faster read performance for large datasets. Requires the ``pyarrow`` package.
 
 .. code-block:: json
    :caption: Example Main Manifest (JSON)
 
    {
      "version": "1.0",
+     "format": "jsonl",
      "parts": [
        {
          "path": "parts/msc_manifest_part000001.jsonl"
@@ -83,23 +88,38 @@ Using the :py:class:`multistorageclient.generators.ManifestMetadataGenerator` is
 
    from multistorageclient import StorageClient
    from multistorageclient.generators import ManifestMetadataGenerator
+   from multistorageclient.providers.manifest_formats import ManifestFormat
 
    # Suppose we have two clients:
    # data_storage_client: Reads the data files we want to include in the manifest.
    # manifest_storage_client: Writes the manifest to the desired path (bucket/folder).
 
-   # This code enumerates all objects from data_storage_client, then writes out
-   # a main manifest + parts manifest(s) using manifest_storage_client.
-
+   # Generate a JSONL manifest (default)
    ManifestMetadataGenerator.generate_and_write_manifest(
-   data_storage_client=data_storage_client,
+       data_storage_client=data_storage_client,
        manifest_storage_client=manifest_storage_client
    )
+
+   # Generate a Parquet manifest (requires pyarrow)
+   ManifestMetadataGenerator.generate_and_write_manifest(
+       data_storage_client=data_storage_client,
+       manifest_storage_client=manifest_storage_client,
+       manifest_format=ManifestFormat.PARQUET
+   )
+
+
+To use Parquet format, install the ``pyarrow`` package:
+
+.. code-block:: bash
+
+   pip install multi-storage-client[parquet]
 
 Referencing Manifests in Configuration
 --------------------------------------
 
-When you set a profile’s ``metadata_provider`` to ``type: manifest``, you must also provide the ``manifest_path`` option, which refers to manifest path relative to the storage profile's ``base_path``. For example:
+When you set a profile's ``metadata_provider`` to ``type: manifest``, you must also provide the ``manifest_path`` option, which refers to manifest path relative to the storage profile's ``base_path``.
+
+You can also specify the ``format`` option to control the format used when writing new manifests (defaults to ``jsonl``):
 
 .. code-block:: yaml
    :linenos:
@@ -114,6 +134,7 @@ When you set a profile’s ``metadata_provider`` to ``type: manifest``, you must
          type: manifest
          options:
            manifest_path: .msc_manifests
+           format: parquet  # Optional: jsonl (default) or parquet
 
 You can also store manifests in a **different** profile than your data. In that case, the ``metadata_provider`` will refer to storage profile using the ``storage_provider_profile`` option. Here's an example:
 
