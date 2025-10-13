@@ -3,7 +3,13 @@ all: fmt build lint
 GIT_TAG := $(shell git describe --tags --always --dirty)
 LDFLAGS := -ldflags="-X 'main.GitTag=$(GIT_TAG)'"
 
-.PHONY: all artifacts build clean fmt lint lint-update publish replace
+.PHONY: all artifacts build clean fmt lint lint-update publish replace install uninstall
+
+# Installation directories (can be overridden)
+PREFIX ?= /usr/local
+BINDIR ?= $(PREFIX)/bin
+SBINDIR ?= /usr/sbin
+LOGDIR ?= /var/log/msc
 
 artifacts:
 	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o msc-posix-linux-amd64 .
@@ -33,3 +39,41 @@ publish:
 	 docker cp mscp_built:/msc-posix-linux-amd64 ./msc-posix-linux-amd64 && \
 	 docker cp mscp_built:/msc-posix-linux-arm64 ./msc-posix-linux-arm64 && \
 	 docker rm mscp_built
+
+install: build
+	@echo "Installing MSC to $(PREFIX)"
+	@if [ "$$(id -u)" -ne 0 ]; then \
+		echo "ERROR: Installation requires root privileges. Use: sudo make install"; \
+		exit 1; \
+	fi
+	install -d $(BINDIR)
+	install -d $(SBINDIR)
+	install -d $(LOGDIR)
+	install -m 755 mscp $(BINDIR)/mscp
+	install -m 755 mount.msc $(SBINDIR)/mount.msc
+	@echo ""
+	@echo "Installation complete!"
+	@echo "  Binary:      $(BINDIR)/mscp"
+	@echo "  Mount:       $(SBINDIR)/mount.msc"
+	@echo "  Log dir:     $(LOGDIR)"
+	@echo ""
+	@echo "Usage:"
+	@echo "  mount -t msc <config_file> <mountpoint>"
+	@echo "  umount <mountpoint>"
+	@echo ""
+	@echo "For automatic mounting at boot, add to /etc/fstab:"
+	@echo "  /path/to/config.yaml  /mnt/point  msc  defaults,_netdev  0  0"
+	@echo ""
+	@echo "See MOUNT_HELPERS.md for documentation"
+
+uninstall:
+	@echo "Uninstalling MSC from $(PREFIX)"
+	@if [ "$$(id -u)" -ne 0 ]; then \
+		echo "ERROR: Uninstallation requires root privileges. Use: sudo make uninstall"; \
+		exit 1; \
+	fi
+	rm -f $(BINDIR)/mscp
+	rm -f $(SBINDIR)/mount.msc
+	@echo "MSC uninstalled. Log directory $(LOGDIR) was preserved."
+	@echo "To remove logs: sudo rm -rf $(LOGDIR)"
+

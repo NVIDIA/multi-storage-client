@@ -44,4 +44,4 @@ services:
     environment:
       - AIS_ENDPOINT=http://ais:8080
       - MSC_CONFIG=./mscp_config_dev.yaml
-    command: [ "sleep", "infinity" ]
+    command: ["/usr/bin/tini", "--", "sleep", "infinity"]

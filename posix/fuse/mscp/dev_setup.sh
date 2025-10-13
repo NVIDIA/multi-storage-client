@@ -2,7 +2,10 @@
 #!/bin/bash
 
 function usage() {
-    echo "Usage: $0 {ais|minio} # \$1 indicates where source-of-truth objects reside"
+    echo "Usage: $0 {ais|aisMinio|minio}"
+    echo "  ais       - AIStore only (objects stored in AIStore local bucket)"
+    echo "  aisMinio  - AIStore caching MinIO (AIStore as cache front end for MinIO)"
+    echo "  minio     - MinIO only (direct MinIO access, no AIStore)"
     exit 1
 }
 
@@ -35,7 +38,7 @@ case "$1" in
         find . -type f | sed 's/^..//' | xargs -I {} ais put {} ais://dev/{}
         ais ls ais://dev
         ;;
-    minio)
+    aisMinio)
         waitForMinio
         s3cmd mb s3://dev
         find . -type f | sed 's/^..//' | xargs -I {} s3cmd put {} s3://dev/{}
@@ -44,6 +47,12 @@ case "$1" in
         ais create s3://dev --skip-lookup
         ais bucket props set s3://dev features S3-Use-Path-Style
         ais ls s3://dev --all
+        ;;
+    minio)
+        waitForMinio
+        s3cmd mb s3://dev
+        find . -type f | sed 's/^..//' | xargs -I {} s3cmd put {} s3://dev/{}
+        s3cmd ls -r s3://dev
         ;;
     *)
         usage

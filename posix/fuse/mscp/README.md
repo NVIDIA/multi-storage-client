@@ -36,26 +36,32 @@ configuration language is also available. This configuration mode is selected
 by supplying a top-level key `mscp_version` with a supported version number
 (see below).
 
+**Environment Variable Integration:** When using the mount helper (`mount -t msc <config> <mountpoint>`),
+the `MSC_MOUNTPOINT` environment variable is automatically set and takes precedence over the
+`mountpoint` setting in the configuration file. This allows the same configuration file to be
+mounted at different locations. The `MSC_CONFIG` environment variable is similarly set with the
+path to the configuration file being used.
+
 The MSCP-specific global (i.e. "top-level") settings are described in the following table:
 
-| Setting                         | Units                | Default             | Description                                                                                                                                                                                                         |
-| :------------------------------ | :------------------- | ------------------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| mscp_version                    | decimal              |                   0 | If == 0, the configuration is assumed to follow the [Multi-Storage Client specification](https://nvidia.github.io/multi-storage-client/references/configuration.html); otherwise, must == 1 & the following applies |
-| mountname                       | string               |         "msc-posix" | Filesystem `name` as it would appear in e.g. `df`                                                                                                                                                                   |
-| mountpoint                      | string               |              "/mnt" | Filesystem `path` were POSIX representation will appear                                                                                                                                                             |
-| uid                             | decimal              |      (current euid) | UserID of the filesystem root directory                                                                                                                                                                             |
-| gid                             | decimal              |      (current egid) | GroupID of the filesystem root directory                                                                                                                                                                            |
-| dir_perm                        | string (in octal)    |               "555" | Permission (Mode) Bits (in 3-digit octal form) of the file system root directory                                                                                                                                    |
-| allow_other                     | boolean              |                true | If true, Permission (Mode) Bits determine who may have access; otherwise only owner and `root` have access                                                                                                          |
-| max_write                       | decimal bytes        |      131072 (128Ki) | Maximum write size Linux VFS will send to FUSE implementatino                                                                                                                                                       |
-| entry_attr_ttl                  | decimal milliseconds |               10000 | Amount of time Linux VFS is allowed to cache returned metadata (including potentially temporary inode numbers)                                                                                                      |
-| evictable_inode_ttl             | decimal milliseconds |             1000000 | Amount of time an auto-generated inode will be minimally maintained (should be at least entry_attr_ttl)                                                                                                             |
-| cache_line_size                 | decimal bytes        |       1048576 (1Mi) | Granularity of caching layer for both file read and write traffic                                                                                                                                                   |
-| cache_lines                     | decimal              |                4096 | Number of cache lines provisioned                                                                                                                                                                                   |
-| dirty_cache_lines_flush_trigger | decimal              |  80% of cache_lines | If readonly false, background flushes triggered at this threshold                                                                                                                                                   |
-| dirty_cache_lines_max           | decimal              |  90% of cache_lines | If readonly false, flushes will block writes until below this threshold                                                                                                                                             |
-| auto_sighup_interval            | decimal seconds      |                   0 | If != 0, schedules SIGHUP processing                                                                                                                                                                                |
-| backends                        | array                |                     | An array of each object store backend to be presented as a pseudo-directory underneath the `mountpoint1                                                                                                             |
+| Setting                         | Units                |                       Default | Description                                                                                                                                                                                                         |
+| :------------------------------ | :------------------- | ----------------------------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| mscp_version                    | decimal              |                             0 | If == 0, the configuration is assumed to follow the [Multi-Storage Client specification](https://nvidia.github.io/multi-storage-client/references/configuration.html); otherwise, must == 1 & the following applies |
+| mountname                       | string               |                   "msc-posix" | Filesystem `name` as it would appear in e.g. `df`                                                                                                                                                                   |
+| mountpoint                      | string               |     ${MSC_MOUNTPOINT:-/mnt} | Filesystem `path` where POSIX representation will appear                                                                                                                                                            |
+| uid                             | decimal              |                (current euid) | UserID of the filesystem root directory                                                                                                                                                                             |
+| gid                             | decimal              |                (current egid) | GroupID of the filesystem root directory                                                                                                                                                                            |
+| dir_perm                        | string (in octal)    |                         "555" | Permission (Mode) Bits (in 3-digit octal form) of the file system root directory                                                                                                                                    |
+| allow_other                     | boolean              |                          true | If true, Permission (Mode) Bits determine who may have access; otherwise only owner and `root` have access                                                                                                          |
+| max_write                       | decimal bytes        |                131072 (128Ki) | Maximum write size Linux VFS will send to FUSE implementatino                                                                                                                                                       |
+| entry_attr_ttl                  | decimal milliseconds |                         10000 | Amount of time Linux VFS is allowed to cache returned metadata (including potentially temporary inode numbers)                                                                                                      |
+| evictable_inode_ttl             | decimal milliseconds |                       1000000 | Amount of time an auto-generated inode will be minimally maintained (should be at least entry_attr_ttl)                                                                                                             |
+| cache_line_size                 | decimal bytes        |                 1048576 (1Mi) | Granularity of caching layer for both file read and write traffic                                                                                                                                                   |
+| cache_lines                     | decimal              |                          4096 | Number of cache lines provisioned                                                                                                                                                                                   |
+| dirty_cache_lines_flush_trigger | decimal              |            80% of cache_lines | If readonly false, background flushes triggered at this threshold                                                                                                                                                   |
+| dirty_cache_lines_max           | decimal              |            90% of cache_lines | If readonly false, flushes will block writes until below this threshold                                                                                                                                             |
+| auto_sighup_interval            | decimal seconds      |                             0 | If != 0, schedules SIGHUP processing                                                                                                                                                                                |
+| backends                        | array                |                               | An array of each object store backend to be presented as a pseudo-directory underneath the `mountpoint1                                                                                                             |
 
 As noted in the above table, the `backends` setting defines an array of object
 store backends to be presented as pseudo-directories underneath the `mountpoint`.
@@ -139,6 +145,116 @@ A typical development sequence is depicted in the following:
 |                                  | ^M                                                                             | Hitting `ENTER` will get us a `#` prompt                                                                    |
 |                                  | # exit                                                                         | Exits the `bash` shell running inside the `dev` Docker Container                                            |
 | $ docker-compose down            |                                                                                | Terminates the `minio` and `dev` Docker Containers                                                          |
+
+## Mount Helpers
+
+After installation (`sudo make install`), use standard Unix `mount` and `umount` commands:
+
+### Mounting
+
+```bash
+# Mount MSC filesystem with config file and mountpoint
+mount -t msc /path/to/config.yaml /mnt/msc1
+
+# Mount multiple instances with different configs or mountpoints
+mount -t msc /path/to/config1.yaml /mnt/msc1
+mount -t msc /path/to/config2.json /mnt/msc2
+```
+
+### Unmounting
+
+```bash
+# Unmount specific mountpoint
+umount /mnt/msc1
+
+# Unmount another mountpoint
+umount /mnt/msc2
+```
+
+### How It Works
+
+The `mount` command uses a standard Unix convention: when you specify `-t <type>`, it looks for a helper script at `/usr/sbin/mount.<type>`. For MSC:
+
+- `mount -t msc <config> <mountpoint>` → automatically calls `/usr/sbin/mount.msc`
+- The mount helper sets environment variables and launches the `mscp` daemon
+
+**Important: Standard `mount` Command Behavior**
+
+The `mount` command behaves differently depending on the arguments provided:
+
+- **`mount`** (no args) → Lists all currently mounted filesystems
+- **`mount -t msc`** (type only) → Lists all currently mounted MSC filesystems (does NOT call `mount.msc`)
+- **`mount -t msc <config> <mountpoint>`** → Calls `/usr/sbin/mount.msc` to perform the mount
+
+The mount helper (`mount.msc`) is **only invoked when you provide both the config file and mountpoint**. This is standard Unix `mount` behavior, not a limitation. The helper validates that both arguments are provided before attempting to launch `mscp`
+
+This is the same mechanism used by other filesystems like NFS (`mount.nfs`), CIFS (`mount.cifs`), and FUSE (`mount.fuse`).
+
+**Mount Helper (`mount.msc`):**
+- Exports `MSC_CONFIG` environment variable from the config file argument
+- Exports `MSC_MOUNTPOINT` environment variable from the mountpoint argument
+- Creates log directory if needed (`/var/log/msc/`)
+- Launches `mscp` daemon in the background using `setsid` for proper process management
+- Stores process ID and mountpoint in `/var/log/msc/mscp_*.pid` for tracking
+- Returns once the daemon is running
+
+**Environment Variables:**
+- `MSC_CONFIG`: Path to the configuration file (set by mount command)
+- `MSC_MOUNTPOINT`: Mount point path (set by mount command, overrides config file)
+- `MSCP_BINARY`: Path to mscp binary (default: `/usr/local/bin/mscp`)
+- `MSCP_LOG_DIR`: Log directory (default: `/var/log/msc`)
+
+**Unmount Helper (`umount.msc`):**
+- Finds all running mscp processes
+- Terminates each process with SIGTERM (waits up to 10 seconds)
+- If still running, sends SIGKILL
+- Handles zombie processes gracefully (accepts as success)
+- Cleans up all PID files in `/var/log/msc/`
+- Note: Unmounts **all** MSC filesystems, regardless of how many are mounted
+
+### Environment Variables
+
+- **`MSC_CONFIG`**: Path to MSC configuration file (YAML or JSON)
+  - Automatically set by mount helper from the first argument to `mount -t msc`
+  - Passed to the `mscp` binary for configuration loading
+- **`MSC_MOUNTPOINT`**: Mount point path
+  - Automatically set by mount helper from the second argument to `mount -t msc`
+  - Overrides the `mountpoint` setting in the configuration file
+- **`MSCP_BINARY`**: Path to mscp binary (default: `/usr/local/bin/mscp`)
+- **`MSCP_LOG_DIR`**: Directory for logs and PID files (default: `/var/log/msc`)
+
+### Automatic Mounting with /etc/fstab
+
+MSC filesystems can be automatically mounted at boot time by adding entries to `/etc/fstab`:
+
+```fstab
+# MSC filesystem with S3 backend
+/etc/msc/s3-config.yaml  /mnt/s3-data  msc  defaults,_netdev  0  0
+
+# MSC filesystem with local config
+/home/user/msc.json      /mnt/storage  msc  defaults,noauto   0  0
+```
+
+**fstab field explanation:**
+- **Field 1**: Path to MSC configuration file (YAML or JSON)
+- **Field 2**: Mount point directory
+- **Field 3**: Filesystem type (`msc`)
+- **Field 4**: Mount options (comma-separated)
+  - `defaults`: Standard mount options
+  - `_netdev`: Wait for network before mounting (for remote storage)
+  - `noauto`: Don't mount automatically at boot (mount manually with `mount /mnt/storage`)
+  - `user`: Allow non-root users to mount (requires `allow_other` in config)
+- **Field 5**: Dump frequency (usually `0`)
+- **Field 6**: fsck pass number (usually `0`)
+
+After editing `/etc/fstab`, test the configuration with:
+```bash
+sudo mount -a  # Mount all filesystems in fstab
+```
+
+### Configuration
+
+The mountpoint is defined in the configuration file's `mountpoint` setting (default: `/mnt`). The filesystem name displayed in `df` and `mount` output is controlled by the `mountname` setting (default: `msc-posix`).
 
 ## Deployment Aids
 

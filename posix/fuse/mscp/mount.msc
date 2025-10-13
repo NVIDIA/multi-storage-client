@@ -1,0 +1,143 @@
+#!/bin/bash
+#
+# mount.msc - Mount helper for MSC (Multi-Storage Client) file systems
+#
+# This script is invoked automatically by: mount -t msc
+#
+# Usage:
+#   mount.msc <config_file> <mountpoint>
+#   OR via mount: mount -t msc <config_file> <mountpoint>
+#
+# Environment variables:
+#   MSC_CONFIG:     (Set from first argument) Path to MSC configuration file (YAML or JSON)
+#   MSC_MOUNTPOINT: (Set from second argument) Mount point path
+#   MSCP_BINARY:    Path to mscp binary (default: /usr/local/bin/mscp)
+#   MSCP_LOG_DIR:   Directory for log files (default: /var/log/msc)
+#
+
+set -euo pipefail
+
+# Default values
+MSCP_BINARY="${MSCP_BINARY:-/usr/local/bin/mscp}"
+MSCP_LOG_DIR="${MSCP_LOG_DIR:-/var/log/msc}"
+SCRIPT_NAME="$(basename "$0")"
+
+# Function to log messages
+log() {
+    echo "[$SCRIPT_NAME] $*" >&2
+}
+
+# Function to check if mscp binary exists and is executable
+check_mscp_binary() {
+    if [[ ! -f "$MSCP_BINARY" ]]; then
+        log "ERROR: mscp binary not found at '$MSCP_BINARY'"
+        log "Please install mscp or set MSCP_BINARY environment variable"
+        return 1
+    fi
+    if [[ ! -x "$MSCP_BINARY" ]]; then
+        log "ERROR: mscp binary at '$MSCP_BINARY' is not executable"
+        return 1
+    fi
+    return 0
+}
+
+# Function to create log directory if it doesn't exist
+ensure_log_dir() {
+    if [[ ! -d "$MSCP_LOG_DIR" ]]; then
+        log "Creating log directory: $MSCP_LOG_DIR"
+        mkdir -p "$MSCP_LOG_DIR"
+    fi
+    if [[ ! -w "$MSCP_LOG_DIR" ]]; then
+        log "ERROR: Log directory '$MSCP_LOG_DIR' is not writable"
+        return 1
+    fi
+    return 0
+}
+
+# Main function
+main() {
+    # Require both config file and mountpoint arguments
+    if [[ $# -lt 2 ]]; then
+        log "ERROR: Both config file and mountpoint arguments are required"
+        log "Usage: mount -t msc <config_file> <mountpoint>"
+        exit 1
+    fi
+    
+    # Parse command-line arguments (following mount convention: source mountpoint)
+    export MSC_CONFIG="$1"
+    export MSC_MOUNTPOINT="$2"
+    log "Config file argument provided: $MSC_CONFIG"
+    log "Mount path argument provided: $MSC_MOUNTPOINT"
+    
+    # Validate config file exists
+    if [[ ! -f "$MSC_CONFIG" ]]; then
+        log "ERROR: Config file '$MSC_CONFIG' does not exist"
+        exit 1
+    fi
+    
+    # Validate mountpoint exists
+    if [[ ! -d "$MSC_MOUNTPOINT" ]]; then
+        log "ERROR: Mount point '$MSC_MOUNTPOINT' does not exist or is not a directory"
+        exit 1
+    fi
+    
+    # Check mscp binary
+    if ! check_mscp_binary; then
+        exit 1
+    fi
+    
+    # Ensure log directory exists
+    if ! ensure_log_dir; then
+        exit 1
+    fi
+    
+    # Clean up stale PID files and associated log files
+    find "$MSCP_LOG_DIR" -name "mscp_*.pid" -type f 2>/dev/null | while read -r pid_file; do
+        pid=$(head -1 "$pid_file" 2>/dev/null)
+        if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+            rm -f "$pid_file" "${pid_file%.pid}.log"
+        fi
+    done
+    
+    # Generate unique ID using timestamp and random number
+    local unique_id="$(date +%s)_$$"
+    local log_file="$MSCP_LOG_DIR/mscp_${unique_id}.log"
+    local pid_file="$MSCP_LOG_DIR/mscp_${unique_id}.pid"
+    
+    log "Launching mscp daemon..."
+    log "  Config file: $MSC_CONFIG"
+    log "  Mount point: $MSC_MOUNTPOINT"
+    log "  Log file: $log_file"
+    log "  PID file: $pid_file"
+    
+    # Ensure PATH includes standard binary directories
+    export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+    
+    # Launch mscp in background and redirect output to log file
+    # MSC_MOUNTPOINT and MSC_CONFIG are passed via environment variables
+    # Use setsid to properly detach the process and prevent zombies
+    setsid "$MSCP_BINARY" "$MSC_CONFIG" > "$log_file" 2>&1 &
+    local mscp_pid=$!
+    
+    # Save PID and mountpoint to file (for tracking specific instances)
+    echo "$mscp_pid" > "$pid_file"
+    echo "$MSC_MOUNTPOINT" >> "$pid_file"
+    
+    # Give mscp a moment to start up
+    sleep 2
+    
+    # Check if process is still running
+    if ! kill -0 "$mscp_pid" 2>/dev/null; then
+        log "ERROR: mscp daemon failed to start (PID: $mscp_pid)"
+        log "Check log file for details: $log_file"
+        rm -f "$pid_file"
+        exit 1
+    fi
+    
+    log "mscp daemon started successfully (PID: $mscp_pid)"
+    log "MSC filesystem mounted"
+    log "To unmount: umount <mountpoint>"
+}
+
+# Run main function with all arguments
+main "$@"

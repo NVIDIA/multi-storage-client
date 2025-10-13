@@ -94,6 +94,11 @@ const (
 )
 
 const (
+	DefaultMountPoint = "/mnt"
+	EnvMSCMountPoint  = "MSC_MOUNTPOINT"
+)
+
+const (
 	DotDirEntryBasename    = "."
 	DotDotDirEntryBasename = ".."
 )

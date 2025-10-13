@@ -236,6 +236,7 @@ func checkConfigFile() (err error) {
 		credentialsProviderOptionsAccessKey               string
 		credentialsProviderOptionsSecretKey               string
 		credentialsProviderType                           string
+		mountPoint                                        string
 		dirName                                           string
 		dirPerm                                           string
 		dirtyCacheLinesFlushTriggerPercentage             uint64
@@ -545,7 +546,12 @@ func checkConfigFile() (err error) {
 		return
 	}
 
-	config.mountPoint, ok = parseString(configFileMap, "mountpoint", "/mnt")
+	// Use MSC_MOUNTPOINT env var if set, otherwise default to DefaultMountPoint
+	mountPoint = os.Getenv(EnvMSCMountPoint)
+	if mountPoint == "" {
+		mountPoint = DefaultMountPoint
+	}
+	config.mountPoint, ok = parseString(configFileMap, "mountpoint", mountPoint)
 	if !ok {
 		err = errors.New("bad mountpoint value")
 		return

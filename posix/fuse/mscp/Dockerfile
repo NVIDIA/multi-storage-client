@@ -32,13 +32,13 @@ RUN    apt-get update \
                         dnsutils \
                         fuse3 \
                         git \
-                        git-lfs \
                         iputils-ping \
                         jq \
                         libfuse3-dev \
                         lsof \
                         make \
                         s3cmd \
+                        tini \
                         tree \
                         unzip \
                         vim \
@@ -46,12 +46,13 @@ RUN    apt-get update \
 
 RUN echo "user_allow_other" >> /etc/fuse.conf
 
+ARG TARGETARCH
 ARG GolangVersion=1.25.1
-ENV GolangBasename="go${GolangVersion}.linux-amd64.tar.gz"
-ENV GolangURL="https://golang.org/dl/${GolangBasename}"
 WORKDIR /tmp
-RUN wget -nv ${GolangURL}
-RUN tar -C /usr/local -xzf $GolangBasename
+RUN GolangBasename="go${GolangVersion}.linux-${TARGETARCH}.tar.gz"; \
+    GolangURL="https://golang.org/dl/${GolangBasename}"; \
+    wget -nv ${GolangURL}; \
+    tar -C /usr/local -xzf ${GolangBasename}
 ENV PATH=$PATH:/usr/local/go/bin
 
 # RUN git clone https://github.com/go-delve/delve
@@ -61,9 +62,10 @@ ENV PATH=$PATH:/usr/local/go/bin
 
 WORKDIR /tmp
 
-RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-RUN unzip awscliv2.zip
-RUN ./aws/install
+RUN if [ "$TARGETARCH" = "amd64" ]; then AWS_ARCH="x86_64"; else AWS_ARCH="aarch64"; fi && \
+    curl "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}.zip" -o "awscliv2.zip" && \
+    unzip awscliv2.zip && \
+    ./aws/install
 
 WORKDIR /root
 
@@ -124,7 +126,6 @@ FROM buildable AS dev
 
 COPY --from=ais /aistore/cmd/cli/autocomplete/bash    /root/cmd_cli_autocomplete_bash
 COPY --from=ais /root/go/bin/ais                      /root/go/bin/ais
-
 RUN echo "source ~/cmd_cli_autocomplete_bash"      >> /root/.bashrc_additions
 
 WORKDIR /multi-storage-client/posix/fuse/mscp
