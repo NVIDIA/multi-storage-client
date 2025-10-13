@@ -165,6 +165,89 @@ PACKAGE_NAME = "multistorageclient"
 logger = logging.getLogger(__name__)
 
 
+class ImmutableDict(dict):
+    """
+    Immutable dictionary that raises an error when attempting to modify it.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # Recursively freeze nested structures
+        for key, value in list(super().items()):
+            if isinstance(value, dict) and not isinstance(value, ImmutableDict):
+                super().__setitem__(key, ImmutableDict(value))
+            elif isinstance(value, list):
+                super().__setitem__(key, self._freeze_list(value))
+
+    @staticmethod
+    def _freeze_list(lst):
+        """
+        Convert list to tuple, freezing nested dicts recursively.
+        """
+        frozen = []
+        for item in lst:
+            if isinstance(item, dict):
+                frozen.append(ImmutableDict(item))
+            elif isinstance(item, list):
+                frozen.append(ImmutableDict._freeze_list(item))
+            else:
+                frozen.append(item)
+        return tuple(frozen)
+
+    def __deepcopy__(self, memo):
+        """
+        Return a regular mutable dict when deepcopy is called.
+        """
+        return copy.deepcopy(dict(self), memo)
+
+    def _copy_value(self, value):
+        """
+        Convert frozen structures back to mutable equivalents.
+        """
+        if isinstance(value, ImmutableDict):
+            return {k: self._copy_value(v) for k, v in value.items()}
+        elif isinstance(value, tuple):
+            # Check if it was originally a list (frozen by _freeze_list)
+            return [self._copy_value(item) for item in value]
+        else:
+            return value
+
+    def __getitem__(self, key):
+        """
+        Return a mutable copy of the value.
+        """
+        value = super().__getitem__(key)
+        return self._copy_value(value)
+
+    def get(self, key, default=None):
+        """
+        Return a mutable copy of the value.
+        """
+        return self[key] if key in self else default
+
+    def __setitem__(self, key, value):
+        raise TypeError("ImmutableDict is immutable")
+
+    def __delitem__(self, key):
+        raise TypeError("ImmutableDict is immutable")
+
+    def clear(self):
+        raise TypeError("ImmutableDict is immutable")
+
+    def pop(self, *args):
+        raise TypeError("ImmutableDict is immutable")
+
+    def popitem(self):
+        raise TypeError("ImmutableDict is immutable")
+
+    def setdefault(self, key, default=None):
+        raise TypeError("ImmutableDict is immutable")
+
+    def update(self, *args, **kwargs):
+        raise TypeError("ImmutableDict is immutable")
+
+
 class SimpleProviderBundle(ProviderBundle):
     def __init__(
         self,
@@ -233,7 +316,7 @@ class StorageClientConfigLoader:
 
         # Interpolates all environment variables into actual values.
         config_dict = expand_env_vars(config_dict)
-        self._resolved_config_dict = config_dict
+        self._resolved_config_dict = ImmutableDict(config_dict)
 
         self._profiles = config_dict.get("profiles", {})
 
@@ -257,7 +340,7 @@ class StorageClientConfigLoader:
             raise ValueError(f"Profile {profile} not found; available profiles: {list(self._profiles.keys())}")
 
         self._profile = profile
-        self._profile_dict = profile_dict
+        self._profile_dict = ImmutableDict(profile_dict)
 
         self._opentelemetry_dict = config_dict.get("opentelemetry", None)
         # Multiprocessing unpickles during the Python interpreter's bootstrap phase for new processes.
