@@ -42,6 +42,7 @@ from ..types import (
     RetryableError,
 )
 from ..utils import (
+    get_available_cpu_count,
     split_path,
     validate_attributes,
 )
@@ -49,7 +50,8 @@ from .base import BaseStorageProvider
 
 _T = TypeVar("_T")
 
-BOTO3_MAX_POOL_CONNECTIONS = 32
+# Default connection pool size scales with CPU count (minimum 32 for backward compatibility)
+MAX_POOL_CONNECTIONS = max(32, get_available_cpu_count())
 
 MiB = 1024 * 1024
 
@@ -150,7 +152,7 @@ class S3StorageProvider(BaseStorageProvider):
         self._s3_client = self._create_s3_client(
             request_checksum_calculation=kwargs.get("request_checksum_calculation"),
             response_checksum_validation=kwargs.get("response_checksum_validation"),
-            max_pool_connections=kwargs.get("max_pool_connections", BOTO3_MAX_POOL_CONNECTIONS),
+            max_pool_connections=kwargs.get("max_pool_connections", MAX_POOL_CONNECTIONS),
             connect_timeout=kwargs.get("connect_timeout"),
             read_timeout=kwargs.get("read_timeout"),
             retries=kwargs.get("retries"),
@@ -192,7 +194,7 @@ class S3StorageProvider(BaseStorageProvider):
         self,
         request_checksum_calculation: Optional[str] = None,
         response_checksum_validation: Optional[str] = None,
-        max_pool_connections: int = BOTO3_MAX_POOL_CONNECTIONS,
+        max_pool_connections: int = MAX_POOL_CONNECTIONS,
         connect_timeout: Union[float, int, None] = None,
         read_timeout: Union[float, int, None] = None,
         retries: Optional[dict[str, Any]] = None,
@@ -276,6 +278,8 @@ class S3StorageProvider(BaseStorageProvider):
 
         if self._endpoint_url:
             configs["endpoint_url"] = self._endpoint_url
+
+        configs["max_pool_connections"] = MAX_POOL_CONNECTIONS
 
         if rust_client_options:
             if rust_client_options.get("allow_http", False):
