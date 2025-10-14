@@ -289,6 +289,8 @@ class GoogleStorageProvider(BaseStorageProvider):
                 f"Failed to {operation} object(s) at {bucket}/{key} due to exhausted retries from Rust. "
                 f"error_type: {type(error).__name__}"
             ) from error
+        except FileNotFoundError:
+            raise
         except Exception as error:
             error_details = str(error)
             raise RuntimeError(

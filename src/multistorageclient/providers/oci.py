@@ -155,6 +155,8 @@ class OracleStorageProvider(BaseStorageProvider):
             raise RetryableError(
                 f"Failed to {operation} object(s) at {bucket}/{key}, error type: {type(error).__name__}"
             ) from error
+        except FileNotFoundError:
+            raise
         except Exception as error:
             raise RuntimeError(
                 f"Failed to {operation} object(s) at {bucket}/{key}, error type: {type(error).__name__}, error: {error}"

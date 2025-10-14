@@ -171,6 +171,8 @@ class AzureBlobStorageProvider(BaseStorageProvider):
         except AzureError as error:
             error_info = f"message: {error.message}"
             raise RuntimeError(f"Failed to {operation} object(s) at {container}/{blob}. {error_info}") from error
+        except FileNotFoundError:
+            raise
         except Exception as error:
             raise RuntimeError(
                 f"Failed to {operation} object(s) at {container}/{blob}. error_type: {type(error).__name__}, error: {error}"
