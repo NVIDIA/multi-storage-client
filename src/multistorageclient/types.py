@@ -235,6 +235,7 @@ class StorageProvider(ABC):
         include_directories: bool = False,
         attribute_filter_expression: Optional[str] = None,
         show_attributes: bool = False,
+        follow_symlinks: bool = True,
     ) -> Iterator[ObjectMetadata]:
         """
         Lists objects in the storage provider under the specified path.
@@ -245,6 +246,7 @@ class StorageProvider(ABC):
         :param include_directories: Whether to include directories in the result. When True, directories are returned alongside objects.
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
         :param show_attributes: Whether to return attributes in the result.  There will be performance impact if this is True as now we need to get object metadata for each object.
+        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers.
 
         :return: An iterator over objects metadata under the specified path.
         """

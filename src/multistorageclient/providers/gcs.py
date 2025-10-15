@@ -487,6 +487,7 @@ class GoogleStorageProvider(BaseStorageProvider):
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
+        follow_symlinks: bool = True,
     ) -> Iterator[ObjectMetadata]:
         bucket, prefix = split_path(path)
         self._refresh_gcs_client_if_needed()

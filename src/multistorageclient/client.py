@@ -490,6 +490,7 @@ class StorageClient:
         include_url_prefix: bool = False,
         attribute_filter_expression: Optional[str] = None,
         show_attributes: bool = False,
+        follow_symlinks: bool = True,
     ) -> Iterator[ObjectMetadata]:
         """
         Lists objects in the storage provider under the specified path.
@@ -507,6 +508,7 @@ class StorageClient:
         :param include_url_prefix: Whether to include the URL prefix ``msc://profile`` in the result.
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
         :param show_attributes: Whether to return attributes in the result.  WARNING: Depend on implementation, there might be performance impact if this set to True.
+        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers. When False, symlinks are skipped during listing.
 
         :return: An iterator over objects.
 
@@ -550,6 +552,7 @@ class StorageClient:
                 include_directories=include_directories,
                 attribute_filter_expression=attribute_filter_expression,
                 show_attributes=show_attributes,
+                follow_symlinks=follow_symlinks,
             )
 
         for object in objects:
@@ -705,6 +708,7 @@ class StorageClient:
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
         patterns: Optional[PatternList] = None,
         preserve_source_attributes: bool = False,
+        follow_symlinks: bool = True,
     ) -> None:
         """
         Syncs files from the source storage client to "path/".
@@ -719,11 +723,11 @@ class StorageClient:
         :param patterns: PatternList for include/exclude filtering. If None, all files are included.
         :param preserve_source_attributes: Whether to preserve source file metadata attributes during synchronization.
             When False (default), only file content is copied. When True, custom metadata attributes are also preserved.
-
             .. warning::
                 **Performance Impact**: When enabled without a ``metadata_provider`` configured, this will make a HEAD
                 request for each object to retrieve attributes, which can significantly impact performance on large-scale
                 sync operations. For production use at scale, configure a ``metadata_provider`` in your storage profile.
+        :param follow_symlinks: If the source StorageClient is PosixFile, whether to follow symbolic links. Default is True.
         """
         # Create internal PatternMatcher from patterns if provided
         pattern_matcher = PatternMatcher(patterns) if patterns else None
@@ -742,6 +746,7 @@ class StorageClient:
             delete_unmatched_files=delete_unmatched_files,
             pattern_matcher=pattern_matcher,
             preserve_source_attributes=preserve_source_attributes,
+            follow_symlinks=follow_symlinks,
         )
 
     def sync_replicas(

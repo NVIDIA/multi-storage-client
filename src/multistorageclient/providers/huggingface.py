@@ -432,6 +432,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
+        follow_symlinks: bool = True,
     ) -> Iterator[ObjectMetadata]:
         """
         Lists objects in the HuggingFace repository under the specified path.

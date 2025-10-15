@@ -604,3 +604,93 @@ def test_progress_bar_capped_percentage():
     progress.update_total(100_000)
     progress.update_progress(99_999)
     assert "99.9%" in str(progress.pbar)
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[[tempdatastore.TemporaryAWSS3Bucket]],
+)
+def test_sync_from_symlink_files(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """Test that symlink files are dereferenced and synced correctly when source is local_profile.
+
+    When syncing from a POSIX source that contains symlinks:
+    - The synced result should be a file with the symlink's name
+    - The content should be the content of the real file that the symlink points to
+    """
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    obj_profile = "s3-sync"
+    local_profile = "local"
+
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as temp_source_data_store,
+        temp_data_store_type() as temp_data_store,
+    ):
+        config.setup_msc_config(
+            config_dict={
+                "profiles": {
+                    obj_profile: temp_data_store.profile_config_dict(),
+                    local_profile: temp_source_data_store.profile_config_dict(),
+                }
+            }
+        )
+
+        source_msc_url = f"msc://{local_profile}/symlink-test"
+        target_msc_url = f"msc://{obj_profile}/synced-symlinks"
+
+        source_client, source_path = msc.resolve_storage_client(source_msc_url)
+        target_client, target_path = msc.resolve_storage_client(target_msc_url)
+
+        base_path = source_client._storage_provider._base_path
+
+        real_file_content = "This is the real file content" * 50
+        real_file_path = os.path.join(source_path, "real_file.txt")
+        source_client.write(real_file_path, real_file_content.encode("utf-8"))
+
+        physical_real_file_path = os.path.join(base_path, source_path, "real_file.txt")
+
+        physical_symlink_path = os.path.join(base_path, source_path, "symlink_to_real.txt")
+        os.symlink(physical_real_file_path, physical_symlink_path)
+
+        regular_file_content = "Regular file content" * 30
+        regular_file_path = os.path.join(source_path, "regular_file.txt")
+        source_client.write(regular_file_path, regular_file_content.encode("utf-8"))
+
+        subdir_path = os.path.join(source_path, "subdir")
+        real_file_subdir_path = os.path.join(subdir_path, "real_in_subdir.txt")
+        real_file_subdir_content = "Real file in subdirectory" * 20
+        source_client.write(real_file_subdir_path, real_file_subdir_content.encode("utf-8"))
+
+        physical_subdir_path = os.path.join(base_path, subdir_path)
+        physical_real_file_subdir_path = os.path.join(base_path, real_file_subdir_path)
+        physical_symlink_subdir_path = os.path.join(physical_subdir_path, "symlink_in_subdir.txt")
+
+        os.symlink(physical_real_file_subdir_path, physical_symlink_subdir_path)
+
+        time.sleep(1)  # Ensure timestamps are clear
+
+        target_client.sync_from(source_client, source_path, target_path)
+
+        expected_files = {
+            "real_file.txt": real_file_content,
+            "symlink_to_real.txt": real_file_content,  # Symlink should be dereferenced
+            "regular_file.txt": regular_file_content,
+            "subdir/real_in_subdir.txt": real_file_subdir_content,
+            "subdir/symlink_in_subdir.txt": real_file_subdir_content,  # Symlink should be dereferenced
+        }
+
+        verify_sync_and_contents(target_url=target_msc_url, expected_files=expected_files)
+
+        target_msc_url = f"msc://{obj_profile}/synced-no-symlinks"
+        target_client, target_path = msc.resolve_storage_client(target_msc_url)
+        target_client.sync_from(source_client, source_path, target_path, follow_symlinks=False)
+
+        time.sleep(1)
+
+        expected_files = {
+            "real_file.txt": real_file_content,
+            "regular_file.txt": regular_file_content,
+            "subdir/real_in_subdir.txt": real_file_subdir_content,
+        }
+
+        verify_sync_and_contents(target_url=target_msc_url, expected_files=expected_files)

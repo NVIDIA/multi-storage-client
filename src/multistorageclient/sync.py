@@ -90,6 +90,7 @@ class ProducerThread(threading.Thread):
         delete_unmatched_files: bool = False,
         pattern_matcher: Optional[PatternMatcher] = None,
         preserve_source_attributes: bool = False,
+        follow_symlinks: bool = True,
     ):
         super().__init__(daemon=True)
         self.source_client = source_client
@@ -102,6 +103,7 @@ class ProducerThread(threading.Thread):
         self.delete_unmatched_files = delete_unmatched_files
         self.pattern_matcher = pattern_matcher
         self.preserve_source_attributes = preserve_source_attributes
+        self.follow_symlinks = follow_symlinks
         self.error = None
 
     def _match_file_metadata(self, source_info: ObjectMetadata, target_info: ObjectMetadata) -> bool:
@@ -114,7 +116,11 @@ class ProducerThread(threading.Thread):
     def run(self):
         try:
             source_iter = iter(
-                self.source_client.list(prefix=self.source_path, show_attributes=self.preserve_source_attributes)
+                self.source_client.list(
+                    prefix=self.source_path,
+                    show_attributes=self.preserve_source_attributes,
+                    follow_symlinks=self.follow_symlinks,
+                )
             )
             target_iter = iter(self.target_client.list(prefix=self.target_path))
             total_count = 0
@@ -255,6 +261,7 @@ class SyncManager:
         delete_unmatched_files: bool = False,
         pattern_matcher: Optional[PatternMatcher] = None,
         preserve_source_attributes: bool = False,
+        follow_symlinks: bool = True,
     ):
         """
         Synchronize objects from source to target storage location.
@@ -281,6 +288,7 @@ class SyncManager:
                 **Performance Impact**: When enabled without a ``metadata_provider`` configured, this will make a HEAD
                 request for each object to retrieve attributes, which can significantly impact performance on large-scale
                 sync operations. For production use at scale, configure a ``metadata_provider`` in your storage profile.
+        :param follow_symlinks: Whether to follow symbolic links. Only applicable when source is POSIX file storage. When False, symlinks are skipped during sync.
         """
         logger.debug(f"Starting sync operation {description}")
 
@@ -330,6 +338,7 @@ class SyncManager:
             delete_unmatched_files,
             pattern_matcher,
             preserve_source_attributes,
+            follow_symlinks,
         )
         producer_thread.start()
 

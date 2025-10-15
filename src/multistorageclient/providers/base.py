@@ -342,6 +342,7 @@ class BaseStorageProvider(StorageProvider):
         include_directories: bool = False,
         attribute_filter_expression: Optional[str] = None,
         show_attributes: bool = False,
+        follow_symlinks: bool = True,
     ) -> Iterator[ObjectMetadata]:
         """
         Lists objects in the storage provider under the specified path.
@@ -352,6 +353,7 @@ class BaseStorageProvider(StorageProvider):
         :param include_directories: Whether to include directories in the result. When True, directories are returned alongside objects.
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
         :param show_attributes: Whether to return attributes in the result.  There will be performance impact if this is True as now we need to get object metadata for each object.
+        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers. When False, symlinks are skipped during listing.
 
         :return: An iterator over objects metadata under the specified path.
         """
@@ -359,10 +361,27 @@ class BaseStorageProvider(StorageProvider):
             raise ValueError(f"start_after ({start_after}) must be before end_at ({end_at})!")
 
         path = self._prepend_base_path(path)
-        objects = self._emit_metrics(
-            operation=BaseStorageProvider._Operation.LIST,
-            f=lambda: self._list_objects(path, start_after, end_at, include_directories),
-        )
+
+        # In version 0.33.0, we added the follow_symlinks parameter to the _list_objects method.
+        # Fallback for custom storage providers that haven't been updated yet
+        try:
+            objects = self._emit_metrics(
+                operation=BaseStorageProvider._Operation.LIST,
+                f=lambda: self._list_objects(
+                    path, start_after, end_at, include_directories, follow_symlinks=follow_symlinks
+                ),
+            )
+        except TypeError as exc:
+            if "follow_symlinks" in str(exc):
+                logger.debug(
+                    "We added the follow_symlinks parameter to the _list_objects method in version 0.33.0, please update your provider's interface to support it."
+                )
+                objects = self._emit_metrics(
+                    operation=BaseStorageProvider._Operation.LIST,
+                    f=lambda: self._list_objects(path, start_after, end_at, include_directories),
+                )
+            else:
+                raise
 
         # Filter objects based on attribute filter expression
         evaluator = (
@@ -476,7 +495,17 @@ class BaseStorageProvider(StorageProvider):
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
+        follow_symlinks: bool = True,
     ) -> Iterator[ObjectMetadata]:
+        """
+        Lists objects in the storage provider under the specified path.
+
+        :param path: The path to list objects under.
+        :param start_after: The key to start after.
+        :param end_at: The key to end at.
+        :param include_directories: Whether to include directories in the result.
+        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers.
+        """
         pass
 
     @abstractmethod
