@@ -52,6 +52,8 @@ _METRICS_EXPORTER_MAPPING = {
 _TRACE_EXPORTER_MAPPING = {
     "console": "opentelemetry.sdk.trace.export.ConsoleSpanExporter",
     "otlp": "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter",
+    # "Private" until it's decided whether this will be official.
+    "_otlp_msal": "multistorageclient.telemetry.traces.exporters.otlp_msal._OTLPMSALSpanExporter",
 }
 
 logger = logging.getLogger(__name__)

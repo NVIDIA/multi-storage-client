@@ -85,6 +85,8 @@ _TRACE_SAMPLER_MODULE_NAME = "opentelemetry.sdk.trace.sampling"
 _OTEL_TRACE_EXPORTER_MAPPING = {
     "console": "opentelemetry.sdk.trace.export.ConsoleSpanExporter",
     "otlp": "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter",
+    # "Private" until it's decided whether this will be official.
+    "_otlp_msal": "multistorageclient.telemetry.traces.exporters.otlp_msal._OTLPMSALSpanExporter",
 }
 
 _IS_SETUP_DONE = False
