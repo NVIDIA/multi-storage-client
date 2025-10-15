@@ -95,15 +95,7 @@
               ];
 
             tags = [
-              # Backends.
-              #
-              # https://github.com/NVIDIA/aistore/blob/v1.4.0/docs/build_tags.md
-              "aws"
-              "azure"
-              "gcp"
-              "ht"
-              "oci"
-              # Monotonic time.
+              # Monotonic time. 
               #
               # https://github.com/NVIDIA/aistore/blob/v1.4.0/Makefile#L86
               "mono"

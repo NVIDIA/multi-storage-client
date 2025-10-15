@@ -1,11 +1,15 @@
-# AIStore
+# AIStore Local Cluster
 
-AIStore configurations. See [AIStore's local configuration script](https://github.com/NVIDIA/aistore/blob/v1.3.31/deploy/dev/local/aisnode_config.sh) for more information.
+Self-contained setup for running a local 2-node AIStore cluster (1 proxy + 1 target) for testing.
 
-Differences between `prepare_sandbox.sh` and the script:
+## Files
 
-- `ais.json`
-    - `net.http.idle_conns_per_host` + `net.http.idle_conns` set to 0 (for macOS).
-- `ais_local.json`
-    - `host_net.port` set to 51080 (like the AIStore Docker container).
-    - Directories are under `sandbox`.
+- `prepare_sandbox.sh` - Generates AIStore configuration files (adapted from [AIStore v1.4.0](https://github.com/NVIDIA/aistore/blob/v1.4.0/deploy/dev/local/aisnode_config.sh))
+- `sandbox/` - Runtime directory (logs, configs, data)
+
+## Key Differences from Upstream
+
+- **Self-contained**: No external dependencies (`utils.sh`, environment variables)
+- **Fixed ports**: 51080 (proxy) and 51081 (target) for test compatibility
+- **Multi-node**: Generates both proxy and target configs in one run
+- **Isolated paths**: All data under `PROJECT_ROOT/.aistore/sandbox/`

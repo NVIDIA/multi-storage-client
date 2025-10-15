@@ -172,6 +172,8 @@ class AIStoreStorageProvider(BaseStorageProvider):
             return func()
         except AISError as error:
             status_code = error.status_code
+            if status_code == 404:
+                raise FileNotFoundError(f"Object {bucket}/{key} does not exist.")  # pylint: disable=raise-missing-from
             error_info = f"status_code: {status_code}, message: {error.message}"
             raise RuntimeError(f"Failed to {operation} object(s) at {bucket}/{key}. {error_info}") from error
         except HTTPError as error:
@@ -227,7 +229,25 @@ class AIStoreStorageProvider(BaseStorageProvider):
         return self._translate_errors(_invoke_api, operation="GET", bucket=bucket, key=key)
 
     def _copy_object(self, src_path: str, dest_path: str) -> int:
-        raise AttributeError("AIStore does not support copy operations")
+        src_bucket, src_key = split_path(src_path)
+        dest_bucket, dest_key = split_path(dest_path)
+
+        def _invoke_api() -> int:
+            src_obj = self.client.bucket(bck_name=src_bucket, provider=self.provider).object(obj_name=src_key)
+            dest_obj = self.client.bucket(bck_name=dest_bucket, provider=self.provider).object(obj_name=dest_key)
+
+            # Get source size before copying
+            src_headers = src_obj.head()
+            src_props = ObjectProps(src_headers)
+
+            # Server-side copy (preserves custom metadata automatically)
+            src_obj.copy(to_obj=dest_obj)  # type: ignore[attr-defined]
+
+            return int(src_props.size)
+
+        return self._translate_errors(
+            _invoke_api, operation="COPY", bucket=f"{src_bucket}->{dest_bucket}", key=f"{src_key}->{dest_key}"
+        )
 
     def _delete_object(self, path: str, if_match: Optional[str] = None) -> None:
         bucket, key = split_path(path)
@@ -241,6 +261,22 @@ class AIStoreStorageProvider(BaseStorageProvider):
             obj.delete()
 
         return self._translate_errors(_invoke_api, operation="DELETE", bucket=bucket, key=key)
+
+    def _is_dir(self, path: str) -> bool:
+        # Ensure the path ends with '/' to mimic a directory
+        path = self._append_delimiter(path)
+
+        bucket, prefix = split_path(path)
+
+        def _invoke_api() -> bool:
+            # List objects with the given prefix (limit to 1 for efficiency)
+            objects = self.client.bucket(bck_name=bucket, provider=self.provider).list_objects_iter(
+                prefix=prefix, page_size=1
+            )
+            # Check if there are any objects with this prefix
+            return any(True for _ in objects)
+
+        return self._translate_errors(_invoke_api, operation="LIST", bucket=bucket, key=prefix)
 
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         bucket, key = split_path(path)
@@ -261,16 +297,35 @@ class AIStoreStorageProvider(BaseStorageProvider):
 
             def _invoke_api() -> ObjectMetadata:
                 obj = self.client.bucket(bck_name=bucket, provider=self.provider).object(obj_name=key)
-                headers = obj.head()
-                props = ObjectProps(headers)
+                try:
+                    headers = obj.head()
+                    props = ObjectProps(headers)
 
-                return ObjectMetadata(
-                    key=key,
-                    content_length=int(props.size),  # pyright: ignore [reportArgumentType]
-                    last_modified=AWARE_DATETIME_MIN,
-                    etag=props.checksum_value,
-                    metadata=props.custom_metadata,
-                )
+                    return ObjectMetadata(
+                        key=key,
+                        content_length=int(props.size),  # pyright: ignore [reportArgumentType]
+                        last_modified=AWARE_DATETIME_MIN,
+                        etag=props.checksum_value,
+                        metadata=props.custom_metadata,
+                    )
+                except (AISError, HTTPError) as e:
+                    # Check if this might be a virtual directory (prefix with objects under it)
+                    status_code = None
+                    if isinstance(e, AISError):
+                        status_code = e.status_code
+                    elif isinstance(e, HTTPError):
+                        status_code = e.response.status_code
+
+                    if status_code == 404:
+                        if self._is_dir(path):
+                            return ObjectMetadata(
+                                key=path + "/",
+                                type="directory",
+                                content_length=0,
+                                last_modified=AWARE_DATETIME_MIN,
+                            )
+                    # Re-raise to be handled by _translate_errors
+                    raise
 
             return self._translate_errors(_invoke_api, operation="HEAD", bucket=bucket, key=key)
 

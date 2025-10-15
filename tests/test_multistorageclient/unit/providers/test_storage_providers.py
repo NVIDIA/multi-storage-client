@@ -39,6 +39,7 @@ from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemory
         [tempdatastore.TemporaryGoogleCloudStorageBucket, False],
         [tempdatastore.TemporaryGoogleCloudStorageS3Bucket, False],
         [tempdatastore.TemporarySwiftStackBucket, False],
+        [tempdatastore.TemporaryAIStoreBucket, False],
         # Test only one store type with cache enabled
         [tempdatastore.TemporaryAWSS3Bucket, True],
     ],

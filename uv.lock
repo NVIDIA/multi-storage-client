@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.9, <4"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -14,7 +14,7 @@ resolution-mode = "lowest-direct"
 
 [[package]]
 name = "aistore"
-version = "1.14.0"
+version = "1.16.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "braceexpand" },
@@ -32,9 +32,9 @@ dependencies = [
     { name = "urllib3", version = "2.5.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "xxhash" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f4/6f/24ccc378a6e95c6dcec6c9e61552fe41e302f03c1225966ead6d07707a76/aistore-1.14.0.tar.gz", hash = "sha256:2dc7cdbab7f1aa653c2e05d621d211ee6e3c3000f5d8cabc6c49b143e35fb92a", size = 98961, upload-time = "2025-05-27T18:08:16.606Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9e/50/8c7d6e74a6c4bea01f61313044f3c21e211dc94bbc690d9386535b4f73c7/aistore-1.16.0.tar.gz", hash = "sha256:8b9fce6150465cc3815a5b7326f427f3066e684bfe5d2fe07f1d0245b7b00b0d", size = 123225, upload-time = "2025-10-06T21:33:58.572Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/86/df/e1015e788e8e52beb4a589420c06647b06dda540183f83e5bf7ec525da5a/aistore-1.14.0-py3-none-any.whl", hash = "sha256:776e2f03ecf1a807d03263b589a66155237a9a916c81d75dfd2e23bbcdf64010", size = 143782, upload-time = "2025-05-27T18:08:14.604Z" },
+    { url = "https://files.pythonhosted.org/packages/99/14/a0324c0da6ed3816197d862b4b372533749b3eb484a2096c76d58e0c790b/aistore-1.16.0-py3-none-any.whl", hash = "sha256:7b1a1a39b6e0748a8eede3a69e5072c7d8a1666e0b660f5ec299664733791131", size = 180380, upload-time = "2025-10-06T21:33:56.336Z" },
 ]
 
 [[package]]
@@ -1262,7 +1262,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aistore", marker = "extra == 'aistore'", specifier = ">=1.14,<2" },
+    { name = "aistore", marker = "extra == 'aistore'", specifier = ">=1.16,<2" },
     { name = "azure-storage-blob", marker = "extra == 'azure-storage-blob'", specifier = ">=12.17,<13" },
     { name = "boto3", marker = "extra == 'boto3'", specifier = ">=1.36,<2" },
     { name = "filelock", specifier = ">=3.14,<4" },

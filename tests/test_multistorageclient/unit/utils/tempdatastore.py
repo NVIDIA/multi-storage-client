@@ -279,3 +279,50 @@ class TemporarySwiftStackBucket(TemporaryAWSS3Bucket):
     def __init__(self, enable_rust_client: bool = False):
         super().__init__(enable_rust_client=enable_rust_client)
         self._profile_config_dict["storage_provider"]["type"] = "s8k"
+
+
+class TemporaryAIStoreBucket(TemporaryDataStore):
+    """
+    This class creates a temporary AIStore bucket. The resulting object can be used as a context manager.
+    On completion of the context or destruction of the temporary data store object,
+    the newly created temporary data store and all its contents are removed.
+    """
+
+    #: Bucket name.
+    _bucket_name: str
+    #: AIStore client.
+    _client: Any
+
+    def __init__(self):
+        from aistore.sdk import Client
+
+        self._bucket_name = str(uuid.uuid4())
+
+        # Backed by local AIStore.
+        #
+        # https://aistore.nvidia.com/docs
+        endpoint = "http://localhost:51080"
+
+        self._client = Client(endpoint=endpoint)
+
+        # Create the bucket
+        self._client.bucket(bck_name=self._bucket_name, provider="ais").create()
+
+        self._profile_config_dict = {
+            "storage_provider": {
+                "type": "ais",
+                "options": {"endpoint": endpoint, "base_path": self._bucket_name, "skip_verify": True},
+            },
+            "caching_enabled": True,
+        }
+
+    def cleanup(self) -> None:
+        try:
+            # Delete all objects in the bucket first
+            bucket = self._client.bucket(bck_name=self._bucket_name, provider="ais")
+            for obj in bucket.list_objects_iter():
+                bucket.object(obj_name=obj.name).delete()
+            # Delete the bucket
+            bucket.delete()
+        except Exception:
+            pass

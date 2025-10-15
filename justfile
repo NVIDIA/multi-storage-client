@@ -56,26 +56,39 @@ stop-storage-systems:
 start-storage-systems: stop-storage-systems
     # Create sandbox directories.
     mkdir --parents .{aistore,azurite,fake-gcs-server,minio}/sandbox
-    # Set up AIStore sandbox directory.
-    cd .aistore && ./prepare_sandbox.sh
-
+    
+    # Set up AIStore cluster (config generation)
+    .aistore/prepare_sandbox.sh
+    
     # Ports used by storage systems:
-    # - AIStore         -> 9080, 10080, 51080
+    # - AIStore         -> 51080 (proxy), 51081 (target)
     # - Azurite         -> 10000-10002
     # - fake-gcs-server -> 4443
     # - MinIO           -> 9000
+    
+    # Start AIStore proxy
+    cd .aistore/sandbox/0 && aisnode -config="config/ais.json" -local_config="config/ais_local.json" -role=proxy -ntargets=1 > log/stdout.log 2>&1 &
+    
+    # Wait for proxy to be ready before starting target
+    timeout 30s bash -c 'until curl -sf "http://localhost:51080/v1/daemon?what=snode" >/dev/null 2>&1; do sleep 0.5; done' || { echo "ERROR: AIStore proxy failed to start"; exit 1; }
+    
+    # Start AIStore target
+    cd .aistore/sandbox/1 && aisnode -config="config/ais.json" -local_config="config/ais_local.json" -role=target > log/stdout.log 2>&1 &
+    
+    # Wait for target to join cluster
+    timeout 30s bash -c 'until [ $(curl -s "http://localhost:51080/v1/cluster?what=smap" 2>/dev/null | grep -o "\"daemon_type\":\"target\"" | wc -l) -ge 1 ]; do sleep 0.5; done' || { echo "ERROR: AIStore target failed to join"; exit 1; }
+    
+    # Wait for AIStore cluster to be operational by creating a bucket and deleting it
+    timeout 60s bash -c 'until curl -sf -X POST "http://localhost:51080/v1/buckets/msc-readiness-check?provider=ais" -H "Content-Type: application/json" -d "{\"action\":\"create-bck\"}" >/dev/null 2>&1; do sleep 1; done' || { echo "ERROR: AIStore cluster not operational"; exit 1; }
+    curl -sf -X DELETE "http://localhost:51080/v1/buckets/msc-readiness-check?provider=ais" -H "Content-Type: application/json" -d '{"action":"destroy-bck"}' >/dev/null 2>&1 || true
 
-    # Start AIStore.
-    cd .aistore/sandbox && aisnode -config ais.json -local_config ais_local.json -loopback -role target &
     # Start Azurite.
     cd .azurite/sandbox && azurite --disableTelemetry --inMemoryPersistence --silent --skipApiVersionCheck &
     # Start fake-gcs-server.
     cd .fake-gcs-server/sandbox && TZ="UTC" fake-gcs-server -backend memory -log-level error -scheme http &
     # Start MinIO.
     cd .minio/sandbox && minio server --config ../minio.yaml --quiet &
-
-    # Wait for AIStore.
-    echo "TODO: AIStore health check"
+    
     # Wait for Azurite.
     timeout 30s bash -c "until netcat --zero localhost 10000; do sleep 1; done"
     # Wait for fake-gcs-server.
