@@ -199,7 +199,7 @@ func (s3Context *s3ContextStruct) deleteFile(deleteFileInput *deleteFileInputStr
 			// Trace nothing
 		case 1:
 			if err != nil {
-				globals.logger.Printf("[WARN] %s.deleteFile(%#v) returning errno: %v", s3Context.backend.dirName, deleteFileInput, err)
+				globals.logger.Printf("[WARN] %s.deleteFile(%#v) returning err: %v", s3Context.backend.dirName, deleteFileInput, err)
 			}
 		default:
 			if err == nil {
@@ -266,7 +266,7 @@ func (s3Context *s3ContextStruct) listDirectory(listDirectoryInput *listDirector
 			// Trace nothing
 		case 1:
 			if err != nil {
-				globals.logger.Printf("[WARN] %s.listDirectory(%#v) returning errno: %v", s3Context.backend.dirName, listDirectoryInput, err)
+				globals.logger.Printf("[WARN] %s.listDirectory(%#v) returning err: %v", s3Context.backend.dirName, listDirectoryInput, err)
 			}
 		case 2:
 			if err == nil {
@@ -278,7 +278,7 @@ func (s3Context *s3ContextStruct) listDirectory(listDirectoryInput *listDirector
 			if err == nil {
 				globals.logger.Printf("[INFO] %s.listDirectory(%#v) returning deleteFileOutput: %#v", s3Context.backend.dirName, listDirectoryInput, listDirectoryOutput)
 			} else {
-				globals.logger.Printf("[WARN] %s.listDirectory(%#v) returning errno: %v", s3Context.backend.dirName, listDirectoryInput, err)
+				globals.logger.Printf("[WARN] %s.listDirectory(%#v) returning err: %v", s3Context.backend.dirName, listDirectoryInput, err)
 			}
 		}
 	}()
@@ -351,7 +351,7 @@ func (s3Context *s3ContextStruct) readFile(readFileInput *readFileInputStruct) (
 			// Trace nothing
 		case 1:
 			if err != nil {
-				globals.logger.Printf("[WARN] %s.readFile(%#v) returning errno: %v", s3Context.backend.dirName, readFileInput, err)
+				globals.logger.Printf("[WARN] %s.readFile(%#v) returning err: %v", s3Context.backend.dirName, readFileInput, err)
 			}
 		case 2:
 			if err == nil {
@@ -363,7 +363,7 @@ func (s3Context *s3ContextStruct) readFile(readFileInput *readFileInputStruct) (
 			if err == nil {
 				globals.logger.Printf("[INFO] %s.readFile(%#v) returning deleteFileOutput: {\"eTag\":\"%s\",len(\"buf\":%v)}", s3Context.backend.dirName, readFileInput, readFileOutput.eTag, len(readFileOutput.buf))
 			} else {
-				globals.logger.Printf("[WARN] %s.readFile(%#v) returning errno: %v", s3Context.backend.dirName, readFileInput, err)
+				globals.logger.Printf("[WARN] %s.readFile(%#v) returning err: %v", s3Context.backend.dirName, readFileInput, err)
 			}
 		}
 	}()
@@ -430,7 +430,7 @@ func (s3Context *s3ContextStruct) statDirectory(statDirectoryInput *statDirector
 			// Trace nothing
 		case 1:
 			if err != nil {
-				globals.logger.Printf("[WARN] %s.statDirectory(%#v) returning errno: %v", s3Context.backend.dirName, statDirectoryInput, err)
+				globals.logger.Printf("[WARN] %s.statDirectory(%#v) returning err: %v", s3Context.backend.dirName, statDirectoryInput, err)
 			}
 		case 2:
 			if err == nil {
@@ -442,7 +442,7 @@ func (s3Context *s3ContextStruct) statDirectory(statDirectoryInput *statDirector
 			if err == nil {
 				globals.logger.Printf("[INFO] %s.statDirectory(%#v) returning deleteFileOutput: %#v", s3Context.backend.dirName, statDirectoryInput, statDirectoryOutput)
 			} else {
-				globals.logger.Printf("[WARN] %s.statDirectory(%#v) returning errno: %v", s3Context.backend.dirName, statDirectoryInput, err)
+				globals.logger.Printf("[WARN] %s.statDirectory(%#v) returning err: %v", s3Context.backend.dirName, statDirectoryInput, err)
 			}
 		}
 	}()
@@ -482,7 +482,7 @@ func (s3Context *s3ContextStruct) statFile(statFileInput *statFileInputStruct) (
 			// Trace nothing
 		case 1:
 			if err != nil {
-				globals.logger.Printf("[WARN] %s.statFile(%#v) returning errno: %v", s3Context.backend.dirName, statFileInput, err)
+				globals.logger.Printf("[WARN] %s.statFile(%#v) returning err: %v", s3Context.backend.dirName, statFileInput, err)
 			}
 		case 2:
 			if err == nil {
@@ -494,7 +494,7 @@ func (s3Context *s3ContextStruct) statFile(statFileInput *statFileInputStruct) (
 			if err == nil {
 				globals.logger.Printf("[INFO] %s.statFile(%#v) returning deleteFileOutput: %#v", s3Context.backend.dirName, statFileInput, statFileOutput)
 			} else {
-				globals.logger.Printf("[WARN] %s.statFile(%#v) returning errno: %v", s3Context.backend.dirName, statFileInput, err)
+				globals.logger.Printf("[WARN] %s.statFile(%#v) returning err: %v", s3Context.backend.dirName, statFileInput, err)
 			}
 		}
 	}()

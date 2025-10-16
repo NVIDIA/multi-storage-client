@@ -14,6 +14,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	defaultRAMMaxTotalObjects      = uint64(10000)
+	defaultRAMMaxTotalObjectSpace  = uint64(1073741824) // 2^30 == 1Gi
+	defaultRAMMaxDirectoryPageSize = uint64(100)
+)
+
 // `parseAny` provides a convenient test for the existence of a
 // key string in the map.
 func parseAny(m map[string]interface{}, key string) (ok bool) {
@@ -221,6 +227,9 @@ func checkConfigFile() (err error) {
 		backendAsMap                                      map[string]interface{}
 		backendAsStructNew                                *backendStruct
 		backendAsStructOld                                *backendStruct
+		backendConfigRAMAsInterface                       interface{}
+		backendConfigRAMAsMap                             map[string]interface{}
+		backendConfigRAMAsStruct                          *backendConfigRAMStruct
 		backendConfigS3AsInterface                        interface{}
 		backendConfigS3AsMap                              map[string]interface{}
 		backendConfigS3AsStruct                           *backendConfigS3Struct
@@ -798,6 +807,43 @@ func checkConfigFile() (err error) {
 		case "OCI":
 			err = fmt.Errorf("backends[%v (\"%s\")] specified currently unsupported backend_type \"%s\"", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName, backendAsStructNew.backendType)
 			return
+		case "RAM":
+			backendConfigRAMAsInterface, ok = backendAsMap["RAM"]
+			if ok {
+				backendConfigRAMAsMap, ok = backendConfigRAMAsInterface.(map[string]interface{})
+				if !ok {
+					err = fmt.Errorf("bad RAM section at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					return
+				}
+
+				backendConfigRAMAsStruct = &backendConfigRAMStruct{}
+
+				backendConfigRAMAsStruct.maxTotalObjects, ok = parseUint64(backendConfigRAMAsMap, "max_total_objects", defaultRAMMaxTotalObjects)
+				if !ok {
+					err = fmt.Errorf("bad RAM.max_total_objects at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					return
+				}
+
+				backendConfigRAMAsStruct.maxTotalObjectSpace, ok = parseUint64(backendConfigRAMAsMap, "max_total_object_space", defaultRAMMaxTotalObjectSpace)
+				if !ok {
+					err = fmt.Errorf("bad RAM.max_total_object_space at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					return
+				}
+
+				backendConfigRAMAsStruct.maxDirectoryPageSize, ok = parseUint64(backendConfigRAMAsMap, "max_directory_page_size", defaultRAMMaxDirectoryPageSize)
+				if !ok {
+					err = fmt.Errorf("bad RAM.max_directory_page_size at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					return
+				}
+			} else {
+				backendConfigRAMAsStruct = &backendConfigRAMStruct{
+					maxTotalObjects:      defaultRAMMaxTotalObjects,
+					maxTotalObjectSpace:  defaultRAMMaxTotalObjectSpace,
+					maxDirectoryPageSize: defaultRAMMaxDirectoryPageSize,
+				}
+			}
+
+			backendAsStructNew.backendTypeSpecifics = backendConfigRAMAsStruct
 		case "S3":
 			backendConfigS3AsInterface, ok = backendAsMap["S3"]
 			if !ok {
@@ -1079,6 +1125,21 @@ func checkConfigFile() (err error) {
 				case "OCI": // not currently supported
 					err = fmt.Errorf("logic error comparing backend_type specifics in backends[\"%s\"] - backend_type == \"OCI\"", dirName)
 					return
+				case "RAM":
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigRAMStruct).maxTotalObjects != backendAsStructNew.backendTypeSpecifics.(*backendConfigRAMStruct).maxTotalObjects {
+						err = fmt.Errorf("cannot change RAM.max_total_objects in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigRAMStruct).maxTotalObjectSpace != backendAsStructNew.backendTypeSpecifics.(*backendConfigRAMStruct).maxTotalObjectSpace {
+						err = fmt.Errorf("cannot change RAM.max_total_object_space in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigRAMStruct).maxDirectoryPageSize != backendAsStructNew.backendTypeSpecifics.(*backendConfigRAMStruct).maxDirectoryPageSize {
+						err = fmt.Errorf("cannot change RAM.max_directory_page_size in backends[\"%s\"]", dirName)
+						return
+					}
 				case "S3":
 					if backendAsStructOld.backendTypeSpecifics.(*backendConfigS3Struct).accessKeyID != backendAsStructNew.backendTypeSpecifics.(*backendConfigS3Struct).accessKeyID {
 						err = fmt.Errorf("cannot change S3.access_key_id in backends[\"%s\"]", dirName)

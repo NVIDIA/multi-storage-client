@@ -44,24 +44,24 @@ path to the configuration file being used.
 
 The MSCP-specific global (i.e. "top-level") settings are described in the following table:
 
-| Setting                         | Units                |                       Default | Description                                                                                                                                                                                                         |
-| :------------------------------ | :------------------- | ----------------------------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| mscp_version                    | decimal              |                             0 | If == 0, the configuration is assumed to follow the [Multi-Storage Client specification](https://nvidia.github.io/multi-storage-client/references/configuration.html); otherwise, must == 1 & the following applies |
-| mountname                       | string               |                   "msc-posix" | Filesystem `name` as it would appear in e.g. `df`                                                                                                                                                                   |
-| mountpoint                      | string               |     ${MSC_MOUNTPOINT:-/mnt} | Filesystem `path` where POSIX representation will appear                                                                                                                                                            |
-| uid                             | decimal              |                (current euid) | UserID of the filesystem root directory                                                                                                                                                                             |
-| gid                             | decimal              |                (current egid) | GroupID of the filesystem root directory                                                                                                                                                                            |
-| dir_perm                        | string (in octal)    |                         "555" | Permission (Mode) Bits (in 3-digit octal form) of the file system root directory                                                                                                                                    |
-| allow_other                     | boolean              |                          true | If true, Permission (Mode) Bits determine who may have access; otherwise only owner and `root` have access                                                                                                          |
-| max_write                       | decimal bytes        |                131072 (128Ki) | Maximum write size Linux VFS will send to FUSE implementatino                                                                                                                                                       |
-| entry_attr_ttl                  | decimal milliseconds |                         10000 | Amount of time Linux VFS is allowed to cache returned metadata (including potentially temporary inode numbers)                                                                                                      |
-| evictable_inode_ttl             | decimal milliseconds |                       1000000 | Amount of time an auto-generated inode will be minimally maintained (should be at least entry_attr_ttl)                                                                                                             |
-| cache_line_size                 | decimal bytes        |                 1048576 (1Mi) | Granularity of caching layer for both file read and write traffic                                                                                                                                                   |
-| cache_lines                     | decimal              |                          4096 | Number of cache lines provisioned                                                                                                                                                                                   |
-| dirty_cache_lines_flush_trigger | decimal              |            80% of cache_lines | If readonly false, background flushes triggered at this threshold                                                                                                                                                   |
-| dirty_cache_lines_max           | decimal              |            90% of cache_lines | If readonly false, flushes will block writes until below this threshold                                                                                                                                             |
-| auto_sighup_interval            | decimal seconds      |                             0 | If != 0, schedules SIGHUP processing                                                                                                                                                                                |
-| backends                        | array                |                               | An array of each object store backend to be presented as a pseudo-directory underneath the `mountpoint1                                                                                                             |
+| Setting                         | Units                |                 Default | Description                                                                                                                                                                                                         |
+| :------------------------------ | :------------------- | ----------------------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| mscp_version                    | decimal              |                       0 | If == 0, the configuration is assumed to follow the [Multi-Storage Client specification](https://nvidia.github.io/multi-storage-client/references/configuration.html); otherwise, must == 1 & the following applies |
+| mountname                       | string               |             "msc-posix" | Filesystem `name` as it would appear in e.g. `df`                                                                                                                                                                   |
+| mountpoint                      | string               | ${MSC_MOUNTPOINT:-/mnt} | Filesystem `path` where POSIX representation will appear                                                                                                                                                            |
+| uid                             | decimal              |          (current euid) | UserID of the filesystem root directory                                                                                                                                                                             |
+| gid                             | decimal              |          (current egid) | GroupID of the filesystem root directory                                                                                                                                                                            |
+| dir_perm                        | string (in octal)    |                   "555" | Permission (Mode) Bits (in 3-digit octal form) of the file system root directory                                                                                                                                    |
+| allow_other                     | boolean              |                    true | If true, Permission (Mode) Bits determine who may have access; otherwise only owner and `root` have access                                                                                                          |
+| max_write                       | decimal bytes        |          131072 (128Ki) | Maximum write size Linux VFS will send to FUSE implementatino                                                                                                                                                       |
+| entry_attr_ttl                  | decimal milliseconds |                   10000 | Amount of time Linux VFS is allowed to cache returned metadata (including potentially temporary inode numbers)                                                                                                      |
+| evictable_inode_ttl             | decimal milliseconds |                 1000000 | Amount of time an auto-generated inode will be minimally maintained (should be at least entry_attr_ttl)                                                                                                             |
+| cache_line_size                 | decimal bytes        |           1048576 (1Mi) | Granularity of caching layer for both file read and write traffic                                                                                                                                                   |
+| cache_lines                     | decimal              |                    4096 | Number of cache lines provisioned                                                                                                                                                                                   |
+| dirty_cache_lines_flush_trigger | decimal              |      80% of cache_lines | If readonly false, background flushes triggered at this threshold                                                                                                                                                   |
+| dirty_cache_lines_max           | decimal              |      90% of cache_lines | If readonly false, flushes will block writes until below this threshold                                                                                                                                             |
+| auto_sighup_interval            | decimal seconds      |                       0 | If != 0, schedules SIGHUP processing                                                                                                                                                                                |
+| backends                        | array                |                         | An array of each object store backend to be presented as a pseudo-directory underneath the `mountpoint1                                                                                                             |
 
 As noted in the above table, the `backends` setting defines an array of object
 store backends to be presented as pseudo-directories underneath the `mountpoint`.
@@ -71,34 +71,47 @@ It is also possible to configure a periodic check for changes to the configurati
 file as well. In any event, each `backend` is described in an array element of
 the `backends` array as described by settings in the following table:
 
-| Setting                         | Units                | Default             | Description                                                                                                              |
-| :------------------------------ | :------------------- | ------------------: | :----------------------------------------------------------------------------------------------------------------------- |
-| dir_name                        | string               |                     | Name of the pseudo-direcory underneath `mountpoint` where this backend's files will appear                               |
-| readonly                        | boolean              |                true | If true, the entire pseudo-directory for this backend will be read only                                                  |
-| flush_on_close                  | boolean              |                true | If true, last close of a modified file will trigger a synchronous flush                                                  |
-| uid                             | decimal              |      (current euid) | UserID of this backend's top-level directory and every element underneath it                                             |
-| gid                             | decimal              |      (current egid) | GroupID of this backend's top-level directory and every element underneath it                                            |
-| dir_perm                        | string (in octal)    | "555"(ro)/"777"(rw) | Permission (Mode) Bits (in 3-digit octal form) of this backend's top-level directory and all directories below it        |
-| file_perm                       | string (in octal)    | "444"(ro)/"666"(rw) | Permission (Mode) Bits (in 3-digit octal form) of files underneath this backend's top level directory                    |
-| directory_page_size             | decimal              |                   0 | Maximum number of directory elements fetched at a time; if == 0, object store endpoint default is used                   |
-| multipart_cache_line_threshold  | decimal              |                 512 | Files that fit in this many cache lines will be uploaded in a single PUT; otherwise, Multi-Part Upload will be performed |
-| upload_part_cache_lines         | decimal              |                  32 | Consecutive cache lines that make up each Multi-Part Upload `part`                                                       |
-| upload_part_concurrency         | decimal              |                  32 | Number of Multi-Part Uploads simultaneously employed for a single file                                                   |
-| bucket_container_name           | string               |                     | Name of `bucket` (a.k.a. `container`) to present via POSIX                                                               |
-| prefix                          | string               |                  "" | Subdirectory inside `bucket_container_name` to narrow what to present via POSIX; if !="", should end with "/"            |
-| trace_level                     | decimal              |                   0 | If == 0, no tracing; if >= 1, errors traced; if >= 2, successes traced; if > 2, success details traced                   |
-| backend_type                    | string               |                     | One of the supported object store backends (i.e. `Azure`, `GCP`, 'OCI`, or `S3` though only `S3` is currently supported) |
-| <backend_type_specific>         | (sub-field section)  |         (see below) | A section containing `backend-type`-specific settings                                                                    |
+| Setting                         | Units                | Default             | Description                                                                                                                                 |
+| :------------------------------ | :------------------- | ------------------: | :------------------------------------------------------------------------------------------------------------------------------------------ |
+| dir_name                        | string               |                     | Name of the pseudo-direcory underneath `mountpoint` where this backend's files will appear                                                  |
+| readonly                        | boolean              |                true | If true, the entire pseudo-directory for this backend will be read only                                                                     |
+| flush_on_close                  | boolean              |                true | If true, last close of a modified file will trigger a synchronous flush                                                                     |
+| uid                             | decimal              |      (current euid) | UserID of this backend's top-level directory and every element underneath it                                                                |
+| gid                             | decimal              |      (current egid) | GroupID of this backend's top-level directory and every element underneath it                                                               |
+| dir_perm                        | string (in octal)    | "555"(ro)/"777"(rw) | Permission (Mode) Bits (in 3-digit octal form) of this backend's top-level directory and all directories below it                           |
+| file_perm                       | string (in octal)    | "444"(ro)/"666"(rw) | Permission (Mode) Bits (in 3-digit octal form) of files underneath this backend's top level directory                                       |
+| directory_page_size             | decimal              |                   0 | Maximum number of directory elements fetched at a time; if == 0, object store endpoint default is used                                      |
+| multipart_cache_line_threshold  | decimal              |                 512 | Files that fit in this many cache lines will be uploaded in a single PUT; otherwise, Multi-Part Upload will be performed                    |
+| upload_part_cache_lines         | decimal              |                  32 | Consecutive cache lines that make up each Multi-Part Upload `part`                                                                          |
+| upload_part_concurrency         | decimal              |                  32 | Number of Multi-Part Uploads simultaneously employed for a single file                                                                      |
+| bucket_container_name           | string               |                     | Name of `bucket` (a.k.a. `container`) to present via POSIX                                                                                  |
+| prefix                          | string               |                  "" | Subdirectory inside `bucket_container_name` to narrow what to present via POSIX; if !="", should end with "/"                               |
+| trace_level                     | decimal              |                   0 | If == 0, no tracing; if >= 1, errors traced; if >= 2, successes traced; if > 2, success details traced                                      |
+| backend_type                    | string               |                     | One of the supported object store backends (i.e. `Azure`, `GCP`, `OCI`, `RAM`, or `S3` (though only `RAM` and `S3` are currently supported) |
+| <backend_type_specific>         | (sub-field section)  |         (see below) | A section containing `backend-type`-specific settings                                                                                       |
 
 Note that precisely one section (specific content appropriate for the
 specified `backup_type`) must be present. The following sub-sections
 describe the `backup_type`-specific settings.
 
+### RAM Backend Configuration
+
+If `backend_type` is specified as "RAM", a sub-section of the `backend`
+configuration (whose name is `RAM`) may be provided if any non-defaults
+are are needed. The RAM-specific settings must be provided (or the
+defaults accepted) as described in the following table:
+
+| Setting                 | Units   | Default         | Description                                                          |
+| :---------------------- | :------ | --------------: | :------------------------------------------------------------------- |
+| max_total_objects       | decimal |           10000 | Cap on the number of objets to support                               |
+| max_total_object_space  | decimal | 1073741824(1Gi) | Cap on the sum of all the object sizes to support                    |
+| max_directory_page_size | decimal |             100 | Cap on the number of ListDirectory returned subdirectories and files |
+
 ### S3 Backend Configuration
 
 If `backend_type` is specified as "S3", a sub-section of the `backend`
 configuration (whose name is `S3`) must be provided. The S3-specific
-settings must beprovided (or the defaults accepted) as described in
+settings must be provided (or the defaults accepted) as described in
 the following table:
 
 | Setting                      | Units                | Default     | Description                                                                 |

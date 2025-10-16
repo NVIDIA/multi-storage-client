@@ -23,6 +23,13 @@ type backendConfigAzureStruct struct{} // not currently supported
 type backendConfigGCPStruct struct{}   // not currently supported
 type backendConfigOCIStruct struct{}   // not currently supported
 
+// `backendConfigRAMStruct` describes a backend's RAM-specific settings.
+type backendConfigRAMStruct struct {
+	maxTotalObjects      uint64 //             JSON/YAML "max_total_objects"            default:10000
+	maxTotalObjectSpace  uint64 //             JSON/YAML "max_total_object_space"       default:1073741824
+	maxDirectoryPageSize uint64 //             JSON/YAML "max_directory_page_size"      default:100
+}
+
 // `backendConfigS3Struct` describes a backend's S3-specific settings.
 type backendConfigS3Struct struct {
 	// From <config-file>
@@ -60,7 +67,7 @@ type backendStruct struct {
 	prefix                      string      // JSON/YAML "prefix"                         default:""
 	traceLevel                  uint64      // JSON/YAML "trace_level"                    default:0
 	backendType                 string      // JSON/YAML "backend_type"                   required(one of "Azure", "GCP", "OCI", "S3")
-	backendTypeSpecifics        interface{} //                                            required(one of *backendConfig{Azure|GCP|OCI|S3}Struct)
+	backendTypeSpecifics        interface{} //                                            required(one of *backendConfig{Azure|GCP|OCI|RAM|S3}Struct)
 	// Runtime state
 	backendPath string                  //     URL incorporating each of the above path-related values
 	context     backendContextIf        //

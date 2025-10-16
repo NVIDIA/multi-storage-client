@@ -1,6 +1,11 @@
 mscp_version: 1
 backends: [
   {
+    dir_name: ram,
+    bucket_container_name: dev,
+    backend_type: RAM,
+  },
+  {
     dir_name: minio,
     bucket_container_name: dev,
     backend_type: S3,

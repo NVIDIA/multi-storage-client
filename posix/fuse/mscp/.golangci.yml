@@ -64,8 +64,10 @@ linters:
     gosec:
       excludes:
         - G115
+        - G401
         - G402
         - G404
+        - G501
     govet:
       disable:
         - fieldalignment
