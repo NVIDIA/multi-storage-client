@@ -297,7 +297,7 @@ class SyncManager:
         # Create the file and result queues.
         if execution_mode == ExecutionMode.LOCAL:
             if num_worker_processes == 1:
-                file_queue = queue.Queue(maxsize=100000)
+                file_queue = queue.Queue()
                 result_queue = queue.Queue()
             else:
                 file_queue = multiprocessing.Queue()
