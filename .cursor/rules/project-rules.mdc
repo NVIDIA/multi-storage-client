@@ -1,0 +1,223 @@
+---
+alwaysApply: true
+description: Unified implementation, documentation, and testing rules for multi-storage-client. Apply to every feature, bugfix, and refactor.
+---
+
+# Purpose & Applicability
+
+**Use this rule for all requests and all code changes.**  
+It combines development, documentation context, and testing requirements. Cursor should follow the workflow and checklists below verbatim.
+
+---
+
+# Repository Map (Authoritative)
+
+**Structure**
+
+- `src/multistorageclient/` — Core Python library for multi-cloud storage abstraction.
+- `rust/` — Rust implementation for performance-critical operations.
+- `posix/fuse/mscp/` — Go-based FUSE filesystem for POSIX file access.
+- `tests/` — Comprehensive test suite (unit, integration, e2e).
+- `docs/` — Sphinx documentation (source in `docs/src/`, built output in `docs/dist/`).
+- `examples/` — Usage examples and quickstart notebooks.
+- `pyproject.toml` — Python project configuration with maturin for Rust binding.
+- `rust/Cargo.toml` — Rust workspace configuration.
+
+**Architecture Overview**
+
+- Multi-language project: **Python (core)** + **Rust (performance)** + **Go (POSIX/FUSE)**.
+- Storage abstraction layer supporting: AWS S3, GCS, Azure Blob, OCI Object Storage, local filesystem.
+- Python bindings to Rust via maturin/PyO3 (`multistorageclient_rust`).
+- POSIX file operations via FUSE mount (Go implementation).
+
+**Key Features**
+
+- Unified API for multi-cloud object storage operations.
+- High-performance operations powered by Rust.
+- POSIX filesystem compatibility via FUSE.
+- Telemetry and metrics collection.
+
+**Technology Stack**
+
+- **Python:** Core library, CSP SDK integration, credential management.
+- **Rust:** Performance-critical operations (maturin + PyO3).
+- **Go:** FUSE filesystem implementation.
+- **Testing:** pytest, integration tests across cloud providers.
+- **Documentation:** Sphinx with autodoc.
+- **Build:** maturin for Python-Rust bindings, just for task automation.
+
+> **Note:** In any path reference like `@/…`, `@/` means "repository root".
+
+---
+
+# Golden Rules (Do These Every Time)
+
+1. **Present a Plan First**
+   - Before editing files, produce a brief plan that lists:
+     - **Files to change** and **how** they will change.
+     - **Testing plan** (unit + integration scope).
+     - **Documentation updates** (which docs to add/update).
+2. **Work from the Repository Root**
+   - For every shell command, assume current dir = repo **root**.
+3. **Code Comments**
+   - **Do not add comments** unless **absolutely required** for clarity or safety (e.g., non-obvious logic, invariants).
+   - **Do not remove existing comments** unless **they are not correct** anymore.
+
+---
+
+# Standard Implementation Workflow (Cursor, follow step-by-step)
+
+## Phase 0 — Understand & Trace
+
+- Map the request to the architecture:
+  - **Python-only change:** Update `src/multistorageclient/` + tests + docs.
+  - **Performance-critical change:** Consider Rust implementation in `rust/src/`.
+  - **POSIX/filesystem change:** Update Go code in `posix/fuse/mscp/`.
+  - **Cross-language change:** Coordinate Python ↔ Rust bindings via maturin.
+- Identify **user-facing** behavior vs **internal** refactor.
+
+## Phase 1 — Plan (Output to user)
+
+- List concrete file edits with rationale (per file).
+- Specify test coverage (unit + any targeted integration).
+- Specify doc additions/changes (paths under `docs/src/`).
+- Call out any **build steps** needed (maturin build, cargo build, etc.).
+- Important: try to fix things at the cause, not the symptom.
+
+## Phase 2 — Environment & Branch
+
+- Ensure you are at repo root. Confirm required tooling is available via Nix.
+- Create a topic branch as needed (follows user/org conventions).
+
+## Phase 3 — Make the Changes (Layered Order)
+
+1. **Rust Performance Layer** (if applicable)
+   - Edit `rust/src/*.rs` for performance-critical operations.
+   - Update type definitions in `rust/src/types.rs`.
+   - Update Python bindings stub `src/multistorageclient_rust/multistorageclient_rust.pyi`.
+2. **Python Core Library**
+   - Update `src/multistorageclient/…` for core functionality.
+   - Maintain backward compatibility unless explicitly versioning a breaking change.
+   - Update credential management, storage providers, iterators as needed.
+3. **Go POSIX/FUSE Layer** (if applicable)
+   - Edit `posix/fuse/mscp/*.go` for filesystem operations.
+4. **Docs & Examples**
+   - Update `docs/src/…` (Sphinx rst files).
+   - Update `examples/…` and `examples/quickstart.ipynb` to reflect changes.
+5. **Configuration**
+   - Update `pyproject.toml` if dependencies change.
+   - Update `rust/Cargo.toml` if Rust dependencies change.
+
+> Keep code comments minimal; only for non-obvious design decisions or delicate invariants.
+
+## Phase 4 — Unit Tests (Fast Feedback)
+
+- **Always** add/update unit tests that reflect the change:
+  - Python: `tests/test_multistorageclient/`
+  - Rust: `rust/src/*.rs` (inline tests with `#[cfg(test)]`), or `tests/test_multistorageclient_rust/`
+  - Go: `posix/fuse/mscp/*_test.go`
+- **Run all unit tests** as needed:
+  - Python: `just run-unit-tests`
+  - Rust: `cd rust && cargo test`
+  - Go: `cd posix/fuse/mscp && go test ./...`
+- Fix failures and repeat until **green**.
+
+## Phase 5 — Integration Tests
+
+- **Always** add/update integration tests for cross-component or cloud provider changes.
+- Integration tests are more complex to run so I will run them manually.
+
+## Phase 6 — Linting & Quality Gates
+
+- After implementation + tests: run quality checks.
+  - Run: `just analyze`
+- All checks must pass. If anything fails, fix and re-run.
+
+## Phase 7 — Deliverables & Handoff
+
+- Produce:
+  - **Implementation Plan** (final version with any deltas).
+  - **Code diffs** across layers (Rust(if applicable) ➜ Python ➜ Go(if applicable)).
+  - **Tests** (unit + integration) and their outcomes.
+  - **Docs updated** (list specific files under `docs/src/…` and examples).
+  - **Build verification** (maturin build succeeds, imports work).
+- Ready for review.
+
+---
+
+# Testing Policy (Authoritative)
+
+## 1) Unit Tests
+
+- Add/update unit tests for **every** change (feature or bugfix).
+- Prefer focused tests that validate specific behavior.
+- Commands:
+  - **Python:** `just run-unit-tests`
+  - **Rust:** `cd rust && cargo test`
+  - **Go:** `cd posix/fuse/mscp && go test ./...`
+  - **All tests:** `just build`
+- On failure: inspect error, fix implementation, re-run until pass.
+
+## 2) Integration Tests
+
+- Let me know if needed and I will run them manually.
+
+---
+
+# Documentation Requirements
+
+- For any externally visible change:
+  - Update `docs/src/user_guide/*.rst` to reflect new behavior, APIs, or examples.
+  - Update `docs/src/references/*.rst` if API signatures change.
+  - Update `examples/quickstart.ipynb` when SDK usage patterns change.
+  - Rebuild docs with `just document` and verify output.
+- Keep documentation concise, correct, and in sync with implementation.
+- Include docstrings in Python code (Sphinx autodoc will extract them).
+
+---
+
+# Command Reference (Do Not Run Outside Repo Root)
+
+- **Build everything:** `just build`
+- **Develop install (Python+Rust):** `just prepare-toolchain`
+- **Build release wheel:** `just package`
+- **Run Python tests:** `just run-unit-tests`
+- **Run Rust tests:** `cd rust && cargo test`
+- **Run Go tests:** `cd posix/fuse/mscp && go test ./...`
+- **Lint Python:** `just analyze`
+- **Build docs:** `just document`
+
+---
+
+# PR / Change Submission Checklist (Cursor must verify)
+
+- [ ] Plan posted (files to change, tests, docs) and agreed.
+- [ ] Implemented changes with **minimal necessary comments** only.
+- [ ] If Rust signatures changed, updated **`multistorageclient_rust.pyi`**.
+- [ ] Unit tests updated/added and **passing** (Python, Rust, Go as applicable).
+- [ ] Integration tests updated/added (documented if not run).
+- [ ] Docs and examples updated (`docs/src/`, `examples/`).
+- [ ] `just build` succeeds.
+- [ ] Final summary posted (what changed, how tested, any operational notes).
+
+---
+
+# Architecture-Specific Notes
+
+## Python ↔ Rust Interop
+
+- Python calls Rust via `multistorageclient_rust` module (built with maturin).
+- Rust exposes functions via PyO3 `#[pyfunction]` and `#[pyclass]`.
+- Keep type conversions explicit and efficient.
+- Update `.pyi` stub file when Rust API changes for proper type hints.
+
+## Multi-Cloud Abstraction
+
+- Core abstraction: unified API across AWS S3, GCS, Azure, OCI, local FS.
+- Credential management: support multiple auth methods per provider.
+- Error handling: translate provider-specific errors to unified exceptions.
+
+## Performance Considerations
+
+- Use Rust for performance critical operations (e.g. upload/download).
+- Use Python for API orchestration and cloud SDK integration.
