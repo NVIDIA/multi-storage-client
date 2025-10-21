@@ -20,6 +20,7 @@ import string
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -27,6 +28,8 @@ import pytest
 import yaml
 
 import multistorageclient as msc
+from multistorageclient.commands.cli.actions.ls import LsAction
+from multistorageclient.types import ObjectMetadata
 
 
 def create_test_files_with_random_structure(
@@ -528,3 +531,35 @@ def test_config_validate_command_json_format(run_cli):
         assert "profiles" in config
         assert "json-test" in config["profiles"]
         assert config["profiles"]["json-test"] == test_config["profiles"]["json-test"]
+
+
+def test_ls_command_with_path_prefix():
+    action = LsAction()
+
+    result = action._remove_path_prefix(
+        "dir1/dir2",
+        ObjectMetadata(key="dir1/dir2/file1.txt", type="file", last_modified=datetime.now(), content_length=100),
+    )
+    assert result == "file1.txt"
+
+    result = action._remove_path_prefix(
+        "dir1/",
+        ObjectMetadata(key="dir1/dir2/file1.txt", type="file", last_modified=datetime.now(), content_length=100),
+    )
+    assert result == "dir2/file1.txt"
+
+    result = action._remove_path_prefix(
+        "/etc", ObjectMetadata(key="etc/hosts", type="file", last_modified=datetime.now(), content_length=100)
+    )
+    assert result == "hosts"
+
+    result = action._remove_path_prefix(
+        "/etc/hosts", ObjectMetadata(key="etc/hosts", type="file", last_modified=datetime.now(), content_length=100)
+    )
+    assert result == "/etc/hosts"
+
+    result = action._remove_path_prefix(
+        "dir1/dir2/file1.txt",
+        ObjectMetadata(key="dir1/dir2/file1.txt", type="file", last_modified=datetime.now(), content_length=100),
+    )
+    assert result == "dir1/dir2/file1.txt"

@@ -66,20 +66,27 @@ The ``msc ls`` command lists files and directories in a storage service. It supp
 .. code-block:: text
   :caption: List files
 
-  $ msc ls msc://profile/data/
-  Last Modified           Size  Name
-  2025-04-15 00:22:40  5242880  msc://profile/data/data-5MB.bin
-  2025-04-15 00:23:36     1496  msc://profile/data/model.pt
+  $ msc ls msc://profile/data/ --human-readable
+  +---------------------+-------+----------------+
+  | Last Modified       |  Size | Name           |
+  +---------------------+-------+----------------+
+  | 2025-04-15 00:22:40 | 5.0MB | data-5MB.bin   |
+  | 2025-04-15 00:23:36 | 1.5KB | model.pt       |
+  |                     |       | subdir/        |
+  +---------------------+-------+----------------+
 
 .. code-block:: text
   :caption: List files recursively
 
-  $ msc ls --recursive msc://profile/data/
-  Last Modified           Size  Name
-  2025-04-15 00:22:40  5242880  msc://profile/data/data-5MB.bin
-  2025-04-15 00:23:36     1496  msc://profile/data/model.pt
-  2025-04-15 00:24:15     2048  msc://profile/data/subdir/config.json
-  2025-04-15 00:25:30     1024  msc://profile/data/subdir/logs/error.log
+  $ msc ls msc://profile/data/ --human-readable --recursive
+  +---------------------+-------+-----------------------+
+  | Last Modified       |  Size | Name                  |
+  +---------------------+-------+-----------------------+
+  | 2025-04-15 00:22:40 | 5.0MB | data-5MB.bin          |
+  | 2025-04-15 00:23:36 | 1.5KB | model.pt              |
+  | 2025-04-15 00:24:15 | 2.0KB | subdir/config.json    |
+  | 2025-04-15 00:25:30 | 1.0KB | subdir/logs/error.log |
+  +---------------------+-------+-----------------------+
 
 .. note::
    The ``--attribute-filter-expression`` option allows you to filter files based on their metadata attributes.

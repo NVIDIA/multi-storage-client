@@ -20,6 +20,7 @@ import sys
 from prettytable import PrettyTable
 
 import multistorageclient as msc
+from multistorageclient.types import AWARE_DATETIME_MIN, ObjectMetadata
 
 from .action import Action
 
@@ -107,6 +108,32 @@ class LsAction(Action):
   msc ls "msc://profile/data/" --show-attributes --human-readable
 """
 
+    def _remove_path_prefix(self, path: str, metadata: ObjectMetadata) -> str:
+        """
+        Remove the path prefix from the metadata key to produce a relative path for display.
+
+        Handles both POSIX-style paths (starting with '/') and object storage paths.
+        The method normalizes path separators and strips the base path prefix to show
+        only the relative portion of the key in the listing output.
+        """
+        # Object storage path
+        if path == metadata.key:
+            return path
+
+        # POSIX path always starts with a slash
+        if path.startswith("/"):
+            if path.lstrip("/") == metadata.key:
+                return path
+            else:
+                path = path.lstrip("/")
+
+        key = metadata.key.removeprefix(path)
+
+        if key.startswith("/"):
+            key = key.lstrip("/")
+
+        return key
+
     def _format_size(self, size_bytes: int) -> str:
         """Format file size in human-readable format."""
         float_size_bytes = float(size_bytes)
@@ -116,15 +143,24 @@ class LsAction(Action):
             float_size_bytes = float_size_bytes / 1024
         return f"{float_size_bytes:.1f}PB"
 
-    def _format_listing(self, metadata, human_readable: bool = False, show_attributes: bool = False) -> list:
+    def _format_listing(
+        self, path: str, metadata: ObjectMetadata, human_readable: bool = False, show_attributes: bool = False
+    ) -> list:
         """Format file information in listing format."""
-        if not metadata:
-            return ["-", "-", "-"] if not show_attributes else ["-", "-", "-", "-"]
-
-        size_str = (
-            self._format_size(metadata.content_length or 0) if human_readable else str(metadata.content_length or 0)
+        date_str = (
+            metadata.last_modified.strftime("%Y-%m-%d %H:%M:%S") if metadata.last_modified > AWARE_DATETIME_MIN else ""
         )
-        date_str = metadata.last_modified.strftime("%Y-%m-%d %H:%M:%S") if metadata.last_modified else "-"
+
+        if date_str == "":
+            size_str = ""
+        else:
+            size_str = (
+                self._format_size(metadata.content_length or 0) if human_readable else str(metadata.content_length or 0)
+            )
+
+        key = self._remove_path_prefix(path, metadata)
+        if metadata.type == "directory":
+            key = key + "/"
 
         if show_attributes:
             # Format attributes dictionary as JSON string
@@ -133,18 +169,20 @@ class LsAction(Action):
             except TypeError:
                 # the dict can have None values, which can't be serialized to JSON, so we just convert to string
                 attributes_str = str(metadata.metadata) if metadata.metadata else ""
-            return [date_str, size_str, metadata.key, attributes_str]
+            return [date_str, size_str, key, attributes_str]
         else:
-            return [date_str, size_str, metadata.key]
+            return [date_str, size_str, key]
 
     def run(self, args: argparse.Namespace) -> int:
         try:
             if args.debug:
                 print("Arguments:", vars(args))
 
-            # Use msc.list with proper parameters
-            results_iter = msc.list(
-                url=args.path,
+            client, path = msc.resolve_storage_client(args.path)
+
+            # Use client.list with proper parameters
+            results_iter = client.list(
+                path=path,
                 start_after=None,  # Could be added as CLI argument in future
                 end_at=None,  # Could be added as CLI argument in future
                 include_directories=not args.recursive,
@@ -157,7 +195,7 @@ class LsAction(Action):
             count = 0
             total_size = 0
             for obj_metadata in results_iter:
-                row = self._format_listing(obj_metadata, args.human_readable, args.show_attributes)
+                row = self._format_listing(path, obj_metadata, args.human_readable, args.show_attributes)
                 table_data.append(row)
                 count += 1
                 total_size += obj_metadata.content_length or 0
