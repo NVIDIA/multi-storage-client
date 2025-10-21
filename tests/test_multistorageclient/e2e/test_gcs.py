@@ -71,3 +71,23 @@ def test_gcs_hmac_shortcuts(profile_name, config_suffix):
 def test_gcs_hmac_storage_client(profile_name, config_suffix):
     profile = profile_name + config_suffix
     common.test_storage_client(profile)
+
+
+@pytest.mark.parametrize("profile_name", ["test-gcp-public-data"])
+@pytest.mark.parametrize("config_suffix", ["", "-rust"])
+def test_gcs_public_bucket(profile_name, config_suffix):
+    """Test accessing a public GCS bucket without credentials."""
+    profile = profile_name + config_suffix
+    client, _ = msc.resolve_storage_client(f"msc://{profile}/")
+
+    # List objects in the public bucket and get the first one
+    first_object = None
+    for obj in client.list():
+        first_object = obj
+        break
+
+    assert first_object is not None, "Should be able to list objects from public bucket"
+
+    # Read the first object to verify read access
+    data = client.read(first_object.key)
+    assert len(data) > 0, "Should be able to read data from public bucket"

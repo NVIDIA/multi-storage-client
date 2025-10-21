@@ -22,6 +22,7 @@ from collections.abc import Callable, Iterator
 from typing import IO, Any, Optional, TypeVar, Union
 
 from google.api_core.exceptions import GoogleAPICallError, NotFound
+from google.auth import credentials as auth_credentials
 from google.auth import identity_pool
 from google.cloud import storage
 from google.cloud.storage import transfer_manager
@@ -137,6 +138,7 @@ class GoogleStorageProvider(BaseStorageProvider):
         self._project_id = project_id
         self._endpoint_url = endpoint_url
         self._credentials_provider = credentials_provider
+        self._skip_signature = kwargs.get("skip_signature", False)
         self._gcs_client = self._create_gcs_client()
         self._multipart_threshold = kwargs.get("multipart_threshold", DEFAULT_MULTIPART_THRESHOLD)
         self._multipart_chunksize = kwargs.get("multipart_chunksize", DEFAULT_MULTIPART_CHUNKSIZE)
@@ -160,6 +162,14 @@ class GoogleStorageProvider(BaseStorageProvider):
         client_options = {}
         if self._endpoint_url:
             client_options["api_endpoint"] = self._endpoint_url
+
+        # Use anonymous credentials for public buckets when skip_signature is enabled
+        if self._skip_signature:
+            return storage.Client(
+                project=self._project_id,
+                credentials=auth_credentials.AnonymousCredentials(),
+                client_options=client_options,
+            )
 
         if self._credentials_provider:
             if isinstance(self._credentials_provider, GoogleIdentityPoolCredentialsProvider):
@@ -203,6 +213,9 @@ class GoogleStorageProvider(BaseStorageProvider):
             configs["service_account_path"] = os.getenv("GOOGLE_SERVICE_ACCOUNT")
         if os.getenv("GOOGLE_SERVICE_ACCOUNT_PATH"):
             configs["service_account_path"] = os.getenv("GOOGLE_SERVICE_ACCOUNT_PATH")
+
+        if self._skip_signature:
+            configs["skip_signature"] = True
 
         if rust_client_options:
             if "application_credentials" in rust_client_options:
