@@ -97,6 +97,18 @@ WORKDIR /
 
 RUN rm -rf /multi-storage-client
 
+FROM buildable AS minio
+
+WORKDIR /
+
+RUN git clone --single-branch --depth 1 https://github.com/minio/minio.git
+
+WORKDIR /minio
+
+RUN go build
+
+RUN mkdir /data
+
 FROM buildable AS ais
 
 WORKDIR /root/.aws
