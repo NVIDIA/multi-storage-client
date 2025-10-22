@@ -20,6 +20,7 @@ import json
 import logging
 import multiprocessing
 import multiprocessing.managers
+import os
 import threading
 from typing import Any, Literal, Optional, Union
 
@@ -142,6 +143,20 @@ class Telemetry:
         self._tracer_provider_cache = {}
         self._tracer_provider_cache_lock = threading.Lock()
         self._tracer_cache = {}
+        self._tracer_cache_lock = threading.Lock()
+
+    def _reinitialize_instance_locks_after_fork(self) -> None:
+        """
+        Reinitialize internal locks after fork to prevent deadlocks.
+
+        This method reinitializes all internal locks. Caches are kept as they
+        may still be valid, but locks must be fresh to avoid deadlocks.
+        """
+        self._meter_provider_cache_lock = threading.Lock()
+        self._meter_cache_lock = threading.Lock()
+        self._gauge_cache_lock = threading.Lock()
+        self._counter_cache_lock = threading.Lock()
+        self._tracer_provider_cache_lock = threading.Lock()
         self._tracer_cache_lock = threading.Lock()
 
     def meter_provider(self, config: dict[str, Any]) -> Optional[api_metrics.MeterProvider]:
@@ -477,6 +492,28 @@ _TELEMETRY_PROXIES: dict[str, Telemetry] = {}
 #
 # Forking isn't expected to happen while this is held (may lead to a deadlock).
 _TELEMETRY_PROXIES_LOCK = threading.Lock()
+
+
+def _reinitialize_locks_after_fork() -> None:
+    """
+    Reinitialize telemetry locks after fork to prevent deadlocks.
+
+    This function is called automatically after a fork to reinitialize all locks.
+    Caches and instances are kept as they may still be valid, but locks must be
+    fresh to avoid deadlocks.
+    """
+    global _TELEMETRY, _TELEMETRY_LOCK, _TELEMETRY_PROXIES_LOCK
+
+    _TELEMETRY_LOCK = threading.Lock()
+    _TELEMETRY_PROXIES_LOCK = threading.Lock()
+
+    # Reinitialize LOCAL mode telemetry instance locks if it exists
+    if _TELEMETRY is not None:
+        _TELEMETRY._reinitialize_instance_locks_after_fork()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reinitialize_locks_after_fork)
 
 
 class TelemetryMode(enum.Enum):

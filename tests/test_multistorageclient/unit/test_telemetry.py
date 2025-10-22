@@ -334,3 +334,114 @@ def test_telemetry_init_automatic_child(daemon: bool) -> None:
     process = context.Process(target=_test_telemetry_init_automatic_child_parent, kwargs={"daemon": daemon})
     process.start()
     process.join(timeout=10)
+
+
+def test_telemetry_fork_safety_locks_reinitialized() -> None:
+    """Test that telemetry locks are reinitialized after fork to prevent deadlocks."""
+    import os
+
+    pid = os.fork()
+    if pid == 0:
+        try:
+            # In child process, try to acquire the locks
+            # This should succeed if the locks were properly reinitialized
+            acquired = telemetry._TELEMETRY_LOCK.acquire(timeout=1.0)
+            if not acquired:
+                print("Failed to acquire _TELEMETRY_LOCK in child process - deadlock detected!")
+                os._exit(1)
+            telemetry._TELEMETRY_LOCK.release()
+
+            acquired = telemetry._TELEMETRY_PROXIES_LOCK.acquire(timeout=1.0)
+            if not acquired:
+                print("Failed to acquire _TELEMETRY_PROXIES_LOCK in child process - deadlock detected!")
+                os._exit(1)
+            telemetry._TELEMETRY_PROXIES_LOCK.release()
+
+            os._exit(0)
+        except Exception as e:
+            print(f"Child process error: {e}")
+            os._exit(1)
+    else:
+        _, status = os.waitpid(pid, 0)
+        assert os.WIFEXITED(status)
+        assert os.WEXITSTATUS(status) == 0
+
+
+def test_telemetry_fork_safety_with_lock_held() -> None:
+    """Test telemetry fork safety when lock is held during fork (worst case scenario)."""
+    import os
+
+    def worker_with_lock():
+        """Worker that holds lock and then forks."""
+        # Acquire the _TELEMETRY_LOCK
+        with telemetry._TELEMETRY_LOCK:
+            # Fork while holding the lock
+            pid = os.fork()
+            if pid == 0:
+                try:
+                    # Child should be able to acquire the lock (it was reinitialized)
+                    acquired = telemetry._TELEMETRY_LOCK.acquire(timeout=1.0)
+                    if not acquired:
+                        os._exit(1)
+
+                    telemetry._TELEMETRY_LOCK.release()
+                    os._exit(0)
+                except Exception:
+                    os._exit(1)
+            else:
+                _, status = os.waitpid(pid, 0)
+                return os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
+
+    result = worker_with_lock()
+    assert result, "Child process should be able to acquire telemetry lock after fork"
+
+
+def test_telemetry_local_instance_fork_safety() -> None:
+    """Test that LOCAL mode telemetry instance locks are reinitialized after fork."""
+    import os
+
+    # Create a LOCAL mode telemetry instance
+    telemetry_instance = telemetry.init(mode=telemetry.TelemetryMode.LOCAL)
+    assert not isinstance(telemetry_instance, BaseProxy)
+
+    # Store reference to verify it's the same instance in parent
+    assert telemetry._TELEMETRY is telemetry_instance
+
+    pid = os.fork()
+    if pid == 0:
+        try:
+            # Verify the telemetry instance still exists in child (not reset)
+            assert telemetry._TELEMETRY is not None
+
+            # Try to acquire all internal locks - should succeed if reinitialized
+            locks_to_test = [
+                ("_meter_provider_cache_lock", telemetry._TELEMETRY._meter_provider_cache_lock),
+                ("_meter_cache_lock", telemetry._TELEMETRY._meter_cache_lock),
+                ("_gauge_cache_lock", telemetry._TELEMETRY._gauge_cache_lock),
+                ("_counter_cache_lock", telemetry._TELEMETRY._counter_cache_lock),
+                ("_tracer_provider_cache_lock", telemetry._TELEMETRY._tracer_provider_cache_lock),
+                ("_tracer_cache_lock", telemetry._TELEMETRY._tracer_cache_lock),
+            ]
+
+            for lock_name, lock in locks_to_test:
+                acquired = lock.acquire(timeout=1.0)
+                if not acquired:
+                    print(f"Failed to acquire {lock_name} in child process - deadlock detected!")
+                    os._exit(1)
+                lock.release()
+
+            # Verify the instance can still be used (no deadlock)
+            # Note: caches are inherited, not cleared
+            assert telemetry._TELEMETRY is not None
+
+            os._exit(0)
+        except Exception as e:
+            print(f"Child process error: {e}")
+            os._exit(1)
+    else:
+        _, status = os.waitpid(pid, 0)
+        assert os.WIFEXITED(status)
+        assert os.WEXITSTATUS(status) == 0
+
+        # Verify parent still has its telemetry instance
+        assert telemetry._TELEMETRY is telemetry_instance

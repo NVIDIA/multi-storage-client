@@ -29,6 +29,48 @@ _TELEMETRY_PROVIDER: Optional[Callable[[], Telemetry]] = None
 _TELEMETRY_PROVIDER_LOCK = threading.Lock()
 _STORAGE_CLIENT_CACHE: dict[str, StorageClient] = {}
 _STORAGE_CLIENT_CACHE_LOCK = threading.Lock()
+_PROCESS_ID = os.getpid()
+
+
+def _reinitialize_after_fork() -> None:
+    """
+    Reinitialize module state after fork to ensure fork-safety.
+
+    This function is called automatically after a fork to:
+    1. Clear the storage client cache (cached clients may have invalid state)
+    2. Reinitialize locks (parent's lock state must not be inherited)
+    3. Update process ID tracking
+
+    Note: The telemetry provider is intentionally inherited by child processes,
+    only its lock is reinitialized.
+    """
+    global _STORAGE_CLIENT_CACHE, _STORAGE_CLIENT_CACHE_LOCK
+    global _TELEMETRY_PROVIDER_LOCK
+    global _PROCESS_ID
+
+    _STORAGE_CLIENT_CACHE.clear()
+    _STORAGE_CLIENT_CACHE_LOCK = threading.Lock()
+    # we don't need to reset telemetry provider as it supposed to be top level Python function
+    _TELEMETRY_PROVIDER_LOCK = threading.Lock()
+    _PROCESS_ID = os.getpid()
+
+
+def _check_and_reinitialize_if_forked() -> None:
+    """
+    Check if the current process is a fork and reinitialize if needed.
+
+    This provides fork-safety for systems where os.register_at_fork is not available
+    or as a fallback mechanism.
+    """
+    global _PROCESS_ID
+
+    current_pid = os.getpid()
+    if current_pid != _PROCESS_ID:
+        _reinitialize_after_fork()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reinitialize_after_fork)
 
 
 def get_telemetry_provider() -> Optional[Callable[[], Telemetry]]:
@@ -163,6 +205,9 @@ def resolve_storage_client(url: str) -> tuple[StorageClient, str]:
     Path mapping defined in the MSC configuration are also applied before creating implicit profiles.
     This allows for explicit mappings between source paths and destination MSC profiles.
 
+    This function is fork-safe: after a fork, the cache is automatically cleared and new client instances
+    are created in the child process to avoid sharing stale connections or file descriptors.
+
     :param url: The storage location, which can be:
                 - A URL in the format ``msc://profile/path`` for object storage.
                 - A local file system path (absolute POSIX path) or a ``file://`` URL.
@@ -175,6 +220,8 @@ def resolve_storage_client(url: str) -> tuple[StorageClient, str]:
     """
     global _STORAGE_CLIENT_CACHE
     global _STORAGE_CLIENT_CACHE_LOCK
+
+    _check_and_reinitialize_if_forked()
 
     # Normalize the path for msc:/ prefix due to pathlib.Path('msc://')
     if url.startswith("msc:/") and not url.startswith("msc://"):

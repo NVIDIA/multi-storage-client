@@ -1262,3 +1262,169 @@ def test_msc_glob_with_attribute_filter_expression(
                 msc.delete(f"{MSC_PROTOCOL}test/{base_path}", recursive=True)
             except Exception:
                 pass
+
+
+def test_fork_safety_cache_and_locks_reinitialized(file_storage_config):
+    """Test that storage client cache and locks are cleared/reinitialized after fork."""
+    # Clear the instance cache to start fresh
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    # Set a telemetry provider in parent
+    def dummy_telemetry_provider():
+        return None
+
+    msc.set_telemetry_provider(dummy_telemetry_provider)  # type: ignore
+    assert msc.get_telemetry_provider() is dummy_telemetry_provider
+
+    # Create a storage client in the parent process
+    parent_client, _ = msc.resolve_storage_client("/tmp/test")
+    assert len(msc.shortcuts._STORAGE_CLIENT_CACHE) == 1
+    parent_pid = os.getpid()
+
+    pid = os.fork()
+    if pid == 0:
+        try:
+            child_pid = os.getpid()
+            assert child_pid != parent_pid
+
+            # Verify cache was cleared in child
+            assert len(msc.shortcuts._STORAGE_CLIENT_CACHE) == 0
+
+            # Verify telemetry provider is inherited (not cleared) in child
+            assert msc.get_telemetry_provider() is dummy_telemetry_provider
+
+            # Verify process ID was updated
+            assert msc.shortcuts._PROCESS_ID == child_pid
+
+            # Verify locks were reinitialized by trying to acquire them
+            acquired = msc.shortcuts._STORAGE_CLIENT_CACHE_LOCK.acquire(timeout=1.0)
+            if not acquired:
+                print("Failed to acquire cache lock in child process - deadlock detected!")
+                os._exit(1)
+            msc.shortcuts._STORAGE_CLIENT_CACHE_LOCK.release()
+
+            acquired = msc.shortcuts._TELEMETRY_PROVIDER_LOCK.acquire(timeout=1.0)
+            if not acquired:
+                print("Failed to acquire telemetry lock in child process - deadlock detected!")
+                os._exit(1)
+            msc.shortcuts._TELEMETRY_PROVIDER_LOCK.release()
+
+            # Verify we can create a new client in the child
+            child_client, _ = msc.resolve_storage_client("/tmp/test")
+            assert child_client is not parent_client
+            assert len(msc.shortcuts._STORAGE_CLIENT_CACHE) == 1
+
+            os._exit(0)
+        except Exception as e:
+            print(f"Child process error: {e}")
+            os._exit(1)
+    else:
+        _, status = os.waitpid(pid, 0)  # wait for child process to exit
+        assert os.WIFEXITED(status)  # check if child process exited normally
+        assert os.WEXITSTATUS(status) == 0  # check if child process exited with status 0
+
+        # Verify parent cache is still intact
+        assert len(msc.shortcuts._STORAGE_CLIENT_CACHE) == 1
+        assert msc.shortcuts._STORAGE_CLIENT_CACHE["default"] is parent_client
+
+        # Verify parent still has the telemetry provider
+        assert msc.get_telemetry_provider() is dummy_telemetry_provider
+
+    # Clean up
+    msc.set_telemetry_provider(None)
+
+
+def test_fork_safety_resolve_storage_client_works(file_storage_config):
+    """Test that resolve_storage_client works correctly after fork."""
+    # Clear the instance cache to start fresh
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    # Create a client in parent
+    parent_client, parent_path = msc.resolve_storage_client("msc://default/tmp/parent_file.txt")
+    assert parent_path == "tmp/parent_file.txt"
+
+    pid = os.fork()
+    if pid == 0:
+        try:
+            # In child, resolve_storage_client should work without deadlock
+            child_client, child_path = msc.resolve_storage_client("msc://default/tmp/child_file.txt")
+            assert child_path == "tmp/child_file.txt"
+
+            # Verify it's a different instance than parent
+            assert child_client is not parent_client
+
+            # Verify subsequent calls return the same instance
+            child_client2, _ = msc.resolve_storage_client("msc://default/tmp/another_file.txt")
+            assert child_client2 is child_client
+
+            os._exit(0)
+        except Exception as e:
+            print(f"Child process error: {e}")
+            os._exit(1)
+    else:
+        _, status = os.waitpid(pid, 0)  # wait for child process to exit
+        assert os.WIFEXITED(status)  # check if child process exited normally
+        assert os.WEXITSTATUS(status) == 0  # check if child process exited with status 0
+
+
+def test_fork_safety_with_lock_held(file_storage_config):
+    """Test fork safety when lock is held during fork (simulates worst case)."""
+    # Clear the instance cache to start fresh
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    def worker_with_lock():
+        """Worker that holds lock and then forks."""
+        # Acquire the lock
+        with msc.shortcuts._STORAGE_CLIENT_CACHE_LOCK:
+            # Fork while holding the lock
+            pid = os.fork()
+            if pid == 0:
+                try:
+                    # Child should be able to acquire the lock (it was reinitialized)
+                    acquired = msc.shortcuts._STORAGE_CLIENT_CACHE_LOCK.acquire(timeout=1.0)
+                    if not acquired:
+                        os._exit(1)
+
+                    msc.shortcuts._STORAGE_CLIENT_CACHE_LOCK.release()
+                    os._exit(0)
+                except Exception:
+                    os._exit(1)
+            else:
+                _, status = os.waitpid(pid, 0)
+                return os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
+
+    result = worker_with_lock()
+    assert result, "Child process should be able to acquire lock after fork"
+
+
+def test_fork_safety_multiple_forks(file_storage_config):
+    """Test that fork safety works across multiple forks."""
+    # Clear the instance cache to start fresh
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    # Create a client in parent
+    parent_client, _ = msc.resolve_storage_client("/tmp/test")
+    assert len(msc.shortcuts._STORAGE_CLIENT_CACHE) == 1
+
+    for i in range(3):
+        pid = os.fork()
+        if pid == 0:
+            try:
+                # Verify cache was cleared
+                assert len(msc.shortcuts._STORAGE_CLIENT_CACHE) == 0
+
+                # Create a new client
+                child_client, _ = msc.resolve_storage_client(f"/tmp/test_{i}")
+                assert child_client is not parent_client
+
+                os._exit(0)
+            except Exception as e:
+                print(f"Child process {i} error: {e}")
+                os._exit(1)
+        else:
+            _, status = os.waitpid(pid, 0)  # wait for child process to exit
+            assert os.WIFEXITED(status)  # check if child process exited normally
+            assert os.WEXITSTATUS(status) == 0  # check if child process exited with status 0
+
+    # Verify parent cache is still intact
+    assert len(msc.shortcuts._STORAGE_CLIENT_CACHE) == 1
