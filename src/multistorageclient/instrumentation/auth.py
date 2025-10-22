@@ -45,7 +45,9 @@ class AzureAccessTokenProvider(AccessTokenProvider):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         try:
-            self.azure_scopes = self.auth_options["scopes"]
+            # scopes should be a list to avoid assertion error in msal
+            # Ref: https://github.com/AzureAD/microsoft-authentication-library-for-python/blob/1.31.1/msal/application.py#L1429
+            self.azure_scopes = list(self.auth_options["scopes"])
         except KeyError as e:
             logger.error("Error: 'scopes' key is missing in auth options")
             raise e
