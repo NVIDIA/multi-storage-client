@@ -723,6 +723,7 @@ class StorageClient:
         :param patterns: PatternList for include/exclude filtering. If None, all files are included.
         :param preserve_source_attributes: Whether to preserve source file metadata attributes during synchronization.
             When False (default), only file content is copied. When True, custom metadata attributes are also preserved.
+
             .. warning::
                 **Performance Impact**: When enabled without a ``metadata_provider`` configured, this will make a HEAD
                 request for each object to retrieve attributes, which can significantly impact performance on large-scale

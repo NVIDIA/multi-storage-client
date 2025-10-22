@@ -352,7 +352,7 @@ class ObjectFile(IO):
                         source_version=source_version,
                     ):
                         # The process writes the file to a temporary file and move it to the cache directory.
-                        temp_file_path = self._get_temp_file_path()
+                        temp_file_path = self._generate_temp_file_path()
                         self._storage_client.download_file(self._remote_path, temp_file_path)
                         self._cache_manager.set(self._remote_path, temp_file_path, source_version)
 
@@ -369,15 +369,15 @@ class ObjectFile(IO):
         finally:
             self._download_complete.set()
 
-    def _get_temp_file_path(self) -> str:
+    def _generate_temp_file_path(self) -> str:
         """
-        Generate a temporary file path.
+        Generate a temporary file path. If the cache is enabled, the file will be stored in the cache directory.
         """
-        temp_file = tempfile.NamedTemporaryFile(mode=self._mode, delete=False)
-        temp_file_path = temp_file.name
-        temp_file.close()
-        os.unlink(temp_file_path)
-        return temp_file_path
+        if self._cache_manager:
+            return self._cache_manager.generate_temp_file_path()
+
+        with tempfile.NamedTemporaryFile(mode=self._mode) as temp_file:
+            return temp_file.name
 
     def _download_fileobj(self) -> None:
         """
@@ -554,7 +554,7 @@ class ObjectFile(IO):
             self._storage_client.upload_file(self._remote_path, self._file, attributes=self._attributes)
         elif self._mode in ("a", "ab"):
             # The append mode downloads the file first (if applicable), then upload it again with the appended content.
-            temp_file_path = self._get_temp_file_path()
+            temp_file_path = self._generate_temp_file_path()
             try:
                 self._storage_client.download_file(self._remote_path, temp_file_path)
                 if os.path.getsize(temp_file_path) > self._memory_load_limit:

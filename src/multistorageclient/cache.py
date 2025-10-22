@@ -66,7 +66,9 @@ class CacheManager:
         # Create cache directory if it doesn't exist, this is used to download files
         self._cache_dir = os.path.abspath(cache_config.location or default_location)
         self._cache_path = os.path.join(self._cache_dir, self._profile)
+        self._cache_temp_dir = os.path.join(self._cache_dir, f".tmp-{self._profile}")
         os.makedirs(self._cache_path, exist_ok=True)
+        os.makedirs(self._cache_temp_dir, exist_ok=True)
 
         # Check if eviction policy is valid for this backend
         if not self._check_if_eviction_policy_is_valid(cache_config.eviction_policy.policy):
@@ -82,6 +84,13 @@ class CacheManager:
         # Populate cache with existing files in the cache directory
         self.refresh_cache()
 
+    def generate_temp_file_path(self) -> str:
+        """
+        Create a temporary file in the cache temporary directory.
+        """
+        with tempfile.NamedTemporaryFile(mode="wb", dir=self._cache_temp_dir, prefix=".") as temp_file:
+            return temp_file.name
+
     def _check_if_eviction_policy_is_valid(self, eviction_policy: str) -> bool:
         """Check if the eviction policy is valid for this backend.
 
@@ -91,13 +100,11 @@ class CacheManager:
         return eviction_policy.lower() in {LRU, FIFO, RANDOM, NO_EVICTION}
 
     def get_file_size(self, file_path: str) -> Optional[int]:
-        """Get the size of the file in bytes.
+        """
+        Get the size of the file in bytes.
 
-        Args:
-            file_path: Path to the file
-
-        Returns:
-            Optional[int]: Size of the file in bytes, or None if file doesn't exist
+        :param file_path: Path to the file
+        :return: Size of the file in bytes, or None if file doesn't exist
         """
         try:
             return os.path.getsize(file_path)
@@ -105,10 +112,10 @@ class CacheManager:
             return None
 
     def delete_file(self, file_path: str) -> None:
-        """Delete a file from the cache directory.
+        """
+        Delete a file from the cache directory.
 
-        Args:
-            file_path: Path to the file relative to cache directory
+        :param file_path: Path to the file relative to cache directory
         """
         try:
             # Construct absolute path using cache directory as base

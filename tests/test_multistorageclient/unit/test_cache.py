@@ -249,6 +249,14 @@ def test_cache_manager_open_file(profile_name, tmpdir, cache_manager):
         assert result.name == os.path.join(tmpdir, profile_name, key)
 
 
+def test_cache_manager_generate_temp_file_path(cache_manager):
+    """Test that CacheManager can generate a temporary file path."""
+    temp_file_path = cache_manager.generate_temp_file_path()
+    assert os.path.exists(temp_file_path) is False
+    assert cache_manager._cache_temp_dir in temp_file_path
+    assert cache_manager._cache_temp_dir == os.path.join(cache_manager._cache_dir, f".tmp-{cache_manager._profile}")
+
+
 def test_cache_manager_refresh_cache(tmpdir):
     """Test that cache refresh works correctly."""
     # Use a separate cache directory for this test
