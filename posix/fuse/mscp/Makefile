@@ -1,9 +1,10 @@
-all: fmt build lint
+all: fmt build lint test
 
 GIT_TAG := $(shell git describe --tags --always --dirty)
-LDFLAGS := -ldflags="-X 'main.GitTag=$(GIT_TAG)'"
+BUILD_LDFLAGS := -ldflags="-X 'main.GitTag=$(GIT_TAG)'"
+TEST_LDFLAGS := -ldflags="-X 'github.com/NVIDIA/multi-storage-client/posix/fuse/mscp.GitTag=$(GIT_TAG)'"
 
-.PHONY: all artifacts build clean fmt lint lint-update publish replace install uninstall
+.PHONY: all artifacts build clean cover fmt lint lint-update publish test install uninstall
 
 # Installation directories (can be overridden)
 PREFIX ?= /usr/local
@@ -12,16 +13,19 @@ SBINDIR ?= /usr/sbin
 LOGDIR ?= /var/log/msc
 
 artifacts:
-	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o msc-posix-linux-amd64 .
-	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o msc-posix-linux-arm64 .
+	GOOS=linux GOARCH=amd64 go build $(BUILD_LDFLAGS) -o msc-posix-linux-amd64 .
+	GOOS=linux GOARCH=arm64 go build $(BUILD_LDFLAGS) -o msc-posix-linux-arm64 .
 
 build:
-	go build $(LDFLAGS) .
+	go build $(BUILD_LDFLAGS) .
 
 clean:
 	go clean -i .
 	rm -f msc-posix-linux-amd64
 	rm -f msc-posix-linux-arm64
+
+cover:
+	go test $(TEST_LDFLAGS) -cover
 
 fmt:
 	go fmt .
@@ -39,6 +43,9 @@ publish:
 	 docker cp mscp_built:/msc-posix-linux-amd64 ./msc-posix-linux-amd64 && \
 	 docker cp mscp_built:/msc-posix-linux-arm64 ./msc-posix-linux-arm64 && \
 	 docker rm mscp_built
+
+test:
+	go test $(TEST_LDFLAGS)
 
 install: build
 	@echo "Installing MSC to $(PREFIX)"

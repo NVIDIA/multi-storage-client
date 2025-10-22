@@ -23,10 +23,14 @@ func main() {
 		displayHelp         bool
 		displayHelpMatchSet map[string]struct{}
 		err                 error
+		osArgs              []string // Copy of os.Args so that initGlobals() can be passed a modified set of arguments in testing/benchmarking
 		signalChan          chan os.Signal
 		signalReceived      os.Signal
 		ticker              *time.Ticker
 	)
+
+	osArgs = make([]string, len(os.Args))
+	_ = copy(osArgs, os.Args)
 
 	displayHelpMatchSet = make(map[string]struct{})
 	displayHelpMatchSet["-?"] = struct{}{}
@@ -38,17 +42,17 @@ func main() {
 	displayHelpMatchSet["-version"] = struct{}{}
 	displayHelpMatchSet["--version"] = struct{}{}
 
-	switch len(os.Args) {
+	switch len(osArgs) {
 	case 1:
 		displayHelp = false
 	case 2:
-		_, displayHelp = displayHelpMatchSet[os.Args[1]]
+		_, displayHelp = displayHelpMatchSet[osArgs[1]]
 	default:
 		displayHelp = true
 	}
 
 	if displayHelp {
-		fmt.Printf("usage: %s [{-?|-h|help|-help|--help|-v|-version|--version} | <config-file>]\n", os.Args[0])
+		fmt.Printf("usage: %s [{-?|-h|help|-help|--help|-v|-version|--version} | <config-file>]\n", osArgs[0])
 		fmt.Printf("  where a <config-file>, ending in suffix .yaml, .yml, or .json is to be found while searching:\n")
 		fmt.Printf("    ${MSC_CONFIG}\n")
 		fmt.Printf("    ${XDG_CONFIG_HOME}/msc/config.{yaml|yml|json}\n")
@@ -61,7 +65,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	initGlobals()
+	initGlobals(osArgs)
 
 	err = checkConfigFile()
 	if err != nil {

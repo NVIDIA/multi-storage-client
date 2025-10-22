@@ -222,7 +222,7 @@ type globalsStruct struct {
 var globals globalsStruct
 
 // `initGlobals` initializes the globalsStruct and locates the configuration file's path.
-func initGlobals() {
+func initGlobals(osArgs []string) {
 	var (
 		homeEnv                         = os.Getenv("HOME")
 		mscConfigEnv                    = os.Getenv("MSC_CONFIG")
@@ -234,16 +234,16 @@ func initGlobals() {
 
 	globals.logger = log.New(os.Stdout, "", log.Ldate|log.Ltime) // |log.Lmicroseconds|log.Lshortfile
 
-	globals.logger.Printf("Starting %s version %s", os.Args[0], GitTag)
+	globals.logger.Printf("Starting %s version %s", osArgs[0], GitTag)
 
 	globals.backendsSkipped = make(map[string]struct{})
 
 	for {
-		if len(os.Args) == 2 {
-			if !checkForFile(os.Args[1]) {
-				globals.logger.Fatalf("file not readable at \"%s\"", os.Args[1])
+		if len(osArgs) == 2 {
+			if !checkForFile(osArgs[1]) {
+				globals.logger.Fatalf("file not readable at \"%s\"", osArgs[1])
 			}
-			globals.configFilePath = os.Args[1]
+			globals.configFilePath = osArgs[1]
 			break
 		}
 

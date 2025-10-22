@@ -320,174 +320,174 @@ func checkConfigFile() (err error) {
 	switch config.mscpVersion {
 	case MSCPVersionPythonCompatibility:
 		profilesAsInterface, ok = configFileMap["profiles"]
-		if !ok {
-			err = errors.New("missing profiles section")
-			return
-		}
-		profilesAsMap, ok = profilesAsInterface.(map[string]interface{})
-		if !ok {
-			err = errors.New("bad profiles section")
-			return
-		}
-
-		backendsAsInterfaceSlice = make([]interface{}, 0, len(profilesAsMap))
-
-		for profileName, profileAsInterface = range profilesAsMap {
-			profileAsMap, ok = profileAsInterface.(map[string]interface{})
+		if ok && (profilesAsInterface != nil) {
+			profilesAsMap, ok = profilesAsInterface.(map[string]interface{})
 			if !ok {
-				err = fmt.Errorf("bad profile \"%s\"", profileName)
+				err = errors.New("bad profiles section")
 				return
 			}
 
-			storageProviderAsInterface, ok = profileAsMap["storage_provider"]
-			if !ok {
-				// Skip this one as storageProvider not supported
-				_, ok = globals.backendsSkipped[profileName]
+			backendsAsInterfaceSlice = make([]interface{}, 0, len(profilesAsMap))
+
+			for profileName, profileAsInterface = range profilesAsMap {
+				profileAsMap, ok = profileAsInterface.(map[string]interface{})
 				if !ok {
-					globals.logger.Printf("[INFO] skipping profile \"%s\" with no storage_provider", profileName)
-					globals.backendsSkipped[profileName] = struct{}{}
+					err = fmt.Errorf("bad profile \"%s\"", profileName)
+					return
 				}
-				continue
-			}
-			storageProviderAsMap, ok = storageProviderAsInterface.(map[string]interface{})
-			if !ok {
-				err = fmt.Errorf("bad profile \"%s\" storage_provider", profileName)
-				return
-			}
 
-			storageProviderType, ok = parseString(storageProviderAsMap, "type", nil)
-			if !ok {
-				err = fmt.Errorf("missing or bad profile \"%s\" storage_provider type", profileName)
-				return
-			}
-			switch storageProviderType {
-			case "s3":
-				// This one is supported
-			case "s8k":
-				// This is compatible with "s3", so simply operate as if storageProviderType == "s3"
-			default:
-				// Skip this one as storageProviderType not currently supported
-				_, ok = globals.backendsSkipped[profileName]
+				storageProviderAsInterface, ok = profileAsMap["storage_provider"]
 				if !ok {
-					globals.logger.Printf("[INFO] skipping profile \"%s\" with storage_provider \"%s\"", profileName, storageProviderType)
-					globals.backendsSkipped[profileName] = struct{}{}
+					// Skip this one as storageProvider not supported
+					_, ok = globals.backendsSkipped[profileName]
+					if !ok {
+						globals.logger.Printf("[INFO] skipping profile \"%s\" with no storage_provider", profileName)
+						globals.backendsSkipped[profileName] = struct{}{}
+					}
+					continue
 				}
-				continue
-			}
-
-			storageProviderOptionsAsInterface, ok = storageProviderAsMap["options"]
-			if !ok {
-				err = fmt.Errorf("missing profile \"%s\" storage_provider options", profileName)
-				return
-			}
-			storageProviderOptionsAsMap, ok = storageProviderOptionsAsInterface.(map[string]interface{})
-			if !ok {
-				err = fmt.Errorf("bad profile \"%s\" storage_provider options", profileName)
-				return
-			}
-
-			storageProviderOptionsBasePath, ok = parseString(storageProviderOptionsAsMap, "base_path", nil)
-			if !ok {
-				err = fmt.Errorf("missing or bad profile \"%s\" storage_provider options base_path", profileName)
-				return
-			}
-			storageProviderOptionsEndpointURL, ok = parseString(storageProviderOptionsAsMap, "endpoint_url", nil)
-			if !ok {
-				err = fmt.Errorf("missing or bad profile \"%s\" storage_provider options endpoint_url", profileName)
-				return
-			}
-			storageProviderOptionsRegionName, ok = parseString(storageProviderOptionsAsMap, "region_name", nil)
-			if !ok {
-				err = fmt.Errorf("missing or bad profile \"%s\" storage_provider options region_name", profileName)
-				return
-			}
-
-			credentialsProviderAsInterface, ok = profileAsMap["credentials_provider"]
-			if !ok {
-				err = fmt.Errorf("missing profile \"%s\" credentials_provider", profileName)
-				return
-			}
-			credentialsProviderAsMap, ok = credentialsProviderAsInterface.(map[string]interface{})
-			if !ok {
-				err = fmt.Errorf("bad profile \"%s\" credentials_provider", profileName)
-				return
-			}
-
-			credentialsProviderType, ok = parseString(credentialsProviderAsMap, "type", nil)
-			if !ok {
-				err = fmt.Errorf("missing or bad profile \"%s\" credentials_provider type", profileName)
-				return
-			}
-			if credentialsProviderType != "S3Credentials" {
-				err = fmt.Errorf("bad profile \"%s\" storage_provider type (\"%s\") - must be \"S3Credentials\"", profileName, credentialsProviderType)
-				return
-			}
-
-			credentialsProviderOptionsAsInterface, ok = credentialsProviderAsMap["options"]
-			if !ok {
-				err = fmt.Errorf("missing profile \"%s\" credentials_provider options", profileName)
-				return
-			}
-			credentialsProviderOptionsAsMap, ok = credentialsProviderOptionsAsInterface.(map[string]interface{})
-			if !ok {
-				err = fmt.Errorf("bad profile \"%s\" credentials_provider options", profileName)
-				return
-			}
-
-			credentialsProviderOptionsAccessKey, ok = parseString(credentialsProviderOptionsAsMap, "access_key", nil)
-			if !ok {
-				err = fmt.Errorf("missing or bad profile \"%s\" credentials_provider options region_name", profileName)
-				return
-			}
-			credentialsProviderOptionsSecretKey, ok = parseString(credentialsProviderOptionsAsMap, "secret_key", nil)
-			if !ok {
-				err = fmt.Errorf("missing or bad profile \"%s\" credentials_provider options region_name", profileName)
-				return
-			}
-
-			storageProviderOptionsBasePathSplit = strings.Split(storageProviderOptionsBasePath, "/")
-			switch len(storageProviderOptionsBasePathSplit) {
-			case 0:
-				err = fmt.Errorf("bad profile \"%s\" storage_provider options base_path [empty]", profileName)
-				return
-			case 1:
-				storageProviderOptionsBasePathBucketContainerName = storageProviderOptionsBasePathSplit[0]
-				storageProviderOptionsBasePathPrefix = ""
-			default:
-				storageProviderOptionsBasePathBucketContainerName = storageProviderOptionsBasePathSplit[0]
-				storageProviderOptionsBasePathPrefix = strings.Join(storageProviderOptionsBasePathSplit[1:], "/")
-				if !strings.HasSuffix(storageProviderOptionsBasePathPrefix, "/") {
-					storageProviderOptionsBasePathPrefix += "/"
+				storageProviderAsMap, ok = storageProviderAsInterface.(map[string]interface{})
+				if !ok {
+					err = fmt.Errorf("bad profile \"%s\" storage_provider", profileName)
+					return
 				}
+
+				storageProviderType, ok = parseString(storageProviderAsMap, "type", nil)
+				if !ok {
+					err = fmt.Errorf("missing or bad profile \"%s\" storage_provider type", profileName)
+					return
+				}
+				switch storageProviderType {
+				case "s3":
+					// This one is supported
+				case "s8k":
+					// This is compatible with "s3", so simply operate as if storageProviderType == "s3"
+				default:
+					// Skip this one as storageProviderType not currently supported
+					_, ok = globals.backendsSkipped[profileName]
+					if !ok {
+						globals.logger.Printf("[INFO] skipping profile \"%s\" with storage_provider \"%s\"", profileName, storageProviderType)
+						globals.backendsSkipped[profileName] = struct{}{}
+					}
+					continue
+				}
+
+				storageProviderOptionsAsInterface, ok = storageProviderAsMap["options"]
+				if !ok {
+					err = fmt.Errorf("missing profile \"%s\" storage_provider options", profileName)
+					return
+				}
+				storageProviderOptionsAsMap, ok = storageProviderOptionsAsInterface.(map[string]interface{})
+				if !ok {
+					err = fmt.Errorf("bad profile \"%s\" storage_provider options", profileName)
+					return
+				}
+
+				storageProviderOptionsBasePath, ok = parseString(storageProviderOptionsAsMap, "base_path", nil)
+				if !ok {
+					err = fmt.Errorf("missing or bad profile \"%s\" storage_provider options base_path", profileName)
+					return
+				}
+				storageProviderOptionsEndpointURL, ok = parseString(storageProviderOptionsAsMap, "endpoint_url", nil)
+				if !ok {
+					err = fmt.Errorf("missing or bad profile \"%s\" storage_provider options endpoint_url", profileName)
+					return
+				}
+				storageProviderOptionsRegionName, ok = parseString(storageProviderOptionsAsMap, "region_name", nil)
+				if !ok {
+					err = fmt.Errorf("missing or bad profile \"%s\" storage_provider options region_name", profileName)
+					return
+				}
+
+				credentialsProviderAsInterface, ok = profileAsMap["credentials_provider"]
+				if !ok {
+					err = fmt.Errorf("missing profile \"%s\" credentials_provider", profileName)
+					return
+				}
+				credentialsProviderAsMap, ok = credentialsProviderAsInterface.(map[string]interface{})
+				if !ok {
+					err = fmt.Errorf("bad profile \"%s\" credentials_provider", profileName)
+					return
+				}
+
+				credentialsProviderType, ok = parseString(credentialsProviderAsMap, "type", nil)
+				if !ok {
+					err = fmt.Errorf("missing or bad profile \"%s\" credentials_provider type", profileName)
+					return
+				}
+				if credentialsProviderType != "S3Credentials" {
+					err = fmt.Errorf("bad profile \"%s\" storage_provider type (\"%s\") - must be \"S3Credentials\"", profileName, credentialsProviderType)
+					return
+				}
+
+				credentialsProviderOptionsAsInterface, ok = credentialsProviderAsMap["options"]
+				if !ok {
+					err = fmt.Errorf("missing profile \"%s\" credentials_provider options", profileName)
+					return
+				}
+				credentialsProviderOptionsAsMap, ok = credentialsProviderOptionsAsInterface.(map[string]interface{})
+				if !ok {
+					err = fmt.Errorf("bad profile \"%s\" credentials_provider options", profileName)
+					return
+				}
+
+				credentialsProviderOptionsAccessKey, ok = parseString(credentialsProviderOptionsAsMap, "access_key", nil)
+				if !ok {
+					err = fmt.Errorf("missing or bad profile \"%s\" credentials_provider options access_key", profileName)
+					return
+				}
+				credentialsProviderOptionsSecretKey, ok = parseString(credentialsProviderOptionsAsMap, "secret_key", nil)
+				if !ok {
+					err = fmt.Errorf("missing or bad profile \"%s\" credentials_provider options secret_key", profileName)
+					return
+				}
+
+				storageProviderOptionsBasePathSplit = strings.Split(storageProviderOptionsBasePath, "/")
+				switch len(storageProviderOptionsBasePathSplit) {
+				case 0:
+					err = fmt.Errorf("bad profile \"%s\" storage_provider options base_path [empty]", profileName)
+					return
+				case 1:
+					storageProviderOptionsBasePathBucketContainerName = storageProviderOptionsBasePathSplit[0]
+					storageProviderOptionsBasePathPrefix = ""
+				default:
+					storageProviderOptionsBasePathBucketContainerName = storageProviderOptionsBasePathSplit[0]
+					storageProviderOptionsBasePathPrefix = strings.Join(storageProviderOptionsBasePathSplit[1:], "/")
+					if !strings.HasSuffix(storageProviderOptionsBasePathPrefix, "/") {
+						storageProviderOptionsBasePathPrefix += "/"
+					}
+				}
+
+				storageProviderOptionsEndpointURLParsed, err = url.Parse(storageProviderOptionsEndpointURL)
+				if err != nil {
+					err = fmt.Errorf("bad profile \"%s\" storage_provider options endpoint [Err: %v]", profileName, err)
+					return
+				}
+				if (storageProviderOptionsEndpointURLParsed.Scheme != "http") && (storageProviderOptionsEndpointURLParsed.Scheme != "https") {
+					err = fmt.Errorf("bad profile \"%s\" storage_provider options endpoint [Scheme: \"%s\", must be either \"http\" or \"https\"", profileName, storageProviderOptionsEndpointURLParsed.Scheme)
+					return
+				}
+
+				backendConfigS3AsMap = make(map[string]interface{})
+
+				backendConfigS3AsMap["access_key_id"] = credentialsProviderOptionsAccessKey
+				backendConfigS3AsMap["secret_access_key"] = credentialsProviderOptionsSecretKey
+				backendConfigS3AsMap["region"] = storageProviderOptionsRegionName
+				backendConfigS3AsMap["endpoint"] = storageProviderOptionsEndpointURLParsed.Host + storageProviderOptionsEndpointURLParsed.Path
+				backendConfigS3AsMap["allow_http"] = (storageProviderOptionsEndpointURLParsed.Scheme == "http")
+
+				backendAsMap = make(map[string]interface{})
+
+				backendAsMap["dir_name"] = profileName
+				backendAsMap["bucket_container_name"] = storageProviderOptionsBasePathBucketContainerName
+				backendAsMap["prefix"] = storageProviderOptionsBasePathPrefix
+				backendAsMap["backend_type"] = "S3"
+				backendAsMap["S3"] = backendConfigS3AsMap
+
+				backendsAsInterfaceSlice = append(backendsAsInterfaceSlice, backendAsMap)
 			}
-
-			storageProviderOptionsEndpointURLParsed, err = url.Parse(storageProviderOptionsEndpointURL)
-			if err != nil {
-				err = fmt.Errorf("bad profile \"%s\" storage_provider options endpoint [Err: %v]", profileName, err)
-				return
-			}
-			if (storageProviderOptionsEndpointURLParsed.Scheme != "http") && (storageProviderOptionsEndpointURLParsed.Scheme != "https") {
-				err = fmt.Errorf("bad profile \"%s\" storage_provider options endpoint [Scheme: \"%s\", must be either \"http\" or \"https\"", profileName, storageProviderOptionsEndpointURLParsed.Scheme)
-				return
-			}
-
-			backendConfigS3AsMap = make(map[string]interface{})
-
-			backendConfigS3AsMap["access_key_id"] = credentialsProviderOptionsAccessKey
-			backendConfigS3AsMap["secret_access_key"] = credentialsProviderOptionsSecretKey
-			backendConfigS3AsMap["region"] = storageProviderOptionsRegionName
-			backendConfigS3AsMap["endpoint"] = storageProviderOptionsEndpointURLParsed.Host + storageProviderOptionsEndpointURLParsed.Path
-			backendConfigS3AsMap["allow_http"] = (storageProviderOptionsEndpointURLParsed.Scheme == "http")
-
-			backendAsMap = make(map[string]interface{})
-
-			backendAsMap["dir_name"] = profileName
-			backendAsMap["bucket_container_name"] = storageProviderOptionsBasePathBucketContainerName
-			backendAsMap["prefix"] = storageProviderOptionsBasePathPrefix
-			backendAsMap["backend_type"] = "S3"
-			backendAsMap["S3"] = backendConfigS3AsMap
-
-			backendsAsInterfaceSlice = append(backendsAsInterfaceSlice, backendAsMap)
+		} else { // (configFileMap["profiles"] returned !ok) || (profilesAsInterface == nil)
+			backendsAsInterfaceSlice = make([]interface{}, 0)
 		}
 
 		configFileMapTranslated = make(map[string]interface{})
@@ -662,293 +662,291 @@ func checkConfigFile() (err error) {
 	}
 
 	backendsAsInterface, ok = configFileMap["backends"]
-	if !ok {
-		err = errors.New("missing backends section")
-		return
-	}
-	backendsAsInterfaceSlice, ok = backendsAsInterface.([]interface{})
-	if !ok {
-		err = errors.New("bad backends section")
-		return
-	}
-
-	for backendsAsInterfaceSliceIndex, backendAsInterface = range backendsAsInterfaceSlice {
-		backendAsMap, ok = backendAsInterface.(map[string]interface{})
+	if ok {
+		backendsAsInterfaceSlice, ok = backendsAsInterface.([]interface{})
 		if !ok {
 			err = errors.New("bad backends section")
 			return
 		}
 
-		backendAsStructNew = &backendStruct{}
+		for backendsAsInterfaceSliceIndex, backendAsInterface = range backendsAsInterfaceSlice {
+			backendAsMap, ok = backendAsInterface.(map[string]interface{})
+			if !ok {
+				err = errors.New("bad backends section")
+				return
+			}
 
-		backendAsStructNew.dirName, ok = parseString(backendAsMap, "dir_name", nil)
-		if !ok {
-			err = fmt.Errorf("missing or bad dir_name at backends[%v]", backendsAsInterfaceSliceIndex)
-			return
-		}
-		if (backendAsStructNew.dirName == DotDirEntryBasename) || (backendAsStructNew.dirName == DotDotDirEntryBasename) {
-			err = fmt.Errorf("dir_name cannot be either \"%s\" or \"%s\"", DotDirEntryBasename, DotDotDirEntryBasename)
-			return
-		}
+			backendAsStructNew = &backendStruct{}
 
-		backendAsStructNew.readOnly, ok = parseBool(backendAsMap, "readonly", true)
-		if !ok {
-			err = fmt.Errorf("bad readonly at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-			return
-		}
+			backendAsStructNew.dirName, ok = parseString(backendAsMap, "dir_name", nil)
+			if !ok {
+				err = fmt.Errorf("missing or bad dir_name at backends[%v]", backendsAsInterfaceSliceIndex)
+				return
+			}
+			if (backendAsStructNew.dirName == DotDirEntryBasename) || (backendAsStructNew.dirName == DotDotDirEntryBasename) {
+				err = fmt.Errorf("dir_name cannot be either \"%s\" or \"%s\"", DotDirEntryBasename, DotDotDirEntryBasename)
+				return
+			}
 
-		backendAsStructNew.flushOnClose, ok = parseBool(backendAsMap, "flush_on_close", true)
-		if !ok {
-			err = fmt.Errorf("bad flush_on_close at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-			return
-		}
+			backendAsStructNew.readOnly, ok = parseBool(backendAsMap, "readonly", true)
+			if !ok {
+				err = fmt.Errorf("bad readonly at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
 
-		backendAsStructNew.uid, ok = parseUint64(backendAsMap, "uid", uint64(os.Geteuid()))
-		if !ok {
-			err = fmt.Errorf("bad uid at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-			return
-		}
+			backendAsStructNew.flushOnClose, ok = parseBool(backendAsMap, "flush_on_close", true)
+			if !ok {
+				err = fmt.Errorf("bad flush_on_close at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
 
-		backendAsStructNew.gid, ok = parseUint64(backendAsMap, "gid", uint64(os.Getegid()))
-		if !ok {
-			err = fmt.Errorf("bad gid at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-			return
-		}
+			backendAsStructNew.uid, ok = parseUint64(backendAsMap, "uid", uint64(os.Geteuid()))
+			if !ok {
+				err = fmt.Errorf("bad uid at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
 
-		if backendAsStructNew.readOnly {
-			dirPerm, ok = parseString(backendAsMap, "dir_perm", "555")
-		} else {
-			dirPerm, ok = parseString(backendAsMap, "dir_perm", "777")
-		}
-		if !ok {
-			err = fmt.Errorf("bad dir_perm at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-			return
-		}
-		backendAsStructNew.dirPerm, err = strconv.ParseUint(dirPerm, 8, 64)
-		if (err != nil) || (backendAsStructNew.dirPerm > 0o777) {
-			err = fmt.Errorf("bad dir_perm at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-			return
-		}
+			backendAsStructNew.gid, ok = parseUint64(backendAsMap, "gid", uint64(os.Getegid()))
+			if !ok {
+				err = fmt.Errorf("bad gid at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
 
-		if backendAsStructNew.readOnly {
-			filePerm, ok = parseString(backendAsMap, "file_perm", "444")
-		} else {
-			filePerm, ok = parseString(backendAsMap, "file_perm", "666")
-		}
-		if !ok {
-			err = fmt.Errorf("bad file_perm at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-			return
-		}
-		backendAsStructNew.filePerm, err = strconv.ParseUint(filePerm, 8, 64)
-		if (err != nil) || (backendAsStructNew.filePerm > 0o777) {
-			err = fmt.Errorf("bad file_perm at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-			return
-		}
-
-		backendAsStructNew.directoryPageSize, ok = parseUint64(backendAsMap, "directory_page_size", uint64(0))
-		if !ok {
-			err = fmt.Errorf("bad directory_page_size at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-			return
-		}
-
-		backendAsStructNew.multiPartCacheLineThreshold, ok = parseUint64(backendAsMap, "multipart_cache_line_threshold", uint64(512))
-		if !ok {
-			err = fmt.Errorf("bad multipart_cache_line_threshold at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-			return
-		}
-
-		backendAsStructNew.uploadPartCacheLines, ok = parseUint64(backendAsMap, "upload_part_cache_lines", uint64(32))
-		if !ok {
-			err = fmt.Errorf("bad upload_part_cache_lines at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-			return
-		}
-
-		backendAsStructNew.uploadPartConcurrency, ok = parseUint64(backendAsMap, "upload_part_concurrency", uint64(32))
-		if !ok {
-			err = fmt.Errorf("bad upload_part_concurrency at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-			return
-		}
-
-		backendAsStructNew.bucketContainerName, ok = parseString(backendAsMap, "bucket_container_name", nil)
-		if !ok {
-			err = fmt.Errorf("missing or bad bucket_container_name at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-			return
-		}
-
-		backendAsStructNew.prefix, ok = parseString(backendAsMap, "prefix", "")
-		if !ok {
-			err = fmt.Errorf("bad prefix at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-			return
-		}
-		if (backendAsStructNew.prefix != "") && !strings.HasSuffix(backendAsStructNew.prefix, "/") {
-			err = fmt.Errorf("bad prefix at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-			return
-		}
-
-		backendAsStructNew.traceLevel, ok = parseUint64(backendAsMap, "trace_level", uint64(0))
-		if !ok {
-			err = fmt.Errorf("bad trace_level at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-			return
-		}
-
-		backendAsStructNew.backendType, ok = parseString(backendAsMap, "backend_type", nil)
-		if !ok {
-			err = fmt.Errorf("missing or bad bucket_container_name at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-			return
-		}
-
-		switch backendAsStructNew.backendType {
-		case "Azure":
-			err = fmt.Errorf("backends[%v (\"%s\")] specified currently unsupported backend_type \"%s\"", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName, backendAsStructNew.backendType)
-			return
-		case "GCP":
-			err = fmt.Errorf("backends[%v (\"%s\")] specified currently unsupported backend_type \"%s\"", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName, backendAsStructNew.backendType)
-			return
-		case "OCI":
-			err = fmt.Errorf("backends[%v (\"%s\")] specified currently unsupported backend_type \"%s\"", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName, backendAsStructNew.backendType)
-			return
-		case "RAM":
-			backendConfigRAMAsInterface, ok = backendAsMap["RAM"]
-			if ok {
-				backendConfigRAMAsMap, ok = backendConfigRAMAsInterface.(map[string]interface{})
-				if !ok {
-					err = fmt.Errorf("bad RAM section at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-					return
-				}
-
-				backendConfigRAMAsStruct = &backendConfigRAMStruct{}
-
-				backendConfigRAMAsStruct.maxTotalObjects, ok = parseUint64(backendConfigRAMAsMap, "max_total_objects", defaultRAMMaxTotalObjects)
-				if !ok {
-					err = fmt.Errorf("bad RAM.max_total_objects at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-					return
-				}
-
-				backendConfigRAMAsStruct.maxTotalObjectSpace, ok = parseUint64(backendConfigRAMAsMap, "max_total_object_space", defaultRAMMaxTotalObjectSpace)
-				if !ok {
-					err = fmt.Errorf("bad RAM.max_total_object_space at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-					return
-				}
-
-				backendConfigRAMAsStruct.maxDirectoryPageSize, ok = parseUint64(backendConfigRAMAsMap, "max_directory_page_size", defaultRAMMaxDirectoryPageSize)
-				if !ok {
-					err = fmt.Errorf("bad RAM.max_directory_page_size at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-					return
-				}
+			if backendAsStructNew.readOnly {
+				dirPerm, ok = parseString(backendAsMap, "dir_perm", "555")
 			} else {
-				backendConfigRAMAsStruct = &backendConfigRAMStruct{
-					maxTotalObjects:      defaultRAMMaxTotalObjects,
-					maxTotalObjectSpace:  defaultRAMMaxTotalObjectSpace,
-					maxDirectoryPageSize: defaultRAMMaxDirectoryPageSize,
+				dirPerm, ok = parseString(backendAsMap, "dir_perm", "777")
+			}
+			if !ok {
+				err = fmt.Errorf("bad dir_perm at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
+			backendAsStructNew.dirPerm, err = strconv.ParseUint(dirPerm, 8, 64)
+			if (err != nil) || (backendAsStructNew.dirPerm > 0o777) {
+				err = fmt.Errorf("bad dir_perm at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
+
+			if backendAsStructNew.readOnly {
+				filePerm, ok = parseString(backendAsMap, "file_perm", "444")
+			} else {
+				filePerm, ok = parseString(backendAsMap, "file_perm", "666")
+			}
+			if !ok {
+				err = fmt.Errorf("bad file_perm at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
+			backendAsStructNew.filePerm, err = strconv.ParseUint(filePerm, 8, 64)
+			if (err != nil) || (backendAsStructNew.filePerm > 0o777) {
+				err = fmt.Errorf("bad file_perm at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
+
+			backendAsStructNew.directoryPageSize, ok = parseUint64(backendAsMap, "directory_page_size", uint64(0))
+			if !ok {
+				err = fmt.Errorf("bad directory_page_size at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
+
+			backendAsStructNew.multiPartCacheLineThreshold, ok = parseUint64(backendAsMap, "multipart_cache_line_threshold", uint64(512))
+			if !ok {
+				err = fmt.Errorf("bad multipart_cache_line_threshold at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
+
+			backendAsStructNew.uploadPartCacheLines, ok = parseUint64(backendAsMap, "upload_part_cache_lines", uint64(32))
+			if !ok {
+				err = fmt.Errorf("bad upload_part_cache_lines at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
+
+			backendAsStructNew.uploadPartConcurrency, ok = parseUint64(backendAsMap, "upload_part_concurrency", uint64(32))
+			if !ok {
+				err = fmt.Errorf("bad upload_part_concurrency at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
+
+			backendAsStructNew.bucketContainerName, ok = parseString(backendAsMap, "bucket_container_name", nil)
+			if !ok {
+				err = fmt.Errorf("missing or bad bucket_container_name at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
+
+			backendAsStructNew.prefix, ok = parseString(backendAsMap, "prefix", "")
+			if !ok {
+				err = fmt.Errorf("bad prefix at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
+			if (backendAsStructNew.prefix != "") && !strings.HasSuffix(backendAsStructNew.prefix, "/") {
+				err = fmt.Errorf("bad prefix at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
+
+			backendAsStructNew.traceLevel, ok = parseUint64(backendAsMap, "trace_level", uint64(0))
+			if !ok {
+				err = fmt.Errorf("bad trace_level at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
+
+			backendAsStructNew.backendType, ok = parseString(backendAsMap, "backend_type", nil)
+			if !ok {
+				err = fmt.Errorf("missing or bad bucket_container_name at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
+
+			switch backendAsStructNew.backendType {
+			case "Azure":
+				err = fmt.Errorf("backends[%v (\"%s\")] specified currently unsupported backend_type \"%s\"", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName, backendAsStructNew.backendType)
+				return
+			case "GCP":
+				err = fmt.Errorf("backends[%v (\"%s\")] specified currently unsupported backend_type \"%s\"", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName, backendAsStructNew.backendType)
+				return
+			case "OCI":
+				err = fmt.Errorf("backends[%v (\"%s\")] specified currently unsupported backend_type \"%s\"", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName, backendAsStructNew.backendType)
+				return
+			case "RAM":
+				backendConfigRAMAsInterface, ok = backendAsMap["RAM"]
+				if ok {
+					backendConfigRAMAsMap, ok = backendConfigRAMAsInterface.(map[string]interface{})
+					if !ok {
+						err = fmt.Errorf("bad RAM section at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigRAMAsStruct = &backendConfigRAMStruct{}
+
+					backendConfigRAMAsStruct.maxTotalObjects, ok = parseUint64(backendConfigRAMAsMap, "max_total_objects", defaultRAMMaxTotalObjects)
+					if !ok {
+						err = fmt.Errorf("bad RAM.max_total_objects at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigRAMAsStruct.maxTotalObjectSpace, ok = parseUint64(backendConfigRAMAsMap, "max_total_object_space", defaultRAMMaxTotalObjectSpace)
+					if !ok {
+						err = fmt.Errorf("bad RAM.max_total_object_space at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigRAMAsStruct.maxDirectoryPageSize, ok = parseUint64(backendConfigRAMAsMap, "max_directory_page_size", defaultRAMMaxDirectoryPageSize)
+					if !ok {
+						err = fmt.Errorf("bad RAM.max_directory_page_size at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+				} else {
+					backendConfigRAMAsStruct = &backendConfigRAMStruct{
+						maxTotalObjects:      defaultRAMMaxTotalObjects,
+						maxTotalObjectSpace:  defaultRAMMaxTotalObjectSpace,
+						maxDirectoryPageSize: defaultRAMMaxDirectoryPageSize,
+					}
 				}
-			}
 
-			backendAsStructNew.backendTypeSpecifics = backendConfigRAMAsStruct
-		case "S3":
-			backendConfigS3AsInterface, ok = backendAsMap["S3"]
-			if !ok {
-				err = fmt.Errorf("missing or bad S3 section at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-				return
-			}
-
-			backendConfigS3AsMap, ok = backendConfigS3AsInterface.(map[string]interface{})
-			if !ok {
-				err = fmt.Errorf("bad S3 section at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-				return
-			}
-
-			backendConfigS3AsStruct = &backendConfigS3Struct{}
-
-			backendConfigS3AsStruct.accessKeyID, ok = parseString(backendConfigS3AsMap, "access_key_id", nil)
-			if !ok {
-				err = fmt.Errorf("missing or bad S3.access_key_id at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-				return
-			}
-
-			backendConfigS3AsStruct.secretAccessKey, ok = parseString(backendConfigS3AsMap, "secret_access_key", nil)
-			if !ok {
-				err = fmt.Errorf("missing or bad S3.secret_access_key at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-				return
-			}
-
-			backendConfigS3AsStruct.region, ok = parseString(backendConfigS3AsMap, "region", nil)
-			if !ok {
-				err = fmt.Errorf("missing or bad S3.region at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-				return
-			}
-
-			backendConfigS3AsStruct.endpoint, ok = parseString(backendConfigS3AsMap, "endpoint", nil)
-			if !ok {
-				err = fmt.Errorf("missing or bad S3.endpoint at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-				return
-			}
-
-			backendConfigS3AsStruct.allowHTTP, ok = parseBool(backendConfigS3AsMap, "allow_http", false)
-			if !ok {
-				err = fmt.Errorf("bad S3.allow_http at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-				return
-			}
-
-			backendConfigS3AsStruct.skipTLSCertificateVerify, ok = parseBool(backendConfigS3AsMap, "skip_tls_certificate_verify", true)
-			if !ok {
-				err = fmt.Errorf("bad S3.skip_tls_certificate_verify at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-				return
-			}
-
-			backendConfigS3AsStruct.virtualHostedStyleRequest, ok = parseBool(backendConfigS3AsMap, "virtual_hosted_style_request", false)
-			if !ok {
-				err = fmt.Errorf("bad S3.virtual_hosted_style_request at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-				return
-			}
-
-			backendConfigS3AsStruct.unsignedPayload, ok = parseBool(backendConfigS3AsMap, "unsigned_payload", false)
-			if !ok {
-				err = fmt.Errorf("bad S3.unsigned_payload at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-				return
-			}
-
-			backendConfigS3AsStruct.retryBaseDelay, ok = parseMilliseconds(backendConfigS3AsMap, "retry_base_delay", 10*time.Millisecond)
-			if !ok {
-				err = fmt.Errorf("bad S3.retry_base_delay at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-				return
-			}
-
-			backendConfigS3AsStruct.retryNextDelayMultiplier, ok = parseFloat64(backendConfigS3AsMap, "retry_next_delay_multiplier", float64(2.0))
-			if !ok || (backendConfigS3AsStruct.retryNextDelayMultiplier < float64(1.0)) {
-				err = fmt.Errorf("bad S3.retry_next_delay_multiplier at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-				return
-			}
-
-			backendConfigS3AsStruct.retryMaxDelay, ok = parseMilliseconds(backendConfigS3AsMap, "retry_max_delay", 2000*time.Millisecond)
-			if !ok {
-				err = fmt.Errorf("bad S3.retry_max_delay at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-				return
-			}
-
-			backendConfigS3AsStruct.retryDelay = make([]time.Duration, 0)
-
-			if backendConfigS3AsStruct.retryBaseDelay != time.Duration(0) {
-				nextRetryDelay = backendConfigS3AsStruct.retryBaseDelay
-
-				for nextRetryDelay <= backendConfigS3AsStruct.retryMaxDelay {
-					backendConfigS3AsStruct.retryDelay = append(backendConfigS3AsStruct.retryDelay, nextRetryDelay)
-					nextRetryDelay = time.Duration(float64(nextRetryDelay) * backendConfigS3AsStruct.retryNextDelayMultiplier)
+				backendAsStructNew.backendTypeSpecifics = backendConfigRAMAsStruct
+			case "S3":
+				backendConfigS3AsInterface, ok = backendAsMap["S3"]
+				if !ok {
+					err = fmt.Errorf("missing or bad S3 section at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					return
 				}
+
+				backendConfigS3AsMap, ok = backendConfigS3AsInterface.(map[string]interface{})
+				if !ok {
+					err = fmt.Errorf("bad S3 section at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					return
+				}
+
+				backendConfigS3AsStruct = &backendConfigS3Struct{}
+
+				backendConfigS3AsStruct.accessKeyID, ok = parseString(backendConfigS3AsMap, "access_key_id", nil)
+				if !ok {
+					err = fmt.Errorf("missing or bad S3.access_key_id at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					return
+				}
+
+				backendConfigS3AsStruct.secretAccessKey, ok = parseString(backendConfigS3AsMap, "secret_access_key", nil)
+				if !ok {
+					err = fmt.Errorf("missing or bad S3.secret_access_key at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					return
+				}
+
+				backendConfigS3AsStruct.region, ok = parseString(backendConfigS3AsMap, "region", nil)
+				if !ok {
+					err = fmt.Errorf("missing or bad S3.region at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					return
+				}
+
+				backendConfigS3AsStruct.endpoint, ok = parseString(backendConfigS3AsMap, "endpoint", nil)
+				if !ok {
+					err = fmt.Errorf("missing or bad S3.endpoint at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					return
+				}
+
+				backendConfigS3AsStruct.allowHTTP, ok = parseBool(backendConfigS3AsMap, "allow_http", false)
+				if !ok {
+					err = fmt.Errorf("bad S3.allow_http at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					return
+				}
+
+				backendConfigS3AsStruct.skipTLSCertificateVerify, ok = parseBool(backendConfigS3AsMap, "skip_tls_certificate_verify", true)
+				if !ok {
+					err = fmt.Errorf("bad S3.skip_tls_certificate_verify at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					return
+				}
+
+				backendConfigS3AsStruct.virtualHostedStyleRequest, ok = parseBool(backendConfigS3AsMap, "virtual_hosted_style_request", false)
+				if !ok {
+					err = fmt.Errorf("bad S3.virtual_hosted_style_request at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					return
+				}
+
+				backendConfigS3AsStruct.unsignedPayload, ok = parseBool(backendConfigS3AsMap, "unsigned_payload", false)
+				if !ok {
+					err = fmt.Errorf("bad S3.unsigned_payload at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					return
+				}
+
+				backendConfigS3AsStruct.retryBaseDelay, ok = parseMilliseconds(backendConfigS3AsMap, "retry_base_delay", 10*time.Millisecond)
+				if !ok {
+					err = fmt.Errorf("bad S3.retry_base_delay at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					return
+				}
+
+				backendConfigS3AsStruct.retryNextDelayMultiplier, ok = parseFloat64(backendConfigS3AsMap, "retry_next_delay_multiplier", float64(2.0))
+				if !ok || (backendConfigS3AsStruct.retryNextDelayMultiplier < float64(1.0)) {
+					err = fmt.Errorf("bad S3.retry_next_delay_multiplier at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					return
+				}
+
+				backendConfigS3AsStruct.retryMaxDelay, ok = parseMilliseconds(backendConfigS3AsMap, "retry_max_delay", 2000*time.Millisecond)
+				if !ok {
+					err = fmt.Errorf("bad S3.retry_max_delay at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					return
+				}
+
+				backendConfigS3AsStruct.retryDelay = make([]time.Duration, 0)
+
+				if backendConfigS3AsStruct.retryBaseDelay != time.Duration(0) {
+					nextRetryDelay = backendConfigS3AsStruct.retryBaseDelay
+
+					for nextRetryDelay <= backendConfigS3AsStruct.retryMaxDelay {
+						backendConfigS3AsStruct.retryDelay = append(backendConfigS3AsStruct.retryDelay, nextRetryDelay)
+						nextRetryDelay = time.Duration(float64(nextRetryDelay) * backendConfigS3AsStruct.retryNextDelayMultiplier)
+					}
+				}
+
+				backendAsStructNew.backendTypeSpecifics = backendConfigS3AsStruct
+			default:
+				err = fmt.Errorf("backends[%v (\"%s\")] specified unsupported backend_type \"%s\"", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName, backendAsStructNew.backendType)
+				return
 			}
 
-			backendAsStructNew.backendTypeSpecifics = backendConfigS3AsStruct
-		default:
-			err = fmt.Errorf("backends[%v (\"%s\")] specified unsupported backend_type \"%s\"", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName, backendAsStructNew.backendType)
-			return
-		}
+			_, ok = config.backends[backendAsStructNew.dirName]
+			if ok {
+				err = fmt.Errorf("duplicate backend at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
 
-		_, ok = config.backends[backendAsStructNew.dirName]
-		if ok {
-			err = fmt.Errorf("duplicate backend at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-			return
+			config.backends[backendAsStructNew.dirName] = backendAsStructNew
 		}
-
-		config.backends[backendAsStructNew.dirName] = backendAsStructNew
 	}
 
 	if globals.config == nil {
