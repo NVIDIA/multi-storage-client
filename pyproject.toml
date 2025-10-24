@@ -38,7 +38,8 @@ dependencies = [
     "tqdm>=4.67.1,<5",
     "lark>=1.2.2,<2",
     "prettytable>=3.10,<4",
-    "psutil>=7,<8"
+    "psutil>=7,<8",
+    "tzdata>=2024.2,<2026",
 ]
 
 [project.urls]

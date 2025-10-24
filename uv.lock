@@ -1353,6 +1353,7 @@ dependencies = [
     { name = "python-dateutil" },
     { name = "pyyaml" },
     { name = "tqdm" },
+    { name = "tzdata" },
     { name = "wcmatch" },
     { name = "xattr" },
 ]
@@ -1465,6 +1466,7 @@ requires-dist = [
     { name = "ray", marker = "extra == 'ray'", specifier = ">=2.48,<3" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=2.8,<3" },
     { name = "tqdm", specifier = ">=4.67.1,<5" },
+    { name = "tzdata", specifier = ">=2024.2,<2026" },
     { name = "wcmatch", specifier = ">=10,<11" },
     { name = "xarray", marker = "extra == 'xarray'", specifier = ">=2024.7.0" },
     { name = "xattr", specifier = ">=1.1.4,<2" },
