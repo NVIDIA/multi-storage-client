@@ -503,6 +503,13 @@ class GoogleStorageProvider(BaseStorageProvider):
         follow_symlinks: bool = True,
     ) -> Iterator[ObjectMetadata]:
         bucket, prefix = split_path(path)
+
+        # Get the prefix of the start_after and end_at paths relative to the bucket.
+        if start_after:
+            _, start_after = split_path(start_after)
+        if end_at:
+            _, end_at = split_path(end_at)
+
         self._refresh_gcs_client_if_needed()
 
         def _invoke_api() -> Iterator[ObjectMetadata]:

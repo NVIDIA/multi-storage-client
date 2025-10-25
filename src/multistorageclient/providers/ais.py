@@ -339,6 +339,12 @@ class AIStoreStorageProvider(BaseStorageProvider):
     ) -> Iterator[ObjectMetadata]:
         bucket, prefix = split_path(path)
 
+        # Get the prefix of the start_after and end_at paths relative to the bucket.
+        if start_after:
+            _, start_after = split_path(start_after)
+        if end_at:
+            _, end_at = split_path(end_at)
+
         def _invoke_api() -> Iterator[ObjectMetadata]:
             # AIS has no start key option like other object stores.
             all_objects = self.client.bucket(bck_name=bucket, provider=self.provider).list_objects_iter(

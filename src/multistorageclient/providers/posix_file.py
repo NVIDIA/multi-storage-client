@@ -216,6 +216,9 @@ class PosixFileStorageProvider(BaseStorageProvider):
         include_directories: bool = False,
         follow_symlinks: bool = True,
     ) -> Iterator[ObjectMetadata]:
+        start_after = os.path.relpath(start_after, self._base_path) if start_after else None
+        end_at = os.path.relpath(end_at, self._base_path) if end_at else None
+
         def _invoke_api() -> Iterator[ObjectMetadata]:
             if os.path.isfile(path):
                 yield ObjectMetadata(

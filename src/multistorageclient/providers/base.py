@@ -360,7 +360,10 @@ class BaseStorageProvider(StorageProvider):
         if (start_after is not None) and (end_at is not None) and not (start_after < end_at):
             raise ValueError(f"start_after ({start_after}) must be before end_at ({end_at})!")
 
+        # Prepend the base path to all the paths, the _list_objects method operates on full paths.
         path = self._prepend_base_path(path)
+        start_after = self._prepend_base_path(start_after) if start_after else None
+        end_at = self._prepend_base_path(end_at) if end_at else None
 
         # In version 0.33.0, we added the follow_symlinks parameter to the _list_objects method.
         # Fallback for custom storage providers that haven't been updated yet
