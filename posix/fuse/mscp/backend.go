@@ -1,9 +1,75 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"time"
+
+	"github.com/NVIDIA/multi-storage-client/posix/fuse/mscp/telemetry"
 )
+
+// recordRequest records the request counter at the START of an operation.
+// Matches Python's behavior: request.sum is recorded BEFORE the operation executes (line 209).
+// This should be called immediately at the start of each backend operation (not in defer).
+// Note: Does not accept additional attributes to avoid high cardinality issues.
+//
+// Call Chain:
+//
+//	S3 Backend Operations (backend_s3.go)
+//	  ↓
+//	recordRequest() (backend.go line 27)
+//	  ↓
+//	metrics.RecordBackendRequest() (backend.go line 43)
+//	  ↓
+//	MSCPMetricsDiperiodic.RecordBackendRequest() (metrics_diperiodic.go line 135)
+//	  ↓
+//	requestSumCounter.Add() (metrics_diperiodic.go line 146)
+func recordRequest(backendName, operation string) {
+	if globals.metrics == nil {
+		return
+	}
+
+	metrics, ok := globals.metrics.(telemetry.MSCPMetricsDiperiodic)
+	if !ok {
+		return
+	}
+
+	// Get version (matches Python's VERSION attribute)
+	version := GitTag
+	if version == "" {
+		version = "dev" // Fallback for development builds
+	}
+
+	metrics.RecordBackendRequest(context.Background(), operation, version, backendName)
+}
+
+// recordBackendMetrics is a helper to record metrics for backend operations.
+// It should be called in a defer statement at the beginning of each backend operation.
+// This records latency, response, data_size, etc. AFTER the operation completes.
+// Matches Python's behavior: these metrics are recorded in the finally block (lines 235-272).
+// This function is in backend.go (not backend_s3.go) so it can be used by all backend types.
+// Note: Does not accept additional attributes (like file paths) to avoid high cardinality issues.
+func recordBackendMetrics(backendName, operation string, startTime time.Time, err error, bytesTransferred int64) {
+	if globals.metrics == nil {
+		return
+	}
+
+	metrics, ok := globals.metrics.(telemetry.MSCPMetricsDiperiodic)
+	if !ok {
+		return
+	}
+
+	duration := time.Since(startTime)
+	success := (err == nil)
+
+	// Get version (matches Python's VERSION attribute)
+	version := GitTag
+	if version == "" {
+		version = "dev" // Fallback for development builds
+	}
+
+	metrics.RecordBackendOperation(context.Background(), operation, version, backendName, duration, success, bytesTransferred)
+}
 
 // `setupContext` is called to establish the client that will be used
 // to access a backend. Once the context is established, each of the

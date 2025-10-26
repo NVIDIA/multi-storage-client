@@ -1,9 +1,87 @@
+// SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package main
 
 import (
 	"os"
 	"testing"
 )
+
+// TestObservabilityConfigParsing verifies that observability config is parsed correctly
+// as an add-on to existing MSCP config without breaking anything.
+func TestObservabilityConfigParsing(t *testing.T) {
+	var (
+		err error
+	)
+
+	// Use the existing dev config which has opentelemetry section
+	initGlobals(testOsArgs("msc_config_dev.yaml"))
+
+	err = checkConfigFile()
+	if err != nil {
+		t.Fatalf("checkConfigFile() unexpectedly failed: %v", err)
+	}
+
+	// Verify observability config was parsed
+	if globals.config.observability == nil {
+		t.Fatal("Expected observability config to be parsed from opentelemetry section, got nil")
+	}
+
+	obs := globals.config.observability
+
+	// Verify metrics exporter
+	if obs.metricsExporter == nil {
+		t.Fatal("Expected metrics exporter to be configured, got nil")
+	}
+	if obs.metricsExporter.Type != "otlp" {
+		t.Errorf("Expected exporter type 'otlp', got '%s'", obs.metricsExporter.Type)
+	}
+	if endpoint, ok := obs.metricsExporter.Options["endpoint"].(string); !ok || endpoint != "otel-collector:4318" {
+		t.Errorf("Expected endpoint 'otel-collector:4318', got '%v'", obs.metricsExporter.Options["endpoint"])
+	}
+	t.Logf("✓ Exporter: type=%s, endpoint=%v", obs.metricsExporter.Type, obs.metricsExporter.Options["endpoint"])
+
+	// Verify metrics reader options
+	if obs.metricsReaderOptions == nil {
+		t.Fatal("Expected metrics reader options to be configured, got nil")
+	}
+	if obs.metricsReaderOptions.CollectIntervalMillis != 1000 {
+		t.Errorf("Expected collect_interval_millis=1000, got %d", obs.metricsReaderOptions.CollectIntervalMillis)
+	}
+	if obs.metricsReaderOptions.ExportIntervalMillis != 60000 {
+		t.Errorf("Expected export_interval_millis=60000, got %d", obs.metricsReaderOptions.ExportIntervalMillis)
+	}
+	t.Logf("✓ Reader: collect=%dms, export=%dms", obs.metricsReaderOptions.CollectIntervalMillis, obs.metricsReaderOptions.ExportIntervalMillis)
+
+	// Verify metrics attributes (should have 5 providers)
+	if len(obs.metricsAttributes) != 5 {
+		t.Errorf("Expected 5 attribute providers, got %d", len(obs.metricsAttributes))
+	}
+	expectedTypes := []string{"static", "host", "process", "environment_variables", "msc_config"}
+	for i, expected := range expectedTypes {
+		if i >= len(obs.metricsAttributes) {
+			t.Errorf("Missing attribute provider at index %d (expected '%s')", i, expected)
+			continue
+		}
+		if obs.metricsAttributes[i].Type != expected {
+			t.Errorf("Attribute provider %d: expected type '%s', got '%s'", i, expected, obs.metricsAttributes[i].Type)
+		}
+	}
+	t.Logf("✓ Attributes: %d providers configured (%v)", len(obs.metricsAttributes), expectedTypes)
+}
 
 func TestInternalGoodJSONConfig(t *testing.T) {
 	var (

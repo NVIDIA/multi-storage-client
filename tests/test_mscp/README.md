@@ -18,6 +18,23 @@ Tests automatic cleanup of stale PID and log files:
 - Verifies stale files are removed
 - Verifies active files are preserved
 
+### test_observability.sh
+
+Tests OpenTelemetry metrics instrumentation:
+
+- Assumes OTEL Collector (mscp_otel_collector) is already running
+- Mounts MSCP with observability enabled (msc_config_dev.yaml)
+- Sets up MinIO with test files (via dev_setup.sh)
+- Performs file operations:
+  - `ls` (triggers DoLookup, DoGetAttr, DoOpenDir, DoReadDir)
+  - `md5sum` on files (triggers DoRead and backend S3 operations)
+- Verifies metrics initialization in MSCP logs
+- Verifies 5+ attribute providers initialized (static, host, process, environment_variables, msc_config)
+- Waits for metrics export (5s)
+- Validates metrics in OTEL Collector logs (checks for msc.request)
+- Verifies specific attributes exported: msc.user, msc.hostname, msc.otel_endpoint, msc.secret_hash
+- Note: Metrics only (tracing not yet implemented)
+
 ## Running the Tests
 
 ### Docker 
@@ -35,6 +52,15 @@ docker-compose exec dev bash -c "/multi-storage-client/tests/test_mscp/test_moun
 
 # Run cleanup test
 docker-compose exec dev bash -c "/multi-storage-client/tests/test_mscp/test_cleanup.sh"
+
+# Run observability test (waits 65 seconds for metrics export)
+docker-compose exec dev bash -c "/multi-storage-client/tests/test_mscp/test_observability.sh"
+
+# Verify metrics were exported to OTEL collector
+docker logs mscp_otel_collector 2>&1 | grep -E "multistorageclient\.(latency|request|response|data)" | head -30
+
+# Check specific metric attributes and values
+docker logs mscp_otel_collector 2>&1 | grep -A 15 "multistorageclient.request.sum" | grep -E "(operation:|Value:)" | head -10
 
 # Clean up
 docker-compose down
@@ -97,4 +123,71 @@ sudo bash /path/to/tests/test_mscp/test_mount.sh
   ✓ No mscp processes
 
 === Test completed successfully! ===
+```
+
+### test_observability.sh
+
+```
+=== MSCP Observability Test ===
+
+1. Creating mount directory...
+
+2. Mounting with observability enabled...
+[mount.msc] mscp daemon started successfully (PID: 5056)
+[mount.msc] MSC filesystem mounted
+
+3. Verifying mount is active...
+msc-posix on /mnt/msc_obs_test type fuse.msc-posix
+
+4. Testing file access (triggers DoLookup, DoGetAttr, DoOpenDir, DoReadDir)...
+  ✓ Mount accessible
+
+4b. Setting up MinIO with test files (via dev_setup.sh)...
+  ✓ MinIO populated with test files
+
+4c. Testing file reads with md5sum (triggers DoRead, backend readFile)...
+  ✓ Performed md5sum on files
+
+5. Checking observability initialization in MSCP logs...
+  ✓ Metrics initialized successfully
+2025/10/22 15:55:55 Metrics initialized with diperiodic pattern (collect=1000ms, export=60000ms)
+
+5b. Verifying attribute providers initialized...
+  ✓ All expected attribute providers found:
+    - static
+    - host
+    - process
+    - environment_variables
+    - msc_config
+
+6. Waiting for metrics to be exported to OTEL Collector (65 seconds)...
+
+7. Checking OTEL Collector logs for metrics...
+  ✓ SUCCESS: Found MSCP metrics in OTEL Collector
+
+8. Unmounting...
+
+=== Test Complete ===
+
+# Expected metrics in OTEL collector logs:
+$ docker logs mscp_otel_collector 2>&1 | grep -E "multistorageclient\.(latency|request|response|data)" | head -30
+
+All 6 metrics exported:
+- multistorageclient.latency
+- multistorageclient.data_size
+- multistorageclient.data_rate
+- multistorageclient.request.sum
+- multistorageclient.response.sum
+- multistorageclient.data_size.sum
+
+Example metric with low-cardinality attributes:
+  Name: multistorageclient.request.sum
+  Data point attributes:
+    -> multistorageclient.operation: Str(list)
+    -> multistorageclient.provider: Str(minio)
+    -> multistorageclient.version: Str(0.32.0-86-gda3ea3e-dirty)
+  Value: 7
+
+✓ All metrics exported with low-cardinality attributes only (operation, provider, version)
+✓ No high-cardinality attributes (paths, offsets, item counts) present
 ```

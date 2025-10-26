@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/NVIDIA/multi-storage-client/posix/fuse/mscp/telemetry"
+	"github.com/NVIDIA/multi-storage-client/posix/fuse/mscp/telemetry/attributes"
+	"github.com/NVIDIA/multi-storage-client/posix/fuse/mscp/telemetry/auth"
 )
 
 // `main` is the entrypoint for the FUSE file system daemon. It parses the
@@ -72,6 +77,9 @@ func main() {
 		globals.logger.Fatalf("parsing config-file (\"%s\") failed: %v", globals.configFilePath, err)
 	}
 
+	// Initialize observability (metrics, tracing, logging)
+	initObservability()
+
 	initFS()
 
 	processToMountList()
@@ -104,6 +112,19 @@ func main() {
 
 				drainFS()
 
+				// Shutdown observability (flush pending metrics)
+				if globals.meterProvider != nil {
+					shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					if mp, ok := globals.meterProvider.(interface{ Shutdown(context.Context) error }); ok {
+						if err := mp.Shutdown(shutdownCtx); err != nil {
+							globals.logger.Printf("Error shutting down meter provider: %v", err)
+						} else {
+							globals.logger.Printf("Meter provider shut down successfully")
+						}
+					}
+				}
+
 				os.Exit(0)
 			}
 
@@ -128,4 +149,207 @@ func main() {
 			globals.logger.Fatalf("received unexpected FUSE error: %v", err)
 		}
 	}
+}
+
+// initObservability initializes metrics via OTLP for MSCP.
+// Config structure matches MSC Python schema exactly: opentelemetry.metrics.{attributes, reader, exporter}
+// Logs are written to stdout (redirected to /var/log/msc/mscp_*.log by mount.msc).
+func initObservability() {
+	// Check if observability is configured
+	if globals.config.observability == nil {
+		globals.logger.Printf("Observability not configured, skipping initialization")
+		return
+	}
+
+	// Check if metrics exporter is configured (matches Python schema requirement)
+	if globals.config.observability.metricsExporter == nil {
+		globals.logger.Printf("Metrics exporter not configured, skipping metrics initialization")
+		return
+	}
+
+	// Extract configuration from Python-compatible schema
+	exporterType := globals.config.observability.metricsExporter.Type
+	exporterOptions := globals.config.observability.metricsExporter.Options
+
+	// Get reader options with defaults (matching Python defaults)
+	collectIntervalMs := uint64(1000) // 1 second default
+	collectTimeoutMs := uint64(10000) // 10 seconds default
+	exportIntervalMs := uint64(60000) // 60 seconds default
+	exportTimeoutMs := uint64(30000)  // 30 seconds default
+
+	if globals.config.observability.metricsReaderOptions != nil {
+		collectIntervalMs = globals.config.observability.metricsReaderOptions.CollectIntervalMillis
+		collectTimeoutMs = globals.config.observability.metricsReaderOptions.CollectTimeoutMillis
+		exportIntervalMs = globals.config.observability.metricsReaderOptions.ExportIntervalMillis
+		exportTimeoutMs = globals.config.observability.metricsReaderOptions.ExportTimeoutMillis
+	}
+
+	// Process attribute providers (matches Python: instantiate providers from config)
+	attributeProviders := processAttributeProviders(globals.config.observability.metricsAttributes)
+
+	// Create metrics config based on exporter type
+	var metricsConfig telemetry.MetricsConfig
+	metricsConfig.Enabled = true
+	metricsConfig.CollectIntervalMillis = collectIntervalMs
+	metricsConfig.CollectTimeoutMillis = collectTimeoutMs
+	metricsConfig.ExportIntervalMillis = exportIntervalMs
+	metricsConfig.ExportTimeoutMillis = exportTimeoutMs
+	metricsConfig.ServiceName = "msc-posix"
+	metricsConfig.AttributeProviders = attributeProviders
+
+	// Handle different exporter types
+	switch exporterType {
+	case "otlp":
+		// Standard OTLP exporter (no auth)
+		endpoint, ok := exporterOptions["endpoint"].(string)
+		if !ok {
+			globals.logger.Printf("Metrics exporter endpoint not configured, skipping metrics initialization")
+			return
+		}
+
+		// Check for insecure option (HTTP vs HTTPS)
+		insecure := true // default to insecure for dev
+		if insecureVal, ok := exporterOptions["insecure"].(bool); ok {
+			insecure = insecureVal
+		}
+
+		metricsConfig.OTLPEndpoint = endpoint
+		metricsConfig.Insecure = insecure
+
+	case "_otlp_msal":
+		// OTLP with Azure MSAL authentication
+		// Config structure: auth{client_id, client_credential, authority, scopes} + exporter{endpoint}
+		authOptions, ok := exporterOptions["auth"].(map[string]interface{})
+		if !ok {
+			globals.logger.Printf("_otlp_msal exporter requires 'auth' configuration, skipping metrics initialization")
+			return
+		}
+
+		exporterSubOptions, ok := exporterOptions["exporter"].(map[string]interface{})
+		if !ok {
+			globals.logger.Printf("_otlp_msal exporter requires 'exporter' configuration, skipping metrics initialization")
+			return
+		}
+
+		// Extract and validate auth config
+		clientID, ok := authOptions["client_id"].(string)
+		if !ok || clientID == "" {
+			globals.logger.Printf("_otlp_msal exporter requires 'auth.client_id', skipping metrics initialization")
+			return
+		}
+
+		clientCredential, ok := authOptions["client_credential"].(string)
+		if !ok || clientCredential == "" {
+			globals.logger.Printf("_otlp_msal exporter requires 'auth.client_credential', skipping metrics initialization")
+			return
+		}
+
+		authority, ok := authOptions["authority"].(string)
+		if !ok || authority == "" {
+			globals.logger.Printf("_otlp_msal exporter requires 'auth.authority', skipping metrics initialization")
+			return
+		}
+
+		var scopes []string
+		if scopesInterface, ok := authOptions["scopes"].([]interface{}); ok {
+			for _, s := range scopesInterface {
+				if scope, ok := s.(string); ok && scope != "" {
+					scopes = append(scopes, scope)
+				}
+			}
+		}
+		if len(scopes) == 0 {
+			globals.logger.Printf("_otlp_msal exporter requires at least one 'auth.scopes', skipping metrics initialization")
+			return
+		}
+
+		// Extract and validate endpoint from nested exporter config
+		endpoint, ok := exporterSubOptions["endpoint"].(string)
+		if !ok || endpoint == "" {
+			globals.logger.Printf("_otlp_msal exporter requires 'exporter.endpoint', skipping metrics initialization")
+			return
+		}
+
+		metricsConfig.OTLPEndpoint = endpoint
+		metricsConfig.Insecure = false // MSAL always uses HTTPS
+		metricsConfig.AzureAuth = &auth.Config{
+			ClientID:         clientID,
+			ClientCredential: clientCredential,
+			Authority:        authority,
+			Scopes:           scopes,
+		}
+
+	default:
+		globals.logger.Printf("Unsupported metrics exporter type: %s (supported: 'otlp', '_otlp_msal')", exporterType)
+		return
+	}
+
+	// Initialize metrics with diperiodic pattern
+	meterProvider, err := telemetry.SetupMetricsDiperiodic(metricsConfig)
+	if err != nil {
+		globals.logger.Printf("Failed to initialize metrics: %v", err)
+		return
+	}
+
+	globals.logger.Printf("Metrics initialized with diperiodic pattern (collect=%dms, export=%dms), sending to %s",
+		collectIntervalMs, exportIntervalMs, metricsConfig.OTLPEndpoint)
+
+	// Create MSCP metrics instruments (matches MSC Python: gauges use LastValue, counters use Sum)
+	metrics, err := telemetry.NewMSCPMetricsDiperiodic("msc-posix")
+	if err != nil {
+		globals.logger.Printf("Failed to create metrics instruments: %v", err)
+		return
+	}
+
+	globals.metrics = metrics
+	globals.meterProvider = meterProvider // Store for shutdown later
+	globals.logger.Printf("MSCP metrics instruments created successfully")
+}
+
+// processAttributeProviders instantiates attribute providers from configuration.
+// Matches Python: providers/base.py:_init_metrics() attribute provider instantiation
+func processAttributeProviders(configs []attributeProviderStruct) []attributes.AttributesProvider {
+	var providers []attributes.AttributesProvider
+
+	// Map of type names to provider constructors
+	// Matches Python: _TELEMETRY_ATTRIBUTES_PROVIDER_MAPPING
+	providerMapping := map[string]func(map[string]interface{}) attributes.AttributesProvider{
+		"static": func(opts map[string]interface{}) attributes.AttributesProvider {
+			return attributes.NewStaticAttributesProvider(opts)
+		},
+		"host": func(opts map[string]interface{}) attributes.AttributesProvider {
+			return attributes.NewHostAttributesProvider(opts)
+		},
+		"process": func(opts map[string]interface{}) attributes.AttributesProvider {
+			return attributes.NewProcessAttributesProvider(opts)
+		},
+		"environment_variables": func(opts map[string]interface{}) attributes.AttributesProvider {
+			return attributes.NewEnvironmentVariablesAttributesProvider(opts)
+		},
+		"msc_config": func(opts map[string]interface{}) attributes.AttributesProvider {
+			// Pass the full config dictionary for JMESPath queries
+			// Add config_dict to options if not already present
+			if _, ok := opts["config_dict"]; !ok {
+				opts["config_dict"] = globals.configFileMap
+			}
+			return attributes.NewMSCConfigAttributesProvider(opts)
+		},
+	}
+
+	for _, config := range configs {
+		// Look up provider constructor
+		constructor, ok := providerMapping[config.Type]
+		if !ok {
+			globals.logger.Printf("Unknown attribute provider type: %s, skipping", config.Type)
+			continue
+		}
+
+		// Instantiate provider with options
+		provider := constructor(config.Options)
+		providers = append(providers, provider)
+
+		globals.logger.Printf("Initialized attribute provider: %s", config.Type)
+	}
+
+	return providers
 }

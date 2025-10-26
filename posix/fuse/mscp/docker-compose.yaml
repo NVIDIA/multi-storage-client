@@ -1,4 +1,18 @@
 services:
+  # Observability: OTLP Collector (receives metrics from MSCP)
+  # Note: This just logs the metrics to console. For production, configure exporters  
+  # to send to your observability backend (Prometheus, Grafana Cloud, Datadog, etc.)
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: mscp_otel_collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4318:4318"   # OTLP HTTP receiver
+      - "8888:8888"   # Collector's own metrics
+
+  # Storage Backends
   minio:
     build:
       context: ../../..
@@ -33,6 +47,7 @@ services:
     container_name: mscp_dev
     depends_on:
       - minio
+      - otel-collector
       - ais
     cap_add:
       - SYS_ADMIN
@@ -46,4 +61,6 @@ services:
     environment:
       - AIS_ENDPOINT=http://ais:8080
       - MSC_CONFIG=./mscp_config_dev.yaml
+      # Observability: OTLP endpoints (accessible from inside container)
+      - OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector:4317
     command: ["/usr/bin/tini", "--", "sleep", "infinity"]

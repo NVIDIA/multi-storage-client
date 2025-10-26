@@ -1,3 +1,6 @@
+# Set to 0 for MSC Python-compatible config format
+mscp_version: 0
+
 profiles:
   minio:
     storage_provider:
@@ -23,3 +26,62 @@ profiles:
       options:
         access_key: minioadmin
         secret_key: minioadmin
+
+# Optional: OpenTelemetry observability configuration
+# Structure matches MSC Python schema exactly: opentelemetry.metrics.{attributes, reader, exporter}
+# See: https://github.com/NVIDIA/multi-storage-client/blob/main/src/multistorageclient/schema.py
+opentelemetry:
+  metrics:
+    # Optional: Attributes to attach to metrics (matches Python EXTENSION_SCHEMA)
+    # All attribute provider types from MSC Python are supported:
+    # - static: Static key-value pairs
+    # - host: Hostname information
+    # - process: Process ID
+    # - environment_variables: Environment variable values
+    # - msc_config: Config values via JMESPath expressions (with hash support)
+    attributes:
+      - type: static
+        options:
+          attributes:
+            organization: NVIDIA
+            cluster: "DGX SuperPOD 1"
+      - type: host
+        options:
+          attributes:
+            node: name
+      - type: process
+        options:
+          attributes:
+            process: pid
+      - type: environment_variables
+        options:
+          attributes:
+            msc.user: USER        # Current user
+            msc.hostname: HOSTNAME # System hostname (if set)
+     
+      - type: msc_config
+        options:
+          attributes:
+            msc.otel_endpoint:
+              expression: opentelemetry.metrics.exporter.options.endpoint
+            msc.export_interval:
+              expression: opentelemetry.metrics.reader.options.export_interval_millis
+            msc.storage_endpoint:
+              expression: backends[0].S3.endpoint
+            msc.secret_hash:
+              expression: hash('sha3-224', backends[0].S3.secret_access_key)
+    
+    # Diperiodic reader options (matches Python DiperiodicExportingMetricReader)
+    reader:
+      options:
+        collect_interval_millis: 1000   # Collect metrics every 1 second (default: 1000)
+        collect_timeout_millis: 10000   # Collect timeout in milliseconds (default: 10000)
+        export_interval_millis: 60000   # Export to OTLP every 60 seconds (default: 60000)
+        export_timeout_millis: 30000    # Export timeout in milliseconds (default: 30000)
+    
+    # Exporter configuration (matches Python EXTENSION_SCHEMA)
+    exporter:
+      type: otlp                        # Type: "otlp" or "console" (only "otlp" supported in Go for now)
+      options:
+        endpoint: "otel-collector:4318" # HTTP/OTLP endpoint - Change to "localhost:4318" for local development
+        insecure: true                  # Use insecure connection (no TLS) - set to false for production with HTTPS

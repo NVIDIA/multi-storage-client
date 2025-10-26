@@ -78,22 +78,52 @@ type backendStruct struct {
 
 // `configStruct` describes the global configuration settings as well as the array of backendStruct's configured.
 type configStruct struct {
-	mscpVersion                 uint64                    // JSON/YAML "mscp_version"                    default:0
-	mountName                   string                    // JSON/YAML "mountname"                       default:"msc-posix"
-	mountPoint                  string                    // JSON/YAML "mountpoint"                      default:"/mnt"
-	uid                         uint64                    // JSON/YAML "uid"                             default:<current euid>
-	gid                         uint64                    // JSON/YAML "gid"                             default:<current egid>
-	dirPerm                     uint64                    // JSON/YAML "dir_perm"                        default:0o555
-	allowOther                  bool                      // JSON/YAML "allow_other"                     default:true
-	maxWrite                    uint64                    // JSON/YAML "max_write"                       default:131072(128Ki)
-	entryAttrTTL                time.Duration             // JSON/YAML "entry_attr_ttl"                  default:1000(in milliseconds)
-	evictableInodeTTL           time.Duration             // JSON/YAML "evictable_inode_ttl"             default:2000(in milliseconds)
-	cacheLineSize               uint64                    // JSON/YAML "cache_line_size"                 default:1048576(1Mi)
-	cacheLines                  uint64                    // JSON/YAML "cache_lines"                     default:4096
-	dirtyCacheLinesFlushTrigger uint64                    // JSON/YAML "dirty_cache_lines_flush_trigger" default:80(as a percentage)
-	dirtyCacheLinesMax          uint64                    // JSON/YAML "dirty_cache_lines_max"           default:90(as a percentage)
-	autoSIGHUPInterval          time.Duration             // JSON/YAML "auto_sighup_interval"            default:0(none)
-	backends                    map[string]*backendStruct // JSON/YAML "backends"                        Key == backendStruct.mountPointSubdirectoryName
+	mscpVersion                 uint64                     // JSON/YAML "mscp_version"                    default:0
+	mountName                   string                     // JSON/YAML "mountname"                       default:"msc-posix"
+	mountPoint                  string                     // JSON/YAML "mountpoint"                      default:"/mnt"
+	uid                         uint64                     // JSON/YAML "uid"                             default:<current euid>
+	gid                         uint64                     // JSON/YAML "gid"                             default:<current egid>
+	dirPerm                     uint64                     // JSON/YAML "dir_perm"                        default:0o555
+	allowOther                  bool                       // JSON/YAML "allow_other"                     default:true
+	maxWrite                    uint64                     // JSON/YAML "max_write"                       default:131072(128Ki)
+	entryAttrTTL                time.Duration              // JSON/YAML "entry_attr_ttl"                  default:1000(in milliseconds)
+	evictableInodeTTL           time.Duration              // JSON/YAML "evictable_inode_ttl"             default:2000(in milliseconds)
+	cacheLineSize               uint64                     // JSON/YAML "cache_line_size"                 default:1048576(1Mi)
+	cacheLines                  uint64                     // JSON/YAML "cache_lines"                     default:4096
+	dirtyCacheLinesFlushTrigger uint64                     // JSON/YAML "dirty_cache_lines_flush_trigger" default:80(as a percentage)
+	dirtyCacheLinesMax          uint64                     // JSON/YAML "dirty_cache_lines_max"           default:90(as a percentage)
+	autoSIGHUPInterval          time.Duration              // JSON/YAML "auto_sighup_interval"            default:0(none)
+	backends                    map[string]*backendStruct  // JSON/YAML "backends"                        Key == backendStruct.mountPointSubdirectoryName
+	observability               *observabilityConfigStruct // JSON/YAML "observability"                   default:nil (disabled)
+}
+
+// observabilityConfigStruct holds observability configuration
+// Matches MSC Python schema exactly: opentelemetry.metrics.{attributes, reader, exporter}
+type observabilityConfigStruct struct {
+	// Metrics configuration (matches Python schema)
+	metricsAttributes    []attributeProviderStruct // JSON/YAML "metrics.attributes"
+	metricsReaderOptions *readerOptionsStruct      // JSON/YAML "metrics.reader.options"
+	metricsExporter      *exporterStruct           // JSON/YAML "metrics.exporter"
+}
+
+// attributeProviderStruct matches Python's EXTENSION_SCHEMA for attributes
+type attributeProviderStruct struct {
+	Type    string                 // JSON/YAML "type"    e.g. "static", "host", "process", "msc_config"
+	Options map[string]interface{} // JSON/YAML "options" type-specific options
+}
+
+// readerOptionsStruct matches Python's reader.options
+type readerOptionsStruct struct {
+	CollectIntervalMillis uint64 // JSON/YAML "collect_interval_millis" default:1000 (1 second)
+	CollectTimeoutMillis  uint64 // JSON/YAML "collect_timeout_millis"  default:10000 (10 seconds)
+	ExportIntervalMillis  uint64 // JSON/YAML "export_interval_millis"  default:60000 (60 seconds)
+	ExportTimeoutMillis   uint64 // JSON/YAML "export_timeout_millis"   default:30000 (30 seconds)
+}
+
+// exporterStruct matches Python's EXTENSION_SCHEMA for exporter
+type exporterStruct struct {
+	Type    string                 // JSON/YAML "type"    e.g. "otlp", "console"
+	Options map[string]interface{} // JSON/YAML "options" e.g. {"endpoint": "http://localhost:4318/v1/metrics"}
 }
 
 const (
@@ -199,8 +229,11 @@ type inodeStruct struct {
 type globalsStruct struct {
 	sync.Mutex                                       //
 	logger                 *log.Logger               //
+	metrics                interface{}               // observability.MSCPMetrics (nil if observability disabled)
+	meterProvider          interface{}               // *sdkmetric.MeterProvider (nil if observability disabled)
 	configFilePath         string                    //
 	config                 *configStruct             //
+	configFileMap          map[string]interface{}    // Parsed config map for msc_config attribute provider
 	backendsToUnmount      map[string]*backendStruct //
 	backendsToMount        map[string]*backendStruct //
 	backendsSkipped        map[string]struct{}       //

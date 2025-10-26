@@ -1,0 +1,60 @@
+# OpenTelemetry Collector Configuration
+# This configures the standalone OTel Collector service that receives metrics FROM MSCP
+# 
+# HOW IT WORKS:
+# 1. MSCP application reads mscp_config_dev.yaml (separate config, different schema)
+# 2. MSCP implements diperiodic pattern: collects every 1s, exports every 60s
+# 3. MSCP sends batched metrics to this collector via OTLP/HTTP (port 4318)
+# 4. This collector receives, processes, and forwards metrics to configured exporters
+#
+# Note: The diperiodic pattern is configured in mscp_config_dev.yaml under 
+#       opentelemetry.metrics.reader.options - NOT in this file
+#
+# For production, add exporters below to send to your observability backend
+# (Grafana Cloud, Datadog, New Relic, Prometheus, etc.)
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317  # OTLP gRPC (for future tracing support)
+      http:
+        endpoint: 0.0.0.0:4318  # OTLP HTTP (used by MSCP for metrics - matches MSC Python)
+
+processors:
+  batch:
+    # Batch processor settings aligned with MSCP's 60s export interval
+    # MSCP already batches before sending, so we use generous limits here
+    timeout: 10s            # Wait up to 10s before sending (MSCP sends every 60s by default)
+    send_batch_size: 10000  # Large batch size to accommodate metrics from multiple 1s collections
+  
+  # Add resource attributes
+  resource:
+    attributes:
+      - key: service.name
+        value: msc-posix
+        action: upsert
+
+exporters:
+  # Debug exporter - prints metrics to console (matches MSC Python's console exporter)
+  debug:
+    verbosity: detailed
+  
+  # Example production exporters (uncomment and configure as needed):
+  # prometheus:
+  #   endpoint: "0.0.0.0:9090"
+  # 
+  # otlp/grafana:
+  #   endpoint: "YOUR_GRAFANA_CLOUD_ENDPOINT"
+  #   headers:
+  #     authorization: "Basic YOUR_GRAFANA_CLOUD_API_KEY"
+
+service:
+  pipelines:
+    # Metrics pipeline with diperiodic reader support
+    # Receives metrics from MSCP every 60s (by default) containing aggregated 1s collections
+    metrics:
+      receivers: [otlp]
+      processors: [batch, resource]
+      exporters: [debug]
+

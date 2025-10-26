@@ -495,6 +495,12 @@ func checkConfigFile() (err error) {
 		configFileMapTranslated["mscp_version"] = MSCPVersionOne
 		configFileMapTranslated["backends"] = backendsAsInterfaceSlice
 
+		// Preserve opentelemetry section if present (observability add-on)
+		opentelemetryAsInterface, ok := configFileMap["opentelemetry"]
+		if ok {
+			configFileMapTranslated["opentelemetry"] = opentelemetryAsInterface
+		}
+
 		posixAsInterface, ok = configFileMap["posix"]
 		if ok {
 			posixAsMap, ok = posixAsInterface.(map[string]interface{})
@@ -659,6 +665,75 @@ func checkConfigFile() (err error) {
 	if !ok {
 		err = errors.New("bad auto_sighup_interval value")
 		return
+	}
+
+	// Parse observability configuration (optional) - matches MSC Python's "opentelemetry" key exactly
+	opentelemetryAsInterface, ok := configFileMap["opentelemetry"]
+	if ok {
+		opentelemetryAsMap, ok := opentelemetryAsInterface.(map[string]interface{})
+		if !ok {
+			err = errors.New("bad opentelemetry section")
+			return
+		}
+
+		obs := &observabilityConfigStruct{}
+
+		// Parse metrics section - matches Python schema: opentelemetry.metrics.{attributes, reader, exporter}
+		metricsAsInterface, ok := opentelemetryAsMap["metrics"]
+		if ok {
+			metricsAsMap, ok := metricsAsInterface.(map[string]interface{})
+			if ok {
+				// Parse metrics.attributes (array of attribute providers)
+				if attributesAsInterface, ok := metricsAsMap["attributes"]; ok {
+					if attributesAsArray, ok := attributesAsInterface.([]interface{}); ok {
+						for _, attrAsInterface := range attributesAsArray {
+							if attrAsMap, ok := attrAsInterface.(map[string]interface{}); ok {
+								attrProvider := attributeProviderStruct{}
+								attrProvider.Type, _ = parseString(attrAsMap, "type", "")
+								if optionsAsInterface, ok := attrAsMap["options"]; ok {
+									if optionsAsMap, ok := optionsAsInterface.(map[string]interface{}); ok {
+										attrProvider.Options = optionsAsMap
+									}
+								}
+								obs.metricsAttributes = append(obs.metricsAttributes, attrProvider)
+							}
+						}
+					}
+				}
+
+				// Parse metrics.reader.options
+				if readerAsInterface, ok := metricsAsMap["reader"]; ok {
+					if readerAsMap, ok := readerAsInterface.(map[string]interface{}); ok {
+						if optionsAsInterface, ok := readerAsMap["options"]; ok {
+							if optionsAsMap, ok := optionsAsInterface.(map[string]interface{}); ok {
+								readerOpts := &readerOptionsStruct{}
+								readerOpts.CollectIntervalMillis, _ = parseUint64(optionsAsMap, "collect_interval_millis", 1000)
+								readerOpts.CollectTimeoutMillis, _ = parseUint64(optionsAsMap, "collect_timeout_millis", 10000)
+								readerOpts.ExportIntervalMillis, _ = parseUint64(optionsAsMap, "export_interval_millis", 60000)
+								readerOpts.ExportTimeoutMillis, _ = parseUint64(optionsAsMap, "export_timeout_millis", 30000)
+								obs.metricsReaderOptions = readerOpts
+							}
+						}
+					}
+				}
+
+				// Parse metrics.exporter (type + options)
+				if exporterAsInterface, ok := metricsAsMap["exporter"]; ok {
+					if exporterAsMap, ok := exporterAsInterface.(map[string]interface{}); ok {
+						exporter := &exporterStruct{}
+						exporter.Type, _ = parseString(exporterAsMap, "type", "")
+						if optionsAsInterface, ok := exporterAsMap["options"]; ok {
+							if optionsAsMap, ok := optionsAsInterface.(map[string]interface{}); ok {
+								exporter.Options = optionsAsMap
+							}
+						}
+						obs.metricsExporter = exporter
+					}
+				}
+			}
+		}
+
+		config.observability = obs
 	}
 
 	backendsAsInterface, ok = configFileMap["backends"]
@@ -960,6 +1035,7 @@ func checkConfigFile() (err error) {
 		// Finally, just set globals.config to be our (local) config
 
 		globals.config = config
+		globals.configFileMap = configFileMap // Store for msc_config attribute provider
 	} else {
 		// Validate that no global config changes were made
 
