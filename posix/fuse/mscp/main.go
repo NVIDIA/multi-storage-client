@@ -115,7 +115,6 @@ func main() {
 				// Shutdown observability (flush pending metrics)
 				if globals.meterProvider != nil {
 					shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer cancel()
 					if mp, ok := globals.meterProvider.(interface{ Shutdown(context.Context) error }); ok {
 						if err := mp.Shutdown(shutdownCtx); err != nil {
 							globals.logger.Printf("Error shutting down meter provider: %v", err)
@@ -123,6 +122,7 @@ func main() {
 							globals.logger.Printf("Meter provider shut down successfully")
 						}
 					}
+					cancel()
 				}
 
 				os.Exit(0)
@@ -335,6 +335,8 @@ func processAttributeProviders(configs []attributeProviderStruct) []attributes.A
 			return attributes.NewMSCConfigAttributesProvider(opts)
 		},
 	}
+
+	providers = make([]attributes.AttributesProvider, 0, len(configs))
 
 	for _, config := range configs {
 		// Look up provider constructor

@@ -589,6 +589,7 @@ backends: [
 	}
 
 	initFS()
+	defer drainFS()
 
 	processToMountList()
 
@@ -723,6 +724,7 @@ backends: [
 	}
 
 	initFS()
+	defer drainFS()
 
 	processToMountList()
 

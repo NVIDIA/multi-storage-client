@@ -1,9 +1,6 @@
 package main
 
 import (
-	"crypto/md5"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strconv"
@@ -42,63 +39,12 @@ type ramContextStruct struct {
 // method defined in the `backendConfigIf` interface may be invoked.
 // Note that there is no `destroyContext` counterpart.
 func (backend *backendStruct) setupRAMContext() (err error) {
-	var (
-		dir1                = newRamDir("dir1")
-		dir2                = newRamDir("dir2")
-		dir3                = newRamDir("dir3")
-		dir4                = newRamDir("dir4")
-		fileBContent        []byte
-		fileBMD5AsByteSlice [md5.Size]byte
-		fileBMD5AsString    string
-	)
-
 	backend.context = &ramContextStruct{
 		backend:             backend,
 		rootDir:             newRamDir(""),
 		curTotalObjects:     0,
 		curTotalObjectSpace: 0,
 	}
-
-	// Whilst we remain read-only, it is convenient to pre-populate the context
-	// with content sufficient for testing purposes here.
-
-	_ = backend.context.(*ramContextStruct).rootDir.dirMap.Put("dir1", dir1)
-	_ = backend.context.(*ramContextStruct).rootDir.dirMap.Put("dir2", dir2)
-	_ = backend.context.(*ramContextStruct).rootDir.fileMap.Put("fileA", []byte("/fileA\n"))
-
-	fileBContent = make([]byte, 100*1024*1024)
-	_, err = rand.Read(fileBContent)
-	if err != nil {
-		err = fmt.Errorf("rand.Read(fileBContent) failed: %v", err)
-		return
-	}
-	fileBMD5AsByteSlice = md5.Sum(fileBContent)
-	fileBMD5AsString = hex.EncodeToString(fileBMD5AsByteSlice[:])
-
-	_ = backend.context.(*ramContextStruct).rootDir.fileMap.Put("fileB", fileBContent)
-
-	_ = dir1.dirMap.Put("dir3", dir3)
-	_ = dir1.fileMap.Put("fileC", []byte("/dir1/fileC\n"))
-
-	_ = dir2.dirMap.Put("dir4", dir4)
-
-	_ = dir3.fileMap.Put("fileD", []byte("/dir1/dir3/fileD\n"))
-
-	_ = dir4.fileMap.Put("fileE", []byte("/dir2/dir4/fileE\n"))
-
-	backend.context.(*ramContextStruct).curTotalObjects += 5
-	backend.context.(*ramContextStruct).curTotalObjectSpace += 7 + uint64(len(fileBContent)) + 12 + 17 + 17
-
-	globals.logger.Printf("[backend.dirName: \"%s\"] ramContext.rootDir populated with:", backend.dirName)
-	globals.logger.Printf("       ├── dir1")
-	globals.logger.Printf("       │   ├── dir3")
-	globals.logger.Printf("       │   │   └── fileD (containing \"/dir1/dir3/fileD\\n\")")
-	globals.logger.Printf("       │   └── fileC (containing \"/dir1/fileC\\n\")")
-	globals.logger.Printf("       ├── dir2")
-	globals.logger.Printf("       │   └── dir4")
-	globals.logger.Printf("       │       └── fileE (containing \"/dir2/dir4/fileE\\n\")")
-	globals.logger.Printf("       ├── fileA (containing \"/fileA\\n\")")
-	globals.logger.Printf("       └── fileB (containing %v random bytes with md5sum %v)", len(fileBContent), fileBMD5AsString)
 
 	err = nil
 	return

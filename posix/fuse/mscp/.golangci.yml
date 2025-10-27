@@ -30,7 +30,7 @@ linters:
     - nilnesserr
     - nolintlint
     - perfsprint
-    - prealloc
+    # - prealloc
     - protogetter
     - reassign
     # - revive
@@ -110,6 +110,8 @@ linters:
         - name: unused-parameter
         - name: unused-receiver
         - name: waitgroup-by-value
+    staticcheck:
+      checks: ["-QF1008"]
   exclusions:
     generated: lax
     presets:
