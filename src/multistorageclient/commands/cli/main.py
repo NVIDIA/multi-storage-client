@@ -24,6 +24,7 @@ from .actions import (
     GlobAction,
     HelpAction,
     LsAction,
+    MCPServerAction,
     MSCArgumentParser,
     RmAction,
     SyncAction,
@@ -63,6 +64,7 @@ def main() -> int:
     registry.register_action(GlobAction())
     registry.register_action(LsAction())
     registry.register_action(RmAction())
+    registry.register_action(MCPServerAction())
 
     # Parse command line arguments
     parser = create_parser()

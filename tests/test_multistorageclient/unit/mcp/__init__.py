@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,23 +13,3 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .action import ActionRegistry, MSCArgumentParser
-from .config import ConfigAction
-from .glob import GlobAction
-from .help import HelpAction
-from .ls import LsAction
-from .mcp_server import MCPServerAction
-from .rm import RmAction
-from .sync import SyncAction
-
-__all__ = [
-    "ActionRegistry",
-    "MSCArgumentParser",
-    "ConfigAction",
-    "HelpAction",
-    "SyncAction",
-    "GlobAction",
-    "LsAction",
-    "MCPServerAction",
-    "RmAction",
-]
