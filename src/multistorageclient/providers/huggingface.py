@@ -371,23 +371,25 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         last_modified = AWARE_DATETIME_MIN
 
         if isinstance(item, RepoFile):
+            etag = item.blob_id
             return ObjectMetadata(
                 key=item.path,
                 type="file",
                 content_length=item.size,
                 last_modified=last_modified,
-                etag=None,
+                etag=etag,
                 content_type=None,
                 storage_class=None,
                 metadata=None,
             )
         else:
+            etag = item.tree_id
             return ObjectMetadata(
                 key=item.path,
                 type="directory",
                 content_length=0,
                 last_modified=last_modified,
-                etag=None,
+                etag=etag,
                 content_type=None,
                 storage_class=None,
                 metadata=None,
