@@ -121,7 +121,7 @@ def verify_storage_provider(storage_client: msc.StorageClient, prefix: str) -> N
     assert info.last_modified is not None
 
     info_list = list(storage_client.list(filename))
-    assert len(info_list) == 1
+    assert len(info_list) == 1, f"actual list for path {filename}: {info_list}"
     listed_info = info_list[0]
     assert listed_info is not None
     assert listed_info.key.endswith(filename)
@@ -250,6 +250,89 @@ def verify_storage_provider(storage_client: msc.StorageClient, prefix: str) -> N
         storage_client.delete(f"{prefix}/dir1/dir2/", recursive=True)
 
         wait(waitable=lambda: storage_client.list(prefix), should_wait=len_should_wait(expected_len=1))
+
+    # test list functionality
+    storage_client.write(f"{prefix}/dir1/file1.txt", b"content1")
+    storage_client.write(f"{prefix}/dir1/file2.txt", b"content2")
+    if not isinstance(storage_client._storage_provider, HuggingFaceStorageProvider):
+        storage_client.write(f"{prefix}/dir1/dir2/", b"")
+    storage_client.write(f"{prefix}/dir1/dir2/file3.txt", b"content3")
+
+    wait(
+        waitable=lambda: storage_client.list(f"{prefix}/dir1"),
+        should_wait=len_should_wait(expected_len=3),
+    )
+
+    immediate_children = list(storage_client.list(prefix=f"{prefix}/dir1/", include_directories=True))
+    immediate_keys = [obj.key.replace(f"{prefix}/dir1/", "") for obj in immediate_children]
+
+    assert len(immediate_children) == 3, f"Actual list: {immediate_children}"
+    assert "file1.txt" in immediate_keys
+    assert "file2.txt" in immediate_keys
+    assert "dir2" in immediate_keys
+    assert "dir2/file3.txt" not in immediate_keys, (
+        "Should not include files from subdirectories when include_directories=True"
+    )
+
+    dir2_obj = next(obj for obj in immediate_children if obj.key.endswith("dir2"))
+    assert dir2_obj.type == "directory"
+
+    all_files = list(storage_client.list(prefix=f"{prefix}/dir1/", include_directories=False))
+    all_file_keys = [obj.key.replace(f"{prefix}/dir1/", "") for obj in all_files]
+
+    assert len(all_files) == 3
+    assert "file1.txt" in all_file_keys
+    assert "file2.txt" in all_file_keys
+    assert "dir2/file3.txt" in all_file_keys
+    assert "dir2" not in all_file_keys, "Should not include directory entries when include_directories=False"
+
+    for obj in all_files:
+        assert obj.type == "file", f"Expected file, got {obj.type} for {obj.key}"
+
+    single_file_result = list(storage_client.list(f"{prefix}/dir1/file1.txt"))
+    assert len(single_file_result) == 1, (
+        f"Listing a specific file should return only that file (Linux ls semantics). "
+        f"Expected 1 result, got {len(single_file_result)}: {[r.key for r in single_file_result]}"
+    )
+    assert single_file_result[0].key == f"{prefix}/dir1/file1.txt", (
+        f"Expected key '{prefix}/dir1/file1.txt', got '{single_file_result[0].key}'"
+    )
+    assert single_file_result[0].type == "file"
+    assert not any("file2.txt" in r.key for r in single_file_result)
+
+    nonexistent_dir_no_slash = f"{prefix}/dir1/nonexistent_dir"
+    nonexistent_dir_with_slash = f"{prefix}/dir1/nonexistent_dir/"
+
+    nonexistent_no_slash_results = list(storage_client.list(nonexistent_dir_no_slash))
+    nonexistent_with_slash_results = list(storage_client.list(nonexistent_dir_with_slash))
+
+    assert len(nonexistent_no_slash_results) == 0, (
+        f"Listing non-existent directory without trailing slash should return empty. "
+        f"Got {len(nonexistent_no_slash_results)} results: {[r.key for r in nonexistent_no_slash_results]}"
+    )
+    assert len(nonexistent_with_slash_results) == 0, (
+        f"Listing non-existent directory with trailing slash should return empty. "
+        f"Got {len(nonexistent_with_slash_results)} results: {[r.key for r in nonexistent_with_slash_results]}"
+    )
+
+    assert storage_client.is_empty(nonexistent_dir_no_slash) is True, (
+        "is_empty() should return True for non-existent directory without trailing slash"
+    )
+    assert storage_client.is_empty(nonexistent_dir_with_slash) is True, (
+        "is_empty() should return True for non-existent directory with trailing slash"
+    )
+
+    file1_result = list(storage_client.list(f"{prefix}/dir1/file1.txt"))
+    assert len(file1_result) == 1
+    assert file1_result[0].key == f"{prefix}/dir1/file1.txt"
+    assert file1_result[0].type == "file"
+    assert storage_client.is_empty(f"{prefix}/dir1/file1.txt") is False, (
+        "is_empty() should return False when path points to an existing file"
+    )
+
+    assert storage_client.is_empty(f"{prefix}/dir1/") is False, (
+        "is_empty() should return False for existing directory with files"
+    )
 
 
 def verify_attributes(storage_client: msc.StorageClient, prefix: str) -> None:

@@ -361,6 +361,38 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         except Exception as e:
             raise RuntimeError(f"Unexpected error during deletion of {path}: {e}") from e
 
+    def _item_to_metadata(self, item: Union[RepoFile, RepoFolder]) -> ObjectMetadata:
+        """
+        Convert a RepoFile or RepoFolder into ObjectMetadata.
+
+        :param item: The RepoFile or RepoFolder item from HuggingFace API.
+        :return: ObjectMetadata representing the item.
+        """
+        last_modified = AWARE_DATETIME_MIN
+
+        if isinstance(item, RepoFile):
+            return ObjectMetadata(
+                key=item.path,
+                type="file",
+                content_length=item.size,
+                last_modified=last_modified,
+                etag=None,
+                content_type=None,
+                storage_class=None,
+                metadata=None,
+            )
+        else:
+            return ObjectMetadata(
+                key=item.path,
+                type="directory",
+                content_length=0,
+                last_modified=last_modified,
+                etag=None,
+                content_type=None,
+                storage_class=None,
+                metadata=None,
+            )
+
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         """
         Retrieves metadata for an object in the HuggingFace repository.
@@ -389,21 +421,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
                 raise FileNotFoundError(f"File not found in HuggingFace repository: {path}")
 
             item = items[0]
-
-            last_modified = AWARE_DATETIME_MIN
-            if hasattr(item, "last_commit") and item.last_commit:
-                last_modified = item.last_commit.date
-
-            return ObjectMetadata(
-                key=item.path,
-                type="file" if isinstance(item, RepoFile) else "directory",
-                content_length=item.size if isinstance(item, RepoFile) else 0,
-                last_modified=last_modified,
-                etag=None,  # Can be obtained via a separate call to get_hf_file_metadata
-                content_type=None,
-                storage_class=None,
-                metadata=None,
-            )
+            return self._item_to_metadata(item)
         except FileNotFoundError as error:
             if strict:
                 dir_path = path.rstrip("/") + "/"
@@ -457,56 +475,37 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         path = self._normalize_path(path)
 
         try:
+            metadata = self._get_object_metadata(path.rstrip("/"), strict=False)
+            if metadata and metadata.type == "file":
+                yield metadata
+                return
+        except FileNotFoundError:
+            pass
+
+        try:
+            dir_path = path.rstrip("/")
+
             repo_items = self._hf_client.list_repo_tree(
                 repo_id=self._repository_id,
-                path_in_repo=os.path.dirname(path),
+                path_in_repo=dir_path + "/" if dir_path else None,
                 repo_type=self._repo_type,
                 revision=self._repo_revision,
                 expand=True,
-                recursive=True,
+                recursive=not include_directories,
             )
 
             for item in repo_items:
-                if not item.path.startswith(os.path.dirname(path)):
-                    continue
-
                 if include_directories and isinstance(item, RepoFolder):
-                    last_modified = AWARE_DATETIME_MIN
-                    if hasattr(item, "last_commit") and item.last_commit:
-                        last_modified = item.last_commit.date
-
-                    yield ObjectMetadata(
-                        key=item.path,
-                        type="directory",
-                        content_length=0,
-                        last_modified=last_modified,
-                        etag=None,
-                        content_type=None,
-                        storage_class=None,
-                        metadata=None,
-                    )
-
+                    yield self._item_to_metadata(item)
                 elif isinstance(item, RepoFile):
-                    last_modified = AWARE_DATETIME_MIN
-                    if hasattr(item, "last_commit") and item.last_commit:
-                        last_modified = item.last_commit.date
+                    yield self._item_to_metadata(item)
 
-                    yield ObjectMetadata(
-                        key=item.path,
-                        type="file",
-                        content_length=item.size,
-                        last_modified=last_modified,
-                        etag=None,
-                        content_type=None,
-                        storage_class=None,
-                        metadata=None,
-                    )
         except (RepositoryNotFoundError, RevisionNotFoundError) as e:
             raise FileNotFoundError(
                 f"Repository or revision not found: {self._repository_id}@{self._repo_revision}"
             ) from e
-        # if an entry wasn't found, we can effectively treat this as an empty directory since HF creates/deletes directories implicitly.
         except EntryNotFoundError:
+            # Directory doesn't exist - return empty (matches POSIX behavior)
             pass
         except HfHubHTTPError as e:
             raise RuntimeError(f"HuggingFace API error during listing of {path}: {e}") from e
