@@ -515,6 +515,7 @@ def test_partial_file_caching_cleanup() -> None:
 
         # Force a cache refresh to trigger cleanup
         cache_manager = client._cache_manager
+        assert cache_manager is not None
         cache_manager.refresh_cache()
 
         # Verify that LRU eviction worked correctly:
@@ -677,8 +678,7 @@ def test_partial_file_caching_3mb_file_1mb_read():
         msc.write(test_file_path, test_content)
 
         # Read 1MB from the file with prefetch_file=False
-        open_kwargs = {"prefetch_file": False}
-        with msc.open(test_file_path, "rb", **open_kwargs) as f:
+        with msc.open(test_file_path, "rb", prefetch_file=False) as f:
             # 1. f (ObjectFile) receives calls (f.read(), f.seek())
             # 2. f delegates to f._file (RemoteFileReader)
             # 3. f._file (RemoteFileReader) does the actual work:

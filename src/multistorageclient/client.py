@@ -27,7 +27,6 @@ from typing import IO, Any, List, Optional, Union, cast
 from .config import StorageClientConfig
 from .constants import MEMORY_LOAD_LIMIT
 from .file import ObjectFile, PosixFile
-from .instrumentation.utils import instrumented
 from .providers.posix_file import PosixFileStorageProvider
 from .replica_manager import ReplicaManager
 from .retry import retry
@@ -47,7 +46,6 @@ from .utils import NullStorageClient, PatternMatcher, join_paths
 logger = logging.getLogger(__name__)
 
 
-@instrumented
 class StorageClient:
     """
     A client for interacting with different storage providers.
@@ -415,7 +413,7 @@ class StorageClient:
         is_file = obj_metadata and obj_metadata.type == "file"
         if recursive and is_dir:
             self.sync_from(
-                NullStorageClient(),
+                cast(StorageClient, NullStorageClient()),
                 path,
                 path,
                 delete_unmatched_files=True,

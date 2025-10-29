@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from multistorageclient.instrumentation.auth import AccessTokenProviderFactory, AzureAccessTokenProvider
+from multistorageclient.instrumentation.auth import AzureAccessTokenProvider
 
 
 @pytest.fixture
@@ -53,18 +53,3 @@ def test_azure_get_token_no_token(mock_azure_provider):
 def test_azure_get_token_exception(mock_azure_provider):
     mock_azure_provider.msal_client.acquire_token_for_client.side_effect = Exception("Test Exception")
     assert mock_azure_provider.get_token() is None
-
-
-def test_create_unknown_provider():
-    auth_config = {"type": "unknown"}
-    with pytest.raises(ValueError):
-        _ = AccessTokenProviderFactory.create_access_token_provider(auth_config)
-
-
-def test_create_azure_provider():
-    auth_config = {
-        "type": "azure",
-        "options": {"client_id": "test_id", "client_credential": "test_cred", "scopes": ["test_scope"]},
-    }
-    provider = AccessTokenProviderFactory.create_access_token_provider(auth_config)
-    assert isinstance(provider, AzureAccessTokenProvider)

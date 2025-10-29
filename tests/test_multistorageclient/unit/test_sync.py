@@ -18,13 +18,15 @@ import os
 import queue
 import time
 from datetime import datetime
-from typing import Optional
+from typing import Optional, cast
 
 import pytest
 
 import multistorageclient as msc
+from multistorageclient.client import StorageClient
 from multistorageclient.constants import MEMORY_LOAD_LIMIT
 from multistorageclient.progress_bar import ProgressBar
+from multistorageclient.providers.base import BaseStorageProvider
 from multistorageclient.providers.manifest_metadata import DEFAULT_MANIFEST_BASE_DIR
 from multistorageclient.sync import ProducerThread, ResultConsumerThread, SyncManager, _SyncOp
 from multistorageclient.types import ExecutionMode, ObjectMetadata
@@ -467,9 +469,9 @@ def test_producer_thread_error():
     target_client = MockStorageClient()
 
     producer_thread = ProducerThread(
-        source_client=source_client,
+        source_client=cast(StorageClient, source_client),
         source_path="",
-        target_client=target_client,
+        target_client=cast(StorageClient, target_client),
         target_path="",
         progress=ProgressBar(desc="", show_progress=False),
         file_queue=queue.Queue(),
@@ -488,7 +490,7 @@ def test_result_consumer_error():
     result_queue = queue.Queue()
 
     result_consumer_thread = ResultConsumerThread(
-        target_client=target_client,
+        target_client=cast(StorageClient, target_client),
         target_path="",
         progress=ProgressBar(desc="", show_progress=False),
         result_queue=result_queue,
@@ -511,7 +513,12 @@ def test_sync_function_return_producer_error():
     source_client = MockStorageClient()
     target_client = MockStorageClient()
 
-    manager = SyncManager(source_client=source_client, source_path="", target_client=target_client, target_path="")
+    manager = SyncManager(
+        source_client=cast(StorageClient, source_client),
+        source_path="",
+        target_client=cast(StorageClient, target_client),
+        target_path="",
+    )
     with pytest.raises(RuntimeError, match="Errors in sync operation, caused by: .*"):
         manager.sync_objects()
 
@@ -542,9 +549,9 @@ def test_progress_bar_update_in_producer_thread_without_deletion():
     file_queue = queue.Queue()
 
     producer_thread = ProducerThread(
-        source_client=source_client,
+        source_client=cast(StorageClient, source_client),
         source_path="",
-        target_client=target_client,
+        target_client=cast(StorageClient, target_client),
         target_path="",
         progress=progress,
         file_queue=file_queue,
@@ -580,9 +587,9 @@ def test_progress_bar_update_in_producer_thread_with_deletion():
     file_queue = queue.Queue()
 
     producer_thread = ProducerThread(
-        source_client=source_client,
+        source_client=cast(StorageClient, source_client),
         source_path="",
-        target_client=target_client,
+        target_client=cast(StorageClient, target_client),
         target_path="",
         progress=progress,
         file_queue=file_queue,
@@ -641,7 +648,7 @@ def test_sync_from_symlink_files(temp_data_store_type: type[tempdatastore.Tempor
         source_client, source_path = msc.resolve_storage_client(source_msc_url)
         target_client, target_path = msc.resolve_storage_client(target_msc_url)
 
-        base_path = source_client._storage_provider._base_path
+        base_path = cast(BaseStorageProvider, source_client._storage_provider)._base_path
 
         real_file_content = "This is the real file content" * 50
         real_file_path = os.path.join(source_path, "real_file.txt")

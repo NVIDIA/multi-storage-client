@@ -23,9 +23,11 @@ import tempfile
 import threading
 import time
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 from filelock import FileLock
+
+from multistorageclient.providers.base import BaseStorageProvider
 
 from .constants import MEMORY_LOAD_LIMIT
 from .progress_bar import ProgressBar
@@ -563,7 +565,9 @@ def _sync_worker_process(
                     target_lock_file_path = os.path.join(
                         os.path.dirname(target_file_path), f".{os.path.basename(target_file_path)}.lock"
                     )
-                    lock_path = target_client._storage_provider._prepend_base_path(target_lock_file_path)
+                    lock_path = cast(BaseStorageProvider, target_client._storage_provider)._prepend_base_path(
+                        target_lock_file_path
+                    )
                     exclusive_lock = FileLock(lock_path, timeout=DEFAULT_LOCK_TIMEOUT)
                 else:
                     exclusive_lock = contextlib.nullcontext()

@@ -47,28 +47,6 @@ OTEL_SCHEMA = {
                 "exporter": EXTENSION_SCHEMA,
             },
         },
-        "traces": {
-            "type": "object",
-            "properties": {
-                "exporter": {
-                    "type": "object",
-                    "properties": {
-                        "type": {
-                            "type": "string",
-                            "enum": ["otlp", "console"],
-                        },
-                        "options": {
-                            "type": "object",
-                            "properties": {
-                                "endpoint": {"type": "string", "format": "uri"},
-                            },
-                            "required": ["endpoint"],
-                        },
-                    },
-                    "required": ["type"],
-                }
-            },
-        },
     },
     "additionalProperties": False,
 }

@@ -30,6 +30,7 @@ from multistorageclient.providers import (
     ManifestMetadataProvider,
     PosixFileStorageProvider,
     S3StorageProvider,
+    S8KStorageProvider,
     StaticS3CredentialsProvider,
 )
 from multistorageclient.types import StorageProviderConfig
@@ -149,8 +150,9 @@ def test_credentials_provider() -> None:
 
     storage_client = StorageClient(yaml_config)
     assert isinstance(storage_client._credentials_provider, StaticS3CredentialsProvider)
-    assert storage_client._credentials_provider._access_key == "my_key"
-    assert storage_client._credentials_provider._secret_key == "my_secret"
+    credentials_provider = cast(StaticS3CredentialsProvider, storage_client._credentials_provider)
+    assert credentials_provider._access_key == "my_key"
+    assert credentials_provider._secret_key == "my_secret"
 
 
 def test_load_extensions() -> None:
@@ -396,6 +398,7 @@ def test_load_retry_config() -> None:
     )
 
     storage_client = StorageClient(config)
+    assert storage_client._retry_config is not None
     assert storage_client._retry_config.attempts == 4
     assert storage_client._retry_config.delay == 0.5
     assert storage_client._retry_config.backoff_multiplier == 3.0
@@ -412,6 +415,7 @@ def test_load_retry_config() -> None:
     )
 
     storage_client = StorageClient(config)
+    assert storage_client._retry_config is not None
     assert storage_client._retry_config.attempts == 3
     assert storage_client._retry_config.delay == 1.0
     assert storage_client._retry_config.backoff_multiplier == 2.0
@@ -432,6 +436,7 @@ def test_load_retry_config() -> None:
     )
 
     storage_client = StorageClient(config)
+    assert storage_client._retry_config is not None
     assert storage_client._retry_config.attempts == 5
     assert storage_client._retry_config.delay == 2.0
     assert storage_client._retry_config.backoff_multiplier == 2.0
@@ -811,7 +816,7 @@ def test_storage_options_does_not_override_creds_provider_options() -> None:
     )
 
     storage_client = StorageClient(config)
-    assert storage_client._storage_provider._region_name == "us-east-1"
+    assert cast(S8KStorageProvider, storage_client._storage_provider)._region_name == "us-east-1"
     assert isinstance(storage_client._credentials_provider, TestScopedCredentialsProvider)
     assert storage_client._credentials_provider._base_path == "mybucket/myprefix/mysubprefix"
     assert storage_client._credentials_provider._endpoint_url == "https://pdx.s8k.io"

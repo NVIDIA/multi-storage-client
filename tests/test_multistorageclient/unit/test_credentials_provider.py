@@ -16,6 +16,7 @@
 from google.auth import identity_pool
 
 from multistorageclient import StorageClient, StorageClientConfig
+from multistorageclient.providers.gcs import GoogleIdentityPoolCredentialsProvider, GoogleStorageProvider
 
 
 def test_google_identity_pool_credentials():
@@ -40,6 +41,8 @@ def test_google_identity_pool_credentials():
         profile="test-gcs",
     )
     storage_client = StorageClient(config)
+    assert isinstance(storage_client._credentials_provider, GoogleIdentityPoolCredentialsProvider)
     assert storage_client._credentials_provider.get_credentials().get_custom_field("audience") == "test-audience"
     assert storage_client._credentials_provider.get_credentials().get_custom_field("token") == "test-token"
+    assert isinstance(storage_client._storage_provider, GoogleStorageProvider)
     assert isinstance(storage_client._storage_provider._gcs_client._credentials, identity_pool.Credentials)

@@ -322,9 +322,3 @@ Storage Provider
       * Timestamp:
 
         * Operation End
-
-******
-Traces
-******
-
-MSC publishes spans using a tail sampler which publishes errors and high-latency traces. The span pipeline currently isn't configurable except the exporter.

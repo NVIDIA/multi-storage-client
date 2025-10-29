@@ -17,7 +17,7 @@ import functools
 import os
 import tempfile
 import uuid
-from typing import Union
+from typing import Union, cast
 
 import pytest
 
@@ -25,6 +25,7 @@ import multistorageclient.telemetry as telemetry
 import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.constants import MEMORY_LOAD_LIMIT
+from multistorageclient.providers.base import BaseStorageProvider
 from multistorageclient.types import PreconditionFailedError, Range
 from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
 
@@ -221,7 +222,7 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
 
         MEMORY_LOAD_LIMIT = 64 * 1024 * 1024
         # Open the file for writes + reads (bytes).
-        if storage_client._storage_provider._provider_name == "gcs":
+        if cast(BaseStorageProvider, storage_client._storage_provider)._provider_name == "gcs":
             # GCS simulator does not support multipart uploads
             large_file_body_bytes = b"\x00" * MEMORY_LOAD_LIMIT
         else:
@@ -301,7 +302,7 @@ def test_put_object_with_etag_metadata(temp_data_store_type: type[tempdatastore.
         profile = "data"
         config_dict = {"profiles": {profile: temp_data_store.profile_config_dict()}}
         storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
-        storage_provider = storage_client._storage_provider
+        storage_provider = cast(BaseStorageProvider, storage_client._storage_provider)
 
         # Test file details
         bucket = config_dict["profiles"][profile]["storage_provider"]["options"]["base_path"]
@@ -322,6 +323,7 @@ def test_put_object_with_etag_metadata(temp_data_store_type: type[tempdatastore.
         assert file_info is not None
         # Skip metadata verification for POSIX if extended attributes are not supported
         if storage_provider._provider_name != "file" or hasattr(os, "setxattr"):
+            assert file_info.metadata is not None
             assert file_info.metadata["etag"] == test_etag
 
         # Clean up
@@ -344,7 +346,7 @@ def test_delete_object_with_etag(temp_data_store_type: type[tempdatastore.Tempor
         profile = "data"
         config_dict = {"profiles": {profile: temp_data_store.profile_config_dict()}}
         storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
-        storage_provider = storage_client._storage_provider
+        storage_provider = cast(BaseStorageProvider, storage_client._storage_provider)
 
         # Test file details
         bucket = config_dict["profiles"][profile]["storage_provider"]["options"]["base_path"]
@@ -398,7 +400,7 @@ def test_posix_xattr_metadata(temp_data_store_type: type[tempdatastore.Temporary
         profile = "data"
         config_dict = {"profiles": {profile: temp_data_store.profile_config_dict()}}
         storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
-        storage_provider = storage_client._storage_provider
+        storage_provider = cast(BaseStorageProvider, storage_client._storage_provider)
 
         # Test file details
         bucket = config_dict["profiles"][profile]["storage_provider"]["options"]["base_path"]
@@ -448,7 +450,7 @@ def test_put_object_with_conditional_params(temp_data_store_type: type[tempdatas
         profile = "data"
         config_dict = {"profiles": {profile: temp_data_store.profile_config_dict()}}
         storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
-        storage_provider = storage_client._storage_provider
+        storage_provider = cast(BaseStorageProvider, storage_client._storage_provider)
 
         # Test file details
         bucket = config_dict["profiles"][profile]["storage_provider"]["options"]["base_path"]
@@ -635,7 +637,7 @@ def test_storage_providers_with_rust_client(
         storage_client.delete(path=file_path)
 
         # Test Multipart Upload and Download
-        if storage_client._storage_provider._provider_name == "gcs":
+        if cast(BaseStorageProvider, storage_client._storage_provider)._provider_name == "gcs":
             # GCS simulator does not support multipart uploads
             large_file_body_bytes = os.urandom(MEMORY_LOAD_LIMIT)
         else:

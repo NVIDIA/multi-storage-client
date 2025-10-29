@@ -28,7 +28,6 @@ import yaml
 
 from .cache import DEFAULT_CACHE_LINE_SIZE, DEFAULT_CACHE_SIZE, CacheManager
 from .caching.cache_config import CacheConfig, EvictionPolicyConfig
-from .instrumentation import setup_opentelemetry
 from .providers.manifest_metadata import ManifestMetadataProvider
 from .rclone import read_rclone_config
 from .schema import validate_config
@@ -686,12 +685,6 @@ class StorageClientConfigLoader:
             interval_minutes = autocommit_dict.get("interval_minutes", None)
             at_exit = autocommit_dict.get("at_exit", False)
             autocommit_config = AutoCommitConfig(interval_minutes=interval_minutes, at_exit=at_exit)
-
-        # set up OpenTelemetry providers once per process
-        #
-        # TODO: Legacy, need to remove.
-        if self._opentelemetry_dict:
-            setup_opentelemetry(self._opentelemetry_dict)
 
         return StorageClientConfig(
             profile=self._profile,

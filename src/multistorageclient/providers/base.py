@@ -26,7 +26,6 @@ from typing import IO, Any, Optional, TypeVar, Union, cast
 import opentelemetry.metrics as api_metrics
 import opentelemetry.util.types as api_types
 
-from ..instrumentation.utils import instrumented
 from ..telemetry import Telemetry
 from ..telemetry.attributes.base import AttributesProvider, collect_attributes
 from ..types import ObjectMetadata, Range, StorageProvider
@@ -53,7 +52,6 @@ _TELEMETRY_ATTRIBUTES_PROVIDER_MAPPING = {
 }
 
 
-@instrumented
 class BaseStorageProvider(StorageProvider):
     """
     Base class for implementing a storage provider that manages object storage paths.

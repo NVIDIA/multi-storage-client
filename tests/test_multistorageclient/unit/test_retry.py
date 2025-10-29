@@ -13,14 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
+from typing import Optional, cast
 from unittest.mock import patch
 
 import pytest
 
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.retry import retry
-from multistorageclient.types import Range, RetryableError
+from multistorageclient.types import Range, RetryableError, StorageProvider
 
 
 class FakeStorageProvider:
@@ -71,22 +71,24 @@ def test_retry_decorator_in_storage_client():
     storage_client = StorageClient(config)
 
     # Set the fake storage provider to fail 2 times before succeeding
-    storage_client._storage_provider = FakeStorageProvider(error_count=2)
+    storage_provider = FakeStorageProvider(error_count=2)
+    storage_client._storage_provider = cast(StorageProvider, storage_provider)
 
     result = storage_client.read("some_path")
     assert result == b"File content"
     # Ensure we have 2 attempts before succeeding
-    assert storage_client._storage_provider.attempts == 2
+    assert storage_provider.attempts == 2
 
     # Another fake storage provider to fail 5 times before succeeding
-    storage_client._storage_provider = FakeStorageProvider(error_count=5)
+    storage_provider = FakeStorageProvider(error_count=5)
+    storage_client._storage_provider = cast(StorageProvider, storage_provider)
 
     # Expect error when exceeding the default maximum number (3) of retries
     with pytest.raises(RetryableError) as e:
         result = storage_client.read("some_path")
 
     assert "Simulated connection time out error." in str(e), f"Unexpected error message: {str(e)}"
-    assert storage_client._storage_provider.attempts == 3
+    assert storage_provider.attempts == 3
 
 
 def test_retry_decorator_outside_storage_client():
@@ -123,7 +125,7 @@ def test_retry_with_custom_backoff_multiplier():
     )
 
     storage_client = StorageClient(config)
-    storage_client._storage_provider = FakeStorageProvider(error_count=4)
+    storage_client._storage_provider = cast(StorageProvider, FakeStorageProvider(error_count=4))
 
     sleep_times = []
 
@@ -173,7 +175,7 @@ def test_file_not_found_error_logging(caplog):
         def get_object(self, path: str, byte_range: Optional[Range] = None):
             raise FileNotFoundError(f"Object {path} not found")
 
-    storage_client._storage_provider = FileNotFoundStorageProvider()
+    storage_client._storage_provider = cast(StorageProvider, FileNotFoundStorageProvider())
 
     with caplog.at_level(logging.DEBUG):
         with pytest.raises(FileNotFoundError):

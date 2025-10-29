@@ -27,7 +27,7 @@ from multistorageclient.constants import MEMORY_LOAD_LIMIT
 
 
 @pytest.fixture(scope="session")
-def storage_client() -> StorageClient:
+def storage_client():
     with tempdatastore.TemporaryAWSS3Bucket() as temp_data_store:
         profile = "data"
         config_dict = {

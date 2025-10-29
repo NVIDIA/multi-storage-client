@@ -15,7 +15,7 @@
 
 import logging
 import time
-from typing import Any, Optional
+from typing import Any
 
 import requests
 
@@ -102,17 +102,3 @@ class AzureAccessTokenProvider(AccessTokenProvider):
 
         logger.debug(f"All {MAX_RETRIES} token fetch attempts failed")
         return None
-
-
-class AccessTokenProviderFactory:
-    @staticmethod
-    def create_access_token_provider(auth_config: dict[str, Any]) -> Optional[AccessTokenProvider]:
-        if not auth_config:
-            return None
-        auth_type = auth_config.get("type", None)
-        auth_options = auth_config.get("options", {})
-
-        if auth_type == "azure":
-            return AzureAccessTokenProvider(auth_options)
-        else:
-            raise ValueError(f"auth_type: {auth_type} is not supported")

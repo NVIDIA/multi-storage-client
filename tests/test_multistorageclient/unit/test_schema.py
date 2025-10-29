@@ -201,29 +201,6 @@ def test_validate_opentelemetry():
         }
     )
 
-    validate_config(
-        {
-            "profiles": {
-                "default": default_storage_provider,
-            },
-            "opentelemetry": {
-                "traces": {"exporter": {"type": "otlp", "options": {"endpoint": "http://0.0.0.0:8888/otlp/v1/traces"}}}
-            },
-        }
-    )
-
-    validate_config(
-        {
-            "profiles": {
-                "default": default_storage_provider,
-            },
-            "opentelemetry": {
-                "metrics": {"exporter": {"type": "console"}},
-                "traces": {"exporter": {"type": "otlp", "options": {"endpoint": "http://0.0.0.0:8888/otlp/v1/traces"}}},
-            },
-        }
-    )
-
 
 def test_validate_posix():
     default_storage_provider = {"storage_provider": {"type": "s3", "options": {"base_path": "bucket/prefix"}}}

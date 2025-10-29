@@ -29,7 +29,6 @@ from botocore.session import get_session
 
 from multistorageclient_rust import RustClient, RustRetryableError
 
-from ..instrumentation.utils import set_span_attribute
 from ..rust_utils import run_async_rust_client_method
 from ..telemetry import Telemetry
 from ..types import (
@@ -64,18 +63,6 @@ PYTHON_MAX_CONCURRENCY = 8
 PROVIDER = "s3"
 
 EXPRESS_ONEZONE_STORAGE_CLASS = "EXPRESS_ONEZONE"
-
-
-def _extract_x_trans_id(response: Any) -> None:
-    """Extract x-trans-id from boto3 response and set it as span attribute."""
-    try:
-        if response and isinstance(response, dict):
-            headers = response.get("ResponseMetadata", {}).get("HTTPHeaders", {})
-            if headers and isinstance(headers, dict) and "x-trans-id" in headers:
-                set_span_attribute("x_trans_id", headers["x-trans-id"])
-    except (KeyError, AttributeError, TypeError):
-        # Silently ignore any errors in extraction
-        pass
 
 
 class StaticS3CredentialsProvider(CredentialsProvider):
@@ -324,8 +311,6 @@ class S3StorageProvider(BaseStorageProvider):
         """
         Translates errors like timeouts and client errors.
 
-        TODO: Remove tracing from this method.
-
         :param func: The function that performs the actual S3 operation.
         :param operation: The type of operation being performed (e.g., "PUT", "GET", "DELETE").
         :param bucket: The name of the S3 bucket involved in the operation.
@@ -333,31 +318,14 @@ class S3StorageProvider(BaseStorageProvider):
 
         :return: The result of the S3 operation, typically the return value of the `func` callable.
         """
-        # Set basic operation attributes
-        set_span_attribute("s3_operation", operation)
-        set_span_attribute("s3_bucket", bucket)
-        set_span_attribute("s3_key", key)
-
         try:
             return func()
         except ClientError as error:
             status_code = error.response["ResponseMetadata"]["HTTPStatusCode"]
             request_id = error.response["ResponseMetadata"].get("RequestId")
             host_id = error.response["ResponseMetadata"].get("HostId")
-            header = error.response["ResponseMetadata"].get("HTTPHeaders", {})
             error_code = error.response["Error"]["Code"]
-
-            # Ensure header is a dictionary before trying to get from it
-            x_trans_id = header.get("x-trans-id") if isinstance(header, dict) else None
-
-            # Record error details in span
-            set_span_attribute("request_id", request_id)
-            set_span_attribute("host_id", host_id)
-
             error_info = f"request_id: {request_id}, host_id: {host_id}, status_code: {status_code}"
-            if x_trans_id:
-                error_info += f", x-trans-id: {x_trans_id}"
-                set_span_attribute("x_trans_id", x_trans_id)
 
             if status_code == 404:
                 if error_code == "NoSuchUpload":
@@ -445,13 +413,9 @@ class S3StorageProvider(BaseStorageProvider):
                 and not path.endswith("/")
                 and all(key not in kwargs for key in rust_unsupported_feature_keys)
             ):
-                response = run_async_rust_client_method(self._rust_client, "put", key, body)
+                run_async_rust_client_method(self._rust_client, "put", key, body)
             else:
-                # Capture the response from put_object
-                response = self._s3_client.put_object(**kwargs)
-
-            # Extract and set x-trans-id if present
-            _extract_x_trans_id(response)
+                self._s3_client.put_object(**kwargs)
 
             return len(body)
 
@@ -477,9 +441,6 @@ class S3StorageProvider(BaseStorageProvider):
                 else:
                     response = self._s3_client.get_object(Bucket=bucket, Key=key)
 
-            # Extract and set x-trans-id if present
-            _extract_x_trans_id(response)
-
             return response["Body"].read()
 
         return self._translate_errors(_invoke_api, operation="GET", bucket=bucket, key=key)
@@ -491,15 +452,12 @@ class S3StorageProvider(BaseStorageProvider):
         src_object = self._get_object_metadata(src_path)
 
         def _invoke_api() -> int:
-            response = self._s3_client.copy(
+            self._s3_client.copy(
                 CopySource={"Bucket": src_bucket, "Key": src_key},
                 Bucket=dest_bucket,
                 Key=dest_key,
                 Config=self._transfer_config,
             )
-
-            # Extract and set x-trans-id if present
-            _extract_x_trans_id(response)
 
             return src_object.content_length
 
@@ -511,12 +469,9 @@ class S3StorageProvider(BaseStorageProvider):
         def _invoke_api() -> None:
             # conditionally delete the object if if_match(etag) is provided, if not, delete the object unconditionally
             if if_match:
-                response = self._s3_client.delete_object(Bucket=bucket, Key=key, IfMatch=if_match)
+                self._s3_client.delete_object(Bucket=bucket, Key=key, IfMatch=if_match)
             else:
-                response = self._s3_client.delete_object(Bucket=bucket, Key=key)
-
-            # Extract and set x-trans-id if present
-            _extract_x_trans_id(response)
+                self._s3_client.delete_object(Bucket=bucket, Key=key)
 
         return self._translate_errors(_invoke_api, operation="DELETE", bucket=bucket, key=key)
 
@@ -529,9 +484,6 @@ class S3StorageProvider(BaseStorageProvider):
         def _invoke_api() -> bool:
             # List objects with the given prefix
             response = self._s3_client.list_objects_v2(Bucket=bucket, Prefix=key, MaxKeys=1, Delimiter="/")
-
-            # Extract and set x-trans-id if present
-            _extract_x_trans_id(response)
 
             # Check if there are any contents or common prefixes
             return bool(response.get("Contents", []) or response.get("CommonPrefixes", []))
@@ -557,9 +509,6 @@ class S3StorageProvider(BaseStorageProvider):
 
             def _invoke_api() -> ObjectMetadata:
                 response = self._s3_client.head_object(Bucket=bucket, Key=key)
-
-                # Extract and set x-trans-id if present
-                _extract_x_trans_id(response)
 
                 return ObjectMetadata(
                     key=path,
@@ -682,18 +631,15 @@ class S3StorageProvider(BaseStorageProvider):
                 if validated_attributes:
                     extra_args["Metadata"] = validated_attributes
                 if self._rust_client and not extra_args:
-                    response = run_async_rust_client_method(self._rust_client, "upload_multipart_from_file", f, key)
+                    run_async_rust_client_method(self._rust_client, "upload_multipart_from_file", f, key)
                 else:
-                    response = self._s3_client.upload_file(
+                    self._s3_client.upload_file(
                         Filename=f,
                         Bucket=bucket,
                         Key=key,
                         Config=self._transfer_config,
                         ExtraArgs=extra_args,
                     )
-
-                # Extract and set x-trans-id if present
-                _extract_x_trans_id(response)
 
                 return file_size
 
@@ -759,23 +705,20 @@ class S3StorageProvider(BaseStorageProvider):
 
             # Download large files using TransferConfig
             def _invoke_api() -> int:
-                response = None
                 with tempfile.NamedTemporaryFile(mode="wb", delete=False, dir=os.path.dirname(f), prefix=".") as fp:
                     temp_file_path = fp.name
                     if self._rust_client:
-                        response = run_async_rust_client_method(
+                        run_async_rust_client_method(
                             self._rust_client, "download_multipart_to_file", key, temp_file_path
                         )
                     else:
-                        response = self._s3_client.download_fileobj(
+                        self._s3_client.download_fileobj(
                             Bucket=bucket,
                             Key=key,
                             Fileobj=fp,
                             Config=self._transfer_config,
                         )
 
-                # Extract and set x-trans-id if present
-                _extract_x_trans_id(response)
                 os.rename(src=temp_file_path, dst=f)
 
                 return metadata.content_length
@@ -800,15 +743,12 @@ class S3StorageProvider(BaseStorageProvider):
             bucket, key = split_path(remote_path)
 
             def _invoke_api() -> int:
-                response = self._s3_client.download_fileobj(
+                self._s3_client.download_fileobj(
                     Bucket=bucket,
                     Key=key,
                     Fileobj=f,
                     Config=self._transfer_config,
                 )
-
-                # Extract and set x-trans-id if present
-                _extract_x_trans_id(response)
 
                 return metadata.content_length
 

@@ -22,21 +22,14 @@ import os
 import tempfile
 import threading
 from collections.abc import Iterator
-from io import BytesIO, StringIO
-from typing import IO, TYPE_CHECKING, Any, Optional
+from io import BytesIO, IOBase, StringIO
+from typing import IO, TYPE_CHECKING, Any, Optional, cast
 
 import xattr
-from opentelemetry.trace import Span
 
 from .cache import CacheManager
 from .constants import MEMORY_LOAD_LIMIT
-from .instrumentation.utils import (
-    DEFAULT_ATTRIBUTES,
-    TRACER,
-    collect_default_attributes,
-    file_metrics,
-    file_tracer,
-)
+from .instrumentation.utils import file_metrics
 from .providers.base import BaseStorageProvider
 from .types import Range, SourceVersionCheckMode
 from .utils import validate_attributes
@@ -188,7 +181,7 @@ class RemoteFileReader(IO[bytes]):
 
 
 # pylint: disable=abstract-method
-class ObjectFile(IO):
+class ObjectFile(IOBase, IO):
     """
     A file-like object that handles remote file access with asynchronous downloads.
 
@@ -208,7 +201,6 @@ class ObjectFile(IO):
     _cache_manager: Optional[CacheManager] = None
 
     _local_path: Optional[str] = None
-    _trace_span: Optional[Span] = None
     _attributes: Optional[dict[str, str]] = None
 
     def __init__(
@@ -236,14 +228,6 @@ class ObjectFile(IO):
         :param attributes: The attributes to add to the file if a new file is created.
         :param prefetch_file: If True, downloads the entire file to cache in the background for faster subsequent reads. If False, uses RemoteFileReader for streaming reads without caching. Defaults to True.
         """
-        # Initialize parent trace span for this file to share the context with following R/W operations
-        self._trace_span = TRACER.start_span("ObjectFile Lifecycle", attributes=DEFAULT_ATTRIBUTES)
-        self._trace_span.set_attribute("profile", storage_client.profile)
-        self._trace_span.set_attribute("storage_provider", str(storage_client._storage_provider))
-        self._trace_span.set_attribute("mode", mode)
-        for k, v in collect_default_attributes().items():
-            self._trace_span.set_attribute(k, v)
-
         if mode not in ("r", "w", "rb", "wb", "a", "ab"):
             raise ValueError(f'Invalid mode "{mode}", only "w", "r", "a", "wb", "rb" and "ab" are supported.')
 
@@ -422,7 +406,6 @@ class ObjectFile(IO):
             self._download_complete.wait()
         return self._file.closed
 
-    @file_tracer
     def read(self, size: int = -1) -> Any:
         if self.readable():
             self._download_complete.wait()
@@ -449,13 +432,11 @@ class ObjectFile(IO):
             self._download_complete.wait()
         return self._file.tell()
 
-    @file_tracer
     def readline(self, size: int = -1) -> Any:
         if self.readable():
             self._download_complete.wait()
         return self._file.readline(size)
 
-    @file_tracer
     def readlines(self, hint: int = -1) -> list[Any]:
         if self.readable():
             self._download_complete.wait()
@@ -474,11 +455,6 @@ class ObjectFile(IO):
 
     def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
         self.close()
-
-    def __del__(self) -> None:
-        if self._trace_span:
-            self._trace_span.end()
-            self._trace_span = None
 
     @property
     def mode(self) -> str:
@@ -502,22 +478,18 @@ class ObjectFile(IO):
 
         return self._file.fileno()
 
-    @file_tracer
     def write(self, b: Any) -> int:
         return self._file.write(b)
 
-    @file_tracer
     def writelines(self, lines: Any) -> None:
         self._file.writelines(lines)
 
-    @file_tracer
     def truncate(self, size: Optional[int] = None) -> int:
         return self._file.truncate(size)
 
     def flush(self) -> None:
         pass
 
-    @file_tracer
     def readinto(self, b: Any) -> int:
         if self.readable():
             self._download_complete.wait()
@@ -525,11 +497,9 @@ class ObjectFile(IO):
             return self._file.readinto(b)  # type: ignore
         raise io.UnsupportedOperation(f"readinto operation is not supported on file {self._remote_path}")
 
-    @file_tracer
     def readall(self) -> Any:
         return self.read(-1)
 
-    @file_tracer
     def close(self) -> None:
         # If the file is already closed, return immediately.
         if self.closed:
@@ -577,14 +547,14 @@ class ObjectFile(IO):
             self._storage_client.upload_file(self._remote_path, temp_file_path, attributes=self._attributes)
             os.unlink(temp_file_path)
 
-    def resolve_filesystem_path(self) -> Optional[str]:
+    def resolve_filesystem_path(self) -> str:
         """
         Get filesystem path for the file content. Only available in read modes.
 
         With cache manager: Returns path to cached file after download completes.
         Without cache manager: Creates and returns path to temporary file with copied content.
 
-        :return: Path to local file in read mode, None in write mode
+        :return: Path to local file in read mode, raises a ValueError in write mode
         """
         if self.readable():
             self._download_complete.wait()
@@ -602,14 +572,14 @@ class ObjectFile(IO):
                 temp_file.write(self._file.read())
                 self._open_files.append(temp_file)
                 return temp_file.name
-
-        return None
+        else:
+            raise ValueError("resolve_filesystem_path operation not supported in write mode")
 
     def fsync(self) -> None:
         pass
 
 
-class PosixFile(IO):
+class PosixFile(IOBase, IO):
     """
     A file-like object that wraps a POSIX file.
 
@@ -623,7 +593,6 @@ class PosixFile(IO):
 
     _storage_client: StorageClient
     _file: IO
-    _trace_span: Optional[Span] = None
     _attributes: Optional[dict[str, str]] = None
 
     def __init__(
@@ -636,12 +605,6 @@ class PosixFile(IO):
         atomic: bool = True,
         attributes: Optional[dict[str, str]] = None,
     ):
-        # Initialize parent trace span for this file to share the context with following R/W operations
-        self._trace_span = TRACER.start_span("PosixFile Lifecycle", attributes=DEFAULT_ATTRIBUTES)
-        self._trace_span.set_attribute("mode", mode)
-        for k, v in collect_default_attributes().items():
-            self._trace_span.set_attribute(k, v)
-
         # Store storage_client for emitting metrics
         self._storage_client = storage_client
 
@@ -654,7 +617,7 @@ class PosixFile(IO):
             realpath = path
 
         # Required to get the absolute POSIX path.
-        self._real_path = storage_client._storage_provider._prepend_base_path(realpath)
+        self._real_path = cast(BaseStorageProvider, storage_client._storage_provider)._prepend_base_path(realpath)
 
         self._path = path
         self._mode = mode
@@ -682,7 +645,6 @@ class PosixFile(IO):
     def closed(self) -> bool:
         return self._file.closed
 
-    @file_tracer
     @file_metrics(operation=BaseStorageProvider._Operation.READ)
     def read(self, size: int = -1) -> Any:
         return self._file.read(size)
@@ -702,12 +664,10 @@ class PosixFile(IO):
     def tell(self) -> int:
         return self._file.tell()
 
-    @file_tracer
     @file_metrics(operation=BaseStorageProvider._Operation.READ)
     def readline(self, size: int = -1) -> Any:
         return self._file.readline(size)
 
-    @file_tracer
     @file_metrics(operation=BaseStorageProvider._Operation.READ)
     def readlines(self, hint: int = -1) -> list[Any]:
         return self._file.readlines()
@@ -724,11 +684,6 @@ class PosixFile(IO):
     def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
         self.close()
 
-    def __del__(self) -> None:
-        if self._trace_span:
-            self._trace_span.end()
-            self._trace_span = None
-
     @property
     def mode(self) -> str:
         return self._file.mode
@@ -739,38 +694,31 @@ class PosixFile(IO):
     def fileno(self) -> int:
         return self._file.fileno()
 
-    @file_tracer
     @file_metrics(operation=BaseStorageProvider._Operation.WRITE)
     def write(self, b: Any) -> int:
         return self._file.write(b)
 
-    @file_tracer
     @file_metrics(operation=BaseStorageProvider._Operation.WRITE)
     def writelines(self, lines: Any) -> None:
         self._file.writelines(lines)
 
-    @file_tracer
     @file_metrics(operation=BaseStorageProvider._Operation.WRITE)
     def truncate(self, size: Optional[int] = None) -> int:
         return self._file.truncate(size)
 
-    @file_tracer
     def flush(self) -> None:
         self._file.flush()
 
-    @file_tracer
     @file_metrics(operation=BaseStorageProvider._Operation.READ)
     def readinto(self, b: Any) -> int:
         if hasattr(self._file, "readinto"):
             return self._file.readinto(b)  # type: ignore
         raise io.UnsupportedOperation(f"readinto operation is not supported on file {self._file.name}")
 
-    @file_tracer
     @file_metrics(operation=BaseStorageProvider._Operation.READ)
     def readall(self) -> Any:
         return self.read(-1)
 
-    @file_tracer
     def close(self) -> None:
         # If the file is already closed, return immediately.
         if self.closed:
@@ -790,7 +738,7 @@ class PosixFile(IO):
                 except OSError as e:
                     logger.warning("Failed to set extended attributes on %s: %s", self._real_path, e)
 
-    def resolve_filesystem_path(self) -> Optional[str]:
+    def resolve_filesystem_path(self) -> str:
         return self._file.name
 
     def fsync(self) -> None:

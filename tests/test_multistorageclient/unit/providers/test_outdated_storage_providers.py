@@ -122,7 +122,7 @@ def test_outdated_provider_list_objects_through_provider_api():
     # Test case 2: Use of the "prefix" parameter would fail because the BaseStorageProvider.list_objects expects "path", not "prefix"
     # We don't expect this API to be used directly by the application, that's why we don't support backward compatibility for this case.
     with pytest.raises(TypeError):
-        list(provider.list_objects(prefix="test/path"))
+        list(provider.list_objects(prefix="test/path"))  # pyright: ignore [reportCallIssue]
 
     # Test case 3: Use of the new "path" parameter (works)
     result = list(provider.list_objects(path="test/path"))
