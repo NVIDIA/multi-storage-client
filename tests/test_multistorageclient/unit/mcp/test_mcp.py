@@ -46,12 +46,25 @@ class TestMCP:
             tools = await mcp.get_tools()
             tool_names = list(tools.keys())
 
-            assert "msc_list" in tool_names
-            assert "msc_info" in tool_names
+            expected_tools = [
+                "msc_list",
+                "msc_info",
+                "msc_upload_file",
+                "msc_download_file",
+                "msc_delete",
+                "msc_copy",
+                "msc_is_file",
+                "msc_is_empty",
+                "msc_sync",
+            ]
+
+            for expected_tool in expected_tools:
+                assert expected_tool in tool_names, f"Expected tool {expected_tool} not found in {tool_names}"
+
             return tool_names
 
         tool_names = asyncio.run(check_tools())
-        assert len(tool_names) == 2
+        assert len(tool_names) == 9, f"Expected 9 tools, found {len(tool_names)}: {tool_names}"
 
     def test_mcp_prompts_are_registered(self):
         """Test that MCP prompts are registered with the server."""

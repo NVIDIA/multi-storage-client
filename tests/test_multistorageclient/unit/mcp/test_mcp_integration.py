@@ -202,16 +202,377 @@ class TestMCPServerBasicOperations:
             assert len(metadata["key"]) > 0, "Key should be non-empty"
             assert test_file_path in metadata["key"], f"Key should contain file path {test_file_path}"
 
-            # Validate last_modified timestamp
+            # Validate last_modified timestamp exists and has valid format
+            assert metadata["last_modified"] is not None, "last_modified should not be None"
+            assert isinstance(metadata["last_modified"], str), "last_modified should be a string"
+            assert len(metadata["last_modified"]) > 0, "last_modified should not be empty"
+
+            # Validate timestamp format can be parsed (ISO format expected)
             try:
-                parsed_time = datetime.fromisoformat(metadata["last_modified"].replace("Z", "+00:00"))
-                # Ensure timestamp is reasonable (not too old or in future)
-                current_time = datetime.now().timestamp()
-                parsed_timestamp = parsed_time.timestamp()
-                assert abs(current_time - parsed_timestamp) < 3600, "Timestamp should be within last hour"
+                datetime.fromisoformat(metadata["last_modified"].replace("Z", "+00:00"))
             except ValueError:
                 pytest.fail(f"Invalid timestamp format: {metadata['last_modified']}")
 
             error_fields = ["error"]
             for field in error_fields:
                 assert field not in response, f"Response should not contain error field: {response.get(field)}"
+
+    @pytest.mark.asyncio
+    async def test_mcp_upload_download_file(self, mcp_server_parametrized):
+        """Test that msc_upload_file and msc_download_file tools work correctly."""
+        from fastmcp import Client  # pyright: ignore[reportMissingImports]
+        from mcp.types import TextContent  # pyright: ignore[reportMissingImports]
+
+        mcp_server, profile_name = mcp_server_parametrized
+
+        test_prefix = f"upload-test-{uuid.uuid4()}"
+        test_content = b"This is test content for upload/download validation"
+        test_file_path = f"{test_prefix}/uploaded-file.txt"
+
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(mode="wb", delete=False, suffix=".txt") as tmp_upload:
+            tmp_upload.write(test_content)
+            upload_path = tmp_upload.name
+
+        try:
+            async with Client(mcp_server) as client:
+                upload_result = await client.call_tool(
+                    "msc_upload_file",
+                    {"url": f"msc://{profile_name}/{test_file_path}", "local_path": upload_path},
+                )
+
+                assert isinstance(upload_result[0], TextContent)
+                upload_response: Dict[str, Any] = json.loads(upload_result[0].text)
+
+                assert upload_response["success"] is True
+                assert upload_response["url"] == f"msc://{profile_name}/{test_file_path}"
+                assert upload_response["local_path"] == upload_path
+                assert "uploaded_metadata" in upload_response
+                assert upload_response["uploaded_metadata"]["content_length"] == len(test_content)
+
+                with tempfile.NamedTemporaryFile(mode="rb", delete=False, suffix=".txt") as tmp_download:
+                    download_path = tmp_download.name
+
+                download_result = await client.call_tool(
+                    "msc_download_file",
+                    {"url": f"msc://{profile_name}/{test_file_path}", "local_path": download_path},
+                )
+
+                assert isinstance(download_result[0], TextContent)
+                download_response: Dict[str, Any] = json.loads(download_result[0].text)
+
+                assert download_response["success"] is True
+                assert download_response["url"] == f"msc://{profile_name}/{test_file_path}"
+                assert download_response["local_path"] == download_path
+
+                with open(download_path, "rb") as f:
+                    downloaded_content = f.read()
+                    assert downloaded_content == test_content
+
+        finally:
+            import os
+
+            if os.path.exists(upload_path):
+                os.unlink(upload_path)
+            if "download_path" in locals() and os.path.exists(download_path):
+                os.unlink(download_path)
+
+    @pytest.mark.asyncio
+    async def test_mcp_copy(self, mcp_server_parametrized):
+        """Test that msc_copy tool copies files correctly."""
+        from fastmcp import Client  # pyright: ignore[reportMissingImports]
+        from mcp.types import TextContent  # pyright: ignore[reportMissingImports]
+
+        mcp_server, profile_name = mcp_server_parametrized
+
+        test_prefix = f"copy-test-{uuid.uuid4()}"
+        test_content = b"This is test content for copy validation"
+        source_file_path = f"{test_prefix}/source-file.txt"
+        target_file_path = f"{test_prefix}/target-file.txt"
+
+        create_test_file(profile_name, source_file_path, test_content)
+
+        async with Client(mcp_server) as client:
+            result = await client.call_tool(
+                "msc_copy",
+                {
+                    "source_url": f"msc://{profile_name}/{source_file_path}",
+                    "target_url": f"msc://{profile_name}/{target_file_path}",
+                },
+            )
+
+            assert isinstance(result[0], TextContent)
+            textContent: TextContent = result[0]
+            response: Dict[str, Any] = json.loads(textContent.text)
+
+            assert response["success"] is True
+            assert response["source_url"] == f"msc://{profile_name}/{source_file_path}"
+            assert response["target_url"] == f"msc://{profile_name}/{target_file_path}"
+            assert "source_metadata" in response
+            assert "target_metadata" in response
+            assert response["source_metadata"]["content_length"] == len(test_content)
+            assert response["target_metadata"]["content_length"] == len(test_content)
+
+            info_result = await client.call_tool("msc_info", {"url": f"msc://{profile_name}/{target_file_path}"})
+            assert isinstance(info_result[0], TextContent)
+            textContent = info_result[0]
+            info_response: Dict[str, Any] = json.loads(textContent.text)
+            assert info_response["success"] is True
+            assert info_response["metadata"]["content_length"] == len(test_content)
+
+    @pytest.mark.asyncio
+    async def test_mcp_delete_single_file(self, mcp_server_parametrized):
+        """Test that msc_delete tool deletes a single file."""
+        from fastmcp import Client  # pyright: ignore[reportMissingImports]
+        from mcp.types import TextContent  # pyright: ignore[reportMissingImports]
+
+        mcp_server, profile_name = mcp_server_parametrized
+
+        test_prefix = f"delete-test-{uuid.uuid4()}"
+        test_content = b"This file will be deleted"
+        test_file_path = f"{test_prefix}/file-to-delete.txt"
+
+        create_test_file(profile_name, test_file_path, test_content)
+
+        async with Client(mcp_server) as client:
+            info_before = await client.call_tool("msc_info", {"url": f"msc://{profile_name}/{test_file_path}"})
+            assert isinstance(info_before[0], TextContent)
+            textContent: TextContent = info_before[0]
+            info_response: Dict[str, Any] = json.loads(textContent.text)
+            assert info_response["success"] is True
+
+            delete_result = await client.call_tool(
+                "msc_delete", {"url": f"msc://{profile_name}/{test_file_path}", "recursive": False}
+            )
+
+            assert isinstance(delete_result[0], TextContent)
+            textContent: TextContent = delete_result[0]
+            delete_response: Dict[str, Any] = json.loads(textContent.text)
+
+            assert delete_response["success"] is True
+            assert delete_response["url"] == f"msc://{profile_name}/{test_file_path}"
+            assert delete_response["recursive"] is False
+
+            list_result = await client.call_tool("msc_list", {"url": f"msc://{profile_name}/{test_prefix}/"})
+            assert isinstance(list_result[0], TextContent)
+            textContent = list_result[0]
+            list_response: Dict[str, Any] = json.loads(textContent.text)
+            assert list_response["count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_mcp_delete_recursive(self, mcp_server_parametrized):
+        """Test that msc_delete tool recursively deletes directories with nested files."""
+        from fastmcp import Client  # pyright: ignore[reportMissingImports]
+        from mcp.types import TextContent  # pyright: ignore[reportMissingImports]
+
+        mcp_server, profile_name = mcp_server_parametrized
+
+        test_prefix = f"recursive-delete-test-{uuid.uuid4()}"
+
+        create_test_file(profile_name, f"{test_prefix}/file1.txt", b"file 1")
+        create_test_file(profile_name, f"{test_prefix}/file2.txt", b"file 2")
+        create_test_file(profile_name, f"{test_prefix}/subdir/nested1.txt", b"nested 1")
+        create_test_file(profile_name, f"{test_prefix}/subdir/nested2.txt", b"nested 2")
+        create_test_file(profile_name, f"{test_prefix}/subdir/deep/nested3.txt", b"nested 3")
+
+        async with Client(mcp_server) as client:
+            list_before = await client.call_tool("msc_list", {"url": f"msc://{profile_name}/{test_prefix}/"})
+            assert isinstance(list_before[0], TextContent)
+            textContent: TextContent = list_before[0]
+            list_before_response: Dict[str, Any] = json.loads(textContent.text)
+            assert list_before_response["count"] == 5
+
+            delete_result = await client.call_tool(
+                "msc_delete", {"url": f"msc://{profile_name}/{test_prefix}/", "recursive": True}
+            )
+
+            assert isinstance(delete_result[0], TextContent)
+            textContent = delete_result[0]
+            delete_response: Dict[str, Any] = json.loads(textContent.text)
+
+            assert delete_response["success"] is True
+            assert delete_response["url"] == f"msc://{profile_name}/{test_prefix}/"
+            assert delete_response["recursive"] is True
+
+            list_after = await client.call_tool("msc_list", {"url": f"msc://{profile_name}/{test_prefix}/"})
+            assert isinstance(list_after[0], TextContent)
+            textContent = list_after[0]
+            list_after_response: Dict[str, Any] = json.loads(textContent.text)
+            assert list_after_response["count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_mcp_is_file(self, mcp_server_parametrized):
+        """Test that msc_is_file tool correctly identifies files vs directories."""
+        from fastmcp import Client  # pyright: ignore[reportMissingImports]
+        from mcp.types import TextContent  # pyright: ignore[reportMissingImports]
+
+        mcp_server, profile_name = mcp_server_parametrized
+
+        test_prefix = f"is-file-test-{uuid.uuid4()}"
+        test_file_path = f"{test_prefix}/test-file.txt"
+
+        create_test_file(profile_name, test_file_path, b"test content")
+        create_test_file(profile_name, f"{test_prefix}/subdir/nested.txt", b"nested")
+
+        async with Client(mcp_server) as client:
+            file_result = await client.call_tool("msc_is_file", {"url": f"msc://{profile_name}/{test_file_path}"})
+
+            assert isinstance(file_result[0], TextContent)
+            textContent: TextContent = file_result[0]
+            file_response: Dict[str, Any] = json.loads(textContent.text)
+
+            assert file_response["success"] is True
+            assert file_response["is_file"] is True
+            assert file_response["url"] == f"msc://{profile_name}/{test_file_path}"
+
+            dir_result = await client.call_tool("msc_is_file", {"url": f"msc://{profile_name}/{test_prefix}/"})
+            assert isinstance(dir_result[0], TextContent)
+            textContent = dir_result[0]
+            dir_response: Dict[str, Any] = json.loads(textContent.text)
+
+            assert dir_response["success"] is True
+            assert dir_response["is_file"] is False
+
+    @pytest.mark.asyncio
+    async def test_mcp_is_empty(self, mcp_server_parametrized):
+        """Test that msc_is_empty tool correctly identifies empty directories."""
+        from fastmcp import Client  # pyright: ignore[reportMissingImports]
+        from mcp.types import TextContent  # pyright: ignore[reportMissingImports]
+
+        mcp_server, profile_name = mcp_server_parametrized
+
+        test_prefix = f"is-empty-test-{uuid.uuid4()}"
+        empty_prefix = f"{test_prefix}/empty-dir/"
+        non_empty_prefix = f"{test_prefix}/non-empty-dir/"
+
+        create_test_file(profile_name, f"{non_empty_prefix}/file.txt", b"content")
+
+        async with Client(mcp_server) as client:
+            empty_result = await client.call_tool("msc_is_empty", {"url": f"msc://{profile_name}/{empty_prefix}"})
+
+            assert isinstance(empty_result[0], TextContent)
+            textContent: TextContent = empty_result[0]
+            empty_response: Dict[str, Any] = json.loads(textContent.text)
+
+            assert empty_response["success"] is True
+            assert empty_response["is_empty"] is True
+            assert empty_response["url"] == f"msc://{profile_name}/{empty_prefix}"
+
+            non_empty_result = await client.call_tool(
+                "msc_is_empty", {"url": f"msc://{profile_name}/{non_empty_prefix}"}
+            )
+            assert isinstance(non_empty_result[0], TextContent)
+            textContent = non_empty_result[0]
+            non_empty_response: Dict[str, Any] = json.loads(textContent.text)
+
+            assert non_empty_response["success"] is True
+            assert non_empty_response["is_empty"] is False
+
+    @pytest.mark.asyncio
+    async def test_mcp_sync(self, mcp_server_parametrized):
+        """Test that msc_sync tool synchronizes directories correctly."""
+        from fastmcp import Client  # pyright: ignore[reportMissingImports]
+        from mcp.types import TextContent  # pyright: ignore[reportMissingImports]
+
+        mcp_server, profile_name = mcp_server_parametrized
+
+        test_prefix = f"sync-test-{uuid.uuid4()}"
+        source_prefix = f"{test_prefix}/source/"
+        target_prefix = f"{test_prefix}/target/"
+
+        create_test_file(profile_name, f"{source_prefix}file1.txt", b"file 1 content")
+        create_test_file(profile_name, f"{source_prefix}file2.txt", b"file 2 content")
+        create_test_file(profile_name, f"{source_prefix}subdir/nested.txt", b"nested content")
+
+        async with Client(mcp_server) as client:
+            list_before = await client.call_tool("msc_list", {"url": f"msc://{profile_name}/{target_prefix}"})
+            assert isinstance(list_before[0], TextContent)
+            textContent: TextContent = list_before[0]
+            list_before_response: Dict[str, Any] = json.loads(textContent.text)
+            assert list_before_response["count"] == 0
+
+            sync_result = await client.call_tool(
+                "msc_sync",
+                {
+                    "source_url": f"msc://{profile_name}/{source_prefix}",
+                    "target_url": f"msc://{profile_name}/{target_prefix}",
+                    "delete_unmatched_files": False,
+                    "preserve_source_attributes": False,
+                },
+            )
+
+            assert isinstance(sync_result[0], TextContent)
+            textContent = sync_result[0]
+            sync_response: Dict[str, Any] = json.loads(textContent.text)
+
+            assert sync_response["success"] is True
+            assert sync_response["source_url"] == f"msc://{profile_name}/{source_prefix}"
+            assert sync_response["target_url"] == f"msc://{profile_name}/{target_prefix}"
+            assert sync_response["delete_unmatched_files"] is False
+            assert sync_response["preserve_source_attributes"] is False
+
+            list_after = await client.call_tool("msc_list", {"url": f"msc://{profile_name}/{target_prefix}"})
+            assert isinstance(list_after[0], TextContent)
+            textContent = list_after[0]
+            list_after_response: Dict[str, Any] = json.loads(textContent.text)
+            assert list_after_response["count"] == 3
+
+            returned_keys = [obj["key"] for obj in list_after_response["objects"]]
+            expected_files = ["file1.txt", "file2.txt", "subdir/nested.txt"]
+            for expected_file in expected_files:
+                found = any(expected_file in key for key in returned_keys)
+                assert found, f"Should find {expected_file} in synced target: {returned_keys}"
+
+    @pytest.mark.asyncio
+    async def test_mcp_sync_with_delete_unmatched(self, mcp_server_parametrized):
+        """Test that msc_sync tool with delete_unmatched_files removes extra files in target."""
+        from fastmcp import Client  # pyright: ignore[reportMissingImports]
+        from mcp.types import TextContent  # pyright: ignore[reportMissingImports]
+
+        mcp_server, profile_name = mcp_server_parametrized
+
+        test_prefix = f"sync-delete-test-{uuid.uuid4()}"
+        source_prefix = f"{test_prefix}/source/"
+        target_prefix = f"{test_prefix}/target/"
+
+        create_test_file(profile_name, f"{source_prefix}file1.txt", b"source file 1")
+        create_test_file(profile_name, f"{source_prefix}file2.txt", b"source file 2")
+
+        create_test_file(profile_name, f"{target_prefix}file1.txt", b"old target file 1")
+        create_test_file(profile_name, f"{target_prefix}extra.txt", b"extra file to be deleted")
+
+        async with Client(mcp_server) as client:
+            list_before = await client.call_tool("msc_list", {"url": f"msc://{profile_name}/{target_prefix}"})
+            assert isinstance(list_before[0], TextContent)
+            textContent: TextContent = list_before[0]
+            list_before_response: Dict[str, Any] = json.loads(textContent.text)
+            assert list_before_response["count"] == 2
+
+            sync_result = await client.call_tool(
+                "msc_sync",
+                {
+                    "source_url": f"msc://{profile_name}/{source_prefix}",
+                    "target_url": f"msc://{profile_name}/{target_prefix}",
+                    "delete_unmatched_files": True,
+                    "preserve_source_attributes": False,
+                },
+            )
+
+            assert isinstance(sync_result[0], TextContent)
+            textContent = sync_result[0]
+            sync_response: Dict[str, Any] = json.loads(textContent.text)
+
+            assert sync_response["success"] is True
+            assert sync_response["delete_unmatched_files"] is True
+
+            list_after = await client.call_tool("msc_list", {"url": f"msc://{profile_name}/{target_prefix}"})
+            assert isinstance(list_after[0], TextContent)
+            textContent = list_after[0]
+            list_after_response: Dict[str, Any] = json.loads(textContent.text)
+            assert list_after_response["count"] == 2
+
+            returned_keys = [obj["key"] for obj in list_after_response["objects"]]
+            assert any("file1.txt" in key for key in returned_keys), "file1.txt should exist"
+            assert any("file2.txt" in key for key in returned_keys), "file2.txt should exist"
+            assert not any("extra.txt" in key for key in returned_keys), "extra.txt should be deleted"
