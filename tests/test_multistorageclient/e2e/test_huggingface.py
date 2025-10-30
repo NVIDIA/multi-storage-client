@@ -18,8 +18,9 @@ import os
 import re
 from unittest.mock import patch
 
-import common
 import pytest
+
+import test_multistorageclient.e2e.common as common
 
 
 def enable_xet():
