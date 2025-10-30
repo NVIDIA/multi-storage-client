@@ -65,21 +65,6 @@ class StorageClient:
         self._initialize_providers(config)
         self._initialize_replicas(config.replicas)
 
-    def _committer_thread(self, commit_interval_minutes: float, stop_event: threading.Event):
-        if not stop_event:
-            raise RuntimeError("Stop event not set")
-
-        while not stop_event.is_set():
-            # Wait with the ability to exit early
-            if stop_event.wait(timeout=commit_interval_minutes * 60):
-                break
-            logger.debug("Auto-committing to metadata provider")
-            self.commit_metadata()
-
-    def _commit_on_exit(self):
-        logger.debug("Shutting down, committing metadata one last time...")
-        self.commit_metadata()
-
     def _initialize_providers(self, config: StorageClientConfig) -> None:
         self._config = config
         self._credentials_provider = self._config.credentials_provider
@@ -110,45 +95,6 @@ class StorageClient:
             else:
                 logger.debug("No metadata provider configured, auto-commit will not be enabled")
 
-    def __del__(self):
-        if self._stop_event:
-            self._stop_event.set()
-            if self._commit_thread.is_alive():
-                self._commit_thread.join(timeout=5.0)
-
-    def _get_source_version(self, path: str) -> Optional[str]:
-        """
-        Get etag from metadata provider or storage provider.
-        """
-        if self._metadata_provider:
-            metadata = self._metadata_provider.get_object_metadata(path)
-        else:
-            metadata = self._storage_provider.get_object_metadata(path)
-        return metadata.etag
-
-    def _is_cache_enabled(self) -> bool:
-        enabled = self._cache_manager is not None and not self._is_posix_file_storage_provider()
-        return enabled
-
-    def _is_posix_file_storage_provider(self) -> bool:
-        return isinstance(self._storage_provider, PosixFileStorageProvider)
-
-    def is_default_profile(self) -> bool:
-        """
-        Return True if the storage client is using the default profile.
-        """
-        return self._config.profile == "default"
-
-    def _is_rust_client_enabled(self) -> bool:
-        """
-        Return True if the storage provider is using the Rust client.
-        """
-        return hasattr(self._storage_provider, "_rust_client")
-
-    @property
-    def profile(self) -> str:
-        return self._config.profile
-
     def _initialize_replicas(self, replicas: list[Replica]) -> None:
         """Initialize replica StorageClient instances."""
         # Sort replicas by read_priority, the first one is the primary replica
@@ -168,9 +114,111 @@ class StorageClient:
         self._replicas = replica_clients
         self._replica_manager = ReplicaManager(self) if len(self._replicas) > 0 else None
 
+    def _committer_thread(self, commit_interval_minutes: float, stop_event: threading.Event):
+        if not stop_event:
+            raise RuntimeError("Stop event not set")
+
+        while not stop_event.is_set():
+            # Wait with the ability to exit early
+            if stop_event.wait(timeout=commit_interval_minutes * 60):
+                break
+            logger.debug("Auto-committing to metadata provider")
+            self.commit_metadata()
+
+    def _commit_on_exit(self):
+        logger.debug("Shutting down, committing metadata one last time...")
+        self.commit_metadata()
+
+    def _get_source_version(self, path: str) -> Optional[str]:
+        """
+        Get etag from metadata provider or storage provider.
+        """
+        if self._metadata_provider:
+            metadata = self._metadata_provider.get_object_metadata(path)
+        else:
+            metadata = self._storage_provider.get_object_metadata(path)
+        return metadata.etag
+
+    def _is_cache_enabled(self) -> bool:
+        enabled = self._cache_manager is not None and not self._is_posix_file_storage_provider()
+        return enabled
+
+    def _is_posix_file_storage_provider(self) -> bool:
+        return isinstance(self._storage_provider, PosixFileStorageProvider)
+
+    def _is_rust_client_enabled(self) -> bool:
+        """
+        Return True if the storage provider is using the Rust client.
+        """
+        return hasattr(self._storage_provider, "_rust_client")
+
+    def _read_from_replica_or_primary(self, path: str) -> bytes:
+        """
+        Read from replica or primary storage provider. Use BytesIO to avoid creating temporary files.
+        """
+        if self._replica_manager is None:
+            raise RuntimeError("Replica manager is not initialized")
+        file_obj = BytesIO()
+        self._replica_manager.download_from_replica_or_primary(path, file_obj, self._storage_provider)
+        return file_obj.getvalue()
+
+    def __del__(self):
+        if self._stop_event:
+            self._stop_event.set()
+            if self._commit_thread.is_alive():
+                self._commit_thread.join(timeout=5.0)
+
+    def __getstate__(self) -> dict[str, Any]:
+        state = self.__dict__.copy()
+        del state["_credentials_provider"]
+        del state["_storage_provider"]
+        del state["_metadata_provider"]
+        del state["_cache_manager"]
+
+        if "_metadata_provider_lock" in state:
+            del state["_metadata_provider_lock"]
+
+        if "_replicas" in state:
+            del state["_replicas"]
+
+        # Replica manager could be disabled if it's set to None in the state.
+        if "_replica_manager" in state:
+            if state["_replica_manager"] is not None:
+                del state["_replica_manager"]
+
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        config = state["_config"]
+        self._initialize_providers(config)
+
+        # Replica manager could be disabled if it's set to None in the state.
+        if "_replica_manager" in state and state["_replica_manager"] is None:
+            self._replica_manager = None
+        else:
+            self._initialize_replicas(config.replicas)
+
+        if self._metadata_provider:
+            self._metadata_provider_lock = threading.Lock()
+
+    def is_default_profile(self) -> bool:
+        """
+        Return True if the storage client is using the default profile.
+        """
+        return self._config.profile == "default"
+
+    @property
+    def profile(self) -> str:
+        """
+        :return: The profile name of the storage client.
+        """
+        return self._config.profile
+
     @property
     def replicas(self) -> list["StorageClient"]:
-        """Return StorageClient instances for all replicas, sorted by read priority."""
+        """
+        :return: StorageClient instances for all replicas, sorted by read priority.
+        """
         return self._replicas
 
     @retry
@@ -252,16 +300,6 @@ class StorageClient:
             # No cache, no replicas - direct storage provider read
             return self._storage_provider.get_object(path, byte_range=byte_range)
 
-    def _read_from_replica_or_primary(self, path: str) -> bytes:
-        """
-        Read from replica or primary storage provider. Use BytesIO to avoid creating temporary files.
-        """
-        if self._replica_manager is None:
-            raise RuntimeError("Replica manager is not initialized")
-        file_obj = BytesIO()
-        self._replica_manager.download_from_replica_or_primary(path, file_obj, self._storage_provider)
-        return file_obj.getvalue()
-
     def info(self, path: str, strict: bool = True) -> ObjectMetadata:
         """
         Retrieves metadata or information about an object stored at the specified path.
@@ -271,7 +309,6 @@ class StorageClient:
 
         :return: A dictionary containing metadata about the object.
         """
-
         if not path or path == ".":  # for the empty path provided by the user
             if self._is_posix_file_storage_provider():
                 last_modified = datetime.fromtimestamp(os.path.getmtime("."), tz=timezone.utc)
@@ -283,6 +320,7 @@ class StorageClient:
             return self._storage_provider.get_object_metadata(path, strict=strict)
 
         # For metadata_provider, first check if the path exists as a file, then fallback to detecting if path is a directory.
+        # TODO: Consider passing strict argument to the metadata provider.
         try:
             return self._metadata_provider.get_object_metadata(path)
         except FileNotFoundError:
@@ -308,11 +346,11 @@ class StorageClient:
         :param remote_path: The logical path of the file in the storage provider.
         :param local_path: The local path where the file should be downloaded.
         """
-
         if self._metadata_provider:
             real_path, exists = self._metadata_provider.realpath(remote_path)
             if not exists:
                 raise FileNotFoundError(f"The file at path '{remote_path}' was not found by metadata provider.")
+
             metadata = self._metadata_provider.get_object_metadata(remote_path)
             self._storage_provider.download_file(real_path, local_path, metadata)
         elif self._replica_manager:
@@ -337,9 +375,11 @@ class StorageClient:
                     f"The file at path '{virtual_path}' already exists; "
                     f"overwriting is not yet allowed when using a metadata provider."
                 )
-        if self._metadata_provider:
+
             # if metdata provider is present, we only write attributes to the metadata provider
             self._storage_provider.upload_file(remote_path, local_path, attributes=None)
+
+            # TODO(NGCDP-3016): Handle eventual consistency of Swiftstack, without wait.
             obj_metadata = self._storage_provider.get_object_metadata(remote_path)
             obj_metadata.metadata = (obj_metadata.metadata or {}) | (attributes or {})
             with self._metadata_provider_lock or contextlib.nullcontext():
@@ -364,9 +404,10 @@ class StorageClient:
                     f"The file at path '{virtual_path}' already exists; "
                     f"overwriting is not yet allowed when using a metadata provider."
                 )
-        if self._metadata_provider:
+
             # if metadata provider is present, we only write attributes to the metadata provider
             self._storage_provider.put_object(path, body, attributes=None)
+
             # TODO(NGCDP-3016): Handle eventual consistency of Swiftstack, without wait.
             obj_metadata = self._storage_provider.get_object_metadata(path)
             obj_metadata.metadata = (obj_metadata.metadata or {}) | (attributes or {})
@@ -395,11 +436,14 @@ class StorageClient:
                     f"overwriting is not yet allowed when using a metadata provider."
                 )
 
-        self._storage_provider.copy_object(src_path, dest_path)
-        if self._metadata_provider:
-            metadata = self._storage_provider.get_object_metadata(dest_path)
+            self._storage_provider.copy_object(src_path, dest_path)
+
+            # TODO(NGCDP-3016): Handle eventual consistency of Swiftstack, without wait.
+            obj_metadata = self._storage_provider.get_object_metadata(dest_path)
             with self._metadata_provider_lock or contextlib.nullcontext():
-                self._metadata_provider.add_file(virtual_dest_path, metadata)
+                self._metadata_provider.add_file(virtual_dest_path, obj_metadata)
+        else:
+            self._storage_provider.copy_object(src_path, dest_path)
 
     def delete(self, path: str, recursive: bool = False) -> None:
         """
@@ -421,6 +465,7 @@ class StorageClient:
                 description="Deleting",
             )
             # If this is a posix storage provider, we need to also delete remaining directory stubs.
+            # TODO: Nofity metadata provider for the changes.
             if self._is_posix_file_storage_provider():
                 posix_storage_provider = cast(PosixFileStorageProvider, self._storage_provider)
                 posix_storage_provider.rmtree(path)
@@ -434,15 +479,19 @@ class StorageClient:
                     path, exists = self._metadata_provider.realpath(path)
                     if not exists:
                         raise FileNotFoundError(f"The file at path '{virtual_path}' was not found.")
+
+                    self._storage_provider.delete_object(path)
+
                     with self._metadata_provider_lock or contextlib.nullcontext():
                         self._metadata_provider.remove_file(virtual_path)
+                else:
+                    self._storage_provider.delete_object(path)
 
                 # Delete the cached file if it exists
                 if self._is_cache_enabled():
                     if self._cache_manager is None:
                         raise RuntimeError("Cache manager is not initialized")
                     self._cache_manager.delete(virtual_path)
-                self._storage_provider.delete_object(path)
 
                 # Delete from replicas if replica manager exists
                 if self._replica_manager:
@@ -589,6 +638,7 @@ class StorageClient:
             This parameter is only applicable to PosixFile in write mode.
         :param check_source_version: Whether to check the source version of cached objects.
         :param attributes: The attributes to add to the file.  This parameter is only applicable when the mode is "w" or "wb" or "a" or "ab".
+
         :return: A file-like object (PosixFile or ObjectFile) for the specified path.
         """
         if self._is_posix_file_storage_provider():
@@ -639,6 +689,7 @@ class StorageClient:
         if self._metadata_provider:
             _, exists = self._metadata_provider.realpath(path)
             return exists
+
         return self._storage_provider.is_file(path)
 
     def commit_metadata(self, prefix: Optional[str] = None) -> None:
@@ -677,40 +728,8 @@ class StorageClient:
             return next(objects) is None
         except StopIteration:
             pass
+
         return True
-
-    def __getstate__(self) -> dict[str, Any]:
-        state = self.__dict__.copy()
-        del state["_credentials_provider"]
-        del state["_storage_provider"]
-        del state["_metadata_provider"]
-        del state["_cache_manager"]
-
-        if "_metadata_provider_lock" in state:
-            del state["_metadata_provider_lock"]
-
-        if "_replicas" in state:
-            del state["_replicas"]
-
-        # Replica manager could be disabled if it's set to None in the state.
-        if "_replica_manager" in state:
-            if state["_replica_manager"] is not None:
-                del state["_replica_manager"]
-
-        return state
-
-    def __setstate__(self, state: dict[str, Any]) -> None:
-        config = state["_config"]
-        self._initialize_providers(config)
-
-        # Replica manager could be disabled if it's set to None in the state.
-        if "_replica_manager" in state and state["_replica_manager"] is None:
-            self._replica_manager = None
-        else:
-            self._initialize_replicas(config.replicas)
-
-        if self._metadata_provider:
-            self._metadata_provider_lock = threading.Lock()
 
     def sync_from(
         self,

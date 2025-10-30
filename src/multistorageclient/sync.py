@@ -232,21 +232,12 @@ class ResultConsumerThread(threading.Thread):
             while True:
                 op, target_file_path, physical_metadata = self.result_queue.get()
 
+                logger.debug(
+                    f"ResultConsumerThread: {op}, target_file_path: {target_file_path}, physical_metadata: {physical_metadata}"
+                )
+
                 if op == _SyncOp.STOP:
                     break
-
-                if self.target_client._metadata_provider:
-                    with self.target_client._metadata_provider_lock or contextlib.nullcontext():
-                        if op == _SyncOp.ADD:
-                            # Use realpath() to get physical path so metadata provider can
-                            # track the logical/physical mapping.
-                            phys_path, _ = self.target_client._metadata_provider.realpath(target_file_path)
-                            physical_metadata.key = phys_path
-                            self.target_client._metadata_provider.add_file(target_file_path, physical_metadata)
-                        elif op == _SyncOp.DELETE:
-                            self.target_client._metadata_provider.remove_file(target_file_path)
-                        else:
-                            raise RuntimeError(f"Unknown operation: {op}")
 
                 if op in (_SyncOp.ADD, _SyncOp.DELETE):
                     self.progress.update_progress()

@@ -497,7 +497,7 @@ def test_producer_thread_error():
     assert producer_thread.error is not None
 
 
-def test_result_consumer_error():
+def test_result_consumer_exits_with_stop_signal():
     target_client = MockStorageClient()
     result_queue = queue.Queue()
 
@@ -512,13 +512,11 @@ def test_result_consumer_error():
     result_consumer_thread.join(timeout=1)
 
     assert result_consumer_thread.is_alive()
-    assert result_consumer_thread.error is None
 
-    result_queue.put((_SyncOp.ADD, None, None))
+    result_queue.put((_SyncOp.STOP, None, None))
     result_consumer_thread.join(timeout=1)
 
     assert not result_consumer_thread.is_alive()
-    assert result_consumer_thread.error is not None
 
 
 def test_sync_function_return_producer_error():
