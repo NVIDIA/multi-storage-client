@@ -1076,7 +1076,7 @@ class StorageClientConfig:
         if config_file_path is None:
             logger.debug("No MSC config files found in any of the search locations.")
         else:
-            logger.info(f"Using MSC config file: {config_file_path}")
+            logger.debug(f"Using MSC config file: {config_file_path}")
 
         if config_dict:
             validate_config(config_dict)
