@@ -26,11 +26,12 @@ class RefreshableTestCredentialsProvider(CredentialsProvider):
     When the refresh_credentials method is called, it sets the credentials to invalid.
     """
 
-    def __init__(self, access_key: str, secret_key: str, expiration: Union[str, None] = None):
+    def __init__(self, access_key: str, secret_key: str, expiration: Union[str, None] = None, refresh_error=False):
         self._access_key = access_key
         self._secret_key = secret_key
         self._expiration = expiration
         self._refresh_count = 0
+        self._refresh_error = refresh_error
 
     def get_credentials(self) -> Credentials:
         return Credentials(
@@ -42,9 +43,12 @@ class RefreshableTestCredentialsProvider(CredentialsProvider):
 
     def refresh_credentials(self) -> None:
         self._refresh_count += 1
-        self._access_key = "invalid_access_key"
-        self._secret_key = "invalid_secret_key"
-        self._expiration = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if self._refresh_error:
+            raise RuntimeError("Failed to refresh credentials")
+        else:
+            self._access_key = "invalid_access_key"
+            self._secret_key = "invalid_secret_key"
+            self._expiration = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     @property
     def refresh_count(self) -> int:

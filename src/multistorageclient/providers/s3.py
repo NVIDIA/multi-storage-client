@@ -362,7 +362,7 @@ class S3StorageProvider(BaseStorageProvider):
             ) from error
         except RustRetryableError as error:
             raise RetryableError(
-                f"Failed to {operation} object(s) at {bucket}/{key} due to exhausted retries from Rust. "
+                f"Failed to {operation} object(s) at {bucket}/{key} due to retryable error from Rust. "
                 f"error_type: {type(error).__name__}"
             ) from error
         except Exception as error:

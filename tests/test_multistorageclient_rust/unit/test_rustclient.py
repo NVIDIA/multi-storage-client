@@ -26,7 +26,7 @@ import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.constants import MEMORY_LOAD_LIMIT
 from multistorageclient.providers.s3 import StaticS3CredentialsProvider
-from multistorageclient_rust import RustClient  # pyright: ignore[reportAttributeAccessIssue]
+from multistorageclient_rust import RustClient, RustRetryableError  # pyright: ignore[reportAttributeAccessIssue]
 
 from .utils import RefreshableTestCredentialsProvider
 
@@ -161,12 +161,12 @@ async def test_rustclient_basic_operations(temp_data_store_type: Type[tempdatast
 async def test_rustclient_with_refreshable_credentials(temp_data_store_type: Type[tempdatastore.TemporaryDataStore]):
     with temp_data_store_type() as temp_data_store:
         config_dict = temp_data_store.profile_config_dict()
-        # The credentials are valid for 5 seconds before the refresh
+        # The credentials are valid for 905 seconds before the refresh, refresh threshold is 15 minutes for Rust Client.
         # After refresh, the credentials are invalid.
         credentials_provider = RefreshableTestCredentialsProvider(
             access_key=config_dict["credentials_provider"]["options"]["access_key"],
             secret_key=config_dict["credentials_provider"]["options"]["secret_key"],
-            expiration=(datetime.now(timezone.utc) + timedelta(seconds=5)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            expiration=(datetime.now(timezone.utc) + timedelta(seconds=905)).strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
         rust_client = RustClient(
             provider="s3",
@@ -182,8 +182,10 @@ async def test_rustclient_with_refreshable_credentials(temp_data_store_type: Typ
 
         # Create a storage client as well for operations that are not supported by the Rust client
         profile = "data"
-        config_dict = {"profiles": {profile: temp_data_store.profile_config_dict()}}
-        storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
+        py_client_config_dict = {"profiles": {profile: temp_data_store.profile_config_dict()}}
+        py_storage_client = StorageClient(
+            config=StorageClientConfig.from_dict(config_dict=py_client_config_dict, profile=profile)
+        )
 
         file_extension = ".txt"
         # add a random string to the file path below so concurrent tests don't conflict
@@ -197,14 +199,46 @@ async def test_rustclient_with_refreshable_credentials(temp_data_store_type: Typ
         assert result == file_body_bytes
         assert credentials_provider.refresh_count == 0
 
-        # Test after valid credentials expire, should call refresh_credentials and fail
+        # Test Rust client proactively refreshes credentials 15 minutes before expiration, should call refresh_credentials and fail
         time.sleep(6)
-        with pytest.raises(RuntimeError):
+        with pytest.raises(PermissionError) as exc_info:
             await rust_client.get(file_path)
         assert credentials_provider.refresh_count == 1
 
+        error_message = str(exc_info.value)
+        assert "The operation lacked the necessary privileges" in error_message or "403 Forbidden" in error_message, (
+            f"Expected access error in message, but got: {error_message}"
+        )
+
+        credentials_provider = RefreshableTestCredentialsProvider(
+            access_key=config_dict["credentials_provider"]["options"]["access_key"],
+            secret_key=config_dict["credentials_provider"]["options"]["secret_key"],
+            expiration=(datetime.now(timezone.utc) + timedelta(seconds=899)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            refresh_error=True,
+        )
+        rust_client = RustClient(
+            provider="s3",
+            configs={
+                "bucket": config_dict["storage_provider"]["options"]["base_path"],
+                "endpoint_url": config_dict["storage_provider"]["options"]["endpoint_url"],
+                "allow_http": config_dict["storage_provider"]["options"]["endpoint_url"].startswith("http://"),
+            },
+            credentials_provider=credentials_provider,
+        )
+
+        # Test Rust client proactively refreshes credentials 15 minutes before expiration, should call refresh_credentials and fail
+        with pytest.raises(RustRetryableError) as exc_info:
+            await rust_client.get(file_path)
+        assert credentials_provider.refresh_count == 1
+
+        # Verify the error message indicates refresh failure (Python-side exception)
+        error_message = str(exc_info.value)
+        assert "Failed to refresh credentials" in error_message, (
+            f"Expected refresh failure error in message, but got: {error_message}"
+        )
+
         # Delete the file.
-        storage_client.delete(path=file_path)
+        py_storage_client.delete(path=file_path)
 
 
 @pytest.mark.parametrize(

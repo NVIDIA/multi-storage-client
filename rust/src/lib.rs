@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use object_store::aws::AmazonS3Builder;
 use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::RetryConfig;
@@ -56,6 +56,8 @@ pub enum StorageError {
     RetryExhaustedError(String),
     #[error("Object not found: {0}")]
     NotFound(String),
+    #[error("Permission error: {0}")]
+    PermissionError(String),
 }
 
 impl From<object_store::Error> for StorageError {
@@ -69,6 +71,9 @@ impl From<object_store::Error> for StorageError {
         } else if error_msg.contains("HTTP error: error sending request") ||
            error_msg.contains("HTTP error: request or response body error") {
             StorageError::RetryExhaustedError(error_msg)
+        } else if error_msg.contains("The operation lacked the necessary privileges") ||
+           error_msg.contains("403 Forbidden") {
+            StorageError::PermissionError(error_msg)
         } else {
             StorageError::ObjectStoreError(error_msg)
         }
@@ -96,6 +101,9 @@ impl From<StorageError> for PyErr {
             StorageError::RetryExhaustedError(msg) => {
                 RustRetryableError::new_err(msg)
             }
+            StorageError::PermissionError(msg) => {
+                pyo3::exceptions::PyPermissionError::new_err(msg)
+            }
             StorageError::NotFound(msg) => {
                 pyo3::exceptions::PyFileNotFoundError::new_err(msg)
             }
@@ -116,6 +124,8 @@ const DEFAULT_READ_TIMEOUT: u64 = 120;
 const DEFAULT_POOL_IDLE_TIMEOUT: u64 = 30;
 const DEFAULT_POOL_CONNECTIONS: usize = 32;
 
+// Refresh credentials threshold in seconds
+const DEFAULT_REFRESH_CREDENTIALS_THRESHOLD: u64 = 900; // 15 minutes
 
 fn extract_credentials_from_provider(
     credentials_provider: &PyObject,
@@ -463,21 +473,29 @@ impl RustClient {
         let current_expire_time = self.credentials_expire_time.read().unwrap().clone();
         if let (Some(credentials_provider), Some(expire_time)) = (&self.credentials_provider, current_expire_time.as_ref()) {
             let now = Utc::now();
-            if now > *expire_time {
+            if now > (*expire_time - Duration::seconds(DEFAULT_REFRESH_CREDENTIALS_THRESHOLD as i64)) {
                 let mut expire_time_guard = self.credentials_expire_time.write().unwrap();
                 let mut store_guard = self.store.write().unwrap();
                 let mut configs_guard = self.configs.write().unwrap();
-                
-                Python::with_gil(|py| {
+
+                let refresh_result = Python::with_gil(|py| {
                     credentials_provider.call_method0(py, "refresh_credentials")?;
                     Ok::<(), PyErr>(())
-                })?;
+                });
 
-                let new_credentials_expire_time = extract_credentials_from_provider(credentials_provider, &mut configs_guard)?;
-                let new_store = create_store(&self.provider, Some(&configs_guard), self.max_pool_connections)?;
-
-                *store_guard = new_store;
-                *expire_time_guard = new_credentials_expire_time;
+                match refresh_result {
+                    Ok(_) => {
+                        let new_credentials_expire_time = extract_credentials_from_provider(credentials_provider, &mut configs_guard)?;
+                        let new_store = create_store(&self.provider, Some(&configs_guard), self.max_pool_connections)?;
+                        *store_guard = new_store;
+                        *expire_time_guard = new_credentials_expire_time;
+                    }
+                    Err(e) => {
+                        return Err(RustRetryableError::new_err(
+                            format!("Failed to refresh credentials using credentials provider: {}", e)
+                        ));
+                    }
+                }
             }
         }
         Ok(())
@@ -1038,6 +1056,23 @@ mod tests {
                 assert!(msg.contains(" -> "));
             }
             _ => panic!("Expected RetryExhaustedError for HTTP error pattern"),
+        }
+    }
+
+    #[test]
+    fn test_permission_error() {
+        let access_error = object_store::Error::Generic {
+            store: "S3",
+            source: Box::new(io::Error::new(io::ErrorKind::PermissionDenied, "The operation lacked the necessary privileges")),
+        };
+
+        let storage_error = StorageError::from(access_error);
+        match storage_error {
+            StorageError::PermissionError(msg) => {
+                assert!(msg.contains("The operation lacked the necessary privileges"));
+                assert!(msg.contains(" -> "));
+            }
+            _ => panic!("Expected PermissionError for access error pattern"),
         }
     }
 }
