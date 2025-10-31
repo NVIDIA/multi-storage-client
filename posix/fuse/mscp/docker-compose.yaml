@@ -3,7 +3,7 @@ services:
   # Note: This just logs the metrics to console. For production, configure exporters  
   # to send to your observability backend (Prometheus, Grafana Cloud, Datadog, etc.)
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:latest
+    image: otel/opentelemetry-collector-contrib:0.138.0
     container_name: mscp_otel_collector
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
@@ -39,6 +39,7 @@ services:
     environment:
       - S3_ENDPOINT=http://minio:9000
     command: [ "/root/deploy_1_1.sh" ]
+  # Development Container
   dev:
     build:
       context: ../../..

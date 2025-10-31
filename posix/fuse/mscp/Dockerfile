@@ -101,7 +101,7 @@ FROM buildable AS minio
 
 WORKDIR /
 
-RUN git clone --single-branch --depth 1 https://github.com/minio/minio.git
+RUN git clone --depth 1 --branch RELEASE.2025-10-15T17-29-55Z https://github.com/minio/minio.git
 
 WORKDIR /minio
 
@@ -122,11 +122,26 @@ RUN echo "aws_secret_access_key = minioadmin" >> credentials
 
 WORKDIR /
 
-RUN git clone --single-branch --depth 1 https://github.com/NVIDIA/aistore.git
+RUN git clone --depth 1 --branch v1.4.0 https://github.com/NVIDIA/aistore.git
 
 WORKDIR /aistore
 
-RUN (. ~/.bashrc_additions && make cli)
+# AIStore compile failure on Linux/ARM64 workaround:
+#   The steps injected below (after .bashrc_additions & before the make cli step)
+#   create distinct versions of fsutils_linux.go for AMD64 and ARM64 such that the
+#   compilation on ARM64 uses the correct SYSCALL constant. Once AIstore has applied
+#   the final fix (and updated cmd/cli's go.mod to reference it), these steps should
+#   be removed (and, of course, the branch tag being checked out updated).
+RUN . ~/.bashrc_additions && \
+    cd ios && \
+    mv fsutils_linux.go       fsutils_linux_amd64.go && \
+    cp fsutils_linux_amd64.go fsutils_linux_arm64.go && \
+    sed -i 's/SYS_NEWFSTATAT/SYS_FSTATAT/' fsutils_linux_arm64.go && \
+    cd ../cmd/cli && \
+    echo "replace github.com/NVIDIA/aistore => ../.." >> go.mod && \
+    go mod tidy && \
+    cd ../.. && \
+    make cli
 
 RUN echo '#!/bin/bash'                                                                                                   >  /root/deploy_1_1.sh
 RUN echo                     'AIS_ENDPOINT="http://ais:8080" scripts/clean_deploy.sh --target-cnt 1 --proxy-cnt 1 --aws' >> /root/deploy_1_1.sh
