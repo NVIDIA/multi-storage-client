@@ -1,4 +1,6 @@
+build/deb
 mscp
 mscp.test
 msc-posix-linux-amd64
 msc-posix-linux-arm64
+msc-posix_*_*.deb

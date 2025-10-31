@@ -11,14 +11,14 @@
 # Environment variables:
 #   MSC_CONFIG:     (Set from first argument) Path to MSC configuration file (YAML or JSON)
 #   MSC_MOUNTPOINT: (Set from second argument) Mount point path
-#   MSCP_BINARY:    Path to mscp binary (default: /usr/local/bin/mscp)
+#   MSCP_BINARY:    Path to mscp binary (default: /usr/bin/mscp)
 #   MSCP_LOG_DIR:   Directory for log files (default: /var/log/msc)
 #
 
 set -euo pipefail
 
 # Default values
-MSCP_BINARY="${MSCP_BINARY:-/usr/local/bin/mscp}"
+MSCP_BINARY="${MSCP_BINARY:-/usr/bin/mscp}"
 MSCP_LOG_DIR="${MSCP_LOG_DIR:-/var/log/msc}"
 SCRIPT_NAME="$(basename "$0")"
 
