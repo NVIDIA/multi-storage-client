@@ -93,6 +93,7 @@ class ProducerThread(threading.Thread):
         pattern_matcher: Optional[PatternMatcher] = None,
         preserve_source_attributes: bool = False,
         follow_symlinks: bool = True,
+        source_files: Optional[list[str]] = None,
     ):
         super().__init__(daemon=True)
         self.source_client = source_client
@@ -106,6 +107,7 @@ class ProducerThread(threading.Thread):
         self.pattern_matcher = pattern_matcher
         self.preserve_source_attributes = preserve_source_attributes
         self.follow_symlinks = follow_symlinks
+        self.source_files = source_files
         self.error = None
 
     def _match_file_metadata(self, source_info: ObjectMetadata, target_info: ObjectMetadata) -> bool:
@@ -115,15 +117,34 @@ class ProducerThread(threading.Thread):
             and source_info.last_modified <= target_info.last_modified
         )
 
+    def _create_source_files_iterator(self):
+        """Create an iterator from source_files that yields ObjectMetadata."""
+        if self.source_files is not None:
+            for rel_file_path in self.source_files:
+                rel_file_path = rel_file_path.lstrip("/")
+                source_file_path = os.path.join(self.source_path, rel_file_path).lstrip("/")
+                try:
+                    source_metadata = self.source_client.info(
+                        source_file_path, strict=False
+                    )  # don't check if the path is a directory
+                    yield source_metadata
+                except FileNotFoundError:
+                    logger.warning(f"File in source_files not found at source: {source_file_path}")
+                    continue
+
     def run(self):
         try:
-            source_iter = iter(
-                self.source_client.list(
-                    prefix=self.source_path,
-                    show_attributes=self.preserve_source_attributes,
-                    follow_symlinks=self.follow_symlinks,
+            if self.source_files:
+                source_iter = iter(self._create_source_files_iterator())
+            else:
+                source_iter = iter(
+                    self.source_client.list(
+                        prefix=self.source_path,
+                        show_attributes=self.preserve_source_attributes,
+                        follow_symlinks=self.follow_symlinks,
+                    )
                 )
-            )
+
             target_iter = iter(self.target_client.list(prefix=self.target_path))
             total_count = 0
 
@@ -264,6 +285,7 @@ class SyncManager:
         pattern_matcher: Optional[PatternMatcher] = None,
         preserve_source_attributes: bool = False,
         follow_symlinks: bool = True,
+        source_files: Optional[list[str]] = None,
     ):
         """
         Synchronize objects from source to target storage location.
@@ -291,6 +313,8 @@ class SyncManager:
                 request for each object to retrieve attributes, which can significantly impact performance on large-scale
                 sync operations. For production use at scale, configure a ``metadata_provider`` in your storage profile.
         :param follow_symlinks: Whether to follow symbolic links. Only applicable when source is POSIX file storage. When False, symlinks are skipped during sync.
+        :param source_files: Optional list of file paths (relative to source_path) to sync. When provided, only these
+            specific files will be synced, skipping enumeration of the source path.
         """
         logger.debug(f"Starting sync operation {description}")
 
@@ -341,6 +365,7 @@ class SyncManager:
             pattern_matcher,
             preserve_source_attributes,
             follow_symlinks,
+            source_files,
         )
         producer_thread.start()
 

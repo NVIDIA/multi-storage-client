@@ -707,6 +707,7 @@ class StorageClient:
         patterns: Optional[PatternList] = None,
         preserve_source_attributes: bool = False,
         follow_symlinks: bool = True,
+        source_files: Optional[List[str]] = None,
     ) -> None:
         """
         Syncs files from the source storage client to "path/".
@@ -719,6 +720,7 @@ class StorageClient:
         :param num_worker_processes: The number of worker processes to use.
         :param execution_mode: The execution mode to use. Currently supports "local" and "ray".
         :param patterns: PatternList for include/exclude filtering. If None, all files are included.
+            Cannot be used together with source_files.
         :param preserve_source_attributes: Whether to preserve source file metadata attributes during synchronization.
             When False (default), only file content is copied. When True, custom metadata attributes are also preserved.
 
@@ -726,9 +728,15 @@ class StorageClient:
                 **Performance Impact**: When enabled without a ``metadata_provider`` configured, this will make a HEAD
                 request for each object to retrieve attributes, which can significantly impact performance on large-scale
                 sync operations. For production use at scale, configure a ``metadata_provider`` in your storage profile.
+
         :param follow_symlinks: If the source StorageClient is PosixFile, whether to follow symbolic links. Default is True.
+        :param source_files: Optional list of file paths (relative to source_path) to sync. When provided, only these
+            specific files will be synced, skipping enumeration of the source path. Cannot be used together with patterns.
+        :raises ValueError: If both source_files and patterns are provided.
         """
-        # Create internal PatternMatcher from patterns if provided
+        if source_files and patterns:
+            raise ValueError("Cannot specify both 'source_files' and 'patterns'. Please use only one filtering method.")
+
         pattern_matcher = PatternMatcher(patterns) if patterns else None
 
         # Disable the replica manager during sync
@@ -746,6 +754,7 @@ class StorageClient:
             pattern_matcher=pattern_matcher,
             preserve_source_attributes=preserve_source_attributes,
             follow_symlinks=follow_symlinks,
+            source_files=source_files,
         )
 
     def sync_replicas(

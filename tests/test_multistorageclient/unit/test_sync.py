@@ -29,7 +29,7 @@ from multistorageclient.progress_bar import ProgressBar
 from multistorageclient.providers.base import BaseStorageProvider
 from multistorageclient.providers.manifest_metadata import DEFAULT_MANIFEST_BASE_DIR
 from multistorageclient.sync import ProducerThread, ResultConsumerThread, SyncManager, _SyncOp
-from multistorageclient.types import ExecutionMode, ObjectMetadata
+from multistorageclient.types import ExecutionMode, ObjectMetadata, PatternType
 from multistorageclient.utils import NullStorageClient
 from test_multistorageclient.unit.utils import config, tempdatastore
 
@@ -700,4 +700,68 @@ def test_sync_from_symlink_files(temp_data_store_type: type[tempdatastore.Tempor
             "subdir/real_in_subdir.txt": real_file_subdir_content,
         }
 
+        verify_sync_and_contents(target_url=target_msc_url, expected_files=expected_files)
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[[tempdatastore.TemporaryAWSS3Bucket]],
+)
+def test_sync_from_with_source_files(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """Test sync_from with source_files parameter to sync only specific files."""
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    obj_profile = "s3-sync"
+    local_profile = "local"
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as temp_source_data_store,
+        temp_data_store_type() as temp_data_store,
+    ):
+        config.setup_msc_config(
+            config_dict={
+                "profiles": {
+                    obj_profile: temp_data_store.profile_config_dict(),
+                    local_profile: temp_source_data_store.profile_config_dict(),
+                }
+            }
+        )
+
+        source_msc_url = f"msc://{local_profile}/folder"
+        target_msc_url = f"msc://{obj_profile}/synced-files"
+
+        all_files = {
+            "dir1/file0.txt": "a" * 150,
+            "dir1/file1.py": "b" * 200,
+            "dir2/file2.txt": "f" * (MEMORY_LOAD_LIMIT + 1024),  # One large file
+            "dir3/file1.txt": "h" * 800,
+        }
+        create_local_test_dataset(source_msc_url, all_files)
+        time.sleep(1)
+
+        source_client, source_path = msc.resolve_storage_client(source_msc_url)
+        target_client, target_path = msc.resolve_storage_client(target_msc_url)
+
+        # Test case 1: Basic source_files sync
+        files_to_sync = ["dir1/file0.txt", "dir2/file2.txt"]
+        expected_files = {file: all_files[file] for file in files_to_sync}
+        target_client.sync_from(source_client, source_path, target_path, source_files=files_to_sync)
+        verify_sync_and_contents(target_url=target_msc_url, expected_files=expected_files)
+
+        # Test case 2: ValueError is raised when both source_files and patterns are provided
+        files_to_sync_with_py = ["dir1/file1.py", "dir3/file1.txt"]
+        patterns = [(PatternType.EXCLUDE, "*.py")]
+        with pytest.raises(ValueError, match="Cannot specify both 'source_files' and 'patterns'"):
+            target_client.sync_from(
+                source_client, source_path, target_path, source_files=files_to_sync_with_py, patterns=patterns
+            )
+
+        # Now sync without patterns to continue with the test
+        target_client.sync_from(source_client, source_path, target_path, source_files=files_to_sync_with_py)
+        expected_files.update({file: all_files[file] for file in files_to_sync_with_py})
+        verify_sync_and_contents(target_url=target_msc_url, expected_files=expected_files)
+
+        # Test case 3: Missing source file - should log warning but continue
+        files_with_missing = ["dir1/file0.txt", "dir1/nonexistent.txt"]
+        target_client.sync_from(source_client, source_path, target_path, source_files=files_with_missing)
+        # Should not raise error, only existing files synced (dir1/file0.txt already exists)
         verify_sync_and_contents(target_url=target_msc_url, expected_files=expected_files)
