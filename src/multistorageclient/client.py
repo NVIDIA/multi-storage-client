@@ -611,6 +611,23 @@ class StorageClient:
                 prefetch_file=prefetch_file,
             )
 
+    def get_posix_path(self, path: str) -> Optional[str]:
+        """
+        Returns the physical POSIX filesystem path for POSIX storage providers.
+
+        :param path: The path to resolve (may be a symlink or virtual path).
+        :return: Physical POSIX filesystem path if POSIX storage, None otherwise.
+        """
+        if not self._is_posix_file_storage_provider():
+            return None
+
+        if self._metadata_provider:
+            realpath, _ = self._metadata_provider.realpath(path)
+        else:
+            realpath = path
+
+        return cast(PosixFileStorageProvider, self._storage_provider)._prepend_base_path(realpath)
+
     def is_file(self, path: str) -> bool:
         """
         Checks whether the specified path points to a file (rather than a directory or folder).

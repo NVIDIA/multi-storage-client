@@ -699,3 +699,33 @@ def test_storage_providers_with_rust_client_bucket_override(
 
         # Delete the file.
         storage_client.delete(path=file_path)
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryPOSIXDirectory],
+        [tempdatastore.TemporaryAWSS3Bucket],
+        [tempdatastore.TemporaryAzureBlobStorageContainer],
+        [tempdatastore.TemporaryGoogleCloudStorageBucket],
+    ],
+)
+def test_get_posix_path(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """Test get_posix_path returns physical path for POSIX providers and None for others."""
+    with temp_data_store_type() as temp_data_store:
+        profile = "data"
+        config_dict = {"profiles": {profile: temp_data_store.profile_config_dict()}}
+        storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
+
+        test_path = "subdir/test.txt"
+        is_posix = temp_data_store_type == tempdatastore.TemporaryPOSIXDirectory
+
+        if is_posix:
+            # For POSIX providers, should return physical filesystem path
+            posix_path = storage_client.get_posix_path(test_path)
+            base_path = config_dict["profiles"][profile]["storage_provider"]["options"]["base_path"]
+            assert posix_path == os.path.join(base_path, test_path)
+        else:
+            # For non-POSIX providers (cloud storage), should return None
+            posix_path = storage_client.get_posix_path(test_path)
+            assert posix_path is None

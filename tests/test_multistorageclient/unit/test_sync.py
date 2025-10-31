@@ -19,6 +19,7 @@ import queue
 import time
 from datetime import datetime
 from typing import Optional, cast
+from unittest import mock
 
 import pytest
 
@@ -28,7 +29,18 @@ from multistorageclient.constants import MEMORY_LOAD_LIMIT
 from multistorageclient.progress_bar import ProgressBar
 from multistorageclient.providers.base import BaseStorageProvider
 from multistorageclient.providers.manifest_metadata import DEFAULT_MANIFEST_BASE_DIR
-from multistorageclient.sync import ProducerThread, ResultConsumerThread, SyncManager, _SyncOp
+from multistorageclient.sync import (
+    ProducerThread,
+    ResultConsumerThread,
+    SyncManager,
+    _check_posix_paths,
+    _copy_posix_to_posix,
+    _copy_posix_to_remote,
+    _copy_remote_to_posix,
+    _copy_remote_to_remote,
+    _SyncOp,
+    _update_posix_metadata,
+)
 from multistorageclient.types import ExecutionMode, ObjectMetadata, PatternType
 from multistorageclient.utils import NullStorageClient
 from test_multistorageclient.unit.utils import config, tempdatastore
@@ -765,3 +777,312 @@ def test_sync_from_with_source_files(temp_data_store_type: type[tempdatastore.Te
         target_client.sync_from(source_client, source_path, target_path, source_files=files_with_missing)
         # Should not raise error, only existing files synced (dir1/file0.txt already exists)
         verify_sync_and_contents(target_url=target_msc_url, expected_files=expected_files)
+
+
+@pytest.mark.serial
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[[tempdatastore.TemporaryAWSS3Bucket]],
+)
+def test_sync_posix_large_files_no_temp_optimization(
+    temp_data_store_type: type[tempdatastore.TemporaryDataStore],
+):
+    """Verify that POSIX sync optimization avoids temp files in sync.py for large files.
+
+    This test specifically validates the optimization by mocking tempfile.NamedTemporaryFile
+    and ensuring sync.py doesn't create temp files during large file transfers:
+    1. POSIX → POSIX: Direct copy with shutil.copy2 (no temp in sync.py)
+    2. POSIX → Cloud: Direct upload with upload_file (no temp in sync.py)
+
+    Note: Cloud → POSIX is not tested because cloud providers' download_file() methods
+    internally use temp files for atomic downloads, which is a provider implementation
+    detail and not part of the sync.py optimization.
+
+    Only large files (> MEMORY_LOAD_LIMIT) are tested to avoid interference with
+    other operations that legitimately use temp files (e.g., atomic writes for small files).
+    """
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    source_posix_profile = "source-posix"
+    target_posix_profile = "target-posix"
+    cloud_profile = "cloud"
+
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as temp_source_posix,
+        tempdatastore.TemporaryPOSIXDirectory() as temp_target_posix,
+        temp_data_store_type() as temp_cloud,
+    ):
+        config.setup_msc_config(
+            config_dict={
+                "profiles": {
+                    source_posix_profile: temp_source_posix.profile_config_dict(),
+                    target_posix_profile: temp_target_posix.profile_config_dict(),
+                    cloud_profile: temp_cloud.profile_config_dict(),
+                }
+            }
+        )
+
+        large_file_content = "X" * (MEMORY_LOAD_LIMIT + 1024 * 1024)
+        source_url = f"msc://{source_posix_profile}/large-file.dat"
+        target_url = f"msc://{target_posix_profile}/large-file.dat"
+        cloud_url = f"msc://{cloud_profile}/large-file.dat"
+
+        msc.write(source_url, large_file_content.encode())
+        time.sleep(0.5)
+
+        import sys
+
+        sync_module = sys.modules["multistorageclient.sync"]
+
+        # Test POSIX → POSIX: no temp files should be created in sync.py
+        with mock.patch.object(sync_module.tempfile, "NamedTemporaryFile") as mock_tempfile:
+            msc.sync(source_url=f"msc://{source_posix_profile}", target_url=f"msc://{target_posix_profile}")
+            assert not mock_tempfile.called, "POSIX → POSIX should not use temp files in sync.py"
+
+        assert msc.is_file(target_url)
+        with msc.open(target_url, mode="rb") as f:
+            assert f.read().decode() == large_file_content
+        msc.delete(target_url)
+
+        # Test POSIX → Cloud: no temp files should be created in sync.py
+        with mock.patch.object(sync_module.tempfile, "NamedTemporaryFile") as mock_tempfile:
+            msc.sync(source_url=f"msc://{source_posix_profile}", target_url=f"msc://{cloud_profile}")
+            assert not mock_tempfile.called, "POSIX → Cloud should not use temp files in sync.py"
+
+        assert msc.is_file(cloud_url)
+        with msc.open(cloud_url, mode="rb") as f:
+            assert f.read().decode() == large_file_content
+
+
+def _setup_test_clients(posix_profile: str, remote_profile: str, temp_posix, temp_remote):
+    """Helper to set up test clients with profiles."""
+    config.setup_msc_config(
+        config_dict={
+            "profiles": {
+                posix_profile: temp_posix.profile_config_dict(),
+                remote_profile: temp_remote.profile_config_dict(),
+            }
+        }
+    )
+    posix_client, _ = msc.resolve_storage_client(f"msc://{posix_profile}")
+    remote_client, _ = msc.resolve_storage_client(f"msc://{remote_profile}")
+    return posix_client, remote_client
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[[tempdatastore.TemporaryAWSS3Bucket]],
+)
+def test_check_posix_paths(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """Test _check_posix_paths correctly identifies POSIX and non-POSIX clients."""
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as temp_posix,
+        temp_data_store_type() as temp_remote,
+    ):
+        posix_client, remote_client = _setup_test_clients("posix-test", "remote-test", temp_posix, temp_remote)
+
+        # Test POSIX client returns physical path
+        posix_file = "test.txt"
+        source_physical, target_physical = _check_posix_paths(posix_client, posix_client, posix_file, posix_file)
+        assert source_physical is not None
+        assert target_physical is not None
+        assert posix_file in source_physical
+        assert posix_file in target_physical
+
+        # Test remote client returns None
+        source_physical, target_physical = _check_posix_paths(remote_client, remote_client, "file.txt", "file.txt")
+        assert source_physical is None
+        assert target_physical is None
+
+        # Test mixed: POSIX source, remote target
+        source_physical, target_physical = _check_posix_paths(posix_client, remote_client, posix_file, "file.txt")
+        assert source_physical is not None
+        assert target_physical is None
+
+
+def test_copy_posix_to_posix():
+    """Test _copy_posix_to_posix correctly copies files between POSIX locations."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        source_file = os.path.join(tmpdir, "source.txt")
+        target_file = os.path.join(tmpdir, "subdir", "target.txt")
+
+        # Create source file
+        content = "test content"
+        with open(source_file, "w") as f:
+            f.write(content)
+
+        # Copy file
+        _copy_posix_to_posix(source_file, target_file)
+
+        # Verify target file exists and has correct content
+        assert os.path.exists(target_file)
+        with open(target_file, "r") as f:
+            assert f.read() == content
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[[tempdatastore.TemporaryAWSS3Bucket]],
+)
+def test_copy_posix_to_remote(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """Test _copy_posix_to_remote correctly uploads files from POSIX to remote storage."""
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as temp_posix,
+        temp_data_store_type() as temp_remote,
+    ):
+        posix_client, remote_client = _setup_test_clients("posix-test", "remote-test", temp_posix, temp_remote)
+
+        # Create source file in POSIX
+        source_file = "source.txt"
+        content = b"test content for upload"
+        posix_client.write(source_file, content)
+
+        source_physical_path = posix_client.get_posix_path(source_file)
+        assert source_physical_path is not None
+
+        # Create metadata
+        file_metadata = ObjectMetadata(
+            key=source_file,
+            content_length=len(content),
+            last_modified=datetime.now(),
+            metadata={"custom": "value"},
+        )
+
+        # Upload to remote storage
+        target_file = "target.txt"
+        _copy_posix_to_remote(remote_client, source_physical_path, target_file, file_metadata)
+
+        # Verify file exists in remote storage with correct content
+        assert remote_client.is_file(target_file)
+        retrieved_content = remote_client.read(target_file)
+        assert retrieved_content == content
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[[tempdatastore.TemporaryAWSS3Bucket]],
+)
+def test_copy_remote_to_posix(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """Test _copy_remote_to_posix correctly downloads files from remote to POSIX storage."""
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as temp_posix,
+        temp_data_store_type() as temp_remote,
+    ):
+        posix_client, remote_client = _setup_test_clients("posix-test", "remote-test", temp_posix, temp_remote)
+
+        # Create source file in remote storage
+        source_file = "source.txt"
+        content = b"test content for download"
+        remote_client.write(source_file, content)
+
+        # Download to POSIX
+        target_file = "target.txt"
+        target_physical_path = posix_client.get_posix_path(target_file)
+        assert target_physical_path is not None
+
+        _copy_remote_to_posix(remote_client, source_file, target_physical_path)
+
+        # Verify file exists in POSIX with correct content
+        assert os.path.exists(target_physical_path)
+        with open(target_physical_path, "rb") as f:
+            assert f.read() == content
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type", "file_size", "file_type"],
+    argvalues=[
+        [tempdatastore.TemporaryAWSS3Bucket, 100, "small"],  # Small file uses memory
+        [tempdatastore.TemporaryAWSS3Bucket, MEMORY_LOAD_LIMIT + 1000, "large"],  # Large file uses temp file
+    ],
+)
+def test_copy_remote_to_remote(
+    temp_data_store_type: type[tempdatastore.TemporaryDataStore], file_size: int, file_type: str
+):
+    """Test _copy_remote_to_remote handles both small and large files correctly."""
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    with (
+        temp_data_store_type() as temp_source,
+        temp_data_store_type() as temp_target,
+    ):
+        source_client, target_client = _setup_test_clients("source-test", "target-test", temp_source, temp_target)
+
+        # Create source file
+        source_file = f"{file_type}.txt"
+        content = b"x" * file_size
+        source_client.write(source_file, content)
+
+        file_metadata = ObjectMetadata(
+            key=source_file,
+            content_length=len(content),
+            last_modified=datetime.now(),
+            metadata={"type": file_type},
+        )
+
+        # Copy to target
+        target_file = "target.txt"
+        _copy_remote_to_remote(source_client, target_client, source_file, target_file, file_metadata)
+
+        # Verify file exists with correct content
+        assert target_client.is_file(target_file)
+        assert target_client.read(target_file) == content
+
+
+@pytest.mark.parametrize(
+    argnames=["use_metadata_provider"],
+    argvalues=[[True], [False]],
+)
+def test_update_posix_metadata(use_metadata_provider: bool):
+    """Test _update_posix_metadata updates metadata via provider or xattr."""
+    import json
+
+    import xattr
+
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_posix:
+        profile_config = temp_posix.profile_config_dict()
+        if use_metadata_provider:
+            profile_config.update({"manifest_base_dir": ".msc_metadata", "use_manifest_metadata": True})
+
+        config.setup_msc_config(config_dict={"profiles": {"posix-test": profile_config}})
+        client, _ = msc.resolve_storage_client("msc://posix-test")
+
+        # Create test file and metadata
+        test_file = "test.txt"
+        content = b"test content"
+        client.write(test_file, content)
+
+        target_physical_path = client.get_posix_path(test_file)
+        assert target_physical_path is not None
+
+        custom_metadata = {"custom_key": "custom_value", "author": "test"}
+        file_metadata = ObjectMetadata(
+            key=test_file,
+            content_length=len(content),
+            last_modified=datetime.now(),
+            metadata=custom_metadata,
+        )
+
+        # Update metadata
+        _update_posix_metadata(client, target_physical_path, test_file, file_metadata)
+
+        # Verify metadata storage
+        if use_metadata_provider:
+            info = client.info(test_file)
+            assert info.metadata == custom_metadata
+        else:
+            try:
+                xattr_value = xattr.getxattr(target_physical_path, "user.json")
+                stored_metadata = json.loads(xattr_value.decode("utf-8"))
+                assert stored_metadata == custom_metadata
+            except OSError:
+                pytest.skip("xattr not supported on this filesystem")

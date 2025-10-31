@@ -15,16 +15,20 @@
 
 import contextlib
 import importlib.util
+import json
 import logging
 import multiprocessing
 import os
 import queue
+import shutil
 import tempfile
 import threading
 import time
+from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional, cast
 
+import xattr
 from filelock import FileLock
 
 from multistorageclient.providers.base import BaseStorageProvider
@@ -610,22 +614,25 @@ def _sync_worker_process(
                     except FileNotFoundError:
                         pass
 
-                    if file_metadata.content_length < MEMORY_LOAD_LIMIT:
-                        file_content = source_client.read(file_metadata.key)
-                        target_client.write(target_file_path, file_content, attributes=file_metadata.metadata)
-                    else:
-                        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-                            temp_filename = temp_file.name
+                    source_physical_path, target_physical_path = _check_posix_paths(
+                        source_client, target_client, file_metadata.key, target_file_path
+                    )
 
-                        try:
-                            source_client.download_file(remote_path=file_metadata.key, local_path=temp_filename)
-                            target_client.upload_file(
-                                remote_path=target_file_path,
-                                local_path=temp_filename,
-                                attributes=file_metadata.metadata,
-                            )
-                        finally:
-                            os.remove(temp_filename)  # Ensure the temporary file is removed
+                    source_is_posix = source_physical_path is not None
+                    target_is_posix = target_physical_path is not None
+
+                    if source_is_posix and target_is_posix:
+                        _copy_posix_to_posix(source_physical_path, target_physical_path)
+                        _update_posix_metadata(target_client, target_physical_path, target_file_path, file_metadata)
+                    elif source_is_posix and not target_is_posix:
+                        _copy_posix_to_remote(target_client, source_physical_path, target_file_path, file_metadata)
+                    elif not source_is_posix and target_is_posix:
+                        _copy_remote_to_posix(source_client, file_metadata.key, target_physical_path)
+                        _update_posix_metadata(target_client, target_physical_path, target_file_path, file_metadata)
+                    else:
+                        _copy_remote_to_remote(
+                            source_client, target_client, file_metadata.key, target_file_path, file_metadata
+                        )
 
                 # Clean up the lock file for POSIX file storage providers
                 if target_client._is_posix_file_storage_provider():
@@ -665,3 +672,99 @@ def _sync_worker_process(
     # Wait for all threads to complete
     for thread in threads:
         thread.join()
+
+
+def _check_posix_paths(
+    source_client: "StorageClient",
+    target_client: "StorageClient",
+    source_key: str,
+    target_key: str,
+) -> tuple[Optional[str], Optional[str]]:
+    """Check if source and target are POSIX paths and return physical paths if available."""
+    source_physical_path = source_client.get_posix_path(source_key)
+    target_physical_path = target_client.get_posix_path(target_key)
+    return source_physical_path, target_physical_path
+
+
+def _copy_posix_to_posix(
+    source_physical_path: str,
+    target_physical_path: str,
+) -> None:
+    """Copy file from POSIX source to POSIX target using shutil.copy2."""
+    os.makedirs(os.path.dirname(target_physical_path), exist_ok=True)
+    shutil.copy2(source_physical_path, target_physical_path)
+
+
+def _copy_posix_to_remote(
+    target_client: "StorageClient",
+    source_physical_path: str,
+    target_file_path: str,
+    file_metadata: ObjectMetadata,
+) -> None:
+    """Upload file from POSIX source to remote target."""
+    target_client.upload_file(
+        remote_path=target_file_path,
+        local_path=source_physical_path,
+        attributes=file_metadata.metadata,
+    )
+
+
+def _copy_remote_to_posix(
+    source_client: "StorageClient",
+    source_key: str,
+    target_physical_path: str,
+) -> None:
+    """Download file from remote source to POSIX target."""
+    source_client.download_file(remote_path=source_key, local_path=target_physical_path)
+
+
+def _copy_remote_to_remote(
+    source_client: "StorageClient",
+    target_client: "StorageClient",
+    source_key: str,
+    target_file_path: str,
+    file_metadata: ObjectMetadata,
+) -> None:
+    """Copy file between two remote storages, using memory or temp file based on size."""
+    if file_metadata.content_length < MEMORY_LOAD_LIMIT:
+        file_content = source_client.read(source_key)
+        target_client.write(target_file_path, file_content, attributes=file_metadata.metadata)
+    else:
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            temp_filename = temp_file.name
+        try:
+            source_client.download_file(remote_path=source_key, local_path=temp_filename)
+            target_client.upload_file(
+                remote_path=target_file_path,
+                local_path=temp_filename,
+                attributes=file_metadata.metadata,
+            )
+        finally:
+            os.remove(temp_filename)
+
+
+def _update_posix_metadata(
+    target_client: "StorageClient",
+    target_physical_path: str,
+    target_file_path: str,
+    file_metadata: ObjectMetadata,
+) -> None:
+    """Update metadata for POSIX target (metadata provider or xattr)."""
+    if target_client._metadata_provider:
+        physical_metadata = ObjectMetadata(
+            key=target_physical_path,
+            content_length=os.path.getsize(target_physical_path),
+            last_modified=datetime.fromtimestamp(os.path.getmtime(target_physical_path), tz=timezone.utc),
+            metadata=file_metadata.metadata,
+        )
+        with target_client._metadata_provider_lock or contextlib.nullcontext():
+            target_client._metadata_provider.add_file(target_file_path, physical_metadata)
+    elif file_metadata.metadata:
+        try:
+            xattr.setxattr(
+                target_physical_path,
+                "user.json",
+                json.dumps(file_metadata.metadata).encode("utf-8"),
+            )
+        except OSError as e:
+            logger.debug(f"Failed to set extended attributes on {target_physical_path}: {e}")
