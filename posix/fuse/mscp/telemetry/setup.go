@@ -53,8 +53,11 @@ type MetricsConfig struct {
 // - LastValue aggregation for gauges
 // - Sum aggregation for counters
 //
+// Returns the MeterProvider and collected attributes from attribute providers.
+// The attributes should be added to each metric recording (matching Python behavior).
+//
 // Matches Python: telemetry/__init__.py:meter_provider()
-func SetupMetricsDiperiodic(config MetricsConfig) (*sdkmetric.MeterProvider, error) {
+func SetupMetricsDiperiodic(config MetricsConfig) (*sdkmetric.MeterProvider, []attribute.KeyValue, error) {
 	ctx := context.Background()
 
 	// Create exporter based on auth configuration
@@ -65,7 +68,7 @@ func SetupMetricsDiperiodic(config MetricsConfig) (*sdkmetric.MeterProvider, err
 		// Create OTLP exporter with MSAL auth (_otlp_msal)
 		exporter, err = exporters.NewOTLPMSALExporter(*config.AzureAuth, config.OTLPEndpoint)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	} else {
 		// Create standard OTLP/HTTP exporter (otlp)
@@ -78,7 +81,7 @@ func SetupMetricsDiperiodic(config MetricsConfig) (*sdkmetric.MeterProvider, err
 
 		exporter, err = otlpmetrichttp.New(ctx, opts...)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
@@ -113,8 +116,12 @@ func SetupMetricsDiperiodic(config MetricsConfig) (*sdkmetric.MeterProvider, err
 
 	// Collect attributes from attribute providers (matches Python: collect_attributes())
 	var resourceAttrs []attribute.KeyValue
+	var metricAttrs []attribute.KeyValue // Attributes to add to each metric recording (Python behavior)
+
 	if len(config.AttributeProviders) > 0 {
 		resourceAttrs = attributes.CollectAttributes(config.AttributeProviders)
+		metricAttrs = make([]attribute.KeyValue, len(resourceAttrs))
+		copy(metricAttrs, resourceAttrs) // Make a copy for metric labels
 	}
 
 	// Add service name as a resource attribute
@@ -139,5 +146,6 @@ func SetupMetricsDiperiodic(config MetricsConfig) (*sdkmetric.MeterProvider, err
 	// Set global meter provider
 	otel.SetMeterProvider(meterProvider)
 
-	return meterProvider, nil
+	// Return meterProvider and metricAttrs (to be added to each metric recording)
+	return meterProvider, metricAttrs, nil
 }

@@ -57,6 +57,11 @@ import (
 type MSCPMetricsDiperiodic struct {
 	meter metric.Meter
 
+	// Attributes from attribute providers (collected once at startup)
+	// These are added to EVERY metric recording (matching Python behavior)
+	// Python collects these per-metric, but MSCP can collect once since it's a single-process daemon
+	baseAttributes []attribute.KeyValue
+
 	// Gauges (using Gauge instrument with LastValue aggregation)
 	// Go OTel has synchronous Gauge types (Float64Gauge, Int64Gauge)
 	// These automatically use LastValue aggregation (matching Python's _Gauge)
@@ -72,11 +77,12 @@ type MSCPMetricsDiperiodic struct {
 
 // NewMSCPMetricsDiperiodic creates all MSCP metric instruments using diperiodic pattern.
 // serviceName is typically "msc-posix"
+// baseAttributes are attributes from attribute providers (msc.ppp, msc.cluster, etc.) added to every metric
 //
 // Note: We use Float64Counter/Int64Counter for gauges because Go doesn't have synchronous Gauge.
 // The View configuration applies LastValue aggregation to these, making them behave exactly like
 // Python's _Gauge (which also uses LastValue aggregation internally).
-func NewMSCPMetricsDiperiodic(serviceName string) (MSCPMetricsDiperiodic, error) {
+func NewMSCPMetricsDiperiodic(serviceName string, baseAttributes []attribute.KeyValue) (MSCPMetricsDiperiodic, error) {
 	meter := otel.Meter(serviceName)
 
 	// Gauges (using native Gauge instruments)
@@ -139,6 +145,7 @@ func NewMSCPMetricsDiperiodic(serviceName string) (MSCPMetricsDiperiodic, error)
 
 	return MSCPMetricsDiperiodic{
 		meter:              meter,
+		baseAttributes:     baseAttributes,
 		latencyGauge:       latencyGauge,
 		dataSizeGauge:      dataSizeGauge,
 		dataRateGauge:      dataRateGauge,
@@ -152,13 +159,15 @@ func NewMSCPMetricsDiperiodic(serviceName string) (MSCPMetricsDiperiodic, error)
 // Matches Python's behavior: request.sum is recorded BEFORE the operation (line 209).
 // This should be called immediately at function start, NOT in defer.
 func (m *MSCPMetricsDiperiodic) RecordBackendRequest(ctx context.Context, operation string, version string, backend string) {
-	// Build attribute slice
-	// Python base.py lines 201-206: VERSION, PROVIDER, OPERATION
-	allAttrs := []attribute.KeyValue{
+	// Build attribute slice - merging base attributes with operation-specific ones
+	// Python base.py lines 201-206: collect_attributes() + VERSION, PROVIDER, OPERATION
+	allAttrs := make([]attribute.KeyValue, 0, len(m.baseAttributes)+3)
+	allAttrs = append(allAttrs, m.baseAttributes...)
+	allAttrs = append(allAttrs,
 		attribute.String("multistorageclient.version", version),
 		attribute.String("multistorageclient.provider", backend),
 		attribute.String("multistorageclient.operation", operation),
-	}
+	)
 
 	// Record request counter (matches Python line 209)
 	m.requestSumCounter.Add(ctx, 1, metric.WithAttributes(allAttrs...))
@@ -175,14 +184,16 @@ func (m *MSCPMetricsDiperiodic) RecordBackendOperation(ctx context.Context, oper
 		status = "error.Go"
 	}
 
-	// Build attribute slice (matches Python's _AttributeName exactly)
-	// Python base.py lines 201-206: VERSION, PROVIDER, OPERATION (and STATUS added after operation)
-	allAttrs := []attribute.KeyValue{
+	// Build attribute slice - merging base attributes with operation-specific ones
+	// Python base.py lines 201-206: collect_attributes() + VERSION, PROVIDER, OPERATION (and STATUS added after operation)
+	allAttrs := make([]attribute.KeyValue, 0, len(m.baseAttributes)+4)
+	allAttrs = append(allAttrs, m.baseAttributes...)
+	allAttrs = append(allAttrs,
 		attribute.String("multistorageclient.version", version),
 		attribute.String("multistorageclient.provider", backend),
 		attribute.String("multistorageclient.operation", operation),
 		attribute.String("multistorageclient.status", status),
-	}
+	)
 
 	// Record response counter first (always, matches Python line 239-241)
 	// Python: "Always record responses. The only metrics we skip on failure are data size ones."

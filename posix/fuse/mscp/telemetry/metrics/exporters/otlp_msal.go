@@ -18,12 +18,13 @@ package exporters
 import (
 	"context"
 	"fmt"
-	"log"
+	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/NVIDIA/multi-storage-client/posix/fuse/mscp/telemetry/auth"
-	"github.com/hashicorp/go-retryablehttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
@@ -33,82 +34,167 @@ const (
 	maxRetries          = 5    // _MAX_RETRIES = 5
 	retryWaitMin        = 500  // milliseconds (backoff_factor = 0.5 → first retry 0.5s)
 	retryWaitMax        = 8000 // milliseconds (max backoff: 0.5 * 2^4 = 8s)
-	httpClientTimeout   = 60   // seconds (overall timeout for HTTP requests)
 	tokenAcquireTimeout = 30   // seconds (timeout for acquiring access token)
 )
 
 // `NewOTLPMSALExporter` creates an OTLP exporter with MSAL auth and automatic retries.
 // Matches Python: `_OTLPMSALMetricExporter.__init__(auth, exporter)`
-//
-// Uses go-retryablehttp library (similar to Python's `requests.adapters.HTTPAdapter`):
-//   - RetryMax: 5 (matches Python _MAX_RETRIES)
-//   - RetryWaitMin: 500ms (matches Python backoff_factor=0.5, first retry = 0.5s)
-//   - RetryWaitMax: 8s (matches Python max backoff after 5 retries)
-//
-// Returns a standard `sdkmetric.Exporter` with MSAL authentication and retry logic built-in.
 func NewOTLPMSALExporter(authConfig auth.Config, endpoint string) (sdkmetric.Exporter, error) {
-	// Create Azure token provider
 	tokenProvider, err := auth.NewAzureAccessTokenProvider(authConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create token provider: %w", err)
 	}
 
-	// Create retryable HTTP client (matches Python's requests_adapters.Retry)
-	retryClient := retryablehttp.NewClient()
-	retryClient.RetryMax = maxRetries
-	retryClient.RetryWaitMin = retryWaitMin * time.Millisecond
-	retryClient.RetryWaitMax = retryWaitMax * time.Millisecond
-	retryClient.HTTPClient.Timeout = httpClientTimeout * time.Second
-	retryClient.Logger = nil // Disable retryablehttp's verbose logging
-
-	// Wrap transport with MSAL auth (adds Bearer token to each request)
-	retryClient.HTTPClient.Transport = &msalRoundTripper{
-		base:          retryClient.HTTPClient.Transport,
-		tokenProvider: tokenProvider,
+	httpClient := &http.Client{
+		Transport: &retryableTransport{
+			tokenProvider: tokenProvider,
+			retryMax:      maxRetries,
+			retryWaitMin:  retryWaitMin * time.Millisecond,
+			retryWaitMax:  retryWaitMax * time.Millisecond,
+		},
 	}
 
-	// Create OTLP HTTP exporter with retryable client
-	// The library handles retries automatically with exponential backoff
-	return otlpmetrichttp.New(
-		context.Background(),
-		otlpmetrichttp.WithEndpoint(endpoint),
-		otlpmetrichttp.WithURLPath("/v1/metrics"),
-		otlpmetrichttp.WithHTTPClient(retryClient.StandardClient()), // Convert to *http.Client
-	)
+	// Parse endpoint to extract host and path
+	// Supports: "https://hostname/v1/metrics" or "hostname:port"
+	host, path, isInsecure := parseEndpoint(endpoint)
+
+	opts := []otlpmetrichttp.Option{
+		otlpmetrichttp.WithEndpoint(host),
+		otlpmetrichttp.WithHTTPClient(httpClient),
+	}
+
+	if path != "" {
+		opts = append(opts, otlpmetrichttp.WithURLPath(path))
+	}
+
+	// If endpoint uses http:// (not https://), use insecure mode
+	if isInsecure {
+		opts = append(opts, otlpmetrichttp.WithInsecure())
+	}
+
+	return otlpmetrichttp.New(context.Background(), opts...)
 }
 
-// msalRoundTripper adds Bearer tokens to HTTP requests.
-// Matches Python: AccessTokenHTTPAdapter.send()
+// parseEndpoint extracts host, path, and scheme from endpoint string.
+// Examples:
 //
-// Retry logic is handled by go-retryablehttp library (wrapping this transport),
-// just like Python's requests.adapters.HTTPAdapter wraps the session.
-type msalRoundTripper struct {
-	base          http.RoundTripper
-	tokenProvider *auth.AzureAccessTokenProvider
+//	"https://host.com/v1/metrics" → ("host.com", "/v1/metrics", false)
+//	"http://host.com:4318/v1/metrics" → ("host.com:4318", "/v1/metrics", true)
+//	"host.com:4318" → ("host.com:4318", "", false) [defaults to https]
+func parseEndpoint(endpoint string) (host, path string, isInsecure bool) {
+	// If endpoint doesn't have a scheme, prepend https:// for parsing
+	originalEndpoint := endpoint
+	if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
+		endpoint = "https://" + endpoint
+	}
+
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" {
+		// Parse failed, return original endpoint as host, assume secure
+		return originalEndpoint, "", false
+	}
+
+	// Determine if insecure (http://) or secure (https://)
+	isInsecure = (u.Scheme == "http")
+
+	return u.Host, u.Path, isInsecure
 }
 
-// `RoundTrip` implements `http.RoundTripper` interface.
-// Matches Python's `AccessTokenHTTPAdapter.send()` method (lines 54-61).
-func (t *msalRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	// Get token with timeout (Python doesn't explicitly set timeout, but we add it for safety)
-	ctx, cancel := context.WithTimeout(req.Context(), tokenAcquireTimeout*time.Second)
+// retryableTransport implements http.RoundTripper with retry logic and MSAL auth.
+// Matches Python's AccessTokenHTTPAdapter with requests.adapters.Retry.
+type retryableTransport struct {
+	tokenProvider *auth.AzureAccessTokenProvider
+	retryMax      int
+	retryWaitMin  time.Duration
+	retryWaitMax  time.Duration
+}
+
+// RoundTrip implements http.RoundTripper with retry logic.
+// Matches Python's HTTPAdapter.send() with automatic retries.
+func (t *retryableTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	token := t.getToken()
+
+	var lastErr error
+	for attempt := 0; attempt <= t.retryMax; attempt++ {
+		reqClone := t.prepareRequest(req, token)
+
+		resp, err := http.DefaultTransport.RoundTrip(reqClone)
+
+		if err == nil && resp.StatusCode < 500 {
+			return resp, nil
+		}
+
+		lastErr = t.handleError(err, resp, attempt)
+
+		if attempt < t.retryMax {
+			t.sleepWithBackoff(attempt)
+		}
+	}
+
+	return nil, fmt.Errorf("giving up after %d attempt(s): %w", t.retryMax+1, lastErr)
+}
+
+func (t *retryableTransport) getToken() string {
+	ctx, cancel := context.WithTimeout(context.Background(), tokenAcquireTimeout*time.Second)
 	defer cancel()
 
-	// Clone request first (before token acquisition)
-	reqClone := req.Clone(req.Context())
-	reqClone.Header.Set("Connection", "close") // Matches Python line 75: session.headers.update({"Connection": "close"})
-
-	// Get token and add if available (matches Python line 56-60)
 	token, err := t.tokenProvider.GetToken(ctx)
-	if err == nil && token != "" {
-		// Token acquired successfully - add Authorization header (matches Python line 58)
-		reqClone.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	} else {
-		// Failed to get token - log warning but continue (matches Python line 60)
-		log.Printf("Failed to retrieve authentication token! Request might fail.")
-		// Python continues without Authorization header, so we do too
+	if err != nil || token == "" {
+		return ""
 	}
 
-	// Execute request (retries handled by go-retryablehttp wrapper)
-	return t.base.RoundTrip(reqClone)
+	return token
+}
+
+func (t *retryableTransport) prepareRequest(req *http.Request, token string) *http.Request {
+	// Preserve request context but remove any deadline to prevent premature timeouts
+	// This maintains cancellation, tracing, and context values while allowing retries
+	ctx := req.Context()
+	if _, hasDeadline := ctx.Deadline(); hasDeadline {
+		// Use context.WithoutCancel (Go 1.21+) to preserve context values without deadline
+		ctx = context.WithoutCancel(ctx)
+	}
+
+	reqClone := req.Clone(ctx)
+	reqClone.Header.Set("Connection", "close")
+	if token != "" {
+		reqClone.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	}
+	return reqClone
+}
+
+func (t *retryableTransport) handleError(err error, resp *http.Response, attempt int) error {
+	var lastErr error
+	if err != nil {
+		lastErr = fmt.Errorf("attempt %d: %w", attempt+1, err)
+	} else {
+		// Read response body for detailed error message
+		bodyBytes, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		bodyPreview := ""
+		if readErr == nil && len(bodyBytes) > 0 {
+			bodyPreview = string(bodyBytes)
+			if len(bodyPreview) > 500 {
+				bodyPreview = bodyPreview[:500] + "..."
+			}
+		}
+
+		lastErr = fmt.Errorf("attempt %d: server returned status %d", attempt+1, resp.StatusCode)
+
+		// Include body preview in error for debugging
+		if bodyPreview != "" {
+			lastErr = fmt.Errorf("%w: %s", lastErr, bodyPreview)
+		}
+	}
+	return lastErr
+}
+
+func (t *retryableTransport) sleepWithBackoff(attempt int) {
+	multiplier := 1 << uint(attempt)
+	backoff := time.Duration(float64(t.retryWaitMin) * float64(multiplier))
+	if backoff > t.retryWaitMax {
+		backoff = t.retryWaitMax
+	}
+	time.Sleep(backoff)
 }

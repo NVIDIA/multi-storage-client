@@ -285,7 +285,7 @@ func initObservability() {
 	}
 
 	// Initialize metrics with diperiodic pattern
-	meterProvider, err := telemetry.SetupMetricsDiperiodic(metricsConfig)
+	meterProvider, metricAttrs, err := telemetry.SetupMetricsDiperiodic(metricsConfig)
 	if err != nil {
 		globals.logger.Printf("Failed to initialize metrics: %v", err)
 		return
@@ -295,7 +295,8 @@ func initObservability() {
 		collectIntervalMs, exportIntervalMs, metricsConfig.OTLPEndpoint)
 
 	// Create MSCP metrics instruments (matches MSC Python: gauges use LastValue, counters use Sum)
-	metrics, err := telemetry.NewMSCPMetricsDiperiodic("msc-posix")
+	// Pass metricAttrs so they're added to every metric recording (matching Python behavior)
+	metrics, err := telemetry.NewMSCPMetricsDiperiodic("msc-posix", metricAttrs)
 	if err != nil {
 		globals.logger.Printf("Failed to create metrics instruments: %v", err)
 		return
