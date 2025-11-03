@@ -70,6 +70,7 @@ def dump(
     *,
     fix_imports: bool = True,
     buffer_callback: Optional[Callable[[Any], None]] = None,
+    attributes: Optional[dict[str, str]] = None,
 ) -> None:
     """
     Adapt ``pickle.dump``.
@@ -88,12 +89,15 @@ def dump(
 
        with multistorageclient.open(file_path_with_msc_protocol, "rb") as fp:
            pickle.dump(data, fp, ....)
+
+    :param attributes: Optional dictionary of custom attributes/metadata to attach to the file.
     """
+    attributes_dict = attributes or {}
     if isinstance(file_path, str):
-        with msc_open(file_path, mode="wb") as fp:
+        with msc_open(file_path, mode="wb", attributes=attributes_dict) as fp:
             _pickle.dump(obj, fp, protocol=protocol, fix_imports=fix_imports, buffer_callback=buffer_callback)
     elif isinstance(file_path, MultiStoragePath):
-        with file_path.open("wb") as fp:
+        with file_path.open("wb", attributes=attributes_dict) as fp:
             _pickle.dump(obj, fp, protocol=protocol, fix_imports=fix_imports, buffer_callback=buffer_callback)
     else:
         raise NotImplementedError("file object is not supported.")

@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import uuid
+
 import pytest
 import torch
 import torch.distributed.checkpoint as dcp
@@ -187,3 +189,66 @@ def test_filesystem_basic_operations(temp_data_store_type):
         # Test rm_file
         fs.rm_file(new_file_path)
         assert not fs.exists(new_file_path)
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryAWSS3Bucket],
+        [tempdatastore.TemporaryPOSIXDirectory],
+    ],
+)
+def test_torch_save_with_attributes(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """Test torch.save with attributes functionality."""
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    with temp_data_store_type() as temp_data_store:
+        config.setup_msc_config(
+            config_dict={
+                "profiles": {
+                    "test": temp_data_store.profile_config_dict(),
+                },
+            }
+        )
+
+        test_uuid = str(uuid.uuid4())
+        file_path = f"test-torch-attributes-{test_uuid}.pt"
+        tensor = torch.tensor([1, 2, 3, 4])
+
+        test_attributes = {
+            "method": "torch.save",
+            "version": "1.0",
+            "test_id": test_uuid,
+        }
+
+        try:
+            # Test save with attributes using msc-prefixed path
+            msc.torch.save(tensor, f"{MSC_PROTOCOL}test/{file_path}", attributes=test_attributes)
+
+            # Verify content was written correctly
+            result = msc.torch.load(f"{MSC_PROTOCOL}test/{file_path}")
+            assert torch.equal(result, tensor)
+
+            # Verify attributes for storage providers that support metadata
+            if hasattr(temp_data_store, "_bucket_name"):
+                metadata = msc.info(f"{MSC_PROTOCOL}test/{file_path}")
+                assert metadata is not None
+                assert metadata.metadata is not None
+
+                for key, value in test_attributes.items():
+                    assert key in metadata.metadata, f"Expected attribute '{key}' not found"
+                    assert metadata.metadata[key] == value, f"Attribute '{key}' has incorrect value"
+
+            # Test save with attributes using MultiStoragePath
+            file_path2 = f"test-torch-attributes-path-{test_uuid}.pt"
+            msc.torch.save(tensor, msc.Path(f"{MSC_PROTOCOL}test/{file_path2}"), attributes=test_attributes)
+
+            result = msc.torch.load(msc.Path(f"{MSC_PROTOCOL}test/{file_path2}"))
+            assert torch.equal(result, tensor)
+
+        finally:
+            try:
+                msc.delete(f"{MSC_PROTOCOL}test/{file_path}")
+                msc.delete(f"{MSC_PROTOCOL}test/{file_path2}")
+            except Exception:
+                pass

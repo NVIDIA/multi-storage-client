@@ -82,12 +82,16 @@ def load(*args: Any, **kwargs: Any) -> Union[_np.ndarray, dict[str, _np.ndarray]
 def save(*args: Any, **kwargs: Any) -> None:
     """
     Adapt ``numpy.save``.
+
+    :param attributes: Optional dictionary of custom attributes/metadata to attach to the file.
     """
+    attributes_dict = {}
+    if "attributes" in kwargs:
+        attributes_dict = kwargs.pop("attributes")
 
     file = args[0] if args else kwargs.get("file")
     if isinstance(file, str):
-        # use context manager to make sure to upload the file once close() is called
-        with msc_open(file, mode="wb") as fp:
+        with msc_open(file, mode="wb", attributes=attributes_dict) as fp:
             if args:
                 args = (fp,) + args[1:]
             else:
@@ -95,7 +99,7 @@ def save(*args: Any, **kwargs: Any) -> None:
 
             _np.save(*args, **kwargs)  # pyright: ignore [reportArgumentType, reportCallIssue]
     elif isinstance(file, MultiStoragePath):
-        with file.open(mode="wb") as fp:
+        with file.open(mode="wb", attributes=attributes_dict) as fp:
             if args:
                 args = (fp,) + args[1:]
             else:

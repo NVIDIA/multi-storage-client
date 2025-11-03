@@ -40,11 +40,14 @@ def save(obj: object, f: Union[str, os.PathLike[str], IO[bytes]], *args: Any, **
     """
     Adapt ``torch.save``.
     """
+    attributes_dict = {}
+    if "attributes" in kwargs:
+        attributes_dict = kwargs.pop("attributes")
     if isinstance(f, str):
-        with msc_open(f, "wb") as fp:
+        with msc_open(f, "wb", attributes=attributes_dict) as fp:
             return _torch.save(obj, fp, *args, **kwargs)
     elif isinstance(f, MultiStoragePath):
-        with f.open("wb") as fp:
+        with f.open("wb", attributes=attributes_dict) as fp:
             return _torch.save(obj, fp, *args, **kwargs)
     else:
         return _torch.save(obj, f, *args, **kwargs)

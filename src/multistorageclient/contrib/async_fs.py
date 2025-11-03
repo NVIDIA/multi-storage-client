@@ -252,8 +252,9 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
         :param rpath: The remote path to store the file.
         :param kwargs: Additional arguments for file upload functionality.
         """
+        attributes_dict = kwargs.pop("attributes", {})
         storage_client, rpath = self.resolve_path_and_storage_client(rpath)
-        storage_client.upload_file(rpath, lpath)
+        storage_client.upload_file(rpath, lpath, attributes=attributes_dict)
 
     async def _put_file(self, lpath: str, rpath: str, **kwargs: Any) -> None:
         """
@@ -296,10 +297,11 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
 
         :param path: The file path to write the value to.
         :param value: The bytes to write to the file.
-        :param kwargs: Additional arguments for writing functionality.
+        :param kwargs: Additional arguments for writing functionality (e.g., attributes dict for custom metadata).
         """
+        attributes_dict = kwargs.pop("attributes", {})
         storage_client, path = self.resolve_path_and_storage_client(path)
-        storage_client.write(path, value)
+        storage_client.write(path, value, attributes=attributes_dict)
 
     async def _pipe_file(self, path: str, value: bytes, **kwargs: Any) -> None:
         """

@@ -14,11 +14,13 @@
 # limitations under the License.
 
 import tempfile
+import uuid
 
 import pytest
 
 import multistorageclient as msc
 from multistorageclient.types import MSC_PROTOCOL
+from test_multistorageclient.unit.utils import config, tempdatastore
 
 
 @pytest.fixture
@@ -121,3 +123,77 @@ def test_numpy_save(file_storage_config_with_cache, sample_data):
 
             result = np.load(temp.name)
             assert np.array_equal(result, sample_data)
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryAWSS3Bucket],
+        [tempdatastore.TemporaryPOSIXDirectory],
+    ],
+)
+def test_numpy_save_with_attributes(
+    file_storage_config_with_cache, temp_data_store_type: type[tempdatastore.TemporaryDataStore], sample_data
+):
+    """Test numpy.save with attributes functionality."""
+    import numpy as np
+
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    with temp_data_store_type() as temp_data_store:
+        config.setup_msc_config(
+            config_dict={
+                "profiles": {
+                    "test": temp_data_store.profile_config_dict(),
+                },
+            }
+        )
+
+        test_uuid = str(uuid.uuid4())
+        file_path = f"test-numpy-attributes-{test_uuid}.npy"
+
+        test_attributes = {
+            "method": "numpy.save",
+            "version": "1.0",
+            "test_id": test_uuid,
+        }
+
+        try:
+            # Test save with attributes using file path as first positional arg
+            msc.numpy.save(f"{MSC_PROTOCOL}test/{file_path}", sample_data, attributes=test_attributes)
+
+            # Verify content was written correctly
+            result = msc.numpy.load(f"{MSC_PROTOCOL}test/{file_path}")
+            assert np.array_equal(result, sample_data)
+
+            # Verify attributes for storage providers that support metadata
+            if hasattr(temp_data_store, "_bucket_name"):
+                metadata = msc.info(f"{MSC_PROTOCOL}test/{file_path}")
+                assert metadata is not None
+                assert metadata.metadata is not None
+
+                for key, value in test_attributes.items():
+                    assert key in metadata.metadata, f"Expected attribute '{key}' not found"
+                    assert metadata.metadata[key] == value, f"Attribute '{key}' has incorrect value"
+
+            # Test save with attributes using MultiStoragePath
+            file_path2 = f"test-numpy-attributes-path-{test_uuid}.npy"
+            msc.numpy.save(msc.Path(f"{MSC_PROTOCOL}test/{file_path2}"), sample_data, attributes=test_attributes)
+
+            result = msc.numpy.load(msc.Path(f"{MSC_PROTOCOL}test/{file_path2}"))
+            assert np.array_equal(result, sample_data)
+
+            # Test save with attributes using file kwarg
+            file_path3 = f"test-numpy-attributes-kwarg-{test_uuid}.npy"
+            msc.numpy.save(file=f"{MSC_PROTOCOL}test/{file_path3}", arr=sample_data, attributes=test_attributes)
+
+            result = msc.numpy.load(f"{MSC_PROTOCOL}test/{file_path3}")
+            assert np.array_equal(result, sample_data)
+
+        finally:
+            try:
+                msc.delete(f"{MSC_PROTOCOL}test/{file_path}")
+                msc.delete(f"{MSC_PROTOCOL}test/{file_path2}")
+                msc.delete(f"{MSC_PROTOCOL}test/{file_path3}")
+            except Exception:
+                pass

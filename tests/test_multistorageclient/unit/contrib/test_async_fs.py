@@ -15,9 +15,14 @@
 
 import os
 import tempfile
+import uuid
 
 import fsspec
 import pytest
+
+import multistorageclient as msc
+from multistorageclient.types import MSC_PROTOCOL
+from test_multistorageclient.unit.utils import config, tempdatastore
 
 
 @pytest.mark.asyncio
@@ -110,3 +115,184 @@ async def test_multi_async_filesystem(file_storage_config_with_cache):
 
         # Clean up remote file after test
         await filesystem._rm(remote_file_path, recursive=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryAWSS3Bucket],
+        [tempdatastore.TemporaryPOSIXDirectory],
+    ],
+)
+async def test_async_fs_pipe_file_with_attributes(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """Test async filesystem pipe_file with attributes functionality."""
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    with temp_data_store_type() as temp_data_store:
+        config.setup_msc_config(
+            config_dict={
+                "profiles": {
+                    "test": temp_data_store.profile_config_dict(),
+                },
+            }
+        )
+
+        filesystem = fsspec.filesystem("msc")
+        test_uuid = str(uuid.uuid4())
+        filename = f"test-async-pipe-attributes-{test_uuid}.txt"
+        file_path = f"test/{filename}"
+        test_content = b"test content for async pipe_file with attributes"
+
+        test_attributes = {
+            "method": "async_fs.pipe_file",
+            "version": "1.0",
+            "test_id": test_uuid,
+        }
+
+        try:
+            # Test pipe_file with attributes
+            await filesystem._pipe_file(file_path, test_content, attributes=test_attributes)
+
+            # Verify content was written correctly
+            content = await filesystem._cat_file(file_path)
+            assert content == test_content
+
+            # Verify attributes for storage providers that support metadata
+            if hasattr(temp_data_store, "_bucket_name"):
+                metadata = msc.info(f"{MSC_PROTOCOL}test/{filename}")
+                assert metadata is not None
+                assert metadata.metadata is not None
+
+                for key, value in test_attributes.items():
+                    assert key in metadata.metadata, f"Expected attribute '{key}' not found"
+                    assert metadata.metadata[key] == value, f"Attribute '{key}' has incorrect value"
+
+        finally:
+            try:
+                await filesystem._rm(file_path)
+            except Exception:
+                pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryAWSS3Bucket],
+        [tempdatastore.TemporaryPOSIXDirectory],
+    ],
+)
+async def test_async_fs_put_file_with_attributes(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """Test async filesystem put_file with attributes functionality."""
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    with temp_data_store_type() as temp_data_store:
+        config.setup_msc_config(
+            config_dict={
+                "profiles": {
+                    "test": temp_data_store.profile_config_dict(),
+                },
+            }
+        )
+
+        filesystem = fsspec.filesystem("msc")
+        test_uuid = str(uuid.uuid4())
+        filename = f"test-async-put-attributes-{test_uuid}.txt"
+        file_path = f"test/{filename}"
+        test_content = b"test content for async put_file with attributes"
+
+        test_attributes = {
+            "method": "async_fs.put_file",
+            "version": "1.0",
+            "test_id": test_uuid,
+        }
+
+        with tempfile.NamedTemporaryFile(delete=False, mode="wb") as temp_file:
+            temp_file.write(test_content)
+            local_file_path = temp_file.name
+
+        try:
+            # Test put_file with attributes
+            await filesystem._put_file(local_file_path, file_path, attributes=test_attributes)
+
+            # Verify content was uploaded correctly
+            content = await filesystem._cat_file(file_path)
+            assert content == test_content
+
+            # Verify attributes for storage providers that support metadata
+            if hasattr(temp_data_store, "_bucket_name"):
+                metadata = msc.info(f"{MSC_PROTOCOL}test/{filename}")
+                assert metadata is not None
+                assert metadata.metadata is not None
+
+                for key, value in test_attributes.items():
+                    assert key in metadata.metadata, f"Expected attribute '{key}' not found"
+                    assert metadata.metadata[key] == value, f"Attribute '{key}' has incorrect value"
+
+        finally:
+            try:
+                os.unlink(local_file_path)
+                await filesystem._rm(file_path)
+            except Exception:
+                pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryAWSS3Bucket],
+        [tempdatastore.TemporaryPOSIXDirectory],
+    ],
+)
+async def test_async_fs_open_with_attributes(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """Test async filesystem open with attributes functionality for write mode."""
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    with temp_data_store_type() as temp_data_store:
+        config.setup_msc_config(
+            config_dict={
+                "profiles": {
+                    "test": temp_data_store.profile_config_dict(),
+                },
+            }
+        )
+
+        filesystem = fsspec.filesystem("msc")
+        test_uuid = str(uuid.uuid4())
+        filename = f"test-async-open-attributes-{test_uuid}.txt"
+        file_path = f"test/{filename}"
+        test_content = b"test content for async open with attributes"
+
+        test_attributes = {
+            "method": "async_fs.open",
+            "version": "1.0",
+            "test_id": test_uuid,
+        }
+
+        try:
+            # Test open with attributes in write mode
+            file_obj = await filesystem._open(file_path, mode="wb", attributes=test_attributes)
+            file_obj.write(test_content)
+            file_obj.close()
+
+            # Verify content was written correctly
+            content = await filesystem._cat_file(file_path)
+            assert content == test_content
+
+            # Verify attributes for storage providers that support metadata
+            if hasattr(temp_data_store, "_bucket_name"):
+                metadata = msc.info(f"{MSC_PROTOCOL}test/{filename}")
+                assert metadata is not None
+                assert metadata.metadata is not None
+
+                for key, value in test_attributes.items():
+                    assert key in metadata.metadata, f"Expected attribute '{key}' not found"
+                    assert metadata.metadata[key] == value, f"Attribute '{key}' has incorrect value"
+
+        finally:
+            try:
+                await filesystem._rm(file_path)
+            except Exception:
+                pass
