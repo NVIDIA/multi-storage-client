@@ -45,10 +45,17 @@ check_mscp_binary() {
 ensure_log_dir() {
     if [[ ! -d "$MSCP_LOG_DIR" ]]; then
         log "Creating log directory: $MSCP_LOG_DIR"
-        mkdir -p "$MSCP_LOG_DIR"
+        mkdir -p "$MSCP_LOG_DIR" 2>/dev/null || {
+            log "ERROR: Cannot create log directory '$MSCP_LOG_DIR' (EPERM/EACCES - Permission denied)"
+            log "This operation requires root privileges. Please run:"
+            log "  sudo mount -t msc <config_file> <mountpoint>"
+            return 1
+        }
     fi
     if [[ ! -w "$MSCP_LOG_DIR" ]]; then
-        log "ERROR: Log directory '$MSCP_LOG_DIR' is not writable"
+        log "ERROR: Log directory '$MSCP_LOG_DIR' is not writable (EPERM/EACCES - Permission denied)"
+        log "This operation requires root privileges. Please run:"
+        log "  sudo mount -t msc <config_file> <mountpoint>"
         return 1
     fi
     return 0
