@@ -127,6 +127,16 @@ const DEFAULT_POOL_CONNECTIONS: usize = 32;
 // Refresh credentials threshold in seconds
 const DEFAULT_REFRESH_CREDENTIALS_THRESHOLD: u64 = 900; // 15 minutes
 
+fn get_timeout_secs(configs: &HashMap<String, ConfigValue>, key: &str, default: u64) -> u64 {
+    configs.get(key)
+        .map(|val| match val {
+            ConfigValue::Number(n) => *n as u64,
+            ConfigValue::String(s) => s.parse::<u64>().unwrap_or(default),
+            _ => default,
+        })
+        .unwrap_or(default)
+}
+
 fn extract_credentials_from_provider(
     credentials_provider: &PyObject,
     configs_map: &mut HashMap<String, ConfigValue>,
@@ -235,23 +245,11 @@ fn build_s3_store<'a>(configs: Option<&'a HashMap<String, ConfigValue>>) -> PyRe
     // Configure client options
     let mut client_options = ClientOptions::new();
 
-    if let Some(connect_timeout_val) = configs.get("connect_timeout") {
-        let timeout_secs = match connect_timeout_val {
-            ConfigValue::Number(n) => *n as u64,
-            ConfigValue::String(s) => s.parse::<u64>().unwrap_or(DEFAULT_CONNECT_TIMEOUT),
-            _ => DEFAULT_CONNECT_TIMEOUT,
-        };
-        client_options = client_options.with_connect_timeout(std::time::Duration::from_secs(timeout_secs));
-    }
+    let connect_timeout_secs = get_timeout_secs(&configs, "connect_timeout", DEFAULT_CONNECT_TIMEOUT);
+    client_options = client_options.with_connect_timeout(std::time::Duration::from_secs(connect_timeout_secs));
 
-    if let Some(read_timeout_val) = configs.get("read_timeout") {
-        let timeout_secs = match read_timeout_val {
-            ConfigValue::Number(n) => *n as u64,
-            ConfigValue::String(s) => s.parse::<u64>().unwrap_or(DEFAULT_READ_TIMEOUT),
-            _ => DEFAULT_READ_TIMEOUT,
-        };
-        client_options = client_options.with_timeout(std::time::Duration::from_secs(timeout_secs));
-    }
+    let read_timeout_secs = get_timeout_secs(&configs, "read_timeout", DEFAULT_READ_TIMEOUT);
+    client_options = client_options.with_timeout(std::time::Duration::from_secs(read_timeout_secs));
 
     if let Some(allow_http_val) = configs.get("allow_http") {
         match allow_http_val {
@@ -339,23 +337,11 @@ fn build_gcs_store<'a>(configs: Option<&'a HashMap<String, ConfigValue>>) -> PyR
     // Configure client options
     let mut client_options = ClientOptions::new();
 
-    if let Some(connect_timeout_val) = configs.get("connect_timeout") {
-        let timeout_secs = match connect_timeout_val {
-            ConfigValue::Number(n) => *n as u64,
-            ConfigValue::String(s) => s.parse::<u64>().unwrap_or(DEFAULT_CONNECT_TIMEOUT),
-            _ => DEFAULT_CONNECT_TIMEOUT,
-        };
-        client_options = client_options.with_connect_timeout(std::time::Duration::from_secs(timeout_secs));
-    }
+    let connect_timeout_secs = get_timeout_secs(&configs, "connect_timeout", DEFAULT_CONNECT_TIMEOUT);
+    client_options = client_options.with_connect_timeout(std::time::Duration::from_secs(connect_timeout_secs));
 
-    if let Some(read_timeout_val) = configs.get("read_timeout") {
-        let timeout_secs = match read_timeout_val {
-            ConfigValue::Number(n) => *n as u64,
-            ConfigValue::String(s) => s.parse::<u64>().unwrap_or(DEFAULT_READ_TIMEOUT),
-            _ => DEFAULT_READ_TIMEOUT,
-        };
-        client_options = client_options.with_timeout(std::time::Duration::from_secs(timeout_secs));
-    }
+    let read_timeout_secs = get_timeout_secs(&configs, "read_timeout", DEFAULT_READ_TIMEOUT);
+    client_options = client_options.with_timeout(std::time::Duration::from_secs(read_timeout_secs));
 
     client_options = client_options.with_pool_idle_timeout(std::time::Duration::from_secs(DEFAULT_POOL_IDLE_TIMEOUT));
 
@@ -1074,5 +1060,33 @@ mod tests {
             }
             _ => panic!("Expected PermissionError for access error pattern"),
         }
+    }
+
+    #[test]
+    fn test_get_timeout_secs() {
+        let mut configs = HashMap::new();
+
+        // Test with Number values
+        configs.insert("read_timeout".to_string(), ConfigValue::Number(600));
+        configs.insert("connect_timeout".to_string(), ConfigValue::Number(120));
+        assert_eq!(get_timeout_secs(&configs, "read_timeout", DEFAULT_READ_TIMEOUT), 600);
+        assert_eq!(get_timeout_secs(&configs, "connect_timeout", DEFAULT_CONNECT_TIMEOUT), 120);
+
+        // Test with String values
+        configs.insert("read_timeout".to_string(), ConfigValue::String("300".to_string()));
+        configs.insert("connect_timeout".to_string(), ConfigValue::String("90".to_string()));
+        assert_eq!(get_timeout_secs(&configs, "read_timeout", DEFAULT_READ_TIMEOUT), 300);
+        assert_eq!(get_timeout_secs(&configs, "connect_timeout", DEFAULT_CONNECT_TIMEOUT), 90);
+
+        // Test with invalid String values (should use defaults)
+        configs.insert("read_timeout".to_string(), ConfigValue::String("invalid".to_string()));
+        configs.insert("connect_timeout".to_string(), ConfigValue::String("bad".to_string()));
+        assert_eq!(get_timeout_secs(&configs, "read_timeout", DEFAULT_READ_TIMEOUT), DEFAULT_READ_TIMEOUT);
+        assert_eq!(get_timeout_secs(&configs, "connect_timeout", DEFAULT_CONNECT_TIMEOUT), DEFAULT_CONNECT_TIMEOUT);
+
+        // Test without values (should use defaults)
+        configs.clear();
+        assert_eq!(get_timeout_secs(&configs, "read_timeout", DEFAULT_READ_TIMEOUT), DEFAULT_READ_TIMEOUT);
+        assert_eq!(get_timeout_secs(&configs, "connect_timeout", DEFAULT_CONNECT_TIMEOUT), DEFAULT_CONNECT_TIMEOUT);
     }
 }

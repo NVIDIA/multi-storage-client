@@ -194,8 +194,6 @@ class GoogleStorageProvider(BaseStorageProvider):
             return storage.Client(project=self._project_id, client_options=client_options)
 
     def _create_rust_client(self, rust_client_options: Optional[dict[str, Any]] = None):
-        configs = {}
-
         if self._credentials_provider or self._endpoint_url:
             # Workload Identity Federation (WIF) is not supported by the rust client:
             # https://github.com/apache/arrow-rs-object-store/issues/258
@@ -203,41 +201,21 @@ class GoogleStorageProvider(BaseStorageProvider):
                 "Rust client for GCS only supports Application Default Credentials or Service Account Key, skipping rust client"
             )
             return None
+        configs = dict(rust_client_options) if rust_client_options else {}
 
-        # Use environment variables if available, could be overridden by rust_client_options
-        if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+        if "application_credentials" not in configs and os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
             configs["application_credentials"] = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-        if os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY"):
+        if "service_account_key" not in configs and os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY"):
             configs["service_account_key"] = os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY")
-        if os.getenv("GOOGLE_SERVICE_ACCOUNT"):
+        if "service_account_path" not in configs and os.getenv("GOOGLE_SERVICE_ACCOUNT"):
             configs["service_account_path"] = os.getenv("GOOGLE_SERVICE_ACCOUNT")
-        if os.getenv("GOOGLE_SERVICE_ACCOUNT_PATH"):
+        if "service_account_path" not in configs and os.getenv("GOOGLE_SERVICE_ACCOUNT_PATH"):
             configs["service_account_path"] = os.getenv("GOOGLE_SERVICE_ACCOUNT_PATH")
 
-        if self._skip_signature:
+        if self._skip_signature and "skip_signature" not in configs:
             configs["skip_signature"] = True
 
-        if rust_client_options:
-            if "application_credentials" in rust_client_options:
-                configs["application_credentials"] = rust_client_options["application_credentials"]
-            if "service_account_key" in rust_client_options:
-                configs["service_account_key"] = rust_client_options["service_account_key"]
-            if "service_account_path" in rust_client_options:
-                configs["service_account_path"] = rust_client_options["service_account_path"]
-            if "skip_signature" in rust_client_options:
-                configs["skip_signature"] = rust_client_options["skip_signature"]
-            if "max_concurrency" in rust_client_options:
-                configs["max_concurrency"] = rust_client_options["max_concurrency"]
-            if "multipart_chunksize" in rust_client_options:
-                configs["multipart_chunksize"] = rust_client_options["multipart_chunksize"]
-            if "read_timeout" in rust_client_options:
-                configs["read_timeout"] = rust_client_options["read_timeout"]
-            if "connect_timeout" in rust_client_options:
-                configs["connect_timeout"] = rust_client_options["connect_timeout"]
-
-        if rust_client_options and "bucket" in rust_client_options:
-            configs["bucket"] = rust_client_options["bucket"]
-        else:
+        if "bucket" not in configs:
             bucket, _ = split_path(self._base_path)
             configs["bucket"] = bucket
 

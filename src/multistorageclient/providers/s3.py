@@ -252,33 +252,21 @@ class S3StorageProvider(BaseStorageProvider):
         """
         Creates and configures the rust client, using refreshable credentials if possible.
         """
-        configs = {}
-        if self._region_name:
+        configs = dict(rust_client_options) if rust_client_options else {}
+
+        if self._region_name and "region_name" not in configs:
             configs["region_name"] = self._region_name
 
+        if self._endpoint_url and "endpoint_url" not in configs:
+            configs["endpoint_url"] = self._endpoint_url
+
         # If the user specifies a bucket, use it. Otherwise, use the base path.
-        if rust_client_options and "bucket" in rust_client_options:
-            configs["bucket"] = rust_client_options["bucket"]
-        else:
+        if "bucket" not in configs:
             bucket, _ = split_path(self._base_path)
             configs["bucket"] = bucket
 
-        if self._endpoint_url:
-            configs["endpoint_url"] = self._endpoint_url
-
-        configs["max_pool_connections"] = MAX_POOL_CONNECTIONS
-
-        if rust_client_options:
-            if rust_client_options.get("allow_http", False):
-                configs["allow_http"] = True
-            if "max_concurrency" in rust_client_options:
-                configs["max_concurrency"] = rust_client_options["max_concurrency"]
-            if "max_pool_connections" in rust_client_options:
-                configs["max_pool_connections"] = rust_client_options["max_pool_connections"]
-            if "multipart_chunksize" in rust_client_options:
-                configs["multipart_chunksize"] = rust_client_options["multipart_chunksize"]
-            if "skip_signature" in rust_client_options:
-                configs["skip_signature"] = rust_client_options["skip_signature"]
+        if "max_pool_connections" not in configs:
+            configs["max_pool_connections"] = MAX_POOL_CONNECTIONS
 
         return RustClient(
             provider=PROVIDER,
