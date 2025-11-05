@@ -114,19 +114,76 @@ configuration (whose name is `S3`) must be provided. The S3-specific
 settings must be provided (or the defaults accepted) as described in
 the following table:
 
-| Setting                      | Units                | Default     | Description                                                                 |
-| :--------------------------- | :------------------- | ----------: | :-------------------------------------------------------------------------- |
-| access_key_id                | string               |             | S3 Access Key                                                               |
-| secret_access_key            | string               |             | S3 Secret Key                                                               |
-| region                       | string               |             | S3 Region                                                                   |
-| endpoint                     | string               |             | S3 Endpoint                                                                 |
-| allow_http                   | boolean              |       false | If false, requires HTTPS (TLS)                                              |
-| skip_tls_certificate_verify  | boolean              |        true | If true & using HTTPS (TLS), TLS Certificate Verification skipped           |
-| virtual_hosted_style_request | boolean              |       false | If false, uses "path style" URLs                                            |
-| unsigned_payload             | boolean              |       false | If true, skips the "signing" of payloads                                    |
-| retry_base_delay             | decimal milliseconds |          10 | If == 0, retry is disabled ; delay between failure response and first retry |
-| retry_next_delay_multiplier  | float                |         2.0 | Must be >= 1.0; used to compute delay between prior failure and next retry  |
-| retry_max_delay              | decimal milliseconds |        2000 | Stops retries if next delay would exceed this limit                         |
+| Setting                      | Units                | Default                                                     | Description                                                                                       |
+| :--------------------------- | :------------------- | ----------------------------------------------------------: | :------------------------------------------------------------------------------------------------ |
+| config_credentials_profile   | string               |                                   "${AWS_PROFILE:-default}" | If use_{config\|credentials}_env == true, optionally specifies {config\|credentials} file profile |
+| use_config_env               | boolean              |                                                       false | If true, use cconfig file instead of access_key_id and secret_access_key                          |
+| config_file_path             | string               |                  "${AWS_CONFIG_FILE:-\${HOME}/.aws/config}" | If use_config_env == true, optionally specifies location of config file                           |
+| region                       | string               |                                  "${AWS_REGION:-us-east-1}" | S3 Region                                                                                         |
+| endpoint                     | string               |                                           "${AWS_ENDPOINT}" | S3 Endpoint (including the "http://" or "https://" scheme)                                        |
+| use_credentials_env          | boolean              |                                                       false | If true, use credentials file instead of access_key_id and secret_access_key                      |
+| credentials_file_path        | string               | "${AWS_SHARED_CREDENTIALS_FILE:-\${HOME}/.aws/credentials}" | If use_credentials_env == true, optionally specifies location of credentials file                 |
+| access_key_id                | string               |                                      "${AWS_ACCESS_KEY_ID}" | If use_credentials_env == false, specifies S3 Access Key                                          |
+| secret_access_key            | string               |                                  "${AWS_SECRET_ACCESS_KEY}" | If use_credentials_env == false, specifies S3 Secret Key                                          |
+| skip_tls_certificate_verify  | boolean              |                                                        true | If true & using HTTPS (TLS), TLS Certificate Verification skipped                                 |
+| virtual_hosted_style_request | boolean              |                                                       false | If false, uses "path style" URLs                                                                  |
+| unsigned_payload             | boolean              |                                                       false | If true, skips the "signing" of payloads                                                          |
+| retry_base_delay             | decimal milliseconds |                                                          10 | If == 0, retry is disabled ; delay between failure response and first retry                       |
+| retry_next_delay_multiplier  | float                |                                                         2.0 | Must be >= 1.0; used to compute delay between prior failure and next retry                        |
+| retry_max_delay              | decimal milliseconds |                                                        2000 | Stops retries if next delay would exceed this limit                                               |
+
+### Configuration Example
+
+Here is an eample (taken from `./mscp_config_dev.yaml`) YAML-formatted configuration file:
+```
+mscp_version: 1
+backends: [
+  {
+    dir_name: minio,
+    bucket_container_name: dev,
+    backend_type: S3,
+    S3: {
+      region: us-east-1,
+      endpoint: "http://minio:9000",
+      access_key_id: minioadmin,
+      secret_access_key: minioadmin,
+    },
+  },
+  {
+    dir_name: ais,
+    bucket_container_name: dev,
+    backend_type: S3,
+    S3: {
+      use_config_env: true,
+      use_credentials_env: true,
+    },
+  },
+]
+```
+
+Notice the following:
+* The internal configuration format is selected by setting `mscp_version` to `1`
+* The `mountpoint` is not specified, so will be the non-empty value of MSC_MOUNTPOINT ENV or simply `/mnt`
+* There are two backends: `minio` and `ais`
+  * These will appear as subdirectories under the mountpoint (e.g. `/mnt/minio` and `/mnt/ais`)
+  * Each maps to an S3 bucket named `dev`
+  * The `minio` backend explicitly specifies the `region` and `endpoint`:
+    * The `region` is set to `us-east-1`
+    * The `endpoint` is set to `http://minio:9000`
+  * The   minio  backend explicitly specifies the   access_key_id` and `secret_access_key`:
+    * The `access_key_id` is set to `minioadmin` (the default MinIO `AWS_ACCESS_KEY`)
+    * The `secret_access_key` is set to `minioadmin` (the default MinIO `AWS_SECRET_ACCESS_KEY`)
+  * The `ais` backend enables fetching the `region` and `endpoint` values from the environment:
+    * This mode is triggered by setting `use_config_env` to `true`
+    * The values for `region` and `endpoint` are fetched from the `${HOME}/.aws/config` file
+    * The location of the `config` file could have been adjusted by setting AWS_CONFIG_FILE ENV
+    * Since `config_credentials_profile` was not specified, those values come from the `[default]` profile
+  * The `ais` backend enables fetching the `access_key_id` and `secret_access_key` values from the environment:
+    * This mode is triggered by setting `use_credentials_env` to `true`
+    * The values for `access_key_id` and `secret_access_key` are fetched from the `${HOME}/.aws/credentials` file
+    * The location of the `credentials` file could have been adjusted by setting AWS_SHARED_CREDENTIALS_FILE ENV
+    * Since `config_credentials_profile` was not specified, those values come from the `[default]` profile
+* All other settings utilized the various defaults specified above
 
 ## Docker Development Environment
 

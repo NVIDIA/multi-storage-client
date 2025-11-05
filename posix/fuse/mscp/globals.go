@@ -33,11 +33,15 @@ type backendConfigRAMStruct struct {
 // `backendConfigS3Struct` describes a backend's S3-specific settings.
 type backendConfigS3Struct struct {
 	// From <config-file>
-	accessKeyID               string        // JSON/YAML "access_key_id"                required
-	secretAccessKey           string        // JSON/YAML "secret_access_key"            required
-	region                    string        // JSON/YAML "region"                       required
-	endpoint                  string        // JSON/YAML "endpoint"                     required
-	allowHTTP                 bool          // JSON/YAML "allow_http"                   default:false
+	configCredentialsProfile  string        // JSON/YAML "config_credentials_profile"   default:"${AWS_PROFILE:-default}"
+	useConfigEnv              bool          // JSON/YAML "use_config_env"               default:false
+	configFilePath            string        // YSON/YAML "config_file_path"             default:"${AWS_CONFIG_FILE:-~/.aws/config}"
+	region                    string        // JSON/YAML "region"                       default:"${AWS_REGION:-us-east-1}"
+	endpoint                  string        // JSON/YAML "endpoint"                     default:"${AWS_ENDPOINT}"
+	useCredentialsEnv         bool          // JSON/YAML "use_credentials_env"          default:false
+	credentialsFilePath       string        // JSON/YAML "credentials_file_path"        default:"${AWS_SHARED_CREDENTIALS_FILE:-~/.aws/credentials}"
+	accessKeyID               string        // JSON/YAML "access_key_id"                default:"${AWS_ACCESS_KEY_ID}"
+	secretAccessKey           string        // JSON/YAML "secret_access_key"            default:"${AWS_SECRET_ACCESS_KEY}"
 	skipTLSCertificateVerify  bool          // JSON/YAML "skip_tls_certificate_verify"  default:true
 	virtualHostedStyleRequest bool          // JSON/YAML "virtual_hosted_style_request" default:false
 	unsignedPayload           bool          // JSON/YAML "unsigned_payload"             default:false
@@ -80,7 +84,7 @@ type backendStruct struct {
 type configStruct struct {
 	mscpVersion                 uint64                     // JSON/YAML "mscp_version"                    default:0
 	mountName                   string                     // JSON/YAML "mountname"                       default:"msc-posix"
-	mountPoint                  string                     // JSON/YAML "mountpoint"                      default:"/mnt"
+	mountPoint                  string                     // JSON/YAML "mountpoint"                      default:"${MSC_MOUNTPOINT:-/mnt}""
 	uid                         uint64                     // JSON/YAML "uid"                             default:<current euid>
 	gid                         uint64                     // JSON/YAML "gid"                             default:<current egid>
 	dirPerm                     uint64                     // JSON/YAML "dir_perm"                        default:0o555
@@ -93,8 +97,8 @@ type configStruct struct {
 	dirtyCacheLinesFlushTrigger uint64                     // JSON/YAML "dirty_cache_lines_flush_trigger" default:80(as a percentage)
 	dirtyCacheLinesMax          uint64                     // JSON/YAML "dirty_cache_lines_max"           default:90(as a percentage)
 	autoSIGHUPInterval          time.Duration              // JSON/YAML "auto_sighup_interval"            default:0(none)
-	backends                    map[string]*backendStruct  // JSON/YAML "backends"                        Key == backendStruct.mountPointSubdirectoryName
 	observability               *observabilityConfigStruct // JSON/YAML "observability"                   default:nil (disabled)
+	backends                    map[string]*backendStruct  // JSON/YAML "backends"                        Key == backendStruct.mountPointSubdirectoryName
 }
 
 // observabilityConfigStruct holds observability configuration

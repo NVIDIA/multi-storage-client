@@ -102,7 +102,7 @@ func processToMountList() {
 
 		err = backend.setupContext()
 		if err != nil {
-			globals.logger.Printf("unable to setup backend context: %v [skipping]", err)
+			globals.logger.Printf("unable to setup backend context: %s (err: %v) [skipping]", dirName, err)
 			continue
 		}
 

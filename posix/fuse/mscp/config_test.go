@@ -104,11 +104,10 @@ func TestInternalGoodJSONConfig(t *testing.T) {
 				"bucket_container_name": "test",
 				"backend_type": "S3",
 				"S3": {
-					"access_key_id": "minioadmin",
-					"secret_access_key": "minioadmin",
 					"region": "us-east-1",
-					"endpoint": "minio:9000",
-					"allow_http": true
+					"endpoint": "http://minio:9000",
+					"access_key_id": "minioadmin",
+					"secret_access_key": "minioadmin"
 				}
 			}
 		]
@@ -144,11 +143,10 @@ func TestInternalBadJSONConfig(t *testing.T) {
 				"bucket_container_name": "test",
 				"backend_type": "S3",
 				"S3": {
-					"access_key_id": "minioadmin",
-					"secret_access_key": "minioadmin",
 					"region": "us-east-1",
-					"endpoint": "minio:9000",
-					"allow_http": true
+					"endpoint": "http://minio:9000",
+					"access_key_id": "minioadmin",
+					"secret_access_key": "minioadmin"
 				}
 			}
 		]
@@ -184,11 +182,10 @@ backends: [
     bucket_container_name: test,
     backend_type: S3,
 	S3: {
+	  region: us-east-1,
+	  endpoint: "http://minio:9000",
 	  access_key_id: minioadmin,
 	  secret_access_key: minioadmin,
-	  region: us-east-1,
-	  endpoint: "minio:9000",
-	  allow_http: true,
 	},
   },
 ]
@@ -222,11 +219,10 @@ backends: [
     bucket_container_name: test,
     backend_type: S3,
 	S3: {
+	  region: us-east-1,
+	  endpoint: "http://minio:9000",
 	  access_key_id: minioadmin,
 	  secret_access_key: minioadmin,
-	  region: us-east-1,
-	  endpoint: "minio:9000",
-	  allow_http: true,
 	},
   },
 ]
@@ -261,11 +257,10 @@ backends: [
     bucket_container_name: test,
     backend_type: S3,
 	S3: {
+	  region: us-east-1,
+	  endpoint: "http://minio:9000",
 	  access_key_id: minioadmin,
 	  secret_access_key: minioadmin,
-	  region: us-east-1,
-	  endpoint: "minio:9000",
-	  allow_http: true,
 	},
   },
 ]
@@ -299,11 +294,10 @@ backends: [
     bucket_container_name: test,
     backend_type: S3,
 	S3: {
+	  region: us-east-1,
+	  endpoint: "http://minio:9000",
 	  access_key_id: minioadmin,
 	  secret_access_key: minioadmin,
-	  region: us-east-1,
-	  endpoint: "minio:9000",
-	  allow_http: true,
 	},
   },
 ]

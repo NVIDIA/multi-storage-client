@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,16 +14,36 @@ import (
 )
 
 const (
+	defaultMountPoint              = "/mnt"
 	defaultRAMMaxTotalObjects      = uint64(10000)
 	defaultRAMMaxTotalObjectSpace  = uint64(1073741824) // 2^30 == 1Gi
 	defaultRAMMaxDirectoryPageSize = uint64(100)
 )
 
-// `parseAny` provides a convenient test for the existence of a
-// key string in the map.
+// `parseAny` provides a convenient test for the existence of
+// a key string in the map.
 func parseAny(m map[string]interface{}, key string) (ok bool) {
 	_, ok = m[key]
 	return
+}
+
+// `parseAnyOf` provides a convenient test for the existence of
+// any of the supplied key strings in the map.
+func parseAnyOf(m map[string]interface{}, keySet []string) (ok bool) {
+	var (
+		key string
+	)
+
+	ok = false // Handles the case where len(keySet) == 0
+
+	for _, key = range keySet {
+		_, ok = m[key]
+		if ok {
+			return
+		}
+	}
+
+	return // If we make it to here, ok remains false
 }
 
 // `parseBool` fetches what is expected to be a bool value for the
@@ -220,62 +239,59 @@ func parseUint64(m map[string]interface{}, key string, dflt interface{}) (u uint
 // case where an existing configuration is being updated.
 func checkConfigFile() (err error) {
 	var (
-		backendAsInterface                                interface{}
-		backendsAsInterface                               interface{}
-		backendsAsInterfaceSlice                          []interface{}
-		backendsAsInterfaceSliceIndex                     int
-		backendAsMap                                      map[string]interface{}
-		backendAsStructNew                                *backendStruct
-		backendAsStructOld                                *backendStruct
-		backendConfigRAMAsInterface                       interface{}
-		backendConfigRAMAsMap                             map[string]interface{}
-		backendConfigRAMAsStruct                          *backendConfigRAMStruct
-		backendConfigS3AsInterface                        interface{}
-		backendConfigS3AsMap                              map[string]interface{}
-		backendConfigS3AsStruct                           *backendConfigS3Struct
-		config                                            *configStruct
-		configFileContent                                 []byte
-		configFileMap                                     map[string]interface{}
-		configFileMapTranslated                           map[string]interface{}
-		configFilePathExt                                 string
-		credentialsProviderAsInterface                    interface{}
-		credentialsProviderAsMap                          map[string]interface{}
-		credentialsProviderOptionsAsInterface             interface{}
-		credentialsProviderOptionsAsMap                   map[string]interface{}
-		credentialsProviderOptionsAccessKey               string
-		credentialsProviderOptionsSecretKey               string
-		credentialsProviderType                           string
-		mountPoint                                        string
-		dirName                                           string
-		dirPerm                                           string
-		dirtyCacheLinesFlushTriggerPercentage             uint64
-		dirtyCacheLinesMaxPercentage                      uint64
-		filePerm                                          string
-		nextRetryDelay                                    time.Duration
-		ok                                                bool
-		posixAllowOther                                   bool
-		posixAsInterface                                  interface{}
-		posixAsMap                                        map[string]interface{}
-		posixAutoSIGHUPInterval                           uint64
-		posixMountname                                    string
-		posixMountpoint                                   string
-		profileAsInterface                                interface{}
-		profileAsMap                                      map[string]interface{}
-		profileName                                       string
-		profilesAsInterface                               interface{}
-		profilesAsMap                                     map[string]interface{}
-		storageProviderAsInterface                        interface{}
-		storageProviderAsMap                              map[string]interface{}
-		storageProviderOptionsAsInterface                 interface{}
-		storageProviderOptionsAsMap                       map[string]interface{}
-		storageProviderOptionsBasePath                    string
-		storageProviderOptionsBasePathBucketContainerName string
-		storageProviderOptionsBasePathPrefix              string
-		storageProviderOptionsBasePathSplit               []string
-		storageProviderOptionsEndpointURL                 string
-		storageProviderOptionsEndpointURLParsed           *url.URL
-		storageProviderOptionsRegionName                  string
-		storageProviderType                               string
+		backendAsInterface                    interface{}
+		backendsAsInterface                   interface{}
+		backendsAsInterfaceSlice              []interface{}
+		backendsAsInterfaceSliceIndex         int
+		backendAsMap                          map[string]interface{}
+		backendAsStructNew                    *backendStruct
+		backendAsStructOld                    *backendStruct
+		backendConfigRAMAsInterface           interface{}
+		backendConfigRAMAsMap                 map[string]interface{}
+		backendConfigRAMAsStruct              *backendConfigRAMStruct
+		backendConfigS3AsInterface            interface{}
+		backendConfigS3AsMap                  map[string]interface{}
+		backendConfigS3AsStruct               *backendConfigS3Struct
+		config                                *configStruct
+		configFileContent                     []byte
+		configFileMap                         map[string]interface{}
+		configFileMapTranslated               map[string]interface{}
+		configFilePathExt                     string
+		credentialsProviderAsInterface        interface{}
+		credentialsProviderAsMap              map[string]interface{}
+		credentialsProviderOptionsAsInterface interface{}
+		credentialsProviderOptionsAsMap       map[string]interface{}
+		credentialsProviderOptionsAccessKey   string
+		credentialsProviderOptionsSecretKey   string
+		credentialsProviderType               string
+		dirName                               string
+		dirPerm                               string
+		dirtyCacheLinesFlushTriggerPercentage uint64
+		dirtyCacheLinesMaxPercentage          uint64
+		filePerm                              string
+		nextRetryDelay                        time.Duration
+		ok                                    bool
+		posixAllowOther                       bool
+		posixAsInterface                      interface{}
+		posixAsMap                            map[string]interface{}
+		posixAutoSIGHUPInterval               uint64
+		posixMountname                        string
+		posixMountpoint                       string
+		profileAsInterface                    interface{}
+		profileAsMap                          map[string]interface{}
+		profileName                           string
+		profilesAsInterface                   interface{}
+		profilesAsMap                         map[string]interface{}
+		storageProviderAsInterface            interface{}
+		storageProviderAsMap                  map[string]interface{}
+		storageProviderOptionsAsInterface     interface{}
+		storageProviderOptionsAsMap           map[string]interface{}
+		storageProviderOptionsBasePath        string
+		storageProviderOptionsBasePathPrefix  string
+		storageProviderOptionsBasePathSplit   []string
+		storageProviderOptionsEndpointURL     string
+		storageProviderOptionsRegionName      string
+		storageProviderType                   string
 	)
 
 	// Compute configFileMap
@@ -372,6 +388,12 @@ func checkConfigFile() (err error) {
 					continue
 				}
 
+				backendAsMap = make(map[string]interface{})
+
+				backendAsMap["dir_name"] = profileName
+
+				backendConfigS3AsMap = make(map[string]interface{})
+
 				storageProviderOptionsAsInterface, ok = storageProviderAsMap["options"]
 				if !ok {
 					err = fmt.Errorf("missing profile \"%s\" storage_provider options", profileName)
@@ -388,59 +410,6 @@ func checkConfigFile() (err error) {
 					err = fmt.Errorf("missing or bad profile \"%s\" storage_provider options base_path", profileName)
 					return
 				}
-				storageProviderOptionsEndpointURL, ok = parseString(storageProviderOptionsAsMap, "endpoint_url", nil)
-				if !ok {
-					err = fmt.Errorf("missing or bad profile \"%s\" storage_provider options endpoint_url", profileName)
-					return
-				}
-				storageProviderOptionsRegionName, ok = parseString(storageProviderOptionsAsMap, "region_name", nil)
-				if !ok {
-					err = fmt.Errorf("missing or bad profile \"%s\" storage_provider options region_name", profileName)
-					return
-				}
-
-				credentialsProviderAsInterface, ok = profileAsMap["credentials_provider"]
-				if !ok {
-					err = fmt.Errorf("missing profile \"%s\" credentials_provider", profileName)
-					return
-				}
-				credentialsProviderAsMap, ok = credentialsProviderAsInterface.(map[string]interface{})
-				if !ok {
-					err = fmt.Errorf("bad profile \"%s\" credentials_provider", profileName)
-					return
-				}
-
-				credentialsProviderType, ok = parseString(credentialsProviderAsMap, "type", nil)
-				if !ok {
-					err = fmt.Errorf("missing or bad profile \"%s\" credentials_provider type", profileName)
-					return
-				}
-				if credentialsProviderType != "S3Credentials" {
-					err = fmt.Errorf("bad profile \"%s\" storage_provider type (\"%s\") - must be \"S3Credentials\"", profileName, credentialsProviderType)
-					return
-				}
-
-				credentialsProviderOptionsAsInterface, ok = credentialsProviderAsMap["options"]
-				if !ok {
-					err = fmt.Errorf("missing profile \"%s\" credentials_provider options", profileName)
-					return
-				}
-				credentialsProviderOptionsAsMap, ok = credentialsProviderOptionsAsInterface.(map[string]interface{})
-				if !ok {
-					err = fmt.Errorf("bad profile \"%s\" credentials_provider options", profileName)
-					return
-				}
-
-				credentialsProviderOptionsAccessKey, ok = parseString(credentialsProviderOptionsAsMap, "access_key", nil)
-				if !ok {
-					err = fmt.Errorf("missing or bad profile \"%s\" credentials_provider options access_key", profileName)
-					return
-				}
-				credentialsProviderOptionsSecretKey, ok = parseString(credentialsProviderOptionsAsMap, "secret_key", nil)
-				if !ok {
-					err = fmt.Errorf("missing or bad profile \"%s\" credentials_provider options secret_key", profileName)
-					return
-				}
 
 				storageProviderOptionsBasePathSplit = strings.Split(storageProviderOptionsBasePath, "/")
 				switch len(storageProviderOptionsBasePathSplit) {
@@ -448,39 +417,97 @@ func checkConfigFile() (err error) {
 					err = fmt.Errorf("bad profile \"%s\" storage_provider options base_path [empty]", profileName)
 					return
 				case 1:
-					storageProviderOptionsBasePathBucketContainerName = storageProviderOptionsBasePathSplit[0]
-					storageProviderOptionsBasePathPrefix = ""
+					backendAsMap["bucket_container_name"] = storageProviderOptionsBasePathSplit[0]
+					backendAsMap["prefix"] = ""
 				default:
-					storageProviderOptionsBasePathBucketContainerName = storageProviderOptionsBasePathSplit[0]
+					backendAsMap["bucket_container_name"] = storageProviderOptionsBasePathSplit[0]
 					storageProviderOptionsBasePathPrefix = strings.Join(storageProviderOptionsBasePathSplit[1:], "/")
 					if !strings.HasSuffix(storageProviderOptionsBasePathPrefix, "/") {
 						storageProviderOptionsBasePathPrefix += "/"
 					}
+					backendAsMap["prefix"] = storageProviderOptionsBasePathPrefix
 				}
 
-				storageProviderOptionsEndpointURLParsed, err = url.Parse(storageProviderOptionsEndpointURL)
-				if err != nil {
-					err = fmt.Errorf("bad profile \"%s\" storage_provider options endpoint [Err: %v]", profileName, err)
-					return
+				if parseAnyOf(storageProviderOptionsAsMap, []string{"endpoint_url", "region_name"}) {
+					backendConfigS3AsMap["use_config_env"] = false // The default
+
+					storageProviderOptionsRegionName, ok = parseString(storageProviderOptionsAsMap, "region_name", "")
+					if ok {
+						if storageProviderOptionsRegionName != "" {
+							backendConfigS3AsMap["region"] = storageProviderOptionsRegionName
+						}
+					} else {
+						err = fmt.Errorf("bad profile \"%s\" storage_provider options region_name", profileName)
+						return
+					}
+
+					storageProviderOptionsEndpointURL, ok = parseString(storageProviderOptionsAsMap, "endpoint_url", "${AWS_ENDPOINT}")
+					if ok {
+						if storageProviderOptionsEndpointURL != "" {
+							backendConfigS3AsMap["endpoint"] = storageProviderOptionsEndpointURL
+						}
+					} else {
+						err = fmt.Errorf("bad profile \"%s\" storage_provider options endpoint_url", profileName)
+						return
+					}
+				} else { // !parseAnyOf(storageProviderOptionsAsMap, []string{"endpoint_url", "region_name"})
+					backendConfigS3AsMap["use_config_env"] = true
 				}
-				if (storageProviderOptionsEndpointURLParsed.Scheme != "http") && (storageProviderOptionsEndpointURLParsed.Scheme != "https") {
-					err = fmt.Errorf("bad profile \"%s\" storage_provider options endpoint [Scheme: \"%s\", must be either \"http\" or \"https\"", profileName, storageProviderOptionsEndpointURLParsed.Scheme)
-					return
+
+				credentialsProviderAsInterface, ok = profileAsMap["credentials_provider"]
+				if ok {
+					backendConfigS3AsMap["use_credentials_env"] = false // The default
+
+					credentialsProviderAsMap, ok = credentialsProviderAsInterface.(map[string]interface{})
+					if !ok {
+						err = fmt.Errorf("bad profile \"%s\" credentials_provider", profileName)
+						return
+					}
+
+					credentialsProviderType, ok = parseString(credentialsProviderAsMap, "type", nil)
+					if !ok {
+						err = fmt.Errorf("missing or bad profile \"%s\" credentials_provider type", profileName)
+						return
+					}
+					if credentialsProviderType != "S3Credentials" {
+						err = fmt.Errorf("bad profile \"%s\" storage_provider type (\"%s\") - must be \"S3Credentials\"", profileName, credentialsProviderType)
+						return
+					}
+
+					credentialsProviderOptionsAsInterface, ok = credentialsProviderAsMap["options"]
+					if !ok {
+						err = fmt.Errorf("missing profile \"%s\" credentials_provider options", profileName)
+						return
+					}
+					credentialsProviderOptionsAsMap, ok = credentialsProviderOptionsAsInterface.(map[string]interface{})
+					if !ok {
+						err = fmt.Errorf("bad profile \"%s\" credentials_provider options", profileName)
+						return
+					}
+
+					credentialsProviderOptionsAccessKey, ok = parseString(credentialsProviderOptionsAsMap, "access_key", "")
+					if ok {
+						if credentialsProviderOptionsAccessKey != "" {
+							backendConfigS3AsMap["access_key_id"] = credentialsProviderOptionsAccessKey
+						}
+					} else {
+						err = fmt.Errorf("bad profile \"%s\" credentials_provider options access_key", profileName)
+						return
+					}
+
+					credentialsProviderOptionsSecretKey, ok = parseString(credentialsProviderOptionsAsMap, "secret_key", "")
+					if ok {
+						if credentialsProviderOptionsSecretKey != "" {
+							backendConfigS3AsMap["secret_access_key"] = credentialsProviderOptionsSecretKey
+						}
+					} else {
+						err = fmt.Errorf("bad profile \"%s\" credentials_provider options secret_key", profileName)
+						return
+					}
+				} else { // profileAsMap["credentials_provider"] returned !ok
+					backendConfigS3AsMap["use_credentials_env"] = true
 				}
 
-				backendConfigS3AsMap = make(map[string]interface{})
-
-				backendConfigS3AsMap["access_key_id"] = credentialsProviderOptionsAccessKey
-				backendConfigS3AsMap["secret_access_key"] = credentialsProviderOptionsSecretKey
-				backendConfigS3AsMap["region"] = storageProviderOptionsRegionName
-				backendConfigS3AsMap["endpoint"] = storageProviderOptionsEndpointURLParsed.Host + storageProviderOptionsEndpointURLParsed.Path
-				backendConfigS3AsMap["allow_http"] = (storageProviderOptionsEndpointURLParsed.Scheme == "http")
-
-				backendAsMap = make(map[string]interface{})
-
-				backendAsMap["dir_name"] = profileName
-				backendAsMap["bucket_container_name"] = storageProviderOptionsBasePathBucketContainerName
-				backendAsMap["prefix"] = storageProviderOptionsBasePathPrefix
 				backendAsMap["backend_type"] = "S3"
 				backendAsMap["S3"] = backendConfigS3AsMap
 
@@ -561,15 +588,21 @@ func checkConfigFile() (err error) {
 		return
 	}
 
-	// Use MSC_MOUNTPOINT env var if set, otherwise default to DefaultMountPoint
-	mountPoint = os.Getenv(EnvMSCMountPoint)
-	if mountPoint == "" {
-		mountPoint = DefaultMountPoint
-	}
-	config.mountPoint, ok = parseString(configFileMap, "mountpoint", mountPoint)
-	if !ok {
-		err = errors.New("bad mountpoint value")
-		return
+	if parseAny(configFileMap, "mountpoint") {
+		config.mountPoint, ok = parseString(configFileMap, "mountpoint", defaultMountPoint)
+		if !ok {
+			err = errors.New("bad mountpoint value")
+			return
+		}
+		if (os.Getenv(EnvMSCMountPoint) != "") && (os.Getenv(EnvMSCMountPoint) != config.mountPoint) {
+			err = fmt.Errorf("specified mountpoint and ${%s} mismatch", EnvMSCMountPoint)
+			return
+		}
+	} else {
+		config.mountPoint = os.Getenv(EnvMSCMountPoint)
+		if config.mountPoint == "" {
+			config.mountPoint = defaultMountPoint
+		}
 	}
 
 	config.uid, ok = parseUint64(configFileMap, "uid", uint64(os.Geteuid()))
@@ -931,34 +964,80 @@ func checkConfigFile() (err error) {
 
 				backendConfigS3AsStruct = &backendConfigS3Struct{}
 
-				backendConfigS3AsStruct.accessKeyID, ok = parseString(backendConfigS3AsMap, "access_key_id", nil)
+				backendConfigS3AsStruct.configCredentialsProfile, ok = parseString(backendConfigS3AsMap, "config_credentials_profile", "default")
 				if !ok {
-					err = fmt.Errorf("missing or bad S3.access_key_id at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					err = fmt.Errorf("bad S3.config_credentials_profile at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
 					return
 				}
 
-				backendConfigS3AsStruct.secretAccessKey, ok = parseString(backendConfigS3AsMap, "secret_access_key", nil)
+				backendConfigS3AsStruct.useConfigEnv, ok = parseBool(backendConfigS3AsMap, "use_config_env", false)
 				if !ok {
-					err = fmt.Errorf("missing or bad S3.secret_access_key at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					err = fmt.Errorf("bad S3.use_config_env at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
 					return
 				}
 
-				backendConfigS3AsStruct.region, ok = parseString(backendConfigS3AsMap, "region", nil)
+				if backendConfigS3AsStruct.useConfigEnv {
+					backendConfigS3AsStruct.configFilePath, ok = parseString(backendConfigS3AsMap, "config_file_path", "${AWS_CONFIG_FILE:-${HOME}/.aws/config}")
+					if !ok {
+						err = fmt.Errorf("bad S3.config_file_path at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigS3AsStruct.region = ""
+					backendConfigS3AsStruct.endpoint = ""
+				} else {
+					backendConfigS3AsStruct.configFilePath = ""
+
+					backendConfigS3AsStruct.region, ok = parseString(backendConfigS3AsMap, "region", "${AWS_REGION:-us-east-1}")
+					if !ok {
+						err = fmt.Errorf("bad S3.region at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigS3AsStruct.endpoint, ok = parseString(backendConfigS3AsMap, "endpoint", "${AWS_ENDPOINT}")
+					if !ok {
+						err = fmt.Errorf("bad S3.endpoint at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+				}
+
+				backendConfigS3AsStruct.useCredentialsEnv, ok = parseBool(backendConfigS3AsMap, "use_credentials_env", false)
 				if !ok {
-					err = fmt.Errorf("missing or bad S3.region at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					err = fmt.Errorf("bad S3.use_credentials_env at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
 					return
 				}
 
-				backendConfigS3AsStruct.endpoint, ok = parseString(backendConfigS3AsMap, "endpoint", nil)
-				if !ok {
-					err = fmt.Errorf("missing or bad S3.endpoint at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-					return
-				}
+				if backendConfigS3AsStruct.useCredentialsEnv {
+					backendConfigS3AsStruct.credentialsFilePath, ok = parseString(backendConfigS3AsMap, "credentials_file_path", "${AWS_SHARED_CREDENTIALS_FILE:-${HOME}/.aws/credentials}")
+					if !ok {
+						err = fmt.Errorf("bad S3.credentials_file_path at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
 
-				backendConfigS3AsStruct.allowHTTP, ok = parseBool(backendConfigS3AsMap, "allow_http", false)
-				if !ok {
-					err = fmt.Errorf("bad S3.allow_http at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
-					return
+					backendConfigS3AsStruct.accessKeyID = ""
+					backendConfigS3AsStruct.secretAccessKey = ""
+				} else {
+					backendConfigS3AsStruct.credentialsFilePath = ""
+
+					backendConfigS3AsStruct.accessKeyID, ok = parseString(backendConfigS3AsMap, "access_key_id", "${AWS_ACCESS_KEY_ID}")
+					if !ok {
+						err = fmt.Errorf("bad S3.access_key_id at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+					if backendConfigS3AsStruct.accessKeyID == "" {
+						err = fmt.Errorf("empty S3.access_key_id at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigS3AsStruct.secretAccessKey, ok = parseString(backendConfigS3AsMap, "secret_access_key", "${AWS_SECRET_ACCESS_KEY}")
+					if !ok {
+						err = fmt.Errorf("bad S3.secret_access_key at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+					if backendConfigS3AsStruct.secretAccessKey == "" {
+						err = fmt.Errorf("empty S3.secret_access_key at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
 				}
 
 				backendConfigS3AsStruct.skipTLSCertificateVerify, ok = parseBool(backendConfigS3AsMap, "skip_tls_certificate_verify", true)
@@ -1215,13 +1294,18 @@ func checkConfigFile() (err error) {
 						return
 					}
 				case "S3":
-					if backendAsStructOld.backendTypeSpecifics.(*backendConfigS3Struct).accessKeyID != backendAsStructNew.backendTypeSpecifics.(*backendConfigS3Struct).accessKeyID {
-						err = fmt.Errorf("cannot change S3.access_key_id in backends[\"%s\"]", dirName)
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigS3Struct).configCredentialsProfile != backendAsStructNew.backendTypeSpecifics.(*backendConfigS3Struct).configCredentialsProfile {
+						err = fmt.Errorf("cannot change S3.config_credentials_profile in backends[\"%s\"]", dirName)
 						return
 					}
 
-					if backendAsStructOld.backendTypeSpecifics.(*backendConfigS3Struct).secretAccessKey != backendAsStructNew.backendTypeSpecifics.(*backendConfigS3Struct).secretAccessKey {
-						err = fmt.Errorf("cannot change S3.secret_access_key in backends[\"%s\"]", dirName)
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigS3Struct).useConfigEnv != backendAsStructNew.backendTypeSpecifics.(*backendConfigS3Struct).useConfigEnv {
+						err = fmt.Errorf("cannot change S3.use_config_env in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigS3Struct).configFilePath != backendAsStructNew.backendTypeSpecifics.(*backendConfigS3Struct).configFilePath {
+						err = fmt.Errorf("cannot change S3.config_file_path in backends[\"%s\"]", dirName)
 						return
 					}
 
@@ -1235,8 +1319,23 @@ func checkConfigFile() (err error) {
 						return
 					}
 
-					if backendAsStructOld.backendTypeSpecifics.(*backendConfigS3Struct).allowHTTP != backendAsStructNew.backendTypeSpecifics.(*backendConfigS3Struct).allowHTTP {
-						err = fmt.Errorf("cannot change S3.allow_http in backends[\"%s\"]", dirName)
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigS3Struct).useCredentialsEnv != backendAsStructNew.backendTypeSpecifics.(*backendConfigS3Struct).useCredentialsEnv {
+						err = fmt.Errorf("cannot change S3.use_credentials_env in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigS3Struct).credentialsFilePath != backendAsStructNew.backendTypeSpecifics.(*backendConfigS3Struct).credentialsFilePath {
+						err = fmt.Errorf("cannot change S3.credentials_file_path in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigS3Struct).accessKeyID != backendAsStructNew.backendTypeSpecifics.(*backendConfigS3Struct).accessKeyID {
+						err = fmt.Errorf("cannot change S3.access_key_id in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigS3Struct).secretAccessKey != backendAsStructNew.backendTypeSpecifics.(*backendConfigS3Struct).secretAccessKey {
+						err = fmt.Errorf("cannot change S3.secret_access_key in backends[\"%s\"]", dirName)
 						return
 					}
 

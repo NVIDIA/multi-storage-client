@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -29,57 +30,42 @@ type s3ContextStruct struct {
 // Note that there is no `destroyContext` counterpart.
 func (backend *backendStruct) setupS3Context() (err error) {
 	var (
-		backendS3     = backend.backendTypeSpecifics.(*backendConfigS3Struct)
-		s3Config      aws.Config
-		s3Endpoint    string
-		configOptions []func(*config.LoadOptions) error
+		backendPathParsed *url.URL
+		backendS3         = backend.backendTypeSpecifics.(*backendConfigS3Struct)
+		configOptions     []func(*config.LoadOptions) error
+		s3Config          aws.Config
+		s3Endpoint        string
 	)
 
-	if backendS3.allowHTTP {
-		backend.backendPath = "http://"
-	} else {
-		backend.backendPath = "https://"
+	configOptions = []func(*config.LoadOptions) error{}
+
+	configOptions = append(configOptions, config.WithSharedConfigProfile(backendS3.configCredentialsProfile))
+
+	if !backendS3.useConfigEnv {
+		configOptions = append(configOptions, config.WithRegion(backendS3.region))
 	}
 
-	if backendS3.virtualHostedStyleRequest {
-		backend.backendPath += backend.bucketContainerName + "."
-	}
-
-	backend.backendPath += backendS3.endpoint + "/"
-
-	if !backendS3.virtualHostedStyleRequest {
-		backend.backendPath += backend.bucketContainerName + "/"
-	}
-
-	backend.backendPath += backend.prefix
-
-	// Build config options
-	configOptions = []func(*config.LoadOptions) error{
-		config.WithCredentialsProvider(credentials.StaticCredentialsProvider{
+	if !backendS3.useCredentialsEnv {
+		configOptions = append(configOptions, config.WithCredentialsProvider(credentials.StaticCredentialsProvider{
 			Value: aws.Credentials{
 				AccessKeyID:     backendS3.accessKeyID,
 				SecretAccessKey: backendS3.secretAccessKey,
-			},
-		}),
-		config.WithRegion(backendS3.region),
+			}}))
 	}
 
-	// Add custom retryer
-	configOptions = append(configOptions, config.WithRetryer(func() aws.Retryer {
-		return backend
-	}))
-
-	// Add custom HTTP client if TLS certificate verification should be skipped
 	if backendS3.skipTLSCertificateVerify {
-		customHTTPClient := awshttp.NewBuildableClient().WithTransportOptions(func(t *http.Transport) {
+		configOptions = append(configOptions, config.WithHTTPClient(awshttp.NewBuildableClient().WithTransportOptions(func(t *http.Transport) {
 			if t.TLSClientConfig == nil {
 				t.TLSClientConfig = &tls.Config{}
 			}
 			t.TLSClientConfig.InsecureSkipVerify = true
 			t.TLSClientConfig.MinVersion = tls.VersionTLS12
-		})
-		configOptions = append(configOptions, config.WithHTTPClient(customHTTPClient))
+		})))
 	}
+
+	configOptions = append(configOptions, config.WithRetryer(func() aws.Retryer {
+		return backend
+	}))
 
 	s3Config, err = config.LoadDefaultConfig(context.Background(), configOptions...)
 	if err != nil {
@@ -87,11 +73,37 @@ func (backend *backendStruct) setupS3Context() (err error) {
 		return
 	}
 
-	if backendS3.allowHTTP {
-		s3Endpoint = "http://" + backendS3.endpoint
+	if backendS3.useConfigEnv {
+		if s3Config.BaseEndpoint == nil {
+			err = errors.New("s3Config.BaseEndpoint == nil")
+			return
+		}
+		backendPathParsed, err = url.Parse(*s3Config.BaseEndpoint)
+		if err != nil {
+			err = fmt.Errorf("url.Parse(*s3Config.BaseEndpoint) failed: %v", err)
+			return
+		}
 	} else {
-		s3Endpoint = "https://" + backendS3.endpoint
+		backendPathParsed, err = url.Parse(backendS3.endpoint)
+		if err != nil {
+			err = fmt.Errorf("url.Parse(backendS3.endpoint) failed: %v", err)
+			return
+		}
 	}
+
+	if backendS3.virtualHostedStyleRequest {
+		backendPathParsed.Host = backend.bucketContainerName + "." + backendPathParsed.Host
+		s3Endpoint = backendPathParsed.Scheme + "://" + backendPathParsed.Host + backendPathParsed.Path
+	} else {
+		s3Endpoint = backendPathParsed.Scheme + "://" + backendPathParsed.Host + backendPathParsed.Path
+		backendPathParsed.Path += "/" + backend.bucketContainerName
+	}
+
+	if backend.prefix != "" {
+		backendPathParsed.Path += "/" + backend.prefix
+	}
+
+	backend.backendPath = backendPathParsed.String() + "/"
 
 	backend.context = &s3ContextStruct{
 		backend: backend,
