@@ -195,15 +195,39 @@ across all profiles.
 The cache eviction policy is configured using the ``eviction_policy`` key in the cache configuration. By default, the cache eviction policy 
 is set to ``fifo`` with a refresh interval of 300 seconds.
 
+Available eviction policies:
+
+* **FIFO (First In First Out)**: Evicts the oldest cached files first, regardless of access patterns. This is the default policy and works well for most workloads.
+
+* **LRU (Least Recently Used)**: Evicts files that haven't been accessed recently, keeping frequently accessed files in cache. Best for workloads with temporal locality where recent files are likely to be accessed again.
+
+* **MRU (Most Recently Used)** (**Experimental**): Evicts the most recently accessed files first, keeping older files in cache. Useful for workloads that scan through datasets sequentially and are unlikely to re-access recently read files. Requires ``experimental_features: {cache_mru_eviction: true}`` in config.
+
+* **RANDOM**: Randomly selects files for eviction (except the most recently added file). Provides unpredictable but fair eviction behavior.
+
+The ``purge_factor`` parameter (**Experimental**) controls how aggressively the cache is cleaned during eviction. It specifies the percentage of maximum cache size to delete (0-100) when eviction is triggered, reducing the frequency of future eviction cycles. Requires ``experimental_features: {cache_purge_factor: true}`` in config.
+
+* ``purge_factor = 0`` (default): Delete only what's needed to stay just under the cache limit. This provides minimal cleanup and may trigger frequent evictions.
+* ``purge_factor = 20``: Delete 20% of max cache size. For a 100GB cache, this keeps 80GB after eviction, providing 20GB of free space.
+* ``purge_factor = 50``: Delete 50% of max cache size. Provides substantial free space but reduces cache hit rate.
+* ``purge_factor = 100``: Delete everything (clear entire cache). Useful for workloads that benefit from completely fresh cache periodically.
+
+Use higher purge factors (20-50%) when you want to reduce eviction frequency at the cost of some cache hits. Use ``purge_factor=0`` (default) when cache hit rate is more important than eviction frequency. Consider your workload patterns: if cache fills up quickly and frequently, a moderate purge factor (20-30%) can improve performance by reducing lock contention during eviction.
+
 .. code-block:: yaml
-   :caption: Example configuration to override the default cache eviction.
+   :caption: Example configuration with purge_factor for aggressive cleanup (experimental).
+
+   experimental_features:
+     cache_mru_eviction: true      # Enable MRU policy
+     cache_purge_factor: true      # Enable purge_factor
 
    cache:
      size: 500G
      location: /path/to/msc_cache
      eviction_policy:
-       policy: random
+       policy: lru
        refresh_interval: 300
+       purge_factor: 20  # Delete 20% (100GB) during eviction, keeping 400GB
 
 
 **************

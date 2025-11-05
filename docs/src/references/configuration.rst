@@ -10,7 +10,11 @@ providers like S3, Azure Blob Storage, Google Cloud Storage, and others.
 Top-Level
 *********
 
-The top-level configuration schema consists of four main sections:
+The top-level configuration schema consists of five main sections:
+
+* ``experimental_features``
+
+  * Optional dictionary to enable experimental features. When omitted, all experimental features are disabled.
 
 * ``profiles``
 
@@ -31,6 +35,9 @@ The top-level configuration schema consists of four main sections:
 .. code-block:: yaml
    :caption: Top-level schema.
 
+   # Optional. Experimental features flags
+   experimental_features: <experimental_features_config>
+
    # Required. Dictionary of profile configurations
    profiles: <profile_config>
 
@@ -42,6 +49,49 @@ The top-level configuration schema consists of four main sections:
 
    # Optional. Path mapping configuration
    path_mapping: <path_mapping_config>
+
+**********************
+Experimental Features
+**********************
+
+The ``experimental_features`` section allows you to enable experimental features that are under active development.
+These features may have breaking changes in future releases.
+
+.. warning::
+   Experimental features are not guaranteed to be stable and may change or be removed in future versions.
+   Use with caution in production environments.
+
+Currently available experimental features:
+
+* ``cache_mru_eviction``
+
+  * Enables the MRU (Most Recently Used) eviction policy for cache (boolean, default: not enabled)
+
+* ``cache_purge_factor``
+
+  * Enables the purge_factor parameter for controlling cache eviction aggressiveness (boolean, default: not enabled)
+
+.. code-block:: yaml
+   :caption: Example: Enable specific experimental features
+
+   experimental_features:
+     cache_mru_eviction: true
+     cache_purge_factor: true
+
+   cache:
+     size: "10G"
+     eviction_policy:
+       policy: mru           # Requires cache_mru_eviction: true
+       purge_factor: 50      # Requires cache_purge_factor: true
+
+If you attempt to use an experimental feature without enabling it, you'll receive a clear error message:
+
+.. code-block:: text
+
+   ValueError: MRU eviction policy is experimental and not enabled.
+   Enable it by adding to config:
+     experimental_features:
+       cache_mru_eviction: true
 
 *******
 Profile
@@ -550,9 +600,21 @@ Options:
 
 * ``eviction_policy``: Cache eviction policy configuration (optional, default policy is ``"fifo"``)
 
-  * ``policy``: Eviction policy type (``"fifo"``, ``"lru"``, ``"random"``)
+  * ``policy``: Eviction policy type
+
+    * ``"fifo"``: First In, First Out (stable)
+    * ``"lru"``: Least Recently Used (stable)
+    * ``"mru"``: Most Recently Used (**experimental** - requires ``cache_mru_eviction: true``)
+    * ``"random"``: Random eviction (stable)
 
   * ``refresh_interval``: Interval in seconds to trigger cache eviction (optional, default: ``"300"``)
+
+  * ``purge_factor``: (**experimental** - requires ``cache_purge_factor: true``) Percentage of cache to delete during eviction (0-100, optional, default: ``"0"``)
+    
+    * ``0`` = Delete only what's needed to stay under limit (default behavior)
+    * ``20`` = Delete 20% of max cache size (keep 80%)
+    * ``50`` = Delete 50% of max cache size (keep 50%)
+    * ``100`` = Delete everything (clear entire cache)
 
 
 .. code-block:: yaml
@@ -571,6 +633,34 @@ Options:
      eviction_policy:
        policy: lru
        refresh_interval: 3600
+
+.. code-block:: yaml
+   :caption: Example configuration with purge_factor to reduce eviction frequency (experimental).
+
+   experimental_features:
+     cache_purge_factor: true  # Enable experimental feature
+
+   cache:
+     size: 500G
+     location: /path/to/msc_cache
+     eviction_policy:
+       policy: lru
+       refresh_interval: 3600
+       purge_factor: 20  # Delete 20% during eviction (keep 400GB free space)
+
+.. code-block:: yaml
+   :caption: Example configuration with MRU eviction policy (experimental).
+
+   experimental_features:
+     cache_mru_eviction: true    # Enable experimental feature
+     cache_purge_factor: true    # Enable experimental feature
+
+   cache:
+     size: 500G
+     location: /path/to/msc_cache
+     eviction_policy:
+       policy: mru
+       purge_factor: 50  # Delete 50% during eviction
 
 .. code-block:: yaml
    :caption: Example configuration with profile-level caching control.

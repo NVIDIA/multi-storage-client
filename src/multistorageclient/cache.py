@@ -29,7 +29,7 @@ from filelock import BaseFileLock, FileLock, Timeout
 
 from .caching.cache_config import CacheConfig
 from .caching.cache_item import CacheItem
-from .caching.eviction_policy import FIFO, LRU, NO_EVICTION, RANDOM, EvictionPolicyFactory
+from .caching.eviction_policy import FIFO, LRU, MRU, NO_EVICTION, RANDOM, EvictionPolicyFactory
 from .types import Range, SourceVersionCheckMode
 
 DEFAULT_CACHE_SIZE = "10G"
@@ -97,7 +97,7 @@ class CacheManager:
         :param eviction_policy: The eviction policy to check.
         :return: True if the policy is valid, False otherwise.
         """
-        return eviction_policy.lower() in {LRU, FIFO, RANDOM, NO_EVICTION}
+        return eviction_policy.lower() in {LRU, MRU, FIFO, RANDOM, NO_EVICTION}
 
     def get_file_size(self, file_path: str) -> Optional[int]:
         """
@@ -173,13 +173,25 @@ class CacheManager:
             cache_size += item.file_size
         logging.debug(f"Total cache size: {cache_size}, Max allowed: {self._max_cache_size}")
 
-        # Evict old files if necessary in case the existing files exceed cache size
-        while cache_size > self._max_cache_size:
-            # Pop the first item in the OrderedDict (according to policy's sorting)
-            oldest_file, file_size = cache.popitem(last=False)
-            cache_size -= file_size
-            logging.debug(f"Evicting file: {oldest_file}, size: {file_size}")
-            self.delete_file(oldest_file)
+        # Calculate target size based on purge_factor
+        # purge_factor = percentage of cache to DELETE (0-100)
+        # target_size = what cache size should be after purging
+        purge_factor = self._cache_config.eviction_policy.purge_factor
+        target_size = self._max_cache_size * (1.0 - purge_factor / 100.0)
+        logging.debug(f"Purge factor: {purge_factor}%, Target size after purge: {target_size}")
+
+        # Evict files to reduce cache size to target_size
+        # Once eviction is triggered, evict down to target_size (not just to max_cache_size)
+        if cache_size > self._max_cache_size:
+            logging.debug(
+                f"Cache size {cache_size} exceeds max {self._max_cache_size}, starting eviction to target {target_size}"
+            )
+            while cache_size > target_size and cache:
+                # Pop the first item in the OrderedDict (according to policy's sorting)
+                file_to_evict, file_size = cache.popitem(last=False)
+                cache_size -= file_size
+                logging.debug(f"Evicting file: {file_to_evict}, size: {file_size}, remaining: {cache_size}")
+                self.delete_file(file_to_evict)
 
         logging.debug("\nFinal cache contents:")
         for file_path in cache.keys():

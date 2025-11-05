@@ -71,10 +71,22 @@ CACHE_SCHEMA = {
             "properties": {
                 "policy": {
                     "type": "string",
-                    "enum": ["lru", "fifo", "random", "no_eviction", "LRU", "FIFO", "RANDOM", "NO_EVICTION"],
+                    "enum": [
+                        "lru",
+                        "mru",
+                        "fifo",
+                        "random",
+                        "no_eviction",
+                        "LRU",
+                        "MRU",
+                        "FIFO",
+                        "RANDOM",
+                        "NO_EVICTION",
+                    ],
                     "default": "lru",
                 },
                 "refresh_interval": {"type": "integer", "minimum": 300},
+                "purge_factor": {"type": "integer", "minimum": 0, "maximum": 100},
             },
         },
         "cache_backend": {  # Optional: If not specified, default cache backend will be used
@@ -188,6 +200,14 @@ POSIX_SCHEMA = {
 CONFIG_SCHEMA = {
     "type": "object",
     "properties": {
+        "experimental_features": {
+            "type": "object",
+            "properties": {
+                "cache_mru_eviction": {"type": "boolean"},
+                "cache_purge_factor": {"type": "boolean"},
+            },
+            "additionalProperties": False,
+        },
         "profiles": PROFILE_SCHEMA,
         "cache": CACHE_SCHEMA,
         "opentelemetry": OTEL_SCHEMA,

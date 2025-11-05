@@ -349,6 +349,7 @@ class StorageClientConfigLoader:
         self._telemetry_provider = telemetry_provider or telemetry_init
 
         self._cache_dict = config_dict.get("cache", None)
+        self._experimental_features = config_dict.get("experimental_features", None)
 
     def _build_storage_provider(
         self,
@@ -578,6 +579,37 @@ class StorageClientConfigLoader:
                     f"This creates a circular reference which is not allowed."
                 )
 
+    # todo: remove once experimental features are stable
+    def _validate_experimental_features(self, eviction_policy: EvictionPolicyConfig) -> None:
+        """
+        Validate that experimental features are enabled when used.
+
+        :param eviction_policy: The eviction policy configuration to validate
+        :raises ValueError: If experimental features are used without being enabled
+        """
+        # Validate MRU eviction policy
+        if eviction_policy.policy.upper() == "MRU":
+            if not (self._experimental_features and self._experimental_features.get("cache_mru_eviction")):
+                raise ValueError(
+                    "MRU eviction policy is experimental and not enabled.\n"
+                    "Enable it by adding to config:\n"
+                    "  experimental_features:\n"
+                    "    cache_mru_eviction: true"
+                )
+
+        # Validate purge_factor
+        if eviction_policy.purge_factor != 0:
+            if eviction_policy.purge_factor < 0 or eviction_policy.purge_factor > 100:
+                raise ValueError("purge_factor must be between 0 and 100")
+
+            if not (self._experimental_features and self._experimental_features.get("cache_purge_factor")):
+                raise ValueError(
+                    "purge_factor is experimental and not enabled.\n"
+                    "Enable it by adding to config:\n"
+                    "  experimental_features:\n"
+                    "    cache_purge_factor: true"
+                )
+
     def build_config(self) -> "StorageClientConfig":
         bundle = self._build_provider_bundle()
 
@@ -640,14 +672,20 @@ class StorageClientConfigLoader:
             # Initialize eviction policy
             if "eviction_policy" in cache_dict:
                 policy = cache_dict["eviction_policy"]["policy"].lower()
+                purge_factor = cache_dict["eviction_policy"].get("purge_factor", 0)
                 eviction_policy = EvictionPolicyConfig(
                     policy=policy,
                     refresh_interval=cache_dict["eviction_policy"].get(
                         "refresh_interval", DEFAULT_CACHE_REFRESH_INTERVAL
                     ),
+                    purge_factor=purge_factor,
                 )
             else:
                 eviction_policy = EvictionPolicyConfig(policy="fifo", refresh_interval=DEFAULT_CACHE_REFRESH_INTERVAL)
+
+            # todo: remove once experimental features are stable
+            # Validate experimental features before creating cache_config
+            self._validate_experimental_features(eviction_policy)
 
             # Create cache config from the standardized format
             cache_config = CacheConfig(

@@ -18,23 +18,27 @@ from .cache_item import CacheItem
 from .eviction_policy import (
     FIFO,
     LRU,
+    MRU,
     RANDOM,
     VALID_EVICTION_POLICIES,
     EvictionPolicy,
     EvictionPolicyFactory,
     FIFOEvictionPolicy,
     LRUEvictionPolicy,
+    MRUEvictionPolicy,
     RandomEvictionPolicy,
 )
 
 __all__ = [
     "CacheItem",
     "LRU",
+    "MRU",
     "FIFO",
     "RANDOM",
     "VALID_EVICTION_POLICIES",
     "EvictionPolicy",
     "LRUEvictionPolicy",
+    "MRUEvictionPolicy",
     "FIFOEvictionPolicy",
     "RandomEvictionPolicy",
     "EvictionPolicyFactory",

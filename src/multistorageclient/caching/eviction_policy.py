@@ -20,12 +20,13 @@ from .cache_item import CacheItem
 
 # Valid eviction policy types
 LRU = "lru"  # Least Recently Used
+MRU = "mru"  # Most Recently Used
 FIFO = "fifo"  # First In First Out
 RANDOM = "random"  # Random Eviction
 NO_EVICTION = "no_eviction"  # No Eviction
 
 # Use a set for faster lookups
-VALID_EVICTION_POLICIES = {LRU, FIFO, RANDOM, NO_EVICTION}
+VALID_EVICTION_POLICIES = {LRU, MRU, FIFO, RANDOM, NO_EVICTION}
 
 
 class EvictionPolicy(ABC):
@@ -58,6 +59,22 @@ class LRUEvictionPolicy(EvictionPolicy):
         :return: Items sorted by access time, oldest first.
         """
         cache_items.sort(key=lambda item: item.atime)
+        return cache_items
+
+
+class MRUEvictionPolicy(EvictionPolicy):
+    """Most Recently Used eviction policy.
+
+    This policy evicts the most recently used items first, based on file access times.
+    """
+
+    def sort_items(self, cache_items: list[CacheItem]) -> list[CacheItem]:
+        """Sort items by access time (newest first, for MRU eviction).
+
+        :param cache_items: List of cache items to sort.
+        :return: Items sorted by access time, most recently accessed first (to be evicted).
+        """
+        cache_items.sort(key=lambda item: item.atime, reverse=True)
         return cache_items
 
 
@@ -142,6 +159,7 @@ class EvictionPolicyFactory:
 
     _policy_map: dict[str, type[EvictionPolicy]] = {
         LRU: LRUEvictionPolicy,
+        MRU: MRUEvictionPolicy,
         FIFO: FIFOEvictionPolicy,
         RANDOM: RandomEvictionPolicy,
         NO_EVICTION: NoEvictionPolicy,

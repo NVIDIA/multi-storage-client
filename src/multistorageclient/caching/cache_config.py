@@ -23,13 +23,16 @@ class EvictionPolicyConfig:
     Configuration for cache eviction policy.
 
     This class defines the configuration parameters for cache eviction policies,
-    including the policy type and refresh interval.
+    including the policy type, refresh interval, and purge factor.
     """
 
-    #: The eviction policy type (LRU, FIFO, RANDOM)
+    #: The eviction policy type (LRU, MRU, FIFO, RANDOM, NO_EVICTION)
     policy: str
     #: Cache refresh interval in seconds. Default is 300 (5 minutes)
     refresh_interval: int = 300
+    #: Purge factor: percentage of cache to delete during eviction (0-100).
+    #: 0 = delete only what's needed (default), 50 = delete 50% of cache, 100 = clear everything
+    purge_factor: int = 0
 
 
 def default_eviction_policy() -> EvictionPolicyConfig:

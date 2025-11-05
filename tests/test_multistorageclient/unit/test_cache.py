@@ -293,6 +293,18 @@ def lru_cache_config(tmpdir):
     )
 
 
+@pytest.fixture
+def mru_cache_config(tmpdir):
+    cache_dir = os.path.join(str(tmpdir), "mru_cache")
+    return CacheConfig(
+        size="10M",
+        cache_line_size="64M",
+        check_source_version=False,
+        location=cache_dir,
+        eviction_policy=EvictionPolicyConfig(policy="MRU"),
+    )
+
+
 def test_lru_eviction_policy(profile_name, lru_cache_config):
     # Create the CacheManager with the provided lru_cache_config
     cache_manager = CacheManager(profile=profile_name, cache_config=lru_cache_config)
@@ -327,6 +339,55 @@ def test_lru_eviction_policy(profile_name, lru_cache_config):
     # Verify that the least recently used file (file2 or file3) has been evicted
     assert not cache_manager.contains(f"{test_uuid}/file2") or not cache_manager.contains(f"{test_uuid}/file3"), (
         "Least recently used file should be evicted"
+    )
+
+
+def test_mru_eviction_policy(profile_name, mru_cache_config):
+    """Test the MRU (Most Recently Used) eviction policy.
+
+    This test verifies that the cache manager correctly implements MRU eviction, where
+    the most recently accessed files are evicted first, preserving older files.
+    """
+    # Create the CacheManager with the provided mru_cache_config
+    cache_manager = CacheManager(profile=profile_name, cache_config=mru_cache_config)
+
+    test_uuid = str(uuid.uuid4())
+    # Add files to the cache (each file is 3 MB)
+    cache_manager.set(f"{test_uuid}/file1", b"a" * 3 * 1024 * 1024)  # 3 MB
+    time.sleep(1)
+    cache_manager.set(f"{test_uuid}/file2", b"b" * 3 * 1024 * 1024)  # 3 MB
+    time.sleep(1)
+    cache_manager.set(f"{test_uuid}/file3", b"c" * 3 * 1024 * 1024)  # 3 MB
+    time.sleep(1)
+
+    # Access file1 to make it the most recently used
+    cache_manager.read(f"{test_uuid}/file1")  # force update ts
+    time.sleep(1)
+
+    # Add another file to trigger eviction
+    cache_manager.set(f"{test_uuid}/file4", b"d" * 3 * 1024 * 1024)  # 3 MB
+
+    time.sleep(1)  # Ensure time difference for MRU
+    # Record the current last_refresh_time and set it to past to force refresh
+    old_refresh_time = cache_manager._last_refresh_time
+    cache_manager._last_refresh_time = datetime.now().replace(year=2000)
+    cache_manager.refresh_cache()
+    # Verify that refresh occurred by checking last_refresh_time was updated
+    assert cache_manager._last_refresh_time > old_refresh_time, "Cache refresh should update last_refresh_time"
+
+    # Verify that file1 (most recently used) OR file4 (newly added, also recently used) has been evicted (MRU policy)
+    # With MRU, the most recently accessed/added files should be evicted
+    file1_present = cache_manager.contains(f"{test_uuid}/file1")
+    file4_present = cache_manager.contains(f"{test_uuid}/file4")
+
+    # At least one of the most recent files (file1 or file4) should be evicted
+    assert not (file1_present and file4_present), (
+        "MRU should evict most recently used files (file1 was accessed, file4 was just added)"
+    )
+
+    # Verify that at least one of the older files (file2 or file3) is still in cache
+    assert cache_manager.contains(f"{test_uuid}/file2") or cache_manager.contains(f"{test_uuid}/file3"), (
+        "Older files should be preserved with MRU policy"
     )
 
 
@@ -644,6 +705,20 @@ def no_eviction_cache_config(tmpdir):
     )
 
 
+@pytest.fixture
+def purge_factor_cache_config(tmpdir, request):
+    """Parameterized cache config fixture for testing different purge_factor values."""
+    purge_factor = request.param
+    cache_dir = os.path.join(str(tmpdir), f"purge_{purge_factor}_cache")
+    return CacheConfig(
+        size="10M",
+        cache_line_size="64M",
+        check_source_version=False,
+        location=cache_dir,
+        eviction_policy=EvictionPolicyConfig(policy="LRU", purge_factor=purge_factor),
+    )
+
+
 def test_no_eviction_policy(profile_name, no_eviction_cache_config):
     """Test the NO_EVICTION eviction policy of the cache manager.
 
@@ -710,6 +785,74 @@ def test_no_eviction_policy(profile_name, no_eviction_cache_config):
     assert not hasattr(cache_manager, "_eviction_thread"), "No eviction thread should be created during test"
     assert not hasattr(cache_manager, "_eviction_thread_running"), (
         "No eviction thread running flag should exist during test"
+    )
+
+
+def test_purge_factor_default(profile_name, lru_cache_config):
+    """Test that purge_factor defaults to 0 (minimal cleanup).
+
+    With purge_factor=0, cache should delete files until just under max size (current behavior).
+    """
+    cache_manager = CacheManager(profile=profile_name, cache_config=lru_cache_config)
+
+    test_uuid = str(uuid.uuid4())
+    # Add 4 files (3MB each = 12MB total, exceeds 10MB limit)
+    for i in range(1, 5):
+        cache_manager.set(f"{test_uuid}/file{i}", b"x" * 3 * 1024 * 1024)
+        time.sleep(0.1)
+
+    # Force eviction
+    cache_manager._last_refresh_time = datetime.now().replace(year=2000)
+    cache_manager.refresh_cache()
+
+    # With purge_factor=0, cache should be just under 10MB
+    final_size = cache_manager.cache_size()
+    assert final_size <= 10 * 1024 * 1024, "Cache should be under max size"
+    assert final_size >= 9 * 1024 * 1024, "Cache should be close to max (minimal cleanup)"
+
+
+@pytest.mark.parametrize(
+    "purge_factor_cache_config,expected_target_pct,expected_max_files",
+    [
+        (20, 0.80, 3),  # 20% purge → 80% kept (8MB) → max 2-3 files
+        (50, 0.50, 2),  # 50% purge → 50% kept (5MB) → max 1-2 files
+        (100, 0.00, 0),  # 100% purge → 0% kept (0MB) → 0 files
+    ],
+    indirect=["purge_factor_cache_config"],
+    ids=["20_percent", "50_percent", "100_percent"],
+)
+def test_purge_factor_values(profile_name, purge_factor_cache_config, expected_target_pct, expected_max_files):
+    """Test various purge_factor values (20%, 50%, 100%).
+
+    Verifies that cache is evicted down to the correct target size based on purge_factor.
+    """
+    cache_manager = CacheManager(profile=profile_name, cache_config=purge_factor_cache_config)
+    purge_factor = purge_factor_cache_config.eviction_policy.purge_factor
+
+    test_uuid = str(uuid.uuid4())
+    # Add 4 files (3MB each = 12MB total, exceeds 10MB limit)
+    for i in range(1, 5):
+        cache_manager.set(f"{test_uuid}/file{i}", b"x" * 3 * 1024 * 1024)
+        time.sleep(0.1)
+
+    # Force eviction
+    cache_manager._last_refresh_time = datetime.now().replace(year=2000)
+    cache_manager.refresh_cache()
+
+    # Calculate expected target size
+    max_cache_size = 10 * 1024 * 1024  # 10MB
+    expected_target_size = max_cache_size * expected_target_pct
+
+    # Verify cache size is at or below target
+    final_size = cache_manager.cache_size()
+    assert final_size <= expected_target_size, (
+        f"Cache should be under target size {expected_target_size} with purge_factor={purge_factor}, got {final_size}"
+    )
+
+    # Verify file count matches expectation
+    remaining_files = sum(1 for i in range(1, 5) if cache_manager.contains(f"{test_uuid}/file{i}"))
+    assert remaining_files <= expected_max_files, (
+        f"Should have at most {expected_max_files} files remaining with purge_factor={purge_factor}, got {remaining_files}"
     )
 
 
