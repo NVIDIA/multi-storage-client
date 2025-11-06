@@ -65,11 +65,12 @@ Create Package:
   script:
     - |
       nix develop '.#"'${PYTHON_BINARY}'"' --command bash -c "
+        cd multi-storage-client &&
         just package
       "
   artifacts:
     paths:
-      - dist/
+      - multi-storage-client/dist/
 
 Publish Package:
   extends:
@@ -107,6 +108,7 @@ Publish Package:
     # Hardcode "arch=any" temporarily to unblock publishing.
     - |
       nix develop --command bash -c "
+        cd multi-storage-client &&
         jf rt search \
           --url ${URM_ARTIFACTORY_URL} \
           --user ${URM_ARTIFACTORY_USERNAME} \

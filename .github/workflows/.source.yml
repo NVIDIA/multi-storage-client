@@ -7,9 +7,12 @@
 name: Source
 on:
   workflow_call:
+defaults:
+  run:
+    shell: nix develop --command bash -e {0}
 jobs:
-  build:
-    name: Build
+  multi-storage-client:
+    name: multi-storage-client
     strategy:
       matrix:
         python-binary:
@@ -25,6 +28,16 @@ jobs:
     steps:
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: actions/checkout@v4
-      - run: |
+      - working-directory: ./multi-storage-client
+        run: |
           just python-binary=${{ matrix.python-binary }} build
           just python-binary=${{ matrix.python-binary }} run-minimal-verification
+  multi-storage-client-docs:
+    name: multi-storage-client-docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: actions/checkout@v4
+      - working-directory: ./multi-storage-client-docs
+        run: |
+          just build

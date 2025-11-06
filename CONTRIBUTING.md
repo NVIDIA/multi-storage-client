@@ -67,41 +67,17 @@ Key:
 ├── .release_notes
 │   └── ...
 │
-│   # Python package build artifacts.
-├── dist 🤖
+│   # Client Python package.
+├── multi-storage-client
 │   └── ...
 │
-│   # Python documentation configuration.
-├── docs
-│   │   # Python documentation build artifacts.
-│   ├── dist 🤖
-│   │   └── ...
-│   │
-│   │   # Python documentation source.
-│   ├── src
-│   │   └── ...
-│   │
-│   │   # Python documentation configuration.
-│   └── conf.py
-│
-│   # Python package source.
-├── src
+│   # Client documentation.
+├── multi-storage-client-docs
 │   └── ...
 │
-│   # Python package test source.
-├── tests
-│   └── test_multistorageclient
-│       │   # Unit tests.
-│       ├── unit
-│       │   └── ...
-│       │
-│       │   # Load tests.
-│       ├── load
-│       │   └── ...
-│       │
-│       │   # End-to-end (E2E) tests.
-│       └── e2e
-│           └── ...
+│   # File system Go package.
+├── multi-storage-file-system
+│   └── ...
 │
 │   # GitLab pipeline entrypoint.
 ├── .gitlab-ci.yml
@@ -113,7 +89,7 @@ Key:
 │   # Build recipes.
 ├── justfile
 │
-│   # Python package configuration.
+│   # Python configuration.
 ├── pyproject.toml
 └── uv.lock 🤖
 ```

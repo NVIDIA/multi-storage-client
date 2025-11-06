@@ -1,0 +1,19 @@
+[project]
+name = "multi-storage-client-docs"
+version = "0.0.0"
+requires-python = ">=3.9,<4"
+classifiers = [
+    "Private :: Do Not Upload"
+]
+dependencies = [
+    "multi-storage-client[observability-otel,aistore,azure-storage-blob,boto3,google-cloud-storage,huggingface,oci,parquet,fsspec,hydra-core,numpy,ray,torch,xarray,zarr]",
+    "sphinx>=7.4.7,<8",
+    "sphinx-copybutton>=0.5.2,<0.6",
+    "furo>=2024.8.6"
+]
+
+[tool.ruff]
+extend = "../pyproject.toml"
+
+[tool.uv]
+package = false

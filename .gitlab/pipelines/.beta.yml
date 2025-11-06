@@ -65,6 +65,7 @@ Run E2E Tests:
   script:
     - |
       nix develop '.#"'${PYTHON_BINARY}'"' --command bash -c "
+        cd multi-storage-client &&
         export OCI_CONFIG_FILE=${OCI_CLIENT_CONFIGURATION_BETA} &&
         export MSC_CONFIG=${MULTI_STORAGE_CLIENT_CONFIGURATION_BETA} &&
         export GOOGLE_APPLICATION_CREDENTIALS=${GCS_APPLICATION_DEFAULT_CREDENTIALS_BETA} &&
@@ -73,4 +74,4 @@ Run E2E Tests:
       "
   artifacts:
     reports:
-      junit: .reports/e2e/pytest.xml
+      junit: multi-storage-client/.reports/e2e/pytest.xml

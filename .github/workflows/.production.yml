@@ -44,7 +44,8 @@ jobs:
       # `locale` comes with most Unix-like operating systems.
       #
       # https://github.com/sphinx-doc/sphinx/issues/11739
-      - run: |
+      - working-directory: ./multi-storage-client-docs
+        run: |
           echo 'All locales:'
           locale --all-locales
           echo 'Current locale:'
@@ -52,7 +53,7 @@ jobs:
           LC_ALL=en_US.utf8 just document
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/dist
+          path: multi-storage-client-docs/dist
       - id: deploy-pages
         uses: actions/deploy-pages@v4
   publish-release:

@@ -17,24 +17,24 @@
 .history
 
 # Build.
-.pytest_cache
-.reports
-.ruff_cache
-.venv
-__pycache__
-dist
-result
-rust/target
+**/.pytest_cache
+**/.reports
+**/.ruff_cache
+**/.venv
+**/__pycache__
+**/dist
+**/result
+**/rust/target
 *.o
 *.so
 
 # Storage systems.
-.aistore/sandbox
-.azurite/sandbox
-.fake-gcs-server/sandbox
-.minio/sandbox
+**/.aistore/sandbox
+**/.azurite/sandbox
+**/.fake-gcs-server/sandbox
+**/.minio/sandbox
 
 # Telemetry systems.
-.grafana/sandbox
-.mimir/sandbox
-.tempo/sandbox
+**/.grafana/sandbox
+**/.mimir/sandbox
+**/.tempo/sandbox

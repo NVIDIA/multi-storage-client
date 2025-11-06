@@ -1,0 +1,47 @@
+#
+# Just configuration.
+#
+# https://just.systems/man/en
+#
+
+# Default to the first Python binary on `PATH`.
+python-binary := "python"
+
+# List recipes.
+help:
+    just --list
+
+# Prepare the toolchain.
+prepare-toolchain:
+    # Prepare the virtual environment.
+    if [[ -z "${CI:-}" ]]; then \
+        uv sync --all-extras --python {{python-binary}}; \
+    else \
+        uv sync --all-extras --locked --python {{python-binary}}; \
+    fi
+
+# Start the Python REPL.
+start-repl: prepare-toolchain
+    # Start the Python REPL.
+    uv run python
+
+# Run static analysis (format, lint, type check).
+analyze: prepare-toolchain
+    # Remove analysis artifacts.
+    rm -rf .reports/ruff.json
+    # Format.
+    if [[ -z "${CI:-}" ]]; then ruff format; else ruff format --check; fi
+    # Lint.
+    if [[ -z "${CI:-}" ]]; then ruff check --fix; else ruff check --output-file .reports/ruff.json --output-format gitlab; fi
+    # Type check.
+    uv run pyright
+
+# Build the documentation.
+document: prepare-toolchain
+    # Remove documentation artifacts.
+    rm -rf dist
+    # Build the documentation website.
+    uv run sphinx-build -b html src dist
+
+# Release build.
+build: analyze document

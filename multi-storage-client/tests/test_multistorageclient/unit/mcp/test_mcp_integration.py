@@ -116,8 +116,8 @@ class TestMCPServerBasicOperations:
                 "msc_list", {"url": f"msc://{profile_name}/{test_prefix}/", "include_directories": False}
             )
 
-            assert isinstance(result[0], TextContent)
-            textContent: TextContent = result[0]
+            assert isinstance(result.content[0], TextContent)
+            textContent: TextContent = result.content[0]
             response: Dict[str, Any] = json.loads(textContent.text)
 
             assert isinstance(response, dict), "Response should be a JSON object"
@@ -164,8 +164,8 @@ class TestMCPServerBasicOperations:
         async with Client(mcp_server) as client:
             result = await client.call_tool("msc_info", {"url": f"msc://{profile_name}/{test_file_path}"})
 
-            assert isinstance(result[0], TextContent)
-            textContent: TextContent = result[0]
+            assert isinstance(result.content[0], TextContent)
+            textContent: TextContent = result.content[0]
             response: Dict[str, Any] = json.loads(textContent.text)
 
             # Basic response structure validation
@@ -242,8 +242,8 @@ class TestMCPServerBasicOperations:
                     {"url": f"msc://{profile_name}/{test_file_path}", "local_path": upload_path},
                 )
 
-                assert isinstance(upload_result[0], TextContent)
-                upload_response: Dict[str, Any] = json.loads(upload_result[0].text)
+                assert isinstance(upload_result.content[0], TextContent)
+                upload_response: Dict[str, Any] = json.loads(upload_result.content[0].text)
 
                 assert upload_response["success"] is True
                 assert upload_response["url"] == f"msc://{profile_name}/{test_file_path}"
@@ -259,8 +259,8 @@ class TestMCPServerBasicOperations:
                     {"url": f"msc://{profile_name}/{test_file_path}", "local_path": download_path},
                 )
 
-                assert isinstance(download_result[0], TextContent)
-                download_response: Dict[str, Any] = json.loads(download_result[0].text)
+                assert isinstance(download_result.content[0], TextContent)
+                download_response: Dict[str, Any] = json.loads(download_result.content[0].text)
 
                 assert download_response["success"] is True
                 assert download_response["url"] == f"msc://{profile_name}/{test_file_path}"
@@ -302,8 +302,8 @@ class TestMCPServerBasicOperations:
                 },
             )
 
-            assert isinstance(result[0], TextContent)
-            textContent: TextContent = result[0]
+            assert isinstance(result.content[0], TextContent)
+            textContent: TextContent = result.content[0]
             response: Dict[str, Any] = json.loads(textContent.text)
 
             assert response["success"] is True
@@ -315,8 +315,8 @@ class TestMCPServerBasicOperations:
             assert response["target_metadata"]["content_length"] == len(test_content)
 
             info_result = await client.call_tool("msc_info", {"url": f"msc://{profile_name}/{target_file_path}"})
-            assert isinstance(info_result[0], TextContent)
-            textContent = info_result[0]
+            assert isinstance(info_result.content[0], TextContent)
+            textContent = info_result.content[0]
             info_response: Dict[str, Any] = json.loads(textContent.text)
             assert info_response["success"] is True
             assert info_response["metadata"]["content_length"] == len(test_content)
@@ -337,8 +337,8 @@ class TestMCPServerBasicOperations:
 
         async with Client(mcp_server) as client:
             info_before = await client.call_tool("msc_info", {"url": f"msc://{profile_name}/{test_file_path}"})
-            assert isinstance(info_before[0], TextContent)
-            textContent: TextContent = info_before[0]
+            assert isinstance(info_before.content[0], TextContent)
+            textContent: TextContent = info_before.content[0]
             info_response: Dict[str, Any] = json.loads(textContent.text)
             assert info_response["success"] is True
 
@@ -346,8 +346,8 @@ class TestMCPServerBasicOperations:
                 "msc_delete", {"url": f"msc://{profile_name}/{test_file_path}", "recursive": False}
             )
 
-            assert isinstance(delete_result[0], TextContent)
-            textContent: TextContent = delete_result[0]
+            assert isinstance(delete_result.content[0], TextContent)
+            textContent: TextContent = delete_result.content[0]
             delete_response: Dict[str, Any] = json.loads(textContent.text)
 
             assert delete_response["success"] is True
@@ -355,8 +355,8 @@ class TestMCPServerBasicOperations:
             assert delete_response["recursive"] is False
 
             list_result = await client.call_tool("msc_list", {"url": f"msc://{profile_name}/{test_prefix}/"})
-            assert isinstance(list_result[0], TextContent)
-            textContent = list_result[0]
+            assert isinstance(list_result.content[0], TextContent)
+            textContent = list_result.content[0]
             list_response: Dict[str, Any] = json.loads(textContent.text)
             assert list_response["count"] == 0
 
@@ -378,8 +378,8 @@ class TestMCPServerBasicOperations:
 
         async with Client(mcp_server) as client:
             list_before = await client.call_tool("msc_list", {"url": f"msc://{profile_name}/{test_prefix}/"})
-            assert isinstance(list_before[0], TextContent)
-            textContent: TextContent = list_before[0]
+            assert isinstance(list_before.content[0], TextContent)
+            textContent: TextContent = list_before.content[0]
             list_before_response: Dict[str, Any] = json.loads(textContent.text)
             assert list_before_response["count"] == 5
 
@@ -387,8 +387,8 @@ class TestMCPServerBasicOperations:
                 "msc_delete", {"url": f"msc://{profile_name}/{test_prefix}/", "recursive": True}
             )
 
-            assert isinstance(delete_result[0], TextContent)
-            textContent = delete_result[0]
+            assert isinstance(delete_result.content[0], TextContent)
+            textContent = delete_result.content[0]
             delete_response: Dict[str, Any] = json.loads(textContent.text)
 
             assert delete_response["success"] is True
@@ -396,8 +396,8 @@ class TestMCPServerBasicOperations:
             assert delete_response["recursive"] is True
 
             list_after = await client.call_tool("msc_list", {"url": f"msc://{profile_name}/{test_prefix}/"})
-            assert isinstance(list_after[0], TextContent)
-            textContent = list_after[0]
+            assert isinstance(list_after.content[0], TextContent)
+            textContent = list_after.content[0]
             list_after_response: Dict[str, Any] = json.loads(textContent.text)
             assert list_after_response["count"] == 0
 
@@ -418,8 +418,8 @@ class TestMCPServerBasicOperations:
         async with Client(mcp_server) as client:
             file_result = await client.call_tool("msc_is_file", {"url": f"msc://{profile_name}/{test_file_path}"})
 
-            assert isinstance(file_result[0], TextContent)
-            textContent: TextContent = file_result[0]
+            assert isinstance(file_result.content[0], TextContent)
+            textContent: TextContent = file_result.content[0]
             file_response: Dict[str, Any] = json.loads(textContent.text)
 
             assert file_response["success"] is True
@@ -427,8 +427,8 @@ class TestMCPServerBasicOperations:
             assert file_response["url"] == f"msc://{profile_name}/{test_file_path}"
 
             dir_result = await client.call_tool("msc_is_file", {"url": f"msc://{profile_name}/{test_prefix}/"})
-            assert isinstance(dir_result[0], TextContent)
-            textContent = dir_result[0]
+            assert isinstance(dir_result.content[0], TextContent)
+            textContent = dir_result.content[0]
             dir_response: Dict[str, Any] = json.loads(textContent.text)
 
             assert dir_response["success"] is True
@@ -451,8 +451,8 @@ class TestMCPServerBasicOperations:
         async with Client(mcp_server) as client:
             empty_result = await client.call_tool("msc_is_empty", {"url": f"msc://{profile_name}/{empty_prefix}"})
 
-            assert isinstance(empty_result[0], TextContent)
-            textContent: TextContent = empty_result[0]
+            assert isinstance(empty_result.content[0], TextContent)
+            textContent: TextContent = empty_result.content[0]
             empty_response: Dict[str, Any] = json.loads(textContent.text)
 
             assert empty_response["success"] is True
@@ -462,8 +462,8 @@ class TestMCPServerBasicOperations:
             non_empty_result = await client.call_tool(
                 "msc_is_empty", {"url": f"msc://{profile_name}/{non_empty_prefix}"}
             )
-            assert isinstance(non_empty_result[0], TextContent)
-            textContent = non_empty_result[0]
+            assert isinstance(non_empty_result.content[0], TextContent)
+            textContent = non_empty_result.content[0]
             non_empty_response: Dict[str, Any] = json.loads(textContent.text)
 
             assert non_empty_response["success"] is True
@@ -487,8 +487,8 @@ class TestMCPServerBasicOperations:
 
         async with Client(mcp_server) as client:
             list_before = await client.call_tool("msc_list", {"url": f"msc://{profile_name}/{target_prefix}"})
-            assert isinstance(list_before[0], TextContent)
-            textContent: TextContent = list_before[0]
+            assert isinstance(list_before.content[0], TextContent)
+            textContent: TextContent = list_before.content[0]
             list_before_response: Dict[str, Any] = json.loads(textContent.text)
             assert list_before_response["count"] == 0
 
@@ -502,8 +502,8 @@ class TestMCPServerBasicOperations:
                 },
             )
 
-            assert isinstance(sync_result[0], TextContent)
-            textContent = sync_result[0]
+            assert isinstance(sync_result.content[0], TextContent)
+            textContent = sync_result.content[0]
             sync_response: Dict[str, Any] = json.loads(textContent.text)
 
             assert sync_response["success"] is True
@@ -513,8 +513,8 @@ class TestMCPServerBasicOperations:
             assert sync_response["preserve_source_attributes"] is False
 
             list_after = await client.call_tool("msc_list", {"url": f"msc://{profile_name}/{target_prefix}"})
-            assert isinstance(list_after[0], TextContent)
-            textContent = list_after[0]
+            assert isinstance(list_after.content[0], TextContent)
+            textContent = list_after.content[0]
             list_after_response: Dict[str, Any] = json.loads(textContent.text)
             assert list_after_response["count"] == 3
 
@@ -544,8 +544,8 @@ class TestMCPServerBasicOperations:
 
         async with Client(mcp_server) as client:
             list_before = await client.call_tool("msc_list", {"url": f"msc://{profile_name}/{target_prefix}"})
-            assert isinstance(list_before[0], TextContent)
-            textContent: TextContent = list_before[0]
+            assert isinstance(list_before.content[0], TextContent)
+            textContent: TextContent = list_before.content[0]
             list_before_response: Dict[str, Any] = json.loads(textContent.text)
             assert list_before_response["count"] == 2
 
@@ -559,16 +559,16 @@ class TestMCPServerBasicOperations:
                 },
             )
 
-            assert isinstance(sync_result[0], TextContent)
-            textContent = sync_result[0]
+            assert isinstance(sync_result.content[0], TextContent)
+            textContent = sync_result.content[0]
             sync_response: Dict[str, Any] = json.loads(textContent.text)
 
             assert sync_response["success"] is True
             assert sync_response["delete_unmatched_files"] is True
 
             list_after = await client.call_tool("msc_list", {"url": f"msc://{profile_name}/{target_prefix}"})
-            assert isinstance(list_after[0], TextContent)
-            textContent = list_after[0]
+            assert isinstance(list_after.content[0], TextContent)
+            textContent = list_after.content[0]
             list_after_response: Dict[str, Any] = json.loads(textContent.text)
             assert list_after_response["count"] == 2
 

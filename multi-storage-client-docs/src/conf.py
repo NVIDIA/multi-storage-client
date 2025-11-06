@@ -4,19 +4,12 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 #
 
-from sphinx_pyproject import SphinxConfig
+import importlib.metadata as importlib_metadata
 
-# Load `name`, `version`, `description`, and `authors` from the project's `pyproject.toml`.
-#
-# Prefer defining other configurations in this file instead of using
-# `[tool.sphinx-pyproject]` in the project's `pyproject.toml`.
-config = SphinxConfig(
-    "../../pyproject.toml",
-    globalns=globals(),
-)
+multi_storage_client_package_name = "multi-storage-client"
 
-project = config.name
-release = config.version
+project = multi_storage_client_package_name
+release = importlib_metadata.version(multi_storage_client_package_name)
 author = "NVIDIA Multi-Storage Client Team"
 copyright = "NVIDIA Corporation"
 

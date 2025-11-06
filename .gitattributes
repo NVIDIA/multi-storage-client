@@ -1,2 +1,3 @@
 # Lock files.
 *.lock gitlab-generated linguist-generated
+go.sum gitlab-generated linguist-generated

@@ -54,9 +54,12 @@ default:
 .default:
   stage: 💿
 
-Build:
+multi-storage-client:
   extends:
     - .default
+  rules:
+    - changes:
+      - multi-storage-client/**/*
   parallel:
     matrix:
       - PYTHON_BINARY:
@@ -68,18 +71,38 @@ Build:
   script:
     - |
       nix develop '.#"'${PYTHON_BINARY}'"' --command bash -c "
+        cd multi-storage-client &&
         just python-binary=${PYTHON_BINARY} build &&
         just python-binary=${PYTHON_BINARY} run-minimal-verification
       "
   artifacts:
     paths:
-      - .reports/unit/coverage/
-      - dist/
-      - docs/dist/
+      - multi-storage-client/.reports/unit/coverage/
+      - multi-storage-client/dist/
     reports:
-      codequality: .reports/ruff.json
+      codequality: multi-storage-client/.reports/ruff.json
       coverage_report:
         coverage_format: cobertura
-        path: .reports/unit/coverage.xml
-      junit: .reports/unit/pytest.xml
+        path: multi-storage-client/.reports/unit/coverage.xml
+      junit: multi-storage-client/.reports/unit/pytest.xml
   coverage: '/TOTAL.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
+
+multi-storage-client-docs:
+  extends:
+    - .default
+  rules:
+    - changes:
+      - multi-storage-client/**/*
+      - multi-storage-client-docs/**/*
+  script:
+    - |
+      nix develop --command bash -c "
+        cd multi-storage-client-docs &&
+        just build
+      "
+  artifacts:
+    paths:
+      - multi-storage-client-docs/.reports/unit/coverage/
+      - multi-storage-client-docs/dist/
+    reports:
+      codequality: multi-storage-client-docs/.reports/ruff.json

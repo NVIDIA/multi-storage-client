@@ -95,7 +95,7 @@
               ];
 
             tags = [
-              # Monotonic time. 
+              # Monotonic time.
               #
               # https://github.com/NVIDIA/aistore/blob/v1.4.0/Makefile#L86
               "mono"
@@ -220,14 +220,6 @@
                   #
                   # https://github.com/python/cpython/issues/77906
                   export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
-
-                  # Add git branch to bash prompt.
-                  if [ -n "''${BASH_VERSION}" ]; then
-                    __git_branch() {
-                      git branch 2>/dev/null | grep '^\*' | cut -d' ' -f2-
-                    }
-                    export PS1='\h:\W \u $([ -n "$(__git_branch)" ] && echo "($(__git_branch)) ")\$ '
-                  fi
 
                   echo "⚗️"
                 '';
