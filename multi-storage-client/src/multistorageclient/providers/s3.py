@@ -666,13 +666,18 @@ class S3StorageProvider(BaseStorageProvider):
                 validated_attributes = validate_attributes(attributes)
                 if validated_attributes:
                     extra_args["Metadata"] = validated_attributes
-                self._s3_client.upload_fileobj(
-                    Fileobj=f,
-                    Bucket=bucket,
-                    Key=key,
-                    Config=self._transfer_config,
-                    ExtraArgs=extra_args,
-                )
+
+                if self._rust_client and isinstance(f, io.BytesIO) and not extra_args:
+                    data = f.getbuffer()
+                    run_async_rust_client_method(self._rust_client, "upload_multipart_from_bytes", key, data)
+                else:
+                    self._s3_client.upload_fileobj(
+                        Fileobj=f,
+                        Bucket=bucket,
+                        Key=key,
+                        Config=self._transfer_config,
+                        ExtraArgs=extra_args,
+                    )
 
                 return file_size
 

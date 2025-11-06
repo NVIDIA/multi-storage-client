@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
 import os
 import tempfile
 import time
@@ -385,6 +386,10 @@ async def test_rustclient_explicit_multipart_chunksize(temp_data_store_type: Typ
         result = await rust_client.upload_multipart_from_bytes(
             large_file_path, large_data_bytes, multipart_chunksize=chunk_size, max_concurrency=max_concurrency
         )
+        assert result == large_file_size
+        # Test upload_multipart_from_bytes with BytesIO object
+        with io.BytesIO(large_data_bytes) as bytes_io:
+            result = await rust_client.upload_multipart_from_bytes(large_file_path, bytes_io.getbuffer())
         assert result == large_file_size
 
         # Test download_multipart_to_bytes with large data bytes

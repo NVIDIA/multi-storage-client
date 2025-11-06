@@ -30,11 +30,11 @@ class RustClient:
         """
         ...
 
-    async def put(self, path: str, data: bytes) -> int:
+    async def put(self, path: str, data: bytes | memoryview | bytearray) -> int:
         """
         Upload data to the object store at the specified path.
         :param path: The remote object path in the storage backend.
-        :param data: The data to upload as bytes.
+        :param data: The data to upload as bytes, memoryview, or bytearray (buffer protocol).
         :return: The number of bytes uploaded.
         """
         ...
@@ -90,7 +90,11 @@ class RustClient:
         ...
 
     async def upload_multipart_from_bytes(
-        self, remote_path: str, data: bytes, multipart_chunksize: int | None = ..., max_concurrency: int | None = ...
+        self,
+        remote_path: str,
+        data: bytes | memoryview | bytearray,
+        multipart_chunksize: int | None = ...,
+        max_concurrency: int | None = ...,
     ) -> int:
         """
         Upload data to the object store at the specified remote_path using multipart upload.
@@ -100,7 +104,7 @@ class RustClient:
         compared to put() method.
 
         :param remote_path: The remote object path in the storage backend.
-        :param data: The data to upload as bytes.
+        :param data: The data to upload as bytes, memoryview, or bytearray (buffer protocol).
         :param multipart_chunksize: The size of the multipart chunks.
         :param max_concurrency: The maximum number of concurrent operations.
         :return: The number of bytes uploaded.

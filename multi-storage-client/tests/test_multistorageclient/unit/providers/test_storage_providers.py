@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import functools
+import io
 import os
 import tempfile
 import uuid
@@ -670,6 +671,22 @@ def test_storage_providers_with_rust_client(
 
         # Delete the file.
         storage_client.delete(path=file_path)
+
+        # Test Multipart Upload from BytesIO
+        large_bytesio_path = os.path.join(*[f"{uuid.uuid4().hex}-prefix", "infix", "bytesio_suffix.txt"])
+        large_bytesio_data = os.urandom(MEMORY_LOAD_LIMIT + 1)
+        file_obj = io.BytesIO(large_bytesio_data)
+
+        # Upload BytesIO object
+        storage_client.upload_file(remote_path=large_bytesio_path, local_path=file_obj)
+        assert storage_client.is_file(path=large_bytesio_path)
+
+        # Verify content
+        downloaded_bytes = storage_client.read(path=large_bytesio_path)
+        assert downloaded_bytes == large_bytesio_data
+
+        # Delete the file
+        storage_client.delete(path=large_bytesio_path)
 
 
 @pytest.mark.parametrize(
