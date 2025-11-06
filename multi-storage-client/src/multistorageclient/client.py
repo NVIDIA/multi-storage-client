@@ -744,6 +744,7 @@ class StorageClient:
         preserve_source_attributes: bool = False,
         follow_symlinks: bool = True,
         source_files: Optional[List[str]] = None,
+        ignore_hidden: bool = True,
     ) -> None:
         """
         Syncs files from the source storage client to "path/".
@@ -768,6 +769,7 @@ class StorageClient:
         :param follow_symlinks: If the source StorageClient is PosixFile, whether to follow symbolic links. Default is True.
         :param source_files: Optional list of file paths (relative to source_path) to sync. When provided, only these
             specific files will be synced, skipping enumeration of the source path. Cannot be used together with patterns.
+        :param ignore_hidden: Whether to ignore hidden files and directories. Default is True.
         :raises ValueError: If both source_files and patterns are provided.
         """
         if source_files and patterns:
@@ -791,6 +793,7 @@ class StorageClient:
             preserve_source_attributes=preserve_source_attributes,
             follow_symlinks=follow_symlinks,
             source_files=source_files,
+            ignore_hidden=ignore_hidden,
         )
 
     def sync_replicas(
@@ -802,6 +805,7 @@ class StorageClient:
         num_worker_processes: Optional[int] = None,
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
         patterns: Optional[PatternList] = None,
+        ignore_hidden: bool = True,
     ) -> None:
         """
         Sync files from the source storage client to target replicas.
@@ -813,6 +817,7 @@ class StorageClient:
         :param num_worker_processes: The number of worker processes to use.
         :param execution_mode: The execution mode to use. Currently supports "local" and "ray".
         :param patterns: PatternList for include/exclude filtering. If None, all files are included.
+        :param ignore_hidden: Whether to ignore hidden files and directories (starting with dot). Default is True.
         """
         if not self._replicas:
             logger.warning(
@@ -847,4 +852,5 @@ class StorageClient:
                 num_worker_processes=num_worker_processes,
                 execution_mode=execution_mode,
                 patterns=patterns,
+                ignore_hidden=ignore_hidden,
             )

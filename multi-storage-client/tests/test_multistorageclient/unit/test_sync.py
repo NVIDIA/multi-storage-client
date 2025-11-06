@@ -239,7 +239,24 @@ def test_sync_from(temp_data_store_type: type[tempdatastore.TemporaryDataStore])
         source_msc_url = f"msc://{local_profile}/folder"
         target_msc_url = f"msc://{obj_profile}/synced-files"
 
-        # Create local dataset
+        # Create local dataset with both regular and hidden files
+        source_files = {
+            "dir1/file0.txt": "a" * 150,
+            "dir1/file1.txt": "b" * 200,
+            "dir1/file2.txt": "c" * 1000,
+            "dir2/file0.txt": "d" * 1,
+            "dir2/file1.txt": "e" * 5,
+            "dir2/file2.txt": "f" * (MEMORY_LOAD_LIMIT + 1024),  # One large file
+            "dir3/file0.txt": "g" * 10000,
+            "dir3/file1.txt": "h" * 800,
+            "dir3/file2.txt": "i" * 512,
+            # Hidden files that should NOT be synced
+            ".hidden_root.txt": "hidden_root",
+            "dir1/.hidden_in_dir.txt": "hidden_in_dir1",
+            "dir2/.dotfile": "dotfile_content",
+            ".git/config": "git_config",
+        }
+        # Expected files after sync (without hidden files)
         expected_files = {
             "dir1/file0.txt": "a" * 150,
             "dir1/file1.txt": "b" * 200,
@@ -251,7 +268,7 @@ def test_sync_from(temp_data_store_type: type[tempdatastore.TemporaryDataStore])
             "dir3/file1.txt": "h" * 800,
             "dir3/file2.txt": "i" * 512,
         }
-        create_local_test_dataset(source_msc_url, expected_files)
+        create_local_test_dataset(source_msc_url, source_files)
         # Insert a delay before sync'ing so that timestamps will be clearer.
         time.sleep(1)
 
@@ -264,6 +281,12 @@ def test_sync_from(temp_data_store_type: type[tempdatastore.TemporaryDataStore])
 
         # Verify contents on target match expectation.
         verify_sync_and_contents(target_url=target_msc_url, expected_files=expected_files)
+
+        # Verify hidden files are NOT synced to target
+        hidden_files = [".hidden_root.txt", "dir1/.hidden_in_dir.txt", "dir2/.dotfile", ".git/config"]
+        for hidden_file in hidden_files:
+            hidden_file_url = os.path.join(target_msc_url, hidden_file)
+            assert not msc.is_file(hidden_file_url), f"Hidden file should not be synced: {hidden_file}"
 
 
 @pytest.mark.parametrize(

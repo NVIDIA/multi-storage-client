@@ -98,6 +98,7 @@ class ProducerThread(threading.Thread):
         preserve_source_attributes: bool = False,
         follow_symlinks: bool = True,
         source_files: Optional[list[str]] = None,
+        ignore_hidden: bool = True,
     ):
         super().__init__(daemon=True)
         self.source_client = source_client
@@ -112,6 +113,7 @@ class ProducerThread(threading.Thread):
         self.preserve_source_attributes = preserve_source_attributes
         self.follow_symlinks = follow_symlinks
         self.source_files = source_files
+        self.ignore_hidden = ignore_hidden
         self.error = None
 
     def _match_file_metadata(self, source_info: ObjectMetadata, target_info: ObjectMetadata) -> bool:
@@ -120,6 +122,13 @@ class ProducerThread(threading.Thread):
             source_info.content_length == target_info.content_length
             and source_info.last_modified <= target_info.last_modified
         )
+
+    def _is_hidden(self, path: str) -> bool:
+        """Check if a path contains any hidden components (starting with dot)."""
+        if not self.ignore_hidden:
+            return False
+        parts = path.split("/")
+        return any(part.startswith(".") for part in parts)
 
     def _create_source_files_iterator(self):
         """Create an iterator from source_files that yields ObjectMetadata."""
@@ -163,6 +172,15 @@ class ProducerThread(threading.Thread):
                     source_key = source_file.key[len(self.source_path) :].lstrip("/")
                     target_key = target_file.key[len(self.target_path) :].lstrip("/")
 
+                    # Skip hidden files and directories
+                    if self._is_hidden(source_key):
+                        source_file = next(source_iter, None)
+                        continue
+
+                    if self._is_hidden(target_key):
+                        target_file = next(target_iter, None)
+                        continue
+
                     if source_key < target_key:
                         # Check if file should be included based on patterns
                         if not self.pattern_matcher or self.pattern_matcher.should_include_file(source_key):
@@ -188,12 +206,25 @@ class ProducerThread(threading.Thread):
                         total_count += 1
                 elif source_file:
                     source_key = source_file.key[len(self.source_path) :].lstrip("/")
+
+                    # Skip hidden files and directories
+                    if self._is_hidden(source_key):
+                        source_file = next(source_iter, None)
+                        continue
+
                     # Check if file should be included based on patterns
                     if not self.pattern_matcher or self.pattern_matcher.should_include_file(source_key):
                         self.file_queue.put((_SyncOp.ADD, source_file))
                         total_count += 1
                     source_file = next(source_iter, None)
-                else:
+                elif target_file:
+                    target_key = target_file.key[len(self.target_path) :].lstrip("/")
+
+                    # Skip hidden files and directories
+                    if self._is_hidden(target_key):
+                        target_file = next(target_iter, None)
+                        continue
+
                     if self.delete_unmatched_files:
                         self.file_queue.put((_SyncOp.DELETE, target_file))
                         total_count += 1
@@ -281,6 +312,7 @@ class SyncManager:
         preserve_source_attributes: bool = False,
         follow_symlinks: bool = True,
         source_files: Optional[list[str]] = None,
+        ignore_hidden: bool = True,
     ):
         """
         Synchronize objects from source to target storage location.
@@ -310,6 +342,7 @@ class SyncManager:
         :param follow_symlinks: Whether to follow symbolic links. Only applicable when source is POSIX file storage. When False, symlinks are skipped during sync.
         :param source_files: Optional list of file paths (relative to source_path) to sync. When provided, only these
             specific files will be synced, skipping enumeration of the source path.
+        :param ignore_hidden: Whether to ignore hidden files and directories (starting with dot). Default is True.
         """
         logger.debug(f"Starting sync operation {description}")
 
@@ -361,6 +394,7 @@ class SyncManager:
             preserve_source_attributes,
             follow_symlinks,
             source_files,
+            ignore_hidden,
         )
         producer_thread.start()
 

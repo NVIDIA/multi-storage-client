@@ -355,6 +355,7 @@ def sync(
     execution_mode: ExecutionMode = ExecutionMode.LOCAL,
     patterns: Optional[PatternList] = None,
     preserve_source_attributes: bool = False,
+    ignore_hidden: bool = True,
 ) -> None:
     """
     Syncs files from the source storage to the target storage.
@@ -371,6 +372,7 @@ def sync(
             **Performance Impact**: When enabled without a ``metadata_provider`` configured, this will make a HEAD
             request for each object to retrieve attributes, which can significantly impact performance on large-scale
             sync operations. For production use at scale, configure a ``metadata_provider`` in your storage profile.
+    :param ignore_hidden: Whether to ignore hidden files and directories (starting with dot). Default is True.
     """
     source_client, source_path = resolve_storage_client(source_url)
     target_client, target_path = resolve_storage_client(target_url)
@@ -382,6 +384,7 @@ def sync(
         execution_mode=execution_mode,
         patterns=patterns,
         preserve_source_attributes=preserve_source_attributes,
+        ignore_hidden=ignore_hidden,
     )
 
 
@@ -391,6 +394,7 @@ def sync_replicas(
     delete_unmatched_files: bool = False,
     execution_mode: ExecutionMode = ExecutionMode.LOCAL,
     patterns: Optional[PatternList] = None,
+    ignore_hidden: bool = True,
 ) -> None:
     """
     Syncs files from the source storage to all the replicas.
@@ -400,6 +404,7 @@ def sync_replicas(
     :param delete_unmatched_files: Whether to delete files at the replicas that are not present at the source.
     :param execution_mode: The execution mode to use. Currently supports "local" and "ray".
     :param patterns: PatternList for include/exclude filtering. If None, all files are included.
+    :param ignore_hidden: Whether to ignore hidden files and directories (starting with dot). Default is True.
     """
     source_client, source_path = resolve_storage_client(source_url)
     source_client.sync_replicas(
@@ -408,6 +413,7 @@ def sync_replicas(
         delete_unmatched_files=delete_unmatched_files,
         execution_mode=execution_mode,
         patterns=patterns,
+        ignore_hidden=ignore_hidden,
     )
 
 

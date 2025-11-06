@@ -80,6 +80,11 @@ class SyncAction(Action):
             pattern_type=PatternType.EXCLUDE,
             help="Exclude files that match the specified pattern. Can be used multiple times. Supports AWS S3 compatible glob patterns (*, ?, [sequence], [!sequence]).",
         )
+        parser.add_argument(
+            "--no-ignore-hidden",
+            action="store_true",
+            help="Do not ignore hidden files and directories (those starting with a dot). By default, hidden files are ignored.",
+        )
         parser.add_argument("source_url", help="The path or URL for the source storage (POSIX path or msc:// URL)")
 
         # Add examples as description
@@ -128,6 +133,9 @@ class SyncAction(Action):
 
   # Sync with directory patterns (AWS S3 compatible)
   msc sync msc://source-profile/data --include "images/*.jpg" --exclude "temp/*" --target-url msc://target-profile/data
+
+  # Include hidden files in sync (by default they are ignored)
+  msc sync /path/to/dataset --no-ignore-hidden --target-url msc://profile/prefix
 """
 
     def run(self, args: argparse.Namespace) -> int:
@@ -154,6 +162,9 @@ class SyncAction(Action):
             ordered_patterns = getattr(args, "ordered_patterns", [])
             patterns: Optional[PatternList] = ordered_patterns if ordered_patterns else None
 
+            # Convert --no-ignore-hidden flag to ignore_hidden parameter (inverted logic)
+            ignore_hidden = not args.no_ignore_hidden
+
             if args.target_url:
                 msc.sync(
                     args.source_url,
@@ -161,6 +172,7 @@ class SyncAction(Action):
                     args.delete_unmatched_files,
                     execution_mode=execution_mode,
                     patterns=patterns,
+                    ignore_hidden=ignore_hidden,
                 )
             else:
                 try:
@@ -179,6 +191,7 @@ class SyncAction(Action):
                     delete_unmatched_files=args.delete_unmatched_files,
                     execution_mode=execution_mode,
                     patterns=patterns,
+                    ignore_hidden=ignore_hidden,
                 )
             if args.verbose:
                 print("Synchronization completed successfully")
