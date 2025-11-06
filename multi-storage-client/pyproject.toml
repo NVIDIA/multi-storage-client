@@ -61,7 +61,6 @@ mcp = [
     "fastmcp>=2.11.2; python_version>='3.10'"
 ]
 
-
 # Storage providers.
 aistore = [
     "aistore>=1.16,<2"

@@ -59,7 +59,11 @@ multi-storage-client:
     - .default
   rules:
     - changes:
-      - multi-storage-client/**/*
+        - flake.lock
+        - flake.nix
+        - pyproject.toml
+        - uv.lock
+        - multi-storage-client/**/*
   parallel:
     matrix:
       - PYTHON_BINARY:
@@ -92,8 +96,12 @@ multi-storage-client-docs:
     - .default
   rules:
     - changes:
-      - multi-storage-client/**/*
-      - multi-storage-client-docs/**/*
+        - flake.lock
+        - flake.nix
+        - pyproject.toml
+        - uv.lock
+        - multi-storage-client/**/*
+        - multi-storage-client-docs/**/*
   script:
     - |
       nix develop --command bash -c "
