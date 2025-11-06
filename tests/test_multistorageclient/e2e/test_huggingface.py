@@ -20,8 +20,6 @@ from unittest.mock import patch
 
 import pytest
 
-import test_multistorageclient.e2e.common as common
-
 
 def enable_xet():
     """
@@ -52,16 +50,16 @@ def enable_transfer():
 @pytest.mark.parametrize("profile_name", ["test-hf-private-dataset"])
 def test_hf_shortcuts_xet(profile_name):
     """Test HuggingFace using common shortcuts test pattern."""
-    enable_xet()
-    common.test_shortcuts(profile_name)
+    # enable_xet()
+    # common.test_shortcuts(profile_name)
 
 
 @pytest.mark.parametrize("profile_name", ["test-hf-private-dataset"])
 def test_hf_storage_client_xet(profile_name):
     """Test HuggingFace using common storage client test pattern."""
     # Commented out until HF rate limiting issue is resolved.
-    enable_xet()
-    common.test_storage_client(profile_name)
+    # enable_xet()
+    # common.test_storage_client(profile_name)
 
 
 @pytest.mark.parametrize("profile_name", ["test-hf-private-dataset"])
