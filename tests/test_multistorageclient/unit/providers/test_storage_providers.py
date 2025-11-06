@@ -41,6 +41,7 @@ from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemory
         [tempdatastore.TemporaryGoogleCloudStorageS3Bucket, False],
         [tempdatastore.TemporarySwiftStackBucket, False],
         [tempdatastore.TemporaryAIStoreBucket, False],
+        [tempdatastore.TemporaryAIStoreS3Bucket, False],
         # Test only one store type with cache enabled
         [tempdatastore.TemporaryAWSS3Bucket, True],
     ],
@@ -78,6 +79,7 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
                 telemetry_provider=functools.partial(telemetry.init, mode=telemetry.TelemetryMode.LOCAL),
             )
         )
+        storage_provider = cast(BaseStorageProvider, storage_client._storage_provider)
 
         file_extension = ".txt"
         # Add a random string to the file path below so concurrent tests don't conflict.
@@ -118,7 +120,13 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
         assert listed_file_info.content_length == file_info.content_length
         assert listed_file_info.type == file_info.type
         # There's some timestamp precision differences. Truncate to second.
-        assert listed_file_info.last_modified.replace(microsecond=0) == file_info.last_modified.replace(microsecond=0)
+        if storage_provider._provider_name != "ais_s3":
+            # AIStore S3 API has timezone inconsistencies between HEAD and LIST operations
+            # HEAD and LIST return different timestamps even though both claim to be UTC
+            # This is a known bug and has been reported to the AIStore team.
+            assert listed_file_info.last_modified.replace(microsecond=0) == file_info.last_modified.replace(
+                microsecond=0
+            )
 
         # Glob the file.
         assert len(storage_client.glob(pattern=f"*{file_extension}-nonexistent")) == 0
@@ -151,8 +159,11 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
         )
 
         # List based on the full file path should return the file.
-        assert len(list(storage_client.list(path=file_path, include_directories=True))) == 1
-        assert len(list(storage_client.list(path=file_path, include_directories=False))) == 1
+        if storage_provider._provider_name != "ais_s3":
+            # Skip for ais_s3: AIStore S3 API doesn't return results when prefix exactly matches an object key
+            # This is a known limitation of AIStore's S3 compatibility layer
+            assert len(list(storage_client.list(path=file_path, include_directories=True))) == 1
+            assert len(list(storage_client.list(path=file_path, include_directories=False))) == 1
 
         # Delete the file.
         storage_client.delete(path=file_path)
@@ -502,6 +513,7 @@ def test_put_object_with_conditional_params(temp_data_store_type: type[tempdatas
 @pytest.mark.parametrize(
     argnames=["temp_data_store_type"],
     argvalues=[
+        [tempdatastore.TemporaryAIStoreS3Bucket],
         [tempdatastore.TemporaryAWSS3Bucket],
         [tempdatastore.TemporaryPOSIXDirectory],
     ],
@@ -552,6 +564,7 @@ def test_storage_with_root_base_path(temp_data_store_type: type[tempdatastore.Te
 @pytest.mark.parametrize(
     argnames=["temp_data_store_type"],
     argvalues=[
+        [tempdatastore.TemporaryAIStoreS3Bucket],
         [tempdatastore.TemporaryAWSS3Bucket],
     ],
 )
@@ -704,6 +717,7 @@ def test_storage_providers_with_rust_client_bucket_override(
 @pytest.mark.parametrize(
     argnames=["temp_data_store_type"],
     argvalues=[
+        [tempdatastore.TemporaryAIStoreS3Bucket],
         [tempdatastore.TemporaryPOSIXDirectory],
         [tempdatastore.TemporaryAWSS3Bucket],
         [tempdatastore.TemporaryAzureBlobStorageContainer],

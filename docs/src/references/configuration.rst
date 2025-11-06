@@ -358,7 +358,7 @@ Options: See parameters in :py:class:`multistorageclient.providers.oci.OracleSto
 ``aistore``
 -----------
 
-NVIDIA AIStore provider.
+NVIDIA AIStore provider using the native SDK.
 
 Options: See parameters in :py:class:`multistorageclient.providers.ais.AIStoreStorageProvider`.
 
@@ -368,11 +368,63 @@ Options: See parameters in :py:class:`multistorageclient.providers.ais.AIStoreSt
    profiles:
      my-profile:
        storage_provider:
-         type: aistore
+         type: ais
          options:
            endpoint: https://ais.example.com
            base_path: my-bucket
 
+``ais_s3``
+----------
+
+NVIDIA AIStore provider using the S3-compatible API.
+
+Options: See parameters in :py:class:`multistorageclient.providers.ais_s3.AIStoreS3StorageProvider`.
+
+.. code-block:: yaml
+   :caption: Example 1: Local deployment (no authentication, no SSL).
+
+   profiles:
+     local-aistore:
+       storage_provider:
+         type: ais_s3
+         options:
+           endpoint_url: http://localhost:51080/s3
+           base_path: my-bucket
+
+.. code-block:: yaml
+   :caption: Example 2: Production with self-signed certificate (JWT token provided, skip SSL verification).
+
+   profiles:
+     prod-aistore:
+       storage_provider:
+         type: ais_s3
+         options:
+           endpoint_url: https://aistore.example.com/s3
+           base_path: my-bucket
+           verify: false  # Skip SSL verification for self-signed certificates
+       credentials_provider:
+         type: AISCredentials
+         options:
+           token: ${AIS_TOKEN}  # Pre-generated JWT token
+
+.. code-block:: yaml
+   :caption: Example 3: Production with CA certificate (obtain JWT token with username/password).
+
+   profiles:
+     prod-aistore:
+       storage_provider:
+         type: ais_s3
+         options:
+           endpoint_url: https://aistore.example.com/s3
+           base_path: my-bucket
+           verify: /path/to/aistore-ca.crt  # CA certificate for S3 API endpoint
+       credentials_provider:
+         type: AISCredentials
+         options:
+           username: ${AIS_USERNAME}
+           password: ${AIS_PASSWORD}
+           authn_endpoint: https://authn.example.com:52001
+           ca_cert: /path/to/authn-ca.crt  # CA certificate for AuthN server (often same as above)
 .. _rust-client-reference:
 
 ``huggingface``
@@ -544,6 +596,28 @@ Options: See parameters in :py:class:`multistorageclient.providers.azure.StaticA
 Static credentials provider for NVIDIA AIStore.
 
 Options: See parameters in :py:class:`multistorageclient.providers.ais.StaticAISCredentialProvider`.
+
+.. code-block:: yaml
+   :caption: Example 1: Production with pre-generated JWT token.
+
+   profiles:
+     my-profile:
+       credentials_provider:
+         type: AISCredentials
+         options:
+           token: ${AIS_TOKEN}  # Pre-generated JWT token
+
+.. code-block:: yaml
+   :caption: Example 2: Production with username/password (obtains JWT token automatically).
+
+   profiles:
+     my-profile:
+       credentials_provider:
+         type: AISCredentials
+         options:
+           username: ${AIS_USERNAME}
+           password: ${AIS_PASSWORD}
+           authn_endpoint: https://authn.example.com:52001
 
 Retry
 =====

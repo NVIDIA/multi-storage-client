@@ -52,6 +52,10 @@ Providers
    :members:
    :undoc-members:
 
+.. automodule:: multistorageclient.providers.ais_s3
+   :members:
+   :undoc-members:
+
 .. automodule:: multistorageclient.providers.azure
    :members:
    :undoc-members:

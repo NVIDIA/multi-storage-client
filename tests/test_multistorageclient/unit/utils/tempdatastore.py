@@ -326,3 +326,61 @@ class TemporaryAIStoreBucket(TemporaryDataStore):
             bucket.delete()
         except Exception:
             pass
+
+
+class TemporaryAIStoreS3Bucket(TemporaryDataStore):
+    """
+    This class creates a temporary AIStore S3 bucket. The resulting object can be used as a context manager.
+    On completion of the context or destruction of the temporary data store object,
+    the newly created temporary data store and all its contents are removed.
+    """
+
+    #: Bucket name.
+    _bucket_name: str
+    #: AIStore client (used for bucket creation/deletion).
+    _ais_client: Any
+    #: MSC storage provider (for cleanup operations).
+    _storage_provider: Any
+
+    def __init__(self):
+        from aistore.sdk import Client
+
+        from multistorageclient.providers.ais_s3 import AIStoreS3StorageProvider
+
+        self._bucket_name = str(uuid.uuid4())
+
+        # Backed by local AIStore S3 endpoint.
+        #
+        # https://aistore.nvidia.com/docs/s3compat
+        ais_endpoint = "http://localhost:51080"
+        s3_endpoint = f"{ais_endpoint}/s3"
+
+        # Use AIStore SDK client to create the bucket
+        self._ais_client = Client(endpoint=ais_endpoint)
+        self._ais_client.bucket(bck_name=self._bucket_name, provider="ais").create()
+
+        # Create MSC ais_s3 storage provider for cleanup operations
+        self._storage_provider = AIStoreS3StorageProvider(
+            endpoint_url=s3_endpoint,
+            base_path=self._bucket_name,
+        )
+
+        self._profile_config_dict = {
+            "storage_provider": {
+                "type": "ais_s3",
+                "options": {"endpoint_url": s3_endpoint, "base_path": self._bucket_name},
+            },
+            "caching_enabled": True,
+        }
+
+    def cleanup(self) -> None:
+        try:
+            # Delete all objects in the bucket using MSC ais_s3 provider
+            for obj in self._storage_provider.list_objects():
+                self._storage_provider.delete_object(obj.key)
+
+            # Delete the bucket using AIStore SDK
+            bucket = self._ais_client.bucket(bck_name=self._bucket_name, provider="ais")
+            bucket.delete()
+        except Exception:
+            pass

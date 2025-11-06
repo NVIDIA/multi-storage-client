@@ -49,6 +49,7 @@ def __getattr__(name: str) -> Any:
         "S8KStorageProvider": ".s8k",
         # AIS
         "AIStoreStorageProvider": ".ais",
+        "AIStoreS3StorageProvider": ".ais_s3",
         "StaticAISCredentialProvider": ".ais",
         # HuggingFace
         "HuggingFaceStorageProvider": ".huggingface",
@@ -65,25 +66,31 @@ def __getattr__(name: str) -> Any:
         except ModuleNotFoundError:
             # Map modules to their pip package requirements
             package_map = {
-                ".azure": "azure-storage-blob",
-                ".gcs": "google-cloud-storage",
-                ".gcs-s3": "boto3",
-                ".oci": "oci",
-                ".s3": "boto3",
-                ".s8k": "boto3",
-                ".ais": "aistore",
-                ".huggingface": "huggingface",
+                ".azure": ["azure-storage-blob"],
+                ".gcs": ["google-cloud-storage"],
+                ".gcs_s3": ["boto3"],
+                ".oci": ["oci"],
+                ".s3": ["boto3"],
+                ".s8k": ["boto3"],
+                ".ais": ["aistore"],
+                ".ais_s3": ["boto3", "aistore"],
+                ".huggingface": ["huggingface"],
             }
 
-            required_package = package_map.get(module_name, module_name.lstrip("."))
+            required_packages = ",".join(package_map.get(module_name, [module_name.lstrip(".")]))
+
+            # Map modules to their provider name
             provider_name = {
-                "azure-storage-blob": "Azure Blob Storage",
-                "google-cloud-storage": "Google Cloud Storage",
-                "oci": "Oracle Cloud Infrastructure",
-                "boto3": "Amazon S3 or other S3-compatible storage",
-                "aistore": "NVIDIA AIStore",
-                "huggingface": "HuggingFace Hub",
-            }.get(required_package, required_package)
+                ".azure": "Azure Blob Storage",
+                ".gcs": "Google Cloud Storage",
+                ".gcs_s3": "Google Cloud Storage with S3 API",
+                ".oci": "Oracle Cloud Infrastructure",
+                ".s3": "Amazon S3 or other S3-compatible storage",
+                ".s8k": "S8K storage",
+                ".ais": "NVIDIA AIStore",
+                ".ais_s3": "NVIDIA AIStore with S3 API",
+                ".huggingface": "HuggingFace Hub",
+            }.get(module_name, "this storage provider")
 
             # Write a helpful message to stderr
             logger.error(
@@ -93,7 +100,7 @@ def __getattr__(name: str) -> Any:
                         f"Accessing {provider_name} requires additional dependencies.",
                         "To use this storage provider, please install the optional dependency:",
                         "",
-                        f"    pip install multi-storage-client[{required_package}]",
+                        f"    pip install multi-storage-client[{required_packages}]",
                         "",
                     ]
                 )

@@ -112,6 +112,7 @@ class S3StorageProvider(BaseStorageProvider):
         credentials_provider: Optional[CredentialsProvider] = None,
         config_dict: Optional[dict[str, Any]] = None,
         telemetry_provider: Optional[Callable[[], Telemetry]] = None,
+        verify: Optional[Union[bool, str]] = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -123,6 +124,8 @@ class S3StorageProvider(BaseStorageProvider):
         :param credentials_provider: The provider to retrieve S3 credentials.
         :param config_dict: Resolved MSC config.
         :param telemetry_provider: A function that provides a telemetry instance.
+        :param verify: Controls SSL certificate verification. Can be ``True`` (verify using system CA bundle, default),
+            ``False`` (skip verification), or a string path to a custom CA certificate bundle.
         """
         super().__init__(
             base_path=base_path,
@@ -134,6 +137,7 @@ class S3StorageProvider(BaseStorageProvider):
         self._region_name = region_name
         self._endpoint_url = endpoint_url
         self._credentials_provider = credentials_provider
+        self._verify = verify
 
         self._signature_version = kwargs.get("signature_version", "")
         self._s3_client = self._create_s3_client(
@@ -215,6 +219,9 @@ class S3StorageProvider(BaseStorageProvider):
 
         if self._endpoint_url:
             options["endpoint_url"] = self._endpoint_url
+
+        if self._verify is not None:
+            options["verify"] = self._verify
 
         if self._credentials_provider:
             creds = self._fetch_credentials()
@@ -502,9 +509,9 @@ class S3StorageProvider(BaseStorageProvider):
                     key=path,
                     type="file",
                     content_length=response["ContentLength"],
-                    content_type=response["ContentType"],
+                    content_type=response.get("ContentType"),
                     last_modified=response["LastModified"],
-                    etag=response["ETag"].strip('"'),
+                    etag=response["ETag"].strip('"') if "ETag" in response else None,
                     storage_class=response.get("StorageClass"),
                     metadata=response.get("Metadata"),
                 )

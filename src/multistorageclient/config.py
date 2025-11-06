@@ -86,6 +86,7 @@ STORAGE_PROVIDER_MAPPING = {
     "oci": "OracleStorageProvider",
     "azure": "AzureBlobStorageProvider",
     "ais": "AIStoreStorageProvider",
+    "ais_s3": "AIStoreS3StorageProvider",
     "s8k": "S8KStorageProvider",
     "gcs_s3": "GoogleS3StorageProvider",
     "huggingface": "HuggingFaceStorageProvider",
