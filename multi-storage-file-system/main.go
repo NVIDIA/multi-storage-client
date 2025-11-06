@@ -8,9 +8,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/NVIDIA/multi-storage-client/posix/fuse/mscp/telemetry"
-	"github.com/NVIDIA/multi-storage-client/posix/fuse/mscp/telemetry/attributes"
-	"github.com/NVIDIA/multi-storage-client/posix/fuse/mscp/telemetry/auth"
+	"github.com/NVIDIA/multi-storage-client/multi-storage-file-system/telemetry"
+	"github.com/NVIDIA/multi-storage-client/multi-storage-file-system/telemetry/attributes"
+	"github.com/NVIDIA/multi-storage-client/multi-storage-file-system/telemetry/auth"
 )
 
 // `main` is the entrypoint for the FUSE file system daemon. It parses the

@@ -1,8 +1,9 @@
-module github.com/NVIDIA/multi-storage-client/posix/fuse/mscp
+module github.com/NVIDIA/multi-storage-client/multi-storage-file-system
 
 go 1.25.1
 
 require (
+	github.com/AzureAD/microsoft-authentication-library-for-go v1.5.0
 	github.com/NVIDIA/fission/v3 v3.0.3
 	github.com/NVIDIA/sortedmap v1.30.0
 	github.com/aws/aws-sdk-go-v2 v1.39.2
@@ -20,7 +21,6 @@ require (
 )
 
 require (
-	github.com/AzureAD/microsoft-authentication-library-for-go v1.5.0 // indirect
 	github.com/NVIDIA/cstruct v1.30.0 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.1 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.9 // indirect
@@ -42,8 +42,6 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.2 // indirect
-	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
-	github.com/hashicorp/go-retryablehttp v0.7.8 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 	go.opentelemetry.io/otel/trace v1.38.0 // indirect

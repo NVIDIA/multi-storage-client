@@ -1,4 +1,4 @@
-mscp_version: 1
+msfs_version: 1
 backends: [
   {
     dir_name: ram,

@@ -31,37 +31,37 @@ environment variables. Hence, a string setting may contain `$VAR` and/or
 will ultimately substitute the environment variable `VAR`'s current value.
 
 As FUSE details often require more fine grained and detailed control,
-a MSCP-specific (`MSCP` being an acronym for "Multi-Storage Client POSIX")
+a MSFS-specific (`MSFS` being an acronym for "Multi-Storage-File-System")
 configuration language is also available. This configuration mode is selected
-by supplying a top-level key `mscp_version` with a supported version number
+by supplying a top-level key `msfs_version` with a supported version number
 (see below).
 
-**Environment Variable Integration:** When using the mount helper (`mount -t msc <config> <mountpoint>`),
-the `MSC_MOUNTPOINT` environment variable is automatically set and takes precedence over the
+**Environment Variable Integration:** When using the mount helper (`mount -t msfs <config> <mountpoint>`),
+the `MSFS_MOUNTPOINT` environment variable is automatically set and takes precedence over the
 `mountpoint` setting in the configuration file. This allows the same configuration file to be
 mounted at different locations. The `MSC_CONFIG` environment variable is similarly set with the
 path to the configuration file being used.
 
-The MSCP-specific global (i.e. "top-level") settings are described in the following table:
+The MSFS-specific global (i.e. "top-level") settings are described in the following table:
 
-| Setting                         | Units                |                 Default | Description                                                                                                                                                                                                         |
-| :------------------------------ | :------------------- | ----------------------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| mscp_version                    | decimal              |                       0 | If == 0, the configuration is assumed to follow the [Multi-Storage Client specification](https://nvidia.github.io/multi-storage-client/references/configuration.html); otherwise, must == 1 & the following applies |
-| mountname                       | string               |             "msc-posix" | Filesystem `name` as it would appear in e.g. `df`                                                                                                                                                                   |
-| mountpoint                      | string               | ${MSC_MOUNTPOINT:-/mnt} | Filesystem `path` where POSIX representation will appear                                                                                                                                                            |
-| uid                             | decimal              |          (current euid) | UserID of the filesystem root directory                                                                                                                                                                             |
-| gid                             | decimal              |          (current egid) | GroupID of the filesystem root directory                                                                                                                                                                            |
-| dir_perm                        | string (in octal)    |                   "555" | Permission (Mode) Bits (in 3-digit octal form) of the file system root directory                                                                                                                                    |
-| allow_other                     | boolean              |                    true | If true, Permission (Mode) Bits determine who may have access; otherwise only owner and `root` have access                                                                                                          |
-| max_write                       | decimal bytes        |          131072 (128Ki) | Maximum write size Linux VFS will send to FUSE implementatino                                                                                                                                                       |
-| entry_attr_ttl                  | decimal milliseconds |                   10000 | Amount of time Linux VFS is allowed to cache returned metadata (including potentially temporary inode numbers)                                                                                                      |
-| evictable_inode_ttl             | decimal milliseconds |                 1000000 | Amount of time an auto-generated inode will be minimally maintained (should be at least entry_attr_ttl)                                                                                                             |
-| cache_line_size                 | decimal bytes        |           1048576 (1Mi) | Granularity of caching layer for both file read and write traffic                                                                                                                                                   |
-| cache_lines                     | decimal              |                    4096 | Number of cache lines provisioned                                                                                                                                                                                   |
-| dirty_cache_lines_flush_trigger | decimal              |      80% of cache_lines | If readonly false, background flushes triggered at this threshold                                                                                                                                                   |
-| dirty_cache_lines_max           | decimal              |      90% of cache_lines | If readonly false, flushes will block writes until below this threshold                                                                                                                                             |
-| auto_sighup_interval            | decimal seconds      |                       0 | If != 0, schedules SIGHUP processing                                                                                                                                                                                |
-| backends                        | array                |                         | An array of each object store backend to be presented as a pseudo-directory underneath the `mountpoint1                                                                                                             |
+| Setting                         | Units                |                  Default | Description                                                                                                                                                                                                         |
+| :------------------------------ | :------------------- | -----------------------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| msfs_version                    | decimal              |                        0 | If == 0, the configuration is assumed to follow the [Multi-Storage Client specification](https://nvidia.github.io/multi-storage-client/references/configuration.html); otherwise, must == 1 & the following applies |
+| mountname                       | string               |                   "msfs" | Filesystem `name` as it would appear in e.g. `df`                                                                                                                                                                   |
+| mountpoint                      | string               | ${MSFS_MOUNTPOINT:-/mnt} | Filesystem `path` where POSIX representation will appear                                                                                                                                                            |
+| uid                             | decimal              |           (current euid) | UserID of the filesystem root directory                                                                                                                                                                             |
+| gid                             | decimal              |           (current egid) | GroupID of the filesystem root directory                                                                                                                                                                            |
+| dir_perm                        | string (in octal)    |                    "555" | Permission (Mode) Bits (in 3-digit octal form) of the file system root directory                                                                                                                                    |
+| allow_other                     | boolean              |                     true | If true, Permission (Mode) Bits determine who may have access; otherwise only owner and `root` have access                                                                                                          |
+| max_write                       | decimal bytes        |           131072 (128Ki) | Maximum write size Linux VFS will send to FUSE implementatino                                                                                                                                                       |
+| entry_attr_ttl                  | decimal milliseconds |                    10000 | Amount of time Linux VFS is allowed to cache returned metadata (including potentially temporary inode numbers)                                                                                                      |
+| evictable_inode_ttl             | decimal milliseconds |                  1000000 | Amount of time an auto-generated inode will be minimally maintained (should be at least entry_attr_ttl)                                                                                                             |
+| cache_line_size                 | decimal bytes        |            1048576 (1Mi) | Granularity of caching layer for both file read and write traffic                                                                                                                                                   |
+| cache_lines                     | decimal              |                     4096 | Number of cache lines provisioned                                                                                                                                                                                   |
+| dirty_cache_lines_flush_trigger | decimal              |       80% of cache_lines | If readonly false, background flushes triggered at this threshold                                                                                                                                                   |
+| dirty_cache_lines_max           | decimal              |       90% of cache_lines | If readonly false, flushes will block writes until below this threshold                                                                                                                                             |
+| auto_sighup_interval            | decimal seconds      |                        0 | If != 0, schedules SIGHUP processing                                                                                                                                                                                |
+| backends                        | array                |                          | An array of each object store backend to be presented as a pseudo-directory underneath the `mountpoint1                                                                                                             |
 
 As noted in the above table, the `backends` setting defines an array of object
 store backends to be presented as pseudo-directories underneath the `mountpoint`.
@@ -134,9 +134,9 @@ the following table:
 
 ### Configuration Example
 
-Here is an eample (taken from `./mscp_config_dev.yaml`) YAML-formatted configuration file:
+Here is an eample (taken from `./msfs_config_dev.yaml`) YAML-formatted configuration file:
 ```
-mscp_version: 1
+msfs_version: 1
 backends: [
   {
     dir_name: minio,
@@ -162,8 +162,8 @@ backends: [
 ```
 
 Notice the following:
-* The internal configuration format is selected by setting `mscp_version` to `1`
-* The `mountpoint` is not specified, so will be the non-empty value of MSC_MOUNTPOINT ENV or simply `/mnt`
+* The internal configuration format is selected by setting `msfs_version` to `1`
+* The `mountpoint` is not specified, so will be the non-empty value of MSFS_MOUNTPOINT ENV or simply `/mnt`
 * There are two backends: `minio` and `ais`
   * These will appear as subdirectories under the mountpoint (e.g. `/mnt/minio` and `/mnt/ais`)
   * Each maps to an S3 bucket named `dev`
@@ -202,16 +202,16 @@ A typical development sequence is depicted in the following:
 | $ docker-compose build           |                                                                                | Builds the `dev` Docker Container Image (optionally append `--no-cache` to ensure it is built from scratch) |
 | $ docker-compose up -d dev       |                                                                                | Launches both the `minio` and the `dev` Docker Containers                                                   |
 | $ docker-compose exec dev bash   |                                                                                | Enters a `bash` shell inside the `dev` Docker Container                                                     |
-|                                  | # ./dev_setup.sh {ais\|minio}                                                  | Creates and populates a `dev` bucket/container, populated with the source tree, in either `ais` or `minio`  |
+|                                  | # ./dev_setup.sh {ais\|aisMinio\|minio}                                        | Creates and populates a `dev` bucket/container, populated with the source tree, in `ais` and/or `minio`     |
 |                                  | # make                                                                         | Builds (if necessary) the FUSE program                                                                      |
-|                                  | # ./mscp &                                                                     | Runs the FUSE program in the background configured by what's in ${MSC_CONFIG} (`./mscp_config_dev.yaml`)    |
+|                                  | # ./msfs &                                                                     | Runs the FUSE program in the background configured by what's in ${MSC_CONFIG} (`./msfs_config_dev.yaml`)    |
 |                                  | ^M                                                                             | Hitting `ENTER` will get us a `#` prompt                                                                    |
 |                                  | # mount | grep fuse                                                            | Shows that the `dev` bucket is mounted via FUSE at `/mnt`                                                   |
 |                                  | # df -h /mnt                                                                   | Shows the "stats" for the FUSE-mounted filesystem                                                           |
 |                                  | # ls -ailR /mnt                                                                | Recursively lists the files (backed by the "dev" bucket objects) via POSIX                                  |
-|                                  | # kill -SIGHUP \`pidof ./mscp\`                                                | Sends a SIGHUP to the FUSE program telling it to re-parse the configuration file (here `dev.json`)          |
+|                                  | # kill -SIGHUP \`pidof ./msfs\`                                                | Sends a SIGHUP to the FUSE program telling it to re-parse the configuration file (here `dev.json`)          |
 |                                  | ^M                                                                             | Hitting `ENTER` will get us a `#` prompt                                                                    |
-|                                  | # kill -SIGINT \`pidof ./mscp\`                                                | Sends a SIGINT to the FUSE program telling it to cleanly exit                                               |
+|                                  | # kill -SIGINT \`pidof ./msfs\`                                                | Sends a SIGINT to the FUSE program telling it to cleanly exit                                               |
 |                                  | ^M                                                                             | Hitting `ENTER` will get us a `#` prompt                                                                    |
 |                                  | # exit                                                                         | Exits the `bash` shell running inside the `dev` Docker Container                                            |
 | $ docker-compose down            |                                                                                | Terminates the `minio` and `dev` Docker Containers                                                          |
@@ -223,92 +223,92 @@ After installation (`sudo make install`), use standard Unix `mount` and `umount`
 ### Mounting
 
 ```bash
-# Mount MSC filesystem with config file and mountpoint
-mount -t msc /path/to/config.yaml /mnt/msc1
+# Mount MSFS filesystem with config file and mountpoint
+mount -t msfs /path/to/config.yaml /mnt/msfs1
 
 # Mount multiple instances with different configs or mountpoints
-mount -t msc /path/to/config1.yaml /mnt/msc1
-mount -t msc /path/to/config2.json /mnt/msc2
+mount -t msfs /path/to/config1.yaml /mnt/msfs1
+mount -t msfs /path/to/config2.json /mnt/msfs2
 ```
 
 ### Unmounting
 
 ```bash
 # Unmount specific mountpoint
-umount /mnt/msc1
+umount /mnt/msfs1
 
 # Unmount another mountpoint
-umount /mnt/msc2
+umount /mnt/msfs2
 ```
 
 ### How It Works
 
-The `mount` command uses a standard Unix convention: when you specify `-t <type>`, it looks for a helper script at `/usr/sbin/mount.<type>`. For MSC:
+The `mount` command uses a standard Unix convention: when you specify `-t <type>`, it looks for a helper script at `/usr/sbin/mount.<type>`. For MSFS:
 
-- `mount -t msc <config> <mountpoint>` → automatically calls `/usr/sbin/mount.msc`
-- The mount helper sets environment variables and launches the `mscp` daemon
+- `mount -t msfs <config> <mountpoint>` → automatically calls `/usr/sbin/mount.msfs`
+- The mount helper sets environment variables and launches the `msfs` daemon
 
 **Important: Standard `mount` Command Behavior**
 
 The `mount` command behaves differently depending on the arguments provided:
 
 - **`mount`** (no args) → Lists all currently mounted filesystems
-- **`mount -t msc`** (type only) → Lists all currently mounted MSC filesystems (does NOT call `mount.msc`)
-- **`mount -t msc <config> <mountpoint>`** → Calls `/usr/sbin/mount.msc` to perform the mount
+- **`mount -t msfs`** (type only) → Lists all currently mounted MSFS filesystems (does NOT call `mount.msfs`)
+- **`mount -t msfs <config> <mountpoint>`** → Calls `/usr/sbin/mount.msfs` to perform the mount
 
-The mount helper (`mount.msc`) is **only invoked when you provide both the config file and mountpoint**. This is standard Unix `mount` behavior, not a limitation. The helper validates that both arguments are provided before attempting to launch `mscp`
+The mount helper (`mount.msfs`) is **only invoked when you provide both the config file and mountpoint**. This is standard Unix `mount` behavior, not a limitation. The helper validates that both arguments are provided before attempting to launch `msfs`
 
 This is the same mechanism used by other filesystems like NFS (`mount.nfs`), CIFS (`mount.cifs`), and FUSE (`mount.fuse`).
 
-**Mount Helper (`mount.msc`):**
+**Mount Helper (`mount.msfs`):**
 - Exports `MSC_CONFIG` environment variable from the config file argument
-- Exports `MSC_MOUNTPOINT` environment variable from the mountpoint argument
-- Creates log directory if needed (`/var/log/msc/`)
-- Launches `mscp` daemon in the background using `setsid` for proper process management
-- Stores process ID and mountpoint in `/var/log/msc/mscp_*.pid` for tracking
+- Exports `MSFS_MOUNTPOINT` environment variable from the mountpoint argument
+- Creates log directory if needed (`/var/log/msfs/`)
+- Launches `msfs` daemon in the background using `setsid` for proper process management
+- Stores process ID and mountpoint in `/var/log/msfs/msfs_*.pid` for tracking
 - Returns once the daemon is running
 
 **Environment Variables:**
 - `MSC_CONFIG`: Path to the configuration file (set by mount command)
-- `MSC_MOUNTPOINT`: Mount point path (set by mount command, overrides config file)
-- `MSCP_BINARY`: Path to mscp binary (default: `/usr/local/bin/mscp`)
-- `MSCP_LOG_DIR`: Log directory (default: `/var/log/msc`)
+- `MSFS_MOUNTPOINT`: Mount point path (set by mount command, overrides config file)
+- `MSFS_BINARY`: Path to msfs binary (default: `/usr/local/bin/msfs`)
+- `MSFS_LOG_DIR`: Log directory (default: `/var/log/msfs`)
 
-**Unmount Helper (`umount.msc`):**
-- Finds all running mscp processes
+**Unmount Helper (`umount.msfs`):**
+- Finds all running msfs processes
 - Terminates each process with SIGTERM (waits up to 10 seconds)
 - If still running, sends SIGKILL
 - Handles zombie processes gracefully (accepts as success)
-- Cleans up all PID files in `/var/log/msc/`
-- Note: Unmounts **all** MSC filesystems, regardless of how many are mounted
+- Cleans up all PID files in `/var/log/msfs/`
+- Note: Unmounts **all** MSFS filesystems, regardless of how many are mounted
 
 ### Environment Variables
 
-- **`MSC_CONFIG`**: Path to MSC configuration file (YAML or JSON)
-  - Automatically set by mount helper from the first argument to `mount -t msc`
-  - Passed to the `mscp` binary for configuration loading
-- **`MSC_MOUNTPOINT`**: Mount point path
-  - Automatically set by mount helper from the second argument to `mount -t msc`
+- **`MSC_CONFIG`**: Path to MSFS configuration file (YAML or JSON)
+  - Automatically set by mount helper from the first argument to `mount -t msfs`
+  - Passed to the `msfs` binary for configuration loading
+- **`MSFS_MOUNTPOINT`**: Mount point path
+  - Automatically set by mount helper from the second argument to `mount -t msfs`
   - Overrides the `mountpoint` setting in the configuration file
-- **`MSCP_BINARY`**: Path to mscp binary (default: `/usr/local/bin/mscp`)
-- **`MSCP_LOG_DIR`**: Directory for logs and PID files (default: `/var/log/msc`)
+- **`MSFS_BINARY`**: Path to msfs binary (default: `/usr/local/bin/msfs`)
+- **`MSFS_LOG_DIR`**: Directory for logs and PID files (default: `/var/log/msfs`)
 
 ### Automatic Mounting with /etc/fstab
 
-MSC filesystems can be automatically mounted at boot time by adding entries to `/etc/fstab`:
+MSFS filesystems can be automatically mounted at boot time by adding entries to `/etc/fstab`:
 
 ```fstab
-# MSC filesystem with S3 backend
-/etc/msc/s3-config.yaml  /mnt/s3-data  msc  defaults,_netdev  0  0
+# MSFS filesystem with S3 backend
+/etc/msfs/s3-config.yaml  /mnt/s3-data  msfs  defaults,_netdev  0  0
 
-# MSC filesystem with local config
-/home/user/msc.json      /mnt/storage  msc  defaults,noauto   0  0
+# MSFS filesystem with local config
+/home/user/msfs.json      /mnt/storage  msfs  defaults,noauto   0  0
 ```
 
 **fstab field explanation:**
-- **Field 1**: Path to MSC configuration file (YAML or JSON)
+- **Field 1**: Path to MSFS configuration file (YAML or JSON)
 - **Field 2**: Mount point directory
-- **Field 3**: Filesystem type (`msc`)
+- **Field 3**: Filesystem type (`msfs`)
 - **Field 4**: Mount options (comma-separated)
   - `defaults`: Standard mount options
   - `_netdev`: Wait for network before mounting (for remote storage)
@@ -324,22 +324,22 @@ sudo mount -a  # Mount all filesystems in fstab
 
 ### Configuration
 
-The mountpoint is defined in the configuration file's `mountpoint` setting (default: `/mnt`). The filesystem name displayed in `df` and `mount` output is controlled by the `mountname` setting (default: `msc-posix`).
+The mountpoint is defined in the configuration file's `mountpoint` setting (default: `/mnt`). The filesystem name displayed in `df` and `mount` output is controlled by the `mountname` setting (default: `msfs`).
 
 ## Deployment Aids
 
-A mechanism for distributing the binary executable version of mscp is via a Docker Container
+A mechanism for distributing the binary executable version of msfs is via a Docker Container
 Image is described here. These steps have been automated by Makefile rule `publish` with the
 resultant extracted binaries named for their target OS and CPU.
 
-### Creation of a Scratch-based Docker Container Image having only /mscp
+### Creation of a Scratch-based Docker Container Image having only /msfs
 
-`(cd ../../.. && docker build --file posix/fuse/mscp/Dockerfile --target built --tag mscp_built:$(git describe --tags --always --dirty) .)`
+`(cd .. && docker build --file multi-storage-file-system/Dockerfile --target built --tag msfs_built:$(git describe --tags --always --dirty) .)`
 
-### Extraction of Linuxon-AMD64 mscp from the Scratch-based Docker Container Image
+### Extraction of Linuxon-AMD64 msfs from the Scratch-based Docker Container Image
 
-`docker create --name mscp_built mscp_built:<tag> --entrypoint /mscp && docker cp mscp_built:/msc-posix-linux-amd64 ./mscp && docker rm mscp_built`
+`docker create --name msfs_built msfs_built:<tag> --entrypoint /msfs && docker cp msfs_built:/msfs-linux-amd64 ./msfs && docker rm msfs_built`
 
-### Extraction of Linuxon-ARM64 mscp from the Scratch-based Docker Container Image
+### Extraction of Linuxon-ARM64 msfs from the Scratch-based Docker Container Image
 
-`docker create --name mscp_built mscp_built:<tag> --entrypoint /mscp && docker cp mscp_built:/msc-posix-linux-arm64 ./mscp && docker rm mscp_built`
+`docker create --name msfs_built msfs_built:<tag> --entrypoint /msfs && docker cp msfs_built:/msfs-linux-arm64 ./msfs && docker rm msfs_built`

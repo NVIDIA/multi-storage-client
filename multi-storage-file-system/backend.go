@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/NVIDIA/multi-storage-client/posix/fuse/mscp/telemetry"
+	"github.com/NVIDIA/multi-storage-client/multi-storage-file-system/telemetry"
 )
 
 // recordRequest records the request counter at the START of an operation.

@@ -46,7 +46,7 @@ import (
 //   - Goroutines share same PID, hostname, environment throughout MSCP daemon lifetime
 //   - Resource attributes are Go/OTel best practice for process-level attributes
 //   - More efficient: no repeated system calls or allocations per metric
-//   - See: posix/fuse/mscp/telemetry/setup.go lines 102-117
+//   - See: multi-storage-file-system/telemetry/setup.go lines 102-117
 //
 // ARCHITECTURAL DIFFERENCE:
 //

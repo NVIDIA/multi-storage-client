@@ -233,7 +233,7 @@ func parseUint64(m map[string]interface{}, key string, dflt interface{}) (u uint
 }
 
 // `checkConfigFile` parses globals.configFilePath in either JSON or YAML
-// format following either the MSC Python-compatible or MSC POSIX-specific
+// format following either the MSC Python-compatible or MSFS-specific
 // specification. Upon success, it will also populate both the
 // globals.backendsToUnmount and globals.backendsToMount lists in the
 // case where an existing configuration is being updated.
@@ -328,13 +328,14 @@ func checkConfigFile() (err error) {
 		backends: make(map[string]*backendStruct),
 	}
 
-	config.mscpVersion, ok = parseUint64(configFileMap, "mscp_version", uint64(0))
+	config.msfsVersion, ok = parseUint64(configFileMap, "msfs_version", uint64(0))
 	if !ok {
-		err = errors.New("bad mscp_version value")
+		err = errors.New("bad msfs_version value")
 		return
 	}
-	switch config.mscpVersion {
-	case MSCPVersionPythonCompatibility:
+
+	switch config.msfsVersion {
+	case MSFSVersionPythonCompatibility:
 		profilesAsInterface, ok = configFileMap["profiles"]
 		if ok && (profilesAsInterface != nil) {
 			profilesAsMap, ok = profilesAsInterface.(map[string]interface{})
@@ -519,7 +520,7 @@ func checkConfigFile() (err error) {
 
 		configFileMapTranslated = make(map[string]interface{})
 
-		configFileMapTranslated["mscp_version"] = MSCPVersionOne
+		configFileMapTranslated["msfs_version"] = MSFSVersionOne
 		configFileMapTranslated["backends"] = backendsAsInterfaceSlice
 
 		// Preserve opentelemetry section if present (observability add-on)
@@ -575,33 +576,25 @@ func checkConfigFile() (err error) {
 		}
 
 		configFileMap = configFileMapTranslated
-	case MSCPVersionOne:
+	case MSFSVersionOne:
 		// Nothing to do here
 	default:
-		err = fmt.Errorf("unsupported mscp_version: %v", config.mscpVersion)
+		err = fmt.Errorf("unsupported msfs_version: %v", config.msfsVersion)
 		return
 	}
 
-	config.mountName, ok = parseString(configFileMap, "mountname", "msc-posix")
+	config.mountName, ok = parseString(configFileMap, "mountname", "msfs")
 	if !ok {
 		err = errors.New("bad mountname value")
 		return
 	}
 
-	if parseAny(configFileMap, "mountpoint") {
+	config.mountPoint = os.Getenv(EnvMSFSMountPoint)
+	if config.mountPoint == "" {
 		config.mountPoint, ok = parseString(configFileMap, "mountpoint", defaultMountPoint)
 		if !ok {
 			err = errors.New("bad mountpoint value")
 			return
-		}
-		if (os.Getenv(EnvMSCMountPoint) != "") && (os.Getenv(EnvMSCMountPoint) != config.mountPoint) {
-			err = fmt.Errorf("specified mountpoint and ${%s} mismatch", EnvMSCMountPoint)
-			return
-		}
-	} else {
-		config.mountPoint = os.Getenv(EnvMSCMountPoint)
-		if config.mountPoint == "" {
-			config.mountPoint = defaultMountPoint
 		}
 	}
 
@@ -1118,8 +1111,8 @@ func checkConfigFile() (err error) {
 	} else {
 		// Validate that no global config changes were made
 
-		if globals.config.mscpVersion != config.mscpVersion {
-			err = errors.New("cannot change mscp_version via SIGHUP")
+		if globals.config.msfsVersion != config.msfsVersion {
+			err = errors.New("cannot change msfs_version via SIGHUP")
 			return
 		}
 

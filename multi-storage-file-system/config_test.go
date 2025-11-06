@@ -21,7 +21,7 @@ import (
 )
 
 // TestObservabilityConfigParsing verifies that observability config is parsed correctly
-// as an add-on to existing MSCP config without breaking anything.
+// as an add-on to existing MSFS config without breaking anything.
 func TestObservabilityConfigParsing(t *testing.T) {
 	var (
 		err error
@@ -92,7 +92,7 @@ func TestInternalGoodJSONConfig(t *testing.T) {
 
 	err = os.WriteFile(globals.configFilePath, []byte(`
 	{
-		"mscp_version": 1,
+		"msfs_version": 1,
 		"backends": [
 			{
 				"dir_name": "ram",
@@ -132,7 +132,7 @@ func TestInternalBadJSONConfig(t *testing.T) {
 
 	err = os.WriteFile(globals.configFilePath, []byte(`
 	{
-		"mscp_version": 1,
+		"msfs_version": 1,
 		"backends": [
 			{
 				"dir_name": "ram",
@@ -170,7 +170,7 @@ func TestInternalGoodYAMLConfig(t *testing.T) {
 	initGlobals(testOsArgs(testGlobals.testConfigFilePathMap[".yaml"]))
 
 	err = os.WriteFile(globals.configFilePath, []byte(`
-mscp_version: 1
+msfs_version: 1
 backends: [
   {
     dir_name: ram,
@@ -208,7 +208,7 @@ func TestInternalBadYAMLConfig(t *testing.T) {
 	initGlobals(testOsArgs(testGlobals.testConfigFilePathMap[".yaml"]))
 
 	err = os.WriteFile(globals.configFilePath, []byte(`
-mscp_version: 1
+msfs_version: 1
 backends: [
   {
     dir_name: ram,
@@ -245,7 +245,7 @@ func TestInternalGoodYMLConfig(t *testing.T) {
 	initGlobals(testOsArgs(testGlobals.testConfigFilePathMap[".yml"]))
 
 	err = os.WriteFile(globals.configFilePath, []byte(`
-mscp_version: 1
+msfs_version: 1
 backends: [
   {
     dir_name: ram,
@@ -283,7 +283,7 @@ func TestInternalBadYMLConfig(t *testing.T) {
 	initGlobals(testOsArgs(testGlobals.testConfigFilePathMap[".yml"]))
 
 	err = os.WriteFile(globals.configFilePath, []byte(`
-mscp_version: 1
+msfs_version: 1
 backends: [
   {
     dir_name: ram,
@@ -564,7 +564,7 @@ func TestConfigFileGoodConfigFileUpdate(t *testing.T) {
 	initGlobals(testOsArgs(testGlobals.testConfigFilePathMap[".yaml"]))
 
 	err = os.WriteFile(globals.configFilePath, []byte(`
-mscp_version: 1
+msfs_version: 1
 backends: [
   {
     dir_name: ram1,
@@ -604,7 +604,7 @@ backends: [
 	}
 
 	err = os.WriteFile(globals.configFilePath, []byte(`
-mscp_version: 1
+msfs_version: 1
 backends: [
   {
     dir_name: ram1,
@@ -652,7 +652,7 @@ backends: [
 	}
 
 	err = os.WriteFile(globals.configFilePath, []byte(`
-mscp_version: 1
+msfs_version: 1
 backends: [
   {
     dir_name: ram2,
@@ -699,7 +699,7 @@ func TestConfigFileBadConfigFileUpdate(t *testing.T) {
 	initGlobals(testOsArgs(testGlobals.testConfigFilePathMap[".yaml"]))
 
 	err = os.WriteFile(globals.configFilePath, []byte(`
-mscp_version: 1
+msfs_version: 1
 backends: [
   {
     dir_name: ram,
@@ -723,7 +723,7 @@ backends: [
 	processToMountList()
 
 	err = os.WriteFile(globals.configFilePath, []byte(`
-mscp_version: 1
+msfs_version: 1
 backends: [
   {
     dir_name: ram,

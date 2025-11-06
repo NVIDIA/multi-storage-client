@@ -120,13 +120,13 @@ check_root() {
 check_files() {
     local missing_files=0
     
-    if [[ ! -f "$SCRIPT_DIR/mscp" ]]; then
-        log_error "mscp binary not found. Please run 'make build' first."
+    if [[ ! -f "$SCRIPT_DIR/msfs" ]]; then
+        log_error "msfs binary not found. Please run 'make build' first."
         missing_files=1
     fi
     
-    if [[ ! -f "$SCRIPT_DIR/mount.msc" ]]; then
-        log_error "mount.msc not found"
+    if [[ ! -f "$SCRIPT_DIR/mount.msfs" ]]; then
+        log_error "mount.msfs not found"
         missing_files=1
     fi
     
@@ -136,7 +136,7 @@ check_files() {
 }
 
 # Function to install files
-install_msc() {
+install_msfs() {
     log_info "Installing MSC to $PREFIX"
     
     # Create directories
@@ -146,12 +146,12 @@ install_msc() {
     mkdir -p "$LOGDIR"
     
     # Install mscp binary
-    log_info "Installing mscp binary to $BINDIR/mscp"
-    install -m 755 "$SCRIPT_DIR/mscp" "$BINDIR/mscp"
+    log_info "Installing msfs binary to $BINDIR/msfs"
+    install -m 755 "$SCRIPT_DIR/msfs" "$BINDIR/msfs"
     
     # Install mount helper
-    log_info "Installing mount.msc to $SBINDIR/mount.msc"
-    install -m 755 "$SCRIPT_DIR/mount.msc" "$SBINDIR/mount.msc"
+    log_info "Installing mount.msfs to $SBINDIR/mount.msfs"
+    install -m 755 "$SCRIPT_DIR/mount.msfs" "$SBINDIR/mount.msfs"
     
     # Set log directory permissions
     chmod 755 "$LOGDIR"
@@ -159,37 +159,37 @@ install_msc() {
     log_info "${GREEN}Installation complete!${NC}"
     echo ""
     log_info "Installed files:"
-    log_info "  Binary:      $BINDIR/mscp"
-    log_info "  Mount:       $SBINDIR/mount.msc"
+    log_info "  Binary:      $BINDIR/msfs"
+    log_info "  Mount:       $SBINDIR/mount.msfs"
     log_info "  Log dir:     $LOGDIR"
     echo ""
     log_info "Usage:"
-    log_info "  mount -t msc <config_file> <mountpoint>"
+    log_info "  mount -t msfs <config_file> <mountpoint>"
     log_info "  umount <mountpoint>"
     echo ""
     log_info "For automatic mounting at boot, add to /etc/fstab:"
-    log_info "  /path/to/config.yaml  /mnt/point  msc  defaults,_netdev  0  0"
+    log_info "  /path/to/config.yaml  /mnt/point  msfs  defaults,_netdev  0  0"
     echo ""
     log_info "See MOUNT_HELPERS.md for detailed documentation"
 }
 
 # Function to uninstall files
-uninstall_msc() {
+uninstall_msfs() {
     log_info "Uninstalling MSC from $PREFIX"
     
     local removed=0
     
     # Remove mscp binary
-    if [[ -f "$BINDIR/mscp" ]]; then
-        log_info "Removing $BINDIR/mscp"
-        rm -f "$BINDIR/mscp"
+    if [[ -f "$BINDIR/msfs" ]]; then
+        log_info "Removing $BINDIR/msfs"
+        rm -f "$BINDIR/msfs"
         removed=1
     fi
     
     # Remove mount helper
-    if [[ -f "$SBINDIR/mount.msc" ]]; then
-        log_info "Removing $SBINDIR/mount.msc"
-        rm -f "$SBINDIR/mount.msc"
+    if [[ -f "$SBINDIR/mount.msfs" ]]; then
+        log_info "Removing $SBINDIR/mount.msfs"
+        rm -f "$SBINDIR/mount.msfs"
         removed=1
     fi
     
@@ -218,10 +218,10 @@ main() {
     check_root
     
     if [[ $UNINSTALL -eq 1 ]]; then
-        uninstall_msc
+        uninstall_msfs
     else
         check_files
-        install_msc
+        install_msfs
     fi
 }
 

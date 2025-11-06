@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NVIDIA/multi-storage-client/posix/fuse/mscp/telemetry/auth"
+	"github.com/NVIDIA/multi-storage-client/multi-storage-file-system/telemetry/auth"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )

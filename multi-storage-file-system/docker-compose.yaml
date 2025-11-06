@@ -1,10 +1,10 @@
 services:
-  # Observability: OTLP Collector (receives metrics from MSCP)
+  # Observability: OTLP Collector (receives metrics from MSFS)
   # Note: This just logs the metrics to console. For production, configure exporters  
   # to send to your observability backend (Prometheus, Grafana Cloud, Datadog, etc.)
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.138.0
-    container_name: mscp_otel_collector
+    container_name: msfs_otel_collector
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
       - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
@@ -15,10 +15,10 @@ services:
   # Storage Backends
   minio:
     build:
-      context: ../../..
-      dockerfile: posix/fuse/mscp/Dockerfile
+      context: ..
+      dockerfile: multi-storage-file-system/Dockerfile
       target: minio
-    container_name: mscp_minio
+    container_name: msfs_minio
     expose:
       - 9000
     environment:
@@ -27,10 +27,10 @@ services:
     command: /minio/minio server /data
   ais:
     build:
-      context: ../../..
-      dockerfile: posix/fuse/mscp/Dockerfile
+      context: ..
+      dockerfile: multi-storage-file-system/Dockerfile
       target: ais
-    container_name: mscp_ais
+    container_name: msfs_ais
     expose:
       - 8080
       - 8081
@@ -42,10 +42,10 @@ services:
   # Development Container
   dev:
     build:
-      context: ../../..
-      dockerfile: posix/fuse/mscp/Dockerfile
+      context: ..
+      dockerfile: multi-storage-file-system/Dockerfile
       target: dev
-    container_name: mscp_dev
+    container_name: msfs_dev
     depends_on:
       - minio
       - otel-collector
@@ -57,11 +57,11 @@ services:
     privileged: true
     volumes:
       - type: bind
-        source: ../../..
+        source: ..
         target: /multi-storage-client
     environment:
       - AIS_ENDPOINT=http://ais:8080
-      - MSC_CONFIG=./mscp_config_dev.yaml
+      - MSC_CONFIG=./msfs_config_dev.yaml
       # Observability: OTLP endpoints (accessible from inside container)
       - OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector:4317
     command: ["/usr/bin/tini", "--", "sleep", "infinity"]

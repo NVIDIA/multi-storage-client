@@ -1,0 +1,150 @@
+#!/bin/bash
+#
+# mount.msfs - Mount helper for MSFS (Multi-Storage-File-Systems (MSFS)
+#
+# This script is invoked automatically by: mount -t msfs
+#
+# Usage:
+#   mount.msfs <config_file> <mountpoint>
+#   OR via mount: mount -t msfs <config_file> <mountpoint>
+#
+# Environment variables:
+#   MSC_CONFIG:     (Set from first argument) Path to MSFS configuration file (YAML or JSON)
+#   MSFS_MOUNTPOINT: (Set from second argument) Mount point path
+#   MSFS_BINARY:    Path to msfs binary (default: /usr/bin/msfs)
+#   MSFS_LOG_DIR:   Directory for log files (default: /var/log/msfs)
+#
+
+set -euo pipefail
+
+# Default values
+MSFS_BINARY="${MSFS_BINARY:-/usr/bin/msfs}"
+MSFS_LOG_DIR="${MSFS_LOG_DIR:-/var/log/msfs}"
+SCRIPT_NAME="$(basename "$0")"
+
+# Function to log messages
+log() {
+    echo "[$SCRIPT_NAME] $*" >&2
+}
+
+# Function to check if msfs binary exists and is executable
+check_msfs_binary() {
+    if [[ ! -f "$MSFS_BINARY" ]]; then
+        log "ERROR: msfs binary not found at '$MSFS_BINARY'"
+        log "Please install msfs or set MSFS_BINARY environment variable"
+        return 1
+    fi
+    if [[ ! -x "$MSFS_BINARY" ]]; then
+        log "ERROR: msfs binary at '$MSFS_BINARY' is not executable"
+        return 1
+    fi
+    return 0
+}
+
+# Function to create log directory if it doesn't exist
+ensure_log_dir() {
+    if [[ ! -d "$MSFS_LOG_DIR" ]]; then
+        log "Creating log directory: $MSFS_LOG_DIR"
+        mkdir -p "$MSFS_LOG_DIR" 2>/dev/null || {
+            log "ERROR: Cannot create log directory '$MSFS_LOG_DIR' (EPERM/EACCES - Permission denied)"
+            log "This operation requires root privileges. Please run:"
+            log "  sudo mount -t msfs <config_file> <mountpoint>"
+            return 1
+        }
+    fi
+    if [[ ! -w "$MSFS_LOG_DIR" ]]; then
+        log "ERROR: Log directory '$MSFS_LOG_DIR' is not writable (EPERM/EACCES - Permission denied)"
+        log "This operation requires root privileges. Please run:"
+        log "  sudo mount -t msfs <config_file> <mountpoint>"
+        return 1
+    fi
+    return 0
+}
+
+# Main function
+main() {
+    # Require both config file and mountpoint arguments
+    if [[ $# -lt 2 ]]; then
+        log "ERROR: Both config file and mountpoint arguments are required"
+        log "Usage: mount -t msfs <config_file> <mountpoint>"
+        exit 1
+    fi
+    
+    # Parse command-line arguments (following mount convention: source mountpoint)
+    export MSC_CONFIG="$1"
+    export MSFS_MOUNTPOINT="$2"
+    log "Config file argument provided: $MSC_CONFIG"
+    log "Mount path argument provided: $MSFS_MOUNTPOINT"
+    
+    # Validate config file exists
+    if [[ ! -f "$MSC_CONFIG" ]]; then
+        log "ERROR: Config file '$MSC_CONFIG' does not exist"
+        exit 1
+    fi
+    
+    # Validate mountpoint exists
+    if [[ ! -d "$MSFS_MOUNTPOINT" ]]; then
+        log "ERROR: Mount point '$MSFS_MOUNTPOINT' does not exist or is not a directory"
+        exit 1
+    fi
+    
+    # Check msfs binary
+    if ! check_msfs_binary; then
+        exit 1
+    fi
+    
+    # Ensure log directory exists
+    if ! ensure_log_dir; then
+        exit 1
+    fi
+    
+    # Clean up stale PID files and associated log files
+    find "$MSFS_LOG_DIR" -name "msfs_*.pid" -type f 2>/dev/null | while read -r pid_file; do
+        pid=$(head -1 "$pid_file" 2>/dev/null)
+        if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+            rm -f "$pid_file" "${pid_file%.pid}.log"
+        fi
+    done
+    
+    # Generate unique ID using timestamp and random number
+    local unique_id="$(date +%s)_$$"
+    local log_file="$MSFS_LOG_DIR/msfs_${unique_id}.log"
+    local pid_file="$MSFS_LOG_DIR/msfs_${unique_id}.pid"
+    
+    log "Launching msfs daemon..."
+    log "  Config file: $MSC_CONFIG"
+    log "  Mount point: $MSFS_MOUNTPOINT"
+    log "  Log file: $log_file"
+    log "  PID file: $pid_file"
+    
+    # Ensure PATH includes standard binary directories
+    export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+    
+    # Launch msfs in background and redirect output to log file
+    # MSFS_MOUNTPOINT and MSC_CONFIG are passed via environment variables
+    # Use setsid to properly detach the process and prevent zombies
+    setsid "$MSFS_BINARY" "$MSC_CONFIG" > "$log_file" 2>&1 &
+    local msfs_pid=$!
+    
+    # Save PID and mountpoint to file (for tracking specific instances)
+    echo "$msfs_pid" > "$pid_file"
+    echo "$MSFS_MOUNTPOINT" >> "$pid_file"
+    
+    # Give msfs a moment to start up
+    sleep 2
+    
+    # Check if process is still running
+    if ! kill -0 "$msfs_pid" 2>/dev/null; then
+        log "ERROR: msfs daemon failed to start (PID: $msfs_pid)"
+        log "Check log file for details: $log_file"
+        rm -f "$pid_file"
+        exit 1
+    fi
+    
+    log "msfs daemon started successfully (PID: $msfs_pid)"
+    log "MSFS filesystem mounted"
+    log "To unmount: umount <mountpoint>"
+}
+
+# Run main function with all arguments
+main "$@"

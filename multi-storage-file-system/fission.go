@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	fuseSubtype = "msc-posix"
+	fuseSubtype = "msfs"
 
 	initOutFlags = uint32(0) |
 		fission.InitFlagsAsyncRead |

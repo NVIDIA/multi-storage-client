@@ -23,18 +23,18 @@ func TestMain(m *testing.M) {
 		testConfigFilePathSuffix string
 	)
 
-	testGlobals.testMountPoint, err = os.MkdirTemp("", "MSCPosixTestMountPoint*")
+	testGlobals.testMountPoint, err = os.MkdirTemp("", "MSFSTestMountPoint*")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "os.MkdirTemp(\"\", \"MSCPosixTestMountPoint*\") failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "os.MkdirTemp(\"\", \"MSFSTestMountPoint*\") failed: %v\n", err)
 		os.Exit(1)
 	}
 
 	testGlobals.testConfigFilePathMap = make(map[string]string)
 
 	for _, testConfigFilePathSuffix = range []string{".json", ".yaml", ".yml", ".other", ""} {
-		testConfigFile, err = os.CreateTemp("", "MSCPosixTestConfigFile*"+testConfigFilePathSuffix)
+		testConfigFile, err = os.CreateTemp("", "MSFSTestConfigFile*"+testConfigFilePathSuffix)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "os.CreateTemp(\"\", \"MSCPosixTestConfigFile*%s\") failed: %v\n", testConfigFilePathSuffix, err)
+			fmt.Fprintf(os.Stderr, "os.CreateTemp(\"\", \"MSFSTestConfigFile*%s\") failed: %v\n", testConfigFilePathSuffix, err)
 			os.Exit(1)
 		}
 

@@ -39,16 +39,16 @@ func fissionTestUp(t *testing.T) {
 		ok                  bool
 	)
 
-	err = os.Setenv("MSC_MOUNTPOINT", testGlobals.testMountPoint)
+	err = os.Setenv("MSFS_MOUNTPOINT", testGlobals.testMountPoint)
 	if err != nil {
-		t.Fatalf("os.Setenv(\"MSC_MOUNTPOINT\", testGlobals.testMountPoint) failed: %v", err)
+		t.Fatalf("os.Setenv(\"MSFS_MOUNTPOINT\", testGlobals.testMountPoint) failed: %v", err)
 	}
 
 	initGlobals(testOsArgs(testGlobals.testConfigFilePathMap[".json"]))
 
 	err = os.WriteFile(globals.configFilePath, []byte(`
 	{
-		"mscp_version": 1,
+		"msfs_version": 1,
 		"backends": [
 			{
 				"dir_name": "ram",

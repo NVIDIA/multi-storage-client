@@ -3,14 +3,14 @@
 #   1) As the Dockerfile referenced in docker-compose.yaml in support of a dev/test environment
 #   2) As the Dockerfile used to build a scratch-based container having the built program
 #
-# To create a scratch-based container named `mscp_built` having the resultant binary at `/mscp`:
+# To create a scratch-based container named `msfs_built` having the resultant binary at `/msfs`:
 #
-#   (cd ../../.. && docker build --file posix/fuse/mscp/Dockerfile --target built --tag mscp_built:$(git describe --tags --always --dirty) .)
+#   (cd .. && docker build --file multi-storage-file-system/Dockerfile --target built --tag msfs_built:$(git describe --tags --always --dirty) .)
 #
 # To then extract the AMD64 and/or ARM64 binariwes from that container:
 #
-#   docker create --name mscp_built mscp_built:<tag> --entrypoint /mscp && docker cp mscp_built:/msc-posix-linux-amd64 ./msc-posix-linux-amd64 && docker rm mscp_built
-#   docker create --name mscp_built mscp_built:<tag> --entrypoint /mscp && docker cp mscp_built:/msc-posix-linux-arm64 ./msc-posix-linux-arm64 && docker rm mscp_built
+#   docker create --name msfs_built msfs_built:<tag> --entrypoint /msfs && docker cp msfs_built:/msfs-linux-amd64 ./msfs-linux-amd64 && docker rm msfs_built
+#   docker create --name msfs_built msfs_built:<tag> --entrypoint /msfs && docker cp msfs_built:/msfs-linux-arm64 ./msfs-linux-arm64 && docker rm msfs_built
 
 FROM ubuntu:24.04 AS base
 
@@ -78,18 +78,18 @@ RUN  echo 'export PATH=${GOBIN}:${PATH}' >> .bashrc_additions
 RUN  echo ""                             >> .bashrc
 RUN  echo ". ~/.bashrc_additions"        >> .bashrc
 
-COPY posix/fuse/mscp/minio.s3cfg            .s3cfg
-RUN  mkdir                                  .aws
-COPY posix/fuse/mscp/ais.aws.config         .aws/config
-COPY posix/fuse/mscp/ais.aws.credentials    .aws/credentials
+COPY multi-storage-file-system/minio.s3cfg            .s3cfg
+RUN  mkdir                                            .aws
+COPY multi-storage-file-system/ais.aws.config         .aws/config
+COPY multi-storage-file-system/ais.aws.credentials    .aws/credentials
 
 WORKDIR /multi-storage-client
 
 COPY . .
 
-WORKDIR /multi-storage-client/posix/fuse/mscp
-
 RUN git config --global --add safe.directory /multi-storage-client
+
+WORKDIR /multi-storage-client/multi-storage-file-system
 
 RUN (. ~/.bashrc_additions && make lint-update)
 
@@ -155,7 +155,7 @@ COPY --from=ais /aistore/cmd/cli/autocomplete/bash    /root/cmd_cli_autocomplete
 COPY --from=ais /root/go/bin/ais                      /root/go/bin/ais
 RUN echo "source ~/cmd_cli_autocomplete_bash"      >> /root/.bashrc_additions
 
-WORKDIR /multi-storage-client/posix/fuse/mscp
+WORKDIR /multi-storage-client/multi-storage-file-system
 
 FROM buildable AS build
 
@@ -163,14 +163,14 @@ WORKDIR /multi-storage-client
 
 COPY . .
 
-WORKDIR /multi-storage-client/posix/fuse/mscp
+WORKDIR /multi-storage-client/multi-storage-file-system
 
-RUN (. ~/.bashrc_additions && make build artifacts)
+RUN (. ~/.bashrc_additions && make build msfs-linux-amd64 msfs-linux-arm64)
 
 FROM scratch AS built
 
 WORKDIR /
 
-COPY --from=build /multi-storage-client/posix/fuse/mscp/mscp                  /mscp
-COPY --from=build /multi-storage-client/posix/fuse/mscp/msc-posix-linux-amd64 /msc-posix-linux-amd64
-COPY --from=build /multi-storage-client/posix/fuse/mscp/msc-posix-linux-arm64 /msc-posix-linux-arm64
+COPY --from=build /multi-storage-client/multi-storage-file-system/msfs             /msfs
+COPY --from=build /multi-storage-client/multi-storage-file-system/msfs-linux-amd64 /msfs-linux-amd64
+COPY --from=build /multi-storage-client/multi-storage-file-system/msfs-linux-arm64 /msfs-linux-arm64

@@ -15,8 +15,8 @@ import (
 var GitTag string // This variable will be populated at build time
 
 const (
-	MSCPVersionPythonCompatibility = uint64(0)
-	MSCPVersionOne                 = uint64(1)
+	MSFSVersionPythonCompatibility = uint64(0)
+	MSFSVersionOne                 = uint64(1)
 )
 
 type backendConfigAzureStruct struct{} // not currently supported
@@ -82,9 +82,9 @@ type backendStruct struct {
 
 // `configStruct` describes the global configuration settings as well as the array of backendStruct's configured.
 type configStruct struct {
-	mscpVersion                 uint64                     // JSON/YAML "mscp_version"                    default:0
-	mountName                   string                     // JSON/YAML "mountname"                       default:"msc-posix"
-	mountPoint                  string                     // JSON/YAML "mountpoint"                      default:"${MSC_MOUNTPOINT:-/mnt}""
+	msfsVersion                 uint64                     // JSON/YAML "msfs_version"                    default:0
+	mountName                   string                     // JSON/YAML "mountname"                       default:"msfs"
+	mountPoint                  string                     // JSON/YAML "mountpoint"                      default:"${MSFS_MOUNTPOINT:-/mnt}""
 	uid                         uint64                     // JSON/YAML "uid"                             default:<current euid>
 	gid                         uint64                     // JSON/YAML "gid"                             default:<current egid>
 	dirPerm                     uint64                     // JSON/YAML "dir_perm"                        default:0o555
@@ -136,7 +136,7 @@ const (
 
 const (
 	DefaultMountPoint = "/mnt"
-	EnvMSCMountPoint  = "MSC_MOUNTPOINT"
+	EnvMSFSMountPoint = "MSFS_MOUNTPOINT"
 )
 
 const (
@@ -233,7 +233,7 @@ type inodeStruct struct {
 type globalsStruct struct {
 	sync.Mutex                                       //
 	logger                 *log.Logger               //
-	metrics                interface{}               // observability.MSCPMetrics (nil if observability disabled)
+	metrics                interface{}               // observability.MSFSMetrics (nil if observability disabled)
 	meterProvider          interface{}               // *sdkmetric.MeterProvider (nil if observability disabled)
 	configFilePath         string                    //
 	config                 *configStruct             //
