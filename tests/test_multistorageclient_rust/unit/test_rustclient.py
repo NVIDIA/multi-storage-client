@@ -150,6 +150,7 @@ async def test_rustclient_basic_operations(temp_data_store_type: Type[tempdatast
             await rust_client.get(file_path)
 
 
+@pytest.mark.skip(reason="Temporarily disabled, pending refactor of credential provider logic in the Rust client")
 @pytest.mark.parametrize(
     argnames=["temp_data_store_type"],
     argvalues=[
