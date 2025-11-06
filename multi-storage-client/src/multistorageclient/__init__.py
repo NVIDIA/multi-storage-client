@@ -37,6 +37,7 @@ from .shortcuts import (
     upload_file,
     write,
 )
+from .types import ResolvedPath
 
 __version__ = version("multi-storage-client")
 
@@ -46,6 +47,8 @@ __all__ = [
     "StorageClientConfig",
     "CacheConfig",
     "Path",
+    # Types
+    "ResolvedPath",
     # Shortcuts
     "commit_metadata",
     "download_file",

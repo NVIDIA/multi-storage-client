@@ -23,7 +23,7 @@ import pytest
 
 import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
 from multistorageclient import StorageClient, StorageClientConfig
-from multistorageclient.types import MetadataProvider, ObjectMetadata
+from multistorageclient.types import MetadataProvider, ObjectMetadata, ResolvedPath
 
 
 class UuidMetadataProvider(MetadataProvider):
@@ -65,11 +65,11 @@ class UuidMetadataProvider(MetadataProvider):
     def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
         return [path for path in self._path_to_uuid.keys() if fnmatch.fnmatch(path, pattern)]
 
-    def realpath(self, path: str) -> tuple[str, bool]:
+    def realpath(self, path: str) -> ResolvedPath:
         u = self._path_to_uuid.get(path)
         if u is None:
-            return str(uuid.uuid4()), False
-        return u, True
+            return ResolvedPath(physical_path=str(uuid.uuid4()), exists=False, profile=None)
+        return ResolvedPath(physical_path=u, exists=True, profile=None)
 
     def add_file(self, path: str, metadata: ObjectMetadata) -> None:
         # Keep a dictionary of pending adds

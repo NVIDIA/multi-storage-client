@@ -238,7 +238,7 @@ class StorageClient:
         :return: The content of the object.
         """
         if self._metadata_provider:
-            path, exists = self._metadata_provider.realpath(path)
+            path, exists, _ = self._metadata_provider.realpath(path)
             if not exists:
                 raise FileNotFoundError(f"The file at path '{path}' was not found.")
 
@@ -347,7 +347,7 @@ class StorageClient:
         :param local_path: The local path where the file should be downloaded.
         """
         if self._metadata_provider:
-            real_path, exists = self._metadata_provider.realpath(remote_path)
+            real_path, exists, _ = self._metadata_provider.realpath(remote_path)
             if not exists:
                 raise FileNotFoundError(f"The file at path '{remote_path}' was not found by metadata provider.")
 
@@ -369,7 +369,7 @@ class StorageClient:
         """
         virtual_path = remote_path
         if self._metadata_provider:
-            remote_path, exists = self._metadata_provider.realpath(remote_path)
+            remote_path, exists, _ = self._metadata_provider.realpath(remote_path)
             if exists:
                 raise FileExistsError(
                     f"The file at path '{virtual_path}' already exists; "
@@ -398,7 +398,7 @@ class StorageClient:
         """
         virtual_path = path
         if self._metadata_provider:
-            path, exists = self._metadata_provider.realpath(path)
+            path, exists, _ = self._metadata_provider.realpath(path)
             if exists:
                 raise FileExistsError(
                     f"The file at path '{virtual_path}' already exists; "
@@ -425,11 +425,11 @@ class StorageClient:
         """
         virtual_dest_path = dest_path
         if self._metadata_provider:
-            src_path, exists = self._metadata_provider.realpath(src_path)
+            src_path, exists, _ = self._metadata_provider.realpath(src_path)
             if not exists:
                 raise FileNotFoundError(f"The file at path '{src_path}' was not found.")
 
-            dest_path, exists = self._metadata_provider.realpath(dest_path)
+            dest_path, exists, _ = self._metadata_provider.realpath(dest_path)
             if exists:
                 raise FileExistsError(
                     f"The file at path '{virtual_dest_path}' already exists; "
@@ -476,7 +476,7 @@ class StorageClient:
             if is_file:
                 virtual_path = path
                 if self._metadata_provider:
-                    path, exists = self._metadata_provider.realpath(path)
+                    path, exists, _ = self._metadata_provider.realpath(path)
                     if not exists:
                         raise FileNotFoundError(f"The file at path '{virtual_path}' was not found.")
 
@@ -672,7 +672,7 @@ class StorageClient:
             return None
 
         if self._metadata_provider:
-            realpath, _ = self._metadata_provider.realpath(path)
+            realpath, _, _ = self._metadata_provider.realpath(path)
         else:
             realpath = path
 
@@ -687,7 +687,7 @@ class StorageClient:
         :return: ``True`` if the path points to a file, ``False`` otherwise.
         """
         if self._metadata_provider:
-            _, exists = self._metadata_provider.realpath(path)
+            _, exists, _ = self._metadata_provider.realpath(path)
             return exists
 
         return self._storage_provider.is_file(path)
@@ -703,8 +703,8 @@ class StorageClient:
                 if prefix:
                     # The logical path for each item will be the physical path with
                     # the base physical path removed from the beginning.
-                    physical_base, _ = self._metadata_provider.realpath("")
-                    physical_prefix, _ = self._metadata_provider.realpath(prefix)
+                    physical_base, _, _ = self._metadata_provider.realpath("")
+                    physical_prefix, _, _ = self._metadata_provider.realpath(prefix)
                     for obj in self._storage_provider.list_objects(physical_prefix):
                         virtual_path = obj.key[len(physical_base) :].lstrip("/")
                         self._metadata_provider.add_file(virtual_path, obj)

@@ -18,7 +18,7 @@ from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import IO, Any, Optional, Tuple, Union
+from typing import IO, Any, NamedTuple, Optional, Tuple, Union
 
 from dateutil.parser import parse as dateutil_parser
 
@@ -301,6 +301,23 @@ class StorageProvider(ABC):
         pass
 
 
+class ResolvedPath(NamedTuple):
+    """
+    Result of resolving a virtual path to a physical path.
+
+    Attributes:
+        physical_path: The physical path in storage backend
+        exists: Whether the path exists in metadata
+        profile: Optional profile name for routing in CompositeStorageClient.
+                 None means use current client's storage provider.
+                 String means route to named child StorageClient.
+    """
+
+    physical_path: str
+    exists: bool
+    profile: Optional[str] = None
+
+
 class MetadataProvider(ABC):
     """
     Abstract base class for accessing file metadata.
@@ -355,15 +372,14 @@ class MetadataProvider(ABC):
         pass
 
     @abstractmethod
-    def realpath(self, path: str) -> tuple[str, bool]:
+    def realpath(self, path: str) -> ResolvedPath:
         """
         Returns the canonical, full real physical path for use by a
-        :py:class:`StorageProvider`. This provides translation from user-visible paths to
-        the canonical paths needed by a :py:class:`StorageProvider`.
+        :py:class:`StorageProvider` or child :py:class:`StorageClient` routing information.
 
         :param path: user-supplied virtual path
 
-        :return: A canonical physical path and if the object at the path is valid
+        :return: ResolvedPath with physical_path, exists flag, and optional profile for routing
         """
         pass
 

@@ -24,6 +24,7 @@ from multistorageclient.types import (
     ObjectMetadata,
     ProviderBundle,
     Replica,
+    ResolvedPath,
     StorageProviderConfig,
 )
 from multistorageclient.utils import glob as glob_util
@@ -86,9 +87,9 @@ class TestMetadataProvider(MetadataProvider):
     def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
         return glob_util(list(self._files.keys()), pattern)
 
-    def realpath(self, path: str) -> tuple[str, bool]:
+    def realpath(self, path: str) -> ResolvedPath:
         exists = path in self._files
-        return path, exists
+        return ResolvedPath(physical_path=path, exists=exists, profile=None)
 
     def add_file(self, path: str, metadata: ObjectMetadata) -> None:
         assert path not in self._files

@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional, Union
 
-from ..types import MetadataProvider, ObjectMetadata, StorageProvider
+from ..types import MetadataProvider, ObjectMetadata, ResolvedPath, StorageProvider
 from ..utils import create_attribute_filter_evaluator, glob, matches_attribute_filter_expression
 from .manifest_formats import ManifestFormat, get_format_handler
 
@@ -384,9 +384,9 @@ class ManifestMetadataProvider(MetadataProvider):
         ]
         return [key for key in glob(all_objects, pattern)]
 
-    def realpath(self, path: str) -> tuple[str, bool]:
+    def realpath(self, path: str) -> ResolvedPath:
         exists = path in self._files
-        return path, exists
+        return ResolvedPath(physical_path=path, exists=exists, profile=None)
 
     def add_file(self, path: str, metadata: ObjectMetadata) -> None:
         if not self.is_writable():
