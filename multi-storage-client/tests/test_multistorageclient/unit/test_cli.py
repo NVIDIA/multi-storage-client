@@ -164,7 +164,7 @@ def test_sync_command_with_real_files(run_cli):
             assert target_file.exists(), f"Target file {target_file} does not exist"
             assert target_file.read_text() == content, f"Content mismatch for {target_file}"
 
-        assert "200/200" in stdout
+        assert "200/200" in stderr
         assert "Synchronizing files from" in stdout
         assert "Synchronization completed successfully" in stdout
 
@@ -190,7 +190,7 @@ def test_sync_command_with_real_files_and_patterns(run_cli):
             else:
                 assert not target_file.exists(), f"Target file {target_file} should not exist"
 
-        assert f"{total_txt_files}/{total_txt_files}" in stdout
+        assert f"{total_txt_files}/{total_txt_files}" in stderr
         assert "Synchronizing files from" in stdout
         assert "Synchronization completed successfully" in stdout
 
@@ -495,8 +495,8 @@ def test_rm_command_with_progress(run_cli):
             file_path.write_text(f"Content of {file_path.name}")
 
         # Test with progress
-        stdout, _ = run_cli("rm", "-y", "--recursive", f"{test_dir}")
-        assert "5/5" in stdout
+        _, stderr = run_cli("rm", "-y", "--recursive", f"{test_dir}")
+        assert "5/5" in stderr
 
 
 def test_config_validate_command(run_cli):

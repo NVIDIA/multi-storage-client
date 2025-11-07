@@ -1,8 +1,11 @@
+import logging
 import os
 import sys
 from typing import Any
 
 from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
 
 
 class CappedProgressBar(tqdm):
@@ -30,8 +33,16 @@ class CappedProgressBar(tqdm):
 class ProgressBar:
     def __init__(self, desc: str, show_progress: bool, total_items: int = 0):
         # If the env var is defined, always suppress the progress bar
-        if os.getenv("SUPPRESS_PROGRESS_BAR") is not None:
+        legacy_msc_suppress = os.getenv("SUPPRESS_PROGRESS_BAR") is not None
+        msc_suppress = os.getenv("MSC_SUPPRESS_PROGRESS_BAR") is not None
+
+        if msc_suppress or legacy_msc_suppress:
             show_progress = False
+
+        if legacy_msc_suppress:
+            logger.warning(
+                "Env var 'SUPPRESS_PROGRESS_BAR' is deprecated and will be removed; use 'MSC_SUPPRESS_PROGRESS_BAR'."
+            )
 
         if not show_progress:
             self.pbar = None
@@ -40,7 +51,7 @@ class ProgressBar:
         # Initialize progress bar based on the 'total_items' provided at creation.
         bar_format = "{desc}: {percentage:3.1f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}{postfix}]"
         self.pbar = CappedProgressBar(
-            total=total_items, desc=desc, bar_format=bar_format, file=sys.stdout, dynamic_ncols=True, position=0
+            total=total_items, desc=desc, bar_format=bar_format, file=sys.stderr, dynamic_ncols=True, position=0
         )
 
     def update_total(self, new_total: int) -> None:
