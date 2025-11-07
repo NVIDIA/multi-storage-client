@@ -9,7 +9,7 @@ workflow:
     - if: $CI_PIPELINE_SOURCE == "parent_pipeline"
 
 stages:
-  - 💿
+  - 💽
 
 default:
   tags:
@@ -51,7 +51,7 @@ default:
 
 # Properties we can't set with `default`.
 .default:
-  stage: 💿
+  stage: 💽
   environment:
     name: Beta
     action: access

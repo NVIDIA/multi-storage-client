@@ -123,6 +123,31 @@ jobs:
           path: |
             -
             multi-storage-client-docs/dist/
+  multi-storage-client-scripts:
+    name: multi-storage-client-scripts
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout.
+      - uses: actions/checkout@v6
+      # Install Nix + Magic Nix Cache.
+      - uses: DeterminateSystems/nix-installer-action@main
+        with:
+          summarize: false
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      # Install uv + enable uv caching.
+      #
+      # The Nix shell provides uv so this is only for uv caching.
+      - uses: astral-sh/setup-uv@v8.0.0
+        env:
+          UV_NO_MODIFY_PATH: true
+        with:
+          enable-cache: true
+      # Main.
+      - working-directory: multi-storage-client-scripts
+        run: |
+          just build
   multi-storage-file-system:
     name: multi-storage-file-system
     permissions:

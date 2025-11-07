@@ -9,7 +9,7 @@ workflow:
     - if: $CI_PIPELINE_SOURCE == "parent_pipeline"
 
 stages:
-  - 💿
+  - 💽
 
 default:
   tags:
@@ -52,7 +52,7 @@ default:
 
 # Properties we can't set with `default`.
 .default:
-  stage: 💿
+  stage: 💽
 
 # TODO: Remove once on GitLab 18.2.
 ✔️:
@@ -167,6 +167,29 @@ multi-storage-client-docs:
       - multi-storage-client-docs/dist/
     reports:
       codequality: multi-storage-client-docs/.reports/ruff.json
+
+multi-storage-client-scripts:
+  extends:
+    - .default
+  rules:
+    - changes:
+        - flake.lock
+        - flake.nix
+        - nix/**/*
+        - pyproject.toml
+        - uv.lock
+        - multi-storage-client-scripts/**/*
+    - when: manual
+      allow_failure: true
+  script:
+    - |
+      nix develop --command bash -c "
+        cd multi-storage-client-scripts &&
+        just build
+      "
+  artifacts:
+    reports:
+      codequality: multi-storage-client-scripts/.reports/ruff.json
 
 multi-storage-file-system:
   extends:

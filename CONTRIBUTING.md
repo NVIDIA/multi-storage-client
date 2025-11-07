@@ -67,6 +67,10 @@ Key:
 ├── multi-storage-client-docs
 │   └── ...
 │
+│   # Internal helper scripts.
+├── multi-storage-client-scripts
+│   └── ...
+│
 │   # Client web UI.
 ├── multi-storage-explorer
 │   └── ...
