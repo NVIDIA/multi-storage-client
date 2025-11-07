@@ -740,12 +740,21 @@ def test_open_with_source_version_check(profile: str):
     content1 = b"test content for cache"
     content2 = b"modified content for cache"
 
+    def get_etag(key: str) -> Optional[str]:
+        try:
+            return storage_provider.get_object_metadata(key).etag
+        except FileNotFoundError:
+            return None
+
     try:
         # Write initial content
         storage_provider.put_object(key, content1)
-        initial_etag = storage_provider.get_object_metadata(key).etag
-        if initial_etag is None:
-            pytest.skip("Backend does not support etag; skipping cache/versioning test.")
+        initial_etag = wait(
+            waitable=lambda: get_etag(key),
+            should_wait=lambda etag: etag is None,
+            max_attempts=60,
+            attempt_interval_seconds=1,
+        )
 
         # Read with ENABLE mode - should get updated content
         with msc.open(f"{MSC_PROTOCOL}{profile}/{key}", "rb", check_source_version=SourceVersionCheckMode.ENABLE) as f:
@@ -753,7 +762,12 @@ def test_open_with_source_version_check(profile: str):
 
         # Modify file content
         storage_provider.put_object(key, content2)
-        new_etag = storage_provider.get_object_metadata(key).etag
+        new_etag = wait(
+            waitable=lambda: get_etag(key),
+            should_wait=lambda etag: etag == initial_etag,
+            max_attempts=60,
+            attempt_interval_seconds=1,
+        )
         assert new_etag != initial_etag, "etag should change after file modification"
 
         # Read with DISABLE mode - should get old content from cache
