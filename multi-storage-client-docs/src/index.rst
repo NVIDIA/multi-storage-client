@@ -30,6 +30,7 @@ It provides a generic interface to interact with objects and files across variou
 
    user_guide/replicas
    user_guide/rust
+   user_guide/multi_storage_file_system
 
 .. toctree::
    :maxdepth: 2
