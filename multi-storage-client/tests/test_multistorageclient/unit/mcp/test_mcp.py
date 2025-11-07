@@ -56,6 +56,7 @@ class TestMCP:
                 "msc_is_file",
                 "msc_is_empty",
                 "msc_sync",
+                "msc_sync_replicas",
             ]
 
             for expected_tool in expected_tools:
@@ -64,7 +65,7 @@ class TestMCP:
             return tool_names
 
         tool_names = asyncio.run(check_tools())
-        assert len(tool_names) == 9, f"Expected 9 tools, found {len(tool_names)}: {tool_names}"
+        assert len(tool_names) == 10, f"Expected 10 tools, found {len(tool_names)}: {tool_names}"
 
     def test_mcp_prompts_are_registered(self):
         """Test that MCP prompts are registered with the server."""

@@ -20,7 +20,7 @@ import sys
 if sys.version_info >= (3, 10):
     import json
     import logging
-    from typing import Optional
+    from typing import List, Optional
 
     from .server import mcp
     from .utils import get_storage_client_for_url, metadata_to_dict
@@ -413,5 +413,68 @@ if sys.version_info >= (3, 10):
                 "error": str(e),
                 "source_url": source_url,
                 "target_url": target_url,
+            }
+            return json.dumps(error_result, indent=2)
+
+    @mcp.tool
+    def msc_sync_replicas(
+        source_url: str,
+        replica_indices: Optional[List[int]] = None,
+        delete_unmatched_files: bool = False,
+    ) -> str:
+        """
+        Synchronize files from the source storage to configured replicas.
+
+        This function syncs files from the primary storage to one or more replica storage locations
+        configured in the storage profile. Replicas provide redundancy and improved read performance.
+
+        :param source_url: The URL for the source storage (e.g., 'msc://profile/path/')
+        :param replica_indices: Optional list of replica indices to sync to (0-based). If None, syncs to all replicas
+        :param delete_unmatched_files: Whether to delete files at replicas that are not present at source
+        :return: JSON string containing sync result
+        """
+        try:
+            logger.info(f"Starting replica sync from {source_url}")
+
+            client, source_path = get_storage_client_for_url(source_url)
+
+            if not client.replicas:
+                warning_msg = "No replicas configured for profile. Sync operation skipped."
+                logger.warning(warning_msg)
+                result = {
+                    "success": True,
+                    "source_url": source_url,
+                    "message": warning_msg,
+                    "replicas_synced": 0,
+                }
+                return json.dumps(result, indent=2, default=str)
+
+            client.sync_replicas(
+                source_path=source_path,
+                replica_indices=replica_indices,
+                delete_unmatched_files=delete_unmatched_files,
+            )
+
+            num_replicas = len(replica_indices) if replica_indices else len(client.replicas)
+
+            result = {
+                "success": True,
+                "source_url": source_url,
+                "replica_indices": replica_indices,
+                "delete_unmatched_files": delete_unmatched_files,
+                "replicas_synced": num_replicas,
+                "message": f"Successfully synced {source_url} to {num_replicas} replica(s)",
+            }
+
+            logger.info(f"Successfully synced {source_url} to {num_replicas} replica(s)")
+            return json.dumps(result, indent=2, default=str)
+
+        except Exception as e:
+            logger.error(f"Error syncing replicas from {source_url}: {str(e)}")
+            error_result = {
+                "success": False,
+                "error": str(e),
+                "source_url": source_url,
+                "replica_indices": replica_indices,
             }
             return json.dumps(error_result, indent=2)

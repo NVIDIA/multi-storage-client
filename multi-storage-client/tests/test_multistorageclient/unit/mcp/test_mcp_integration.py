@@ -86,6 +86,73 @@ def mcp_server_parametrized(request):
         msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
 
 
+@pytest.fixture(
+    params=[
+        (tempdatastore.TemporaryPOSIXDirectory, False),
+        (tempdatastore.TemporaryPOSIXDirectory, True),
+    ]
+)
+def mcp_server_with_replicas(request):
+    """Fixture that creates MCP server with source profile and replica profiles."""
+
+    if not MCP_AVAILABLE:
+        pytest.skip("MCP requires Python >= 3.10 and fastmcp")
+
+    temp_data_store_type, with_cache = request.param
+
+    with (
+        temp_data_store_type() as source_store,
+        temp_data_store_type() as replica_store_1,
+        temp_data_store_type() as replica_store_2,
+    ):
+        msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+        source_profile = "source"
+        replica_profile_1 = "replica-1"
+        replica_profile_2 = "replica-2"
+
+        source_config = source_store.profile_config_dict()
+        source_config["replicas"] = [
+            {"replica_profile": replica_profile_1, "read_priority": 1},
+            {"replica_profile": replica_profile_2, "read_priority": 2},
+        ]
+
+        config_dict = {
+            "profiles": {
+                source_profile: source_config,
+                replica_profile_1: replica_store_1.profile_config_dict(),
+                replica_profile_2: replica_store_2.profile_config_dict(),
+            },
+            "opentelemetry": {
+                "metrics": {
+                    "attributes": [
+                        {"type": "static", "options": {"attributes": {"cluster": "local"}}},
+                        {"type": "host", "options": {"attributes": {"node": "name"}}},
+                        {"type": "process", "options": {"attributes": {"process": "pid"}}},
+                    ],
+                    "exporter": {"type": telemetry._fully_qualified_name(InMemoryMetricExporter)},
+                },
+            },
+        }
+        if with_cache:
+            config_dict["cache"] = {
+                "size": "10M",
+                "use_etag": True,
+                "location": tempfile.mkdtemp(),
+                "eviction_policy": {
+                    "policy": "random",
+                },
+            }
+
+        config.setup_msc_config(config_dict)
+
+        from multistorageclient.mcp.server import mcp  # pyright: ignore[reportAttributeAccessIssue]
+
+        yield mcp, source_profile, replica_profile_1, replica_profile_2
+
+        msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+
 def create_test_file(profile_name: str, file_path: str, content: bytes) -> str:
     """Helper to create a test file and return its URL."""
     url = f"msc://{profile_name}/{file_path}"
@@ -576,3 +643,95 @@ class TestMCPServerBasicOperations:
             assert any("file1.txt" in key for key in returned_keys), "file1.txt should exist"
             assert any("file2.txt" in key for key in returned_keys), "file2.txt should exist"
             assert not any("extra.txt" in key for key in returned_keys), "extra.txt should be deleted"
+
+    @pytest.mark.asyncio
+    async def test_mcp_sync_replicas_no_replicas(self, mcp_server_parametrized):
+        """Test that msc_sync_replicas handles profiles with no replicas gracefully."""
+        from fastmcp import Client  # pyright: ignore[reportMissingImports]
+        from mcp.types import TextContent  # pyright: ignore[reportMissingImports]
+
+        mcp_server, profile_name = mcp_server_parametrized
+
+        test_prefix = f"replica-sync-test-{uuid.uuid4()}"
+        test_file_path = f"{test_prefix}/file.txt"
+
+        create_test_file(profile_name, test_file_path, b"test content")
+
+        async with Client(mcp_server) as client:
+            sync_result = await client.call_tool(
+                "msc_sync_replicas",
+                {"source_url": f"msc://{profile_name}/{test_prefix}/", "delete_unmatched_files": False},
+            )
+
+            assert isinstance(sync_result.content[0], TextContent)
+            sync_response: Dict[str, Any] = json.loads(sync_result.content[0].text)
+
+            assert sync_response["success"] is True
+            assert sync_response["source_url"] == f"msc://{profile_name}/{test_prefix}/"
+            assert sync_response["replicas_synced"] == 0
+            assert "No replicas configured" in sync_response["message"]
+
+
+@pytest.mark.skipif(not MCP_AVAILABLE, reason="MCP requires Python >= 3.10 and fastmcp")
+class TestMCPServerReplicaOperations:
+    """Test MCP server replica operations with configured replicas."""
+
+    @pytest.mark.asyncio
+    async def test_mcp_sync_replicas_with_configured_replicas(self, mcp_server_with_replicas):
+        """Test that msc_sync_replicas syncs files to configured replicas."""
+        from fastmcp import Client  # pyright: ignore[reportMissingImports]
+        from mcp.types import TextContent  # pyright: ignore[reportMissingImports]
+
+        mcp_server, source_profile, replica_profile_1, replica_profile_2 = mcp_server_with_replicas
+
+        test_prefix = f"replica-sync-test-{uuid.uuid4()}"
+
+        create_test_file(source_profile, f"{test_prefix}/file1.txt", b"file 1 content")
+        create_test_file(source_profile, f"{test_prefix}/file2.txt", b"file 2 content")
+        create_test_file(source_profile, f"{test_prefix}/subdir/nested.txt", b"nested content")
+
+        async with Client(mcp_server) as client:
+            list_replica1_before = await client.call_tool(
+                "msc_list", {"url": f"msc://{replica_profile_1}/{test_prefix}/"}
+            )
+            assert isinstance(list_replica1_before.content[0], TextContent)
+            list_replica1_before_response: Dict[str, Any] = json.loads(list_replica1_before.content[0].text)
+            assert list_replica1_before_response["count"] == 0
+
+            sync_result = await client.call_tool(
+                "msc_sync_replicas",
+                {"source_url": f"msc://{source_profile}/{test_prefix}/", "delete_unmatched_files": False},
+            )
+
+            assert isinstance(sync_result.content[0], TextContent)
+            sync_response: Dict[str, Any] = json.loads(sync_result.content[0].text)
+
+            assert sync_response["success"] is True
+            assert sync_response["source_url"] == f"msc://{source_profile}/{test_prefix}/"
+            assert sync_response["replicas_synced"] == 2
+
+            list_replica1_after = await client.call_tool(
+                "msc_list", {"url": f"msc://{replica_profile_1}/{test_prefix}/"}
+            )
+            assert isinstance(list_replica1_after.content[0], TextContent)
+            list_replica1_after_response: Dict[str, Any] = json.loads(list_replica1_after.content[0].text)
+            assert list_replica1_after_response["count"] == 3
+
+            list_replica2_after = await client.call_tool(
+                "msc_list", {"url": f"msc://{replica_profile_2}/{test_prefix}/"}
+            )
+            assert isinstance(list_replica2_after.content[0], TextContent)
+            list_replica2_after_response: Dict[str, Any] = json.loads(list_replica2_after.content[0].text)
+            assert list_replica2_after_response["count"] == 3
+
+            returned_keys_1 = [obj["key"] for obj in list_replica1_after_response["objects"]]
+            returned_keys_2 = [obj["key"] for obj in list_replica2_after_response["objects"]]
+            expected_files = ["file1.txt", "file2.txt", "subdir/nested.txt"]
+
+            for expected_file in expected_files:
+                assert any(expected_file in key for key in returned_keys_1), (
+                    f"Should find {expected_file} in replica 1: {returned_keys_1}"
+                )
+                assert any(expected_file in key for key in returned_keys_2), (
+                    f"Should find {expected_file} in replica 2: {returned_keys_2}"
+                )
