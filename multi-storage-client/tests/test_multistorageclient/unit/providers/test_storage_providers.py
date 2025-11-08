@@ -18,6 +18,7 @@ import io
 import os
 import tempfile
 import uuid
+from datetime import datetime, timezone
 from typing import Union, cast
 
 import pytest
@@ -82,6 +83,8 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
         )
         storage_provider = cast(BaseStorageProvider, storage_client._storage_provider)
 
+        current_time = datetime.now(tz=timezone.utc).replace(microsecond=0)
+
         file_extension = ".txt"
         # Add a random string to the file path below so concurrent tests don't conflict.
         file_path_fragments = [f"{uuid.uuid4()}-prefix", "infix", f"suffix{file_extension}"]
@@ -106,6 +109,22 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
         assert file_info.content_length == len(file_body_bytes)
         assert file_info.type == "file"
         assert file_info.last_modified is not None
+
+        if storage_provider._provider_name == "ais_s3":
+            # AIStore S3 API returns the timestamp in the local timezone but marked as UTC.
+            # This is a known bug and has been reported to the AIStore team.
+            # We need to convert it to UTC to compare with current time.
+            file_info.last_modified = datetime(
+                year=file_info.last_modified.year,
+                month=file_info.last_modified.month,
+                day=file_info.last_modified.day,
+                hour=file_info.last_modified.hour,
+                minute=file_info.last_modified.minute,
+                second=file_info.last_modified.second,
+            ).astimezone(timezone.utc)
+
+        assert file_info.last_modified >= current_time
+
         for lead in ["", "/"]:
             assert storage_client.is_file(path=f"{lead}{file_path}")
             assert not storage_client.is_file(path=lead)
@@ -120,11 +139,14 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
         assert listed_file_info.key.endswith(file_path)
         assert listed_file_info.content_length == file_info.content_length
         assert listed_file_info.type == file_info.type
-        # There's some timestamp precision differences. Truncate to second.
-        if storage_provider._provider_name != "ais_s3":
-            # AIStore S3 API has timezone inconsistencies between HEAD and LIST operations
-            # HEAD and LIST return different timestamps even though both claim to be UTC
-            # This is a known bug and has been reported to the AIStore team.
+
+        if storage_provider._provider_name in ("ais_s3", "ais"):
+            # AIStore S3 API does not have seconds in the timestamp
+            assert listed_file_info.last_modified.astimezone(timezone.utc).replace(
+                second=0, microsecond=0
+            ) == file_info.last_modified.replace(second=0, microsecond=0)
+        else:
+            # There's some timestamp precision differences. Truncate to second.
             assert listed_file_info.last_modified.replace(microsecond=0) == file_info.last_modified.replace(
                 microsecond=0
             )

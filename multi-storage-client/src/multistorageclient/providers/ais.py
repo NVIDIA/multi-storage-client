@@ -16,12 +16,14 @@
 import io
 import os
 from collections.abc import Callable, Iterator
+from datetime import datetime, timezone
 from typing import IO, Any, Optional, TypeVar, Union
 
 from aistore.sdk import Client
 from aistore.sdk.authn import AuthNClient
 from aistore.sdk.errors import AISError
 from aistore.sdk.obj.object_props import ObjectProps
+from dateutil.parser import parse as dateutil_parser
 from requests.exceptions import HTTPError
 from urllib3.util import Retry
 
@@ -304,7 +306,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
                     return ObjectMetadata(
                         key=key,
                         content_length=int(props.size),  # pyright: ignore [reportArgumentType]
-                        last_modified=AWARE_DATETIME_MIN,
+                        last_modified=datetime.fromtimestamp(int(props.access_time) / 1e9).astimezone(timezone.utc),
                         etag=props.checksum_value,
                         metadata=props.custom_metadata,
                     )
@@ -360,7 +362,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
                     yield ObjectMetadata(
                         key=key,
                         content_length=int(props.size),
-                        last_modified=AWARE_DATETIME_MIN,
+                        last_modified=dateutil_parser(props.access_time).astimezone(timezone.utc),
                         etag=props.checksum_value,
                     )
                 elif end_at is not None and end_at < key:
