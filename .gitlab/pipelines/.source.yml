@@ -54,6 +54,17 @@ default:
 .default:
   stage: 💿
 
+# TODO: Remove once on GitLab 18.2.
+✔️:
+  extends:
+    - .default
+  variables:
+    GIT_STRATEGY: none
+  before_script:
+    - exit 0
+  script:
+    - exit 0
+
 multi-storage-client:
   extends:
     - .default
@@ -64,6 +75,8 @@ multi-storage-client:
         - pyproject.toml
         - uv.lock
         - multi-storage-client/**/*
+    - when: manual
+      allow_failure: true
   parallel:
     matrix:
       - PYTHON_BINARY:
@@ -102,6 +115,8 @@ multi-storage-client-docs:
         - uv.lock
         - multi-storage-client/**/*
         - multi-storage-client-docs/**/*
+    - when: manual
+      allow_failure: true
   script:
     - |
       nix develop --command bash -c "

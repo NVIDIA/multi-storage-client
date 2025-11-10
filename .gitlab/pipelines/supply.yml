@@ -22,6 +22,7 @@ stages:
     forward:
       pipeline_variables: false
       yaml_variables: false
+    # TODO: Switch to `mirror` once on GitLab 18.2.
     strategy: depend
 
 Source:
