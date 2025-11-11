@@ -108,37 +108,6 @@ The ``msc ls`` command lists files and directories in a storage service. It supp
    **Performance Considerations:** When using attribute filtering, the system will make additional HEAD requests to retrieve metadata for each file if metadata provider is not provided. This can increase latency, especially when working with many files.
 
 
-********
-msc glob
-********
-
-The ``msc glob`` command finds files in a storage service using Unix-style wildcard patterns.
-
-.. code-block:: text
-  :caption: glob command help output
-
-  $ msc help glob
-  usage: msc glob [--attribute-filter-expression ATTRIBUTE_FILTER_EXPRESSION] pattern
-
-  Find files using Unix-style wildcard patterns with optional attribute filtering.
-
-  positional arguments:
-    pattern               The glob pattern to match files (POSIX path or msc:// URL)
-
-  options:
-    --attribute-filter-expression ATTRIBUTE_FILTER_EXPRESSION, -e ATTRIBUTE_FILTER_EXPRESSION
-                          Filter by attributes using a filter expression (e.g., 'model_name = "gpt" AND version > 1.0')
-
-.. code-block:: text
-  :caption: Find files with a wildcard pattern
-
-  $ msc glob "msc://profile/data/*.pt"
-  msc://profile/data/model.pt
-
-.. note::
-   The ``msc glob`` command works by first listing all files in the specified directory using the equivalent of ``msc ls``, then applying the glob pattern as a post-filter to the results. This means that glob patterns are evaluated locally after retrieving the file listing from the storage service.  To reduce number of HEAD requests, either opt in to use metadata provider or use ``msc glob`` for only a specific pattern of files.
-
-
 **********
 msc config
 **********

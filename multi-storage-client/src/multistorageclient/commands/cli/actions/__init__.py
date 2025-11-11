@@ -15,7 +15,6 @@
 
 from .action import ActionRegistry, MSCArgumentParser
 from .config import ConfigAction
-from .glob import GlobAction
 from .help import HelpAction
 from .ls import LsAction
 from .mcp_server import MCPServerAction
@@ -28,7 +27,6 @@ __all__ = [
     "ConfigAction",
     "HelpAction",
     "SyncAction",
-    "GlobAction",
     "LsAction",
     "MCPServerAction",
     "RmAction",

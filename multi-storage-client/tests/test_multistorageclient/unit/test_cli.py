@@ -195,69 +195,6 @@ def test_sync_command_with_real_files_and_patterns(run_cli):
         assert "Synchronization completed successfully" in stdout
 
 
-def test_glob_command_without_attribute_filter_expression(run_cli):
-    with tempfile.TemporaryDirectory() as test_dir:
-        # Create test files with different extensions
-        test_files = [
-            Path(test_dir) / "model1.bin",
-            Path(test_dir) / "model2.bin",
-            Path(test_dir) / "data.txt",
-            Path(test_dir) / "config.json",
-        ]
-
-        for file_path in test_files:
-            file_path.write_text(f"Content of {file_path.name}")
-
-        # Test basic glob pattern
-        stdout, _ = run_cli("glob", f"{test_dir}/*.bin")
-
-        # Should find both .bin files
-        assert "model1.bin" in stdout
-        assert "model2.bin" in stdout
-        assert "data.txt" not in stdout
-        assert "config.json" not in stdout
-
-        # Test debug output
-        stdout, _ = run_cli("glob", "--debug", f"{test_dir}/*")
-
-        # Should show all files with debug info
-        assert "model1.bin" in stdout
-        assert "model2.bin" in stdout
-        assert "data.txt" in stdout
-        assert "config.json" in stdout
-
-
-def test_glob_command_with_attribute_filter_expression(run_cli):
-    with tempfile.TemporaryDirectory() as test_dir:
-        # Create test files with different attributes using msc.open
-        files_with_attrs = [
-            ("model1.bin", {"model_name": "gpt", "version": "1.0", "priority": "10"}),
-            ("model2.bin", {"model_name": "bert", "version": "2.0", "priority": "5"}),
-            ("data.txt", {"model_name": "gpt", "version": "0.5", "priority": "15"}),
-            ("config.json", {"type": "config", "version": "1.5", "priority": "20"}),
-        ]
-
-        for filename, attributes in files_with_attrs:
-            file_path = f"{test_dir}/{filename}"
-            with msc.open(file_path, "w", attributes=attributes) as f:
-                f.write(f"Content of {filename}")
-
-        # Test equality operator - should find files with model_name = gpt
-        stdout, _ = run_cli("glob", "--attribute-filter-expression", 'model_name = "gpt"', f"{test_dir}/*")
-        assert "model1.bin" in stdout  # has model_name = gpt
-        assert "data.txt" in stdout  # has model_name = gpt
-        assert "model2.bin" not in stdout  # has model_name = bert
-        assert "config.json" not in stdout  # no model_name attribute
-
-        # Test multiple filters (AND logic) - model_name = gpt AND version >= 1.0
-        stdout, _ = run_cli(
-            "glob", "--attribute-filter-expression", 'model_name = "gpt" AND version >= 1.0', f"{test_dir}/*"
-        )
-        assert "model1.bin" in stdout  # model_name = gpt AND version = 1.0
-        assert "data.txt" not in stdout  # model_name = gpt BUT version = 0.5
-        assert "model2.bin" not in stdout  # version = 2.0 BUT model_name = bert
-
-
 def test_ls_command_without_attribute_filter_expression(run_cli):
     with tempfile.TemporaryDirectory() as test_dir:
         # Create test files and subdirectory
@@ -401,7 +338,7 @@ def test_attribute_filter_expression_parsing_errors(run_cli):
 
         # Test invalid operator
         _, stderr = run_cli(
-            "glob", "--attribute-filter-expression", "version ~= 1.0", f"{test_dir}/*", expected_return_code=1
+            "ls", "--attribute-filter-expression", "version ~= 1.0", f"{test_dir}/", expected_return_code=1
         )
         assert "Invalid attribute filter expression" in stderr
 
