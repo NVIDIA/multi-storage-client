@@ -41,7 +41,7 @@ document: prepare-toolchain
     # Remove documentation artifacts.
     rm -rf dist
     # Build the documentation website.
-    uv run sphinx-build -b html src dist
+    uv run sphinx-build -b html --fail-on-warning src dist
 
 # Release build.
 build: analyze document

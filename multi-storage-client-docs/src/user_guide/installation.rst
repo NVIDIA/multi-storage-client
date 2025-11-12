@@ -64,3 +64,18 @@ Likewise, there are extras for each higher level library.
 
    # Ray
    pip install "multi-storage-client[ray]"
+
+MSC also provides an optional Model Context Protocol (MCP) server that enables conversational interaction with storage through AI assistants.
+
+.. code-block:: shell
+   :caption: Install MSC with MCP Server support.
+
+   # MCP Server only.
+   pip install "multi-storage-client[mcp]"
+
+   # Verify installation.
+   msc mcp-server --help
+
+.. note::
+
+   The MCP Server requires Python 3.10 or higher. For complete MCP Server documentation, see :doc:`/user_guide/mcp_server`.

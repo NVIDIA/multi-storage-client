@@ -305,12 +305,11 @@ class ResolvedPath(NamedTuple):
     """
     Result of resolving a virtual path to a physical path.
 
-    Attributes:
-        physical_path: The physical path in storage backend
-        exists: Whether the path exists in metadata
-        profile: Optional profile name for routing in CompositeStorageClient.
-                 None means use current client's storage provider.
-                 String means route to named child StorageClient.
+    :param physical_path: The physical path in storage backend
+    :param exists: Whether the path exists in metadata
+    :param profile: Optional profile name for routing in CompositeStorageClient.
+        None means use current client's storage provider.
+        String means route to named child StorageClient.
     """
 
     physical_path: str
