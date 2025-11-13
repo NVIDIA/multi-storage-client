@@ -125,7 +125,6 @@ multi-storage-client-docs:
       "
   artifacts:
     paths:
-      - multi-storage-client-docs/.reports/unit/coverage/
       - multi-storage-client-docs/dist/
     reports:
       codequality: multi-storage-client-docs/.reports/ruff.json
