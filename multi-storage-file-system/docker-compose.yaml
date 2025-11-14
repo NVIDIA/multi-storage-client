@@ -39,6 +39,42 @@ services:
     environment:
       - S3_ENDPOINT=http://minio:9000
     command: [ "/root/deploy_1_1.sh" ]
+  # Test clean Ubuntu Linux Container
+  #
+  # Note:
+  #   apt update && apt -y upgrade && apt install -y fuse3
+  #   cd /multi-storage-client/multi-storage-file-system/
+  ubuntu:
+    image: ubuntu:24.04
+    container_name: msfs_ubuntu
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - '/dev/fuse'
+    privileged: true
+    volumes:
+      - type: bind
+        source: ..
+        target: /multi-storage-client
+    command: ["sleep", "infinity"]
+  # Test clean Rocky Linux Container
+  #
+  # Note:
+  #   dnf install -y fuse procps-ng
+  #   cd /multi-storage-client/multi-storage-file-system/
+  rocky:
+    image: rockylinux:9.3
+    container_name: msfs_rocky
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - '/dev/fuse'
+    privileged: true
+    volumes:
+      - type: bind
+        source: ..
+        target: /multi-storage-client
+    command: ["sleep", "infinity"]
   # Development Container
   dev:
     build:
@@ -47,9 +83,11 @@ services:
       target: dev
     container_name: msfs_dev
     depends_on:
-      - minio
       - otel-collector
+      - minio
       - ais
+      # - ubuntu
+      # - rocky
     cap_add:
       - SYS_ADMIN
     devices:

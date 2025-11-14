@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/drone/envsubst"
 	"gopkg.in/yaml.v3"
 )
 
@@ -166,7 +167,8 @@ func parseSeconds(m map[string]interface{}, key string, dflt interface{}) (d tim
 // substitutions, if any, before being returned.
 func parseString(m map[string]interface{}, key string, dflt interface{}) (s string, ok bool) {
 	var (
-		v interface{}
+		err error
+		v   interface{}
 	)
 
 	v, ok = m[key]
@@ -185,7 +187,11 @@ func parseString(m map[string]interface{}, key string, dflt interface{}) (s stri
 
 	s, ok = dflt.(string)
 	if ok {
-		s = os.ExpandEnv(s)
+		s, err = envsubst.Eval(s, os.Getenv)
+		if err != nil {
+			ok = false
+			return
+		}
 	}
 
 	return
@@ -957,7 +963,7 @@ func checkConfigFile() (err error) {
 
 				backendConfigS3AsStruct = &backendConfigS3Struct{}
 
-				backendConfigS3AsStruct.configCredentialsProfile, ok = parseString(backendConfigS3AsMap, "config_credentials_profile", "default")
+				backendConfigS3AsStruct.configCredentialsProfile, ok = parseString(backendConfigS3AsMap, "config_credentials_profile", "${AWS_PROFILE:-default}")
 				if !ok {
 					err = fmt.Errorf("bad S3.config_credentials_profile at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
 					return

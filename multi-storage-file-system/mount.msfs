@@ -110,6 +110,9 @@ main() {
     local unique_id="$(date +%s)_$$"
     local log_file="$MSFS_LOG_DIR/msfs_${unique_id}.log"
     local pid_file="$MSFS_LOG_DIR/msfs_${unique_id}.pid"
+
+    # Ensure HOME is set to home directory of root user
+    export HOME=$(echo ~root)
     
     log "Launching msfs daemon..."
     log "  Config file: $MSC_CONFIG"

@@ -39,14 +39,20 @@ func (backend *backendStruct) setupS3Context() (err error) {
 
 	configOptions = []func(*config.LoadOptions) error{}
 
-	configOptions = append(configOptions, config.WithSharedConfigProfile(backendS3.configCredentialsProfile))
-
-	if !backendS3.useConfigEnv {
-		configOptions = append(configOptions, config.WithRegion(backendS3.region))
+	if backendS3.useConfigEnv || backendS3.useCredentialsEnv {
+		configOptions = append(configOptions, config.WithSharedConfigProfile(backendS3.configCredentialsProfile))
 	}
 
-	if !backendS3.useCredentialsEnv {
-		configOptions = append(configOptions, config.WithCredentialsProvider(credentials.StaticCredentialsProvider{
+	if backendS3.useConfigEnv {
+		configOptions = append(configOptions, config.WithSharedConfigFiles([]string{backendS3.configFilePath}))
+	} else {
+		configOptions = append(configOptions, config.WithSharedConfigFiles(nil), config.WithRegion(backendS3.region))
+	}
+
+	if backendS3.useCredentialsEnv {
+		configOptions = append(configOptions, config.WithSharedCredentialsFiles(([]string{backendS3.credentialsFilePath})))
+	} else {
+		configOptions = append(configOptions, config.WithSharedCredentialsFiles(nil), config.WithCredentialsProvider(credentials.StaticCredentialsProvider{
 			Value: aws.Credentials{
 				AccessKeyID:     backendS3.accessKeyID,
 				SecretAccessKey: backendS3.secretAccessKey,

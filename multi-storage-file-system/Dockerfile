@@ -35,8 +35,10 @@ RUN    apt-get update \
                         iputils-ping \
                         jq \
                         libfuse3-dev \
+                        librpm-dev \
                         lsof \
                         make \
+                        rpm \
                         s3cmd \
                         tini \
                         tree \

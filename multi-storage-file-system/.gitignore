@@ -1,6 +1,7 @@
-build/deb
+build/
 msfs
 msfs.test
 msfs-linux-amd64
 msfs-linux-arm64
 msfs_*_*.deb
+msfs-*-*.*.rpm
