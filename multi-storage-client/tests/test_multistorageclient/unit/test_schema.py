@@ -20,10 +20,6 @@ from multistorageclient.schema import validate_config
 
 
 def test_validate_profiles():
-    # Invalid: missing profiles
-    with pytest.raises(RuntimeError):
-        validate_config({})
-
     # Invalid: incorrect type
     with pytest.raises(RuntimeError):
         validate_config({"profiles": "incorrect type"})

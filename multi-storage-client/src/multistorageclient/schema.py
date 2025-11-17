@@ -215,7 +215,6 @@ CONFIG_SCHEMA = {
         "posix": POSIX_SCHEMA,
         "additionalProperties": False,
     },
-    "required": ["profiles"],
 }
 
 BENCHMARK_SCHEMA = {

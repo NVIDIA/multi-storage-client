@@ -38,7 +38,7 @@ The top-level configuration schema consists of five main sections:
    # Optional. Experimental features flags
    experimental_features: <experimental_features_config>
 
-   # Required. Dictionary of profile configurations
+   # Optional. Dictionary of profile configurations
    profiles: <profile_config>
 
    # Optional. Cache configuration
@@ -50,9 +50,9 @@ The top-level configuration schema consists of five main sections:
    # Optional. Path mapping configuration
    path_mapping: <path_mapping_config>
 
-**********************
+*********************
 Experimental Features
-**********************
+*********************
 
 The ``experimental_features`` section allows you to enable experimental features that are under active development.
 These features may have breaking changes in future releases.
