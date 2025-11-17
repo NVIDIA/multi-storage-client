@@ -87,9 +87,15 @@ class TestMetadataProvider(MetadataProvider):
     def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
         return glob_util(list(self._files.keys()), pattern)
 
-    def realpath(self, path: str) -> ResolvedPath:
-        exists = path in self._files
-        return ResolvedPath(physical_path=path, exists=exists, profile=None)
+    def realpath(self, logical_path: str) -> ResolvedPath:
+        """Mock implementation - returns the logical path if it exists."""
+        if logical_path in self._files:
+            return ResolvedPath(physical_path=logical_path, exists=True, profile=None)
+        return ResolvedPath(physical_path=logical_path, exists=False, profile=None)
+
+    def generate_physical_path(self, logical_path: str, for_overwrite: bool = False) -> ResolvedPath:
+        """Mock implementation - always returns the logical path."""
+        return ResolvedPath(physical_path=logical_path, exists=False, profile=None)
 
     def add_file(self, path: str, metadata: ObjectMetadata) -> None:
         assert path not in self._files
@@ -111,6 +117,9 @@ class TestMetadataProvider(MetadataProvider):
     def is_writable(self) -> bool:
         # Writable by default to support generation and updates
         return True
+
+    def allow_overwrites(self) -> bool:
+        return False
 
 
 class TestProviderBundle(ProviderBundle):

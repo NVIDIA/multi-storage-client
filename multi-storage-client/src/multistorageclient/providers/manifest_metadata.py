@@ -26,6 +26,7 @@ from typing import Any, Optional, Union
 from ..types import MetadataProvider, ObjectMetadata, ResolvedPath, StorageProvider
 from ..utils import create_attribute_filter_evaluator, glob, matches_attribute_filter_expression
 from .manifest_formats import ManifestFormat, get_format_handler
+from .manifest_object_metadata import ManifestObjectMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -101,11 +102,12 @@ class Manifest:
 
 class ManifestMetadataProvider(MetadataProvider):
     _storage_provider: StorageProvider
-    _files: dict[str, ObjectMetadata]
-    _pending_adds: dict[str, ObjectMetadata]
+    _files: dict[str, ManifestObjectMetadata]
+    _pending_adds: dict[str, ManifestObjectMetadata]
     _pending_removes: set[str]
     _manifest_path: str
     _writable: bool
+    _allow_overwrites: bool
     _format: Union[ManifestFormat, str]
 
     def __init__(
@@ -113,6 +115,7 @@ class ManifestMetadataProvider(MetadataProvider):
         storage_provider: StorageProvider,
         manifest_path: str,
         writable: bool = False,
+        allow_overwrites: bool = False,
         manifest_format: Union[ManifestFormat, str] = ManifestFormat.JSONL,
     ) -> None:
         """
@@ -121,6 +124,7 @@ class ManifestMetadataProvider(MetadataProvider):
         :param storage_provider: Storage provider.
         :param manifest_path: Main manifest file path.
         :param writable: If true, allows modifications and new manifests to be written.
+        :param allow_overwrites: If true, allows overwriting existing files without error.
         :param manifest_format: Format for manifest parts. Defaults to ManifestFormat.JSONL.
         """
         self._storage_provider = storage_provider
@@ -129,6 +133,7 @@ class ManifestMetadataProvider(MetadataProvider):
         self._pending_removes = set()
         self._manifest_path = manifest_path
         self._writable = writable
+        self._allow_overwrites = allow_overwrites
         self._format = (
             manifest_format if isinstance(manifest_format, ManifestFormat) else ManifestFormat(manifest_format)
         )
@@ -190,14 +195,14 @@ class ManifestMetadataProvider(MetadataProvider):
 
             # Load manifest parts.
             for manifest_part_reference in manifest.parts:
-                object_metadata: list[ObjectMetadata] = self._load_manifest_part_file(
+                object_metadata_list: list[ManifestObjectMetadata] = self._load_manifest_part_file(
                     storage_provider=storage_provider,
                     manifest_base=manifest_base,
                     manifest_part_reference=manifest_part_reference,
                     manifest_format=manifest.format,
                 )
 
-                for object_metadatum in object_metadata:
+                for object_metadatum in object_metadata_list:
                     self._files[object_metadatum.key] = object_metadatum
         else:
             raise NotImplementedError(f"Manifest file type {file_type} is not supported.")
@@ -208,9 +213,9 @@ class ManifestMetadataProvider(MetadataProvider):
         manifest_base: str,
         manifest_part_reference: ManifestPartReference,
         manifest_format: Union[ManifestFormat, str] = ManifestFormat.JSONL,
-    ) -> list[ObjectMetadata]:
+    ) -> list[ManifestObjectMetadata]:
         """
-        Loads a manifest part.
+        Loads a manifest part and converts to ManifestObjectMetadata.
 
         :param storage_provider: Storage provider.
         :param manifest_base: Manifest file base path. Prepend to manifest part reference paths.
@@ -227,19 +232,26 @@ class ManifestMetadataProvider(MetadataProvider):
         detected_format = ext[1:] if ext else manifest_format
 
         format_handler = get_format_handler(detected_format)
-        return format_handler.read_part(manifest_part_file_content)
+        object_metadata_list = format_handler.read_part(manifest_part_file_content)
+
+        # Convert ObjectMetadata to ManifestObjectMetadata
+        # The format handler returns ObjectMetadata, but may have extra attributes set (like physical_path)
+        return [ManifestObjectMetadata.from_object_metadata(obj) for obj in object_metadata_list]
 
     def _write_manifest_files(
         self,
         storage_provider: StorageProvider,
-        object_metadata: list[ObjectMetadata],
+        object_metadata: list[ManifestObjectMetadata],
         manifest_format: Union[ManifestFormat, str] = ManifestFormat.JSONL,
     ) -> None:
         """
         Writes the main manifest and its part files.
 
+        Accepts ManifestObjectMetadata which extends ObjectMetadata, so format handlers
+        (which expect ObjectMetadata) can serialize it, preserving all fields including physical_path.
+
         :param storage_provider: The storage provider to use for writing.
-        :param object_metadata: objects to include in manifest.
+        :param object_metadata: ManifestObjectMetadata objects to include in manifest.
         :param manifest_format: Format for manifest parts. Defaults to ManifestFormat.JSONL.
         """
         if not object_metadata:
@@ -277,7 +289,7 @@ class ManifestMetadataProvider(MetadataProvider):
             version="1", parts=[ManifestPartReference(path=manifest_part_file_path)], format=format_value
         )
 
-        manifest_part_content = format_handler.write_part(object_metadata)
+        manifest_part_content = format_handler.write_part(list(object_metadata))
         storage_provider.put_object(os.path.join(manifest_folderpath, manifest_part_file_path), manifest_part_content)
 
         manifest_file_path = os.path.join(manifest_folderpath, MANIFEST_INDEX_FILENAME)
@@ -353,9 +365,7 @@ class ManifestMetadataProvider(MetadataProvider):
                         )
                     continue  # Skip yielding this key as it's part of a directory
 
-            obj = self._files[key]
-            obj.key = key  # use key without base_path
-            yield obj
+            yield self._files[key]
 
         if include_directories and pending_directory:
             yield pending_directory
@@ -365,6 +375,7 @@ class ManifestMetadataProvider(MetadataProvider):
             if include_pending and path in self._pending_removes:
                 raise FileNotFoundError(f"Object {path} does not exist.")
             else:
+                # Return ManifestObjectMetadata directly (it extends ObjectMetadata)
                 return self._files[path]
         elif include_pending and path in self._pending_adds:
             return self._pending_adds[path]
@@ -384,14 +395,75 @@ class ManifestMetadataProvider(MetadataProvider):
         ]
         return [key for key in glob(all_objects, pattern)]
 
-    def realpath(self, path: str) -> ResolvedPath:
-        exists = path in self._files
-        return ResolvedPath(physical_path=path, exists=exists, profile=None)
+    def realpath(self, logical_path: str) -> ResolvedPath:
+        """
+        Resolves a logical path to its physical storage path if the object exists.
+        Only checks committed files, not pending changes.
+
+        :param logical_path: The user-facing logical path
+
+        :return: ResolvedPath with exists=True if found, exists=False otherwise
+        """
+        # Only check committed files
+        manifest_obj = self._files.get(logical_path)
+        if manifest_obj:
+            assert manifest_obj.physical_path is not None
+            return ResolvedPath(physical_path=manifest_obj.physical_path, exists=True, profile=None)
+        return ResolvedPath(physical_path=logical_path, exists=False, profile=None)
+
+    def generate_physical_path(self, logical_path: str, for_overwrite: bool = False) -> ResolvedPath:
+        """
+        Generates a physical storage path for a new object or for overwriting an existing object.
+
+        For now, this simply returns the logical path (no path rewriting).
+        In the future, this could generate unique paths for overwrites.
+
+        :param logical_path: The user-facing logical path
+        :param for_overwrite: If True, generate a path for overwriting an existing object
+
+        :return: The physical storage path to use for writing
+        """
+        # For now, physical path = logical path
+        # Future enhancement: generate unique paths for overwrites
+        # if for_overwrite and self._allow_overwrites:
+        #     return f"{logical_path}-{uuid.uuid4().hex}"
+        return ResolvedPath(physical_path=logical_path, exists=False, profile=None)
 
     def add_file(self, path: str, metadata: ObjectMetadata) -> None:
         if not self.is_writable():
             raise RuntimeError(f"Manifest update support not enabled in configuration. Attempted to add {path}.")
-        self._pending_adds[path] = metadata
+
+        # Check if file already exists in committed state and overwrites are not allowed
+        # Pending files can always be overwritten
+        if not self._allow_overwrites and path in self._files:
+            raise FileExistsError(f"File {path} already exists and overwrites are not allowed.")
+
+        # Handle two cases:
+        # 1. If metadata is already a ManifestObjectMetadata, use it directly
+        # 2. Otherwise, create one assuming metadata.key contains the physical path
+        if isinstance(metadata, ManifestObjectMetadata):
+            # Already has proper logical/physical path separation
+            manifest_metadata = metadata
+            # Ensure the logical path matches what was requested
+            if manifest_metadata.key != path:
+                raise ValueError(f"Logical path mismatch: expected {path}, got {manifest_metadata.key}")
+        else:
+            # For backward compatibility, create a ManifestObjectMetadata from ObjectMetadata
+            manifest_metadata = ManifestObjectMetadata(
+                key=path,  # Logical path (user-facing)
+                content_length=metadata.content_length,
+                last_modified=metadata.last_modified,
+                content_type=metadata.content_type,
+                etag=metadata.etag,
+                metadata=metadata.metadata,
+                type=metadata.type,
+                physical_path=metadata.key,  # Physical path (from storage provider)
+            )
+
+        # TODO: Time travel is not supported - we do not rename file paths when overwriting.
+        # When a file is overwritten, the manifest points to the new version of the file at the same location
+        # without maintaining history of previous versions.
+        self._pending_adds[path] = manifest_metadata
 
     def remove_file(self, path: str) -> None:
         if not self.is_writable():
@@ -402,6 +474,9 @@ class ManifestMetadataProvider(MetadataProvider):
 
     def is_writable(self) -> bool:
         return self._writable
+
+    def allow_overwrites(self) -> bool:
+        return self._allow_overwrites
 
     def commit_updates(self) -> None:
         if not self._pending_adds and not self._pending_removes:
@@ -415,14 +490,7 @@ class ManifestMetadataProvider(MetadataProvider):
             self._files.pop(path)
         self._pending_removes = set()
 
-        # Collect metadata for each object to write out in this part file.
-        object_metadata = [
-            ObjectMetadata(
-                key=file_path,
-                content_length=metadata.content_length,
-                last_modified=metadata.last_modified,
-                metadata=metadata.metadata,
-            )
-            for file_path, metadata in self._files.items()
-        ]
+        # Serialize ManifestObjectMetadata directly
+        # to_dict() will include all fields including physical_path
+        object_metadata = list(self._files.values())
         self._write_manifest_files(self._storage_provider, object_metadata, manifest_format=self._format)

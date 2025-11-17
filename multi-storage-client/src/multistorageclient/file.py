@@ -608,11 +608,12 @@ class PosixFile(IOBase, IO):
         # Store storage_client for emitting metrics
         self._storage_client = storage_client
 
-        # If metadata provider is enabled, use the realpath to get the physical path for the storage provider.
+        # If metadata provider is enabled, resolve the logical path to physical path.
         if storage_client._metadata_provider:
-            realpath, exists, _ = storage_client._metadata_provider.realpath(path)
-            if not exists:
+            resolved = storage_client._metadata_provider.realpath(path)
+            if not resolved.exists:
                 raise FileNotFoundError(f"The file at path '{path}' was not found.")
+            realpath = resolved.physical_path
         else:
             realpath = path
 

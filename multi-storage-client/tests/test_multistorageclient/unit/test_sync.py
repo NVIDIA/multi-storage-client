@@ -109,6 +109,7 @@ def test_sync_function(
                 "options": {
                     "manifest_path": DEFAULT_MANIFEST_BASE_DIR,
                     "writable": True,
+                    # allow_overwrites defaults to False
                 },
             }
         }
@@ -1107,3 +1108,118 @@ def test_update_posix_metadata(use_metadata_provider: bool):
                 assert stored_metadata == custom_metadata
             except OSError:
                 pytest.skip("xattr not supported on this filesystem")
+
+
+def test_sync_with_manifest_overwrite_behavior():
+    """Test sync operations with manifest metadata provider and allow_overwrites True/False."""
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    source_profile = "source"
+    no_overwrite_profile = "no_overwrite"
+    with_overwrite_profile = "with_overwrite"
+
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as source_store,
+        tempdatastore.TemporaryPOSIXDirectory() as no_overwrite_store,
+        tempdatastore.TemporaryPOSIXDirectory() as with_overwrite_store,
+    ):
+        # Configure profiles
+        config_dict = {
+            "profiles": {
+                source_profile: source_store.profile_config_dict(),
+                no_overwrite_profile: copy.deepcopy(no_overwrite_store.profile_config_dict())
+                | {
+                    "metadata_provider": {
+                        "type": "manifest",
+                        "options": {
+                            "manifest_path": DEFAULT_MANIFEST_BASE_DIR,
+                            "writable": True,
+                            "allow_overwrites": False,  # Explicitly disallow overwrites
+                        },
+                    }
+                },
+                with_overwrite_profile: copy.deepcopy(with_overwrite_store.profile_config_dict())
+                | {
+                    "metadata_provider": {
+                        "type": "manifest",
+                        "options": {
+                            "manifest_path": DEFAULT_MANIFEST_BASE_DIR,
+                            "writable": True,
+                            "allow_overwrites": True,  # Allow overwrites
+                        },
+                    }
+                },
+            }
+        }
+        config.setup_msc_config(config_dict=config_dict)
+
+        source_url = f"msc://{source_profile}"
+        no_overwrite_url = f"msc://{no_overwrite_profile}"
+        with_overwrite_url = f"msc://{with_overwrite_profile}"
+
+        # Create source files
+        msc.write(f"{source_url}/file1.txt", "content1".encode())
+        msc.write(f"{source_url}/file2.txt", "content2".encode())
+        msc.write(f"{source_url}/dir/file3.txt", "content3".encode())
+
+        # Test sync with allow_overwrites=False
+        print("Testing sync with allow_overwrites=False")
+
+        # First sync should succeed
+        msc.sync(f"{source_url}/", f"{no_overwrite_url}/synced/")
+
+        # Verify files were synced
+        with msc.open(f"{no_overwrite_url}/synced/file1.txt", "rb") as f:
+            assert f.read() == b"content1"
+        with msc.open(f"{no_overwrite_url}/synced/file2.txt", "rb") as f:
+            assert f.read() == b"content2"
+        with msc.open(f"{no_overwrite_url}/synced/dir/file3.txt", "rb") as f:
+            assert f.read() == b"content3"
+
+        # Modify source files (with different content length to trigger overwrite check)
+        msc.write(f"{source_url}/file1.txt", "modified1".encode())
+        msc.write(f"{source_url}/file2.txt", "modified2".encode())
+
+        # Second sync with allow_overwrites=False should fail in worker thread
+        # TODO(NGCDP-5748): Currently the exception is raised in a daemon thread and doesn't
+        # properly propagate to the caller.
+        # Once NGCDP-5748 is fixed, update this test to expect FileExistsError.
+        # For now, we just verify the sync completes but files are not overwritten
+        # (some files may fail to sync due to thread exceptions)
+        msc.sync(f"{source_url}/", f"{no_overwrite_url}/synced/")
+
+        # Original content should be preserved (files with overwrites failed in thread)
+        # This behavior is not ideal - see NGCDP-5748
+        with msc.open(f"{no_overwrite_url}/synced/file1.txt", "rb") as f:
+            assert f.read() == b"content1"
+        with msc.open(f"{no_overwrite_url}/synced/file2.txt", "rb") as f:
+            assert f.read() == b"content2"
+
+        # Test sync with allow_overwrites=True
+        print("Testing sync with allow_overwrites=True")
+
+        # First sync should succeed
+        msc.sync(f"{source_url}/", f"{with_overwrite_url}/synced/")
+
+        # Verify files were synced (should have modified content from source)
+        with msc.open(f"{with_overwrite_url}/synced/file1.txt", "rb") as f:
+            assert f.read() == b"modified1"
+        with msc.open(f"{with_overwrite_url}/synced/file2.txt", "rb") as f:
+            assert f.read() == b"modified2"
+        with msc.open(f"{with_overwrite_url}/synced/dir/file3.txt", "rb") as f:
+            assert f.read() == b"content3"
+
+        # Modify source files again
+        msc.write(f"{source_url}/file1.txt", "modified_again1".encode())
+        msc.write(f"{source_url}/file2.txt", "modified_again2".encode())
+
+        # Second sync should succeed with allow_overwrites=True
+        msc.sync(f"{source_url}/", f"{with_overwrite_url}/synced/")
+
+        # Verify files were overwritten
+        with msc.open(f"{with_overwrite_url}/synced/file1.txt", "rb") as f:
+            assert f.read() == b"modified_again1"
+        with msc.open(f"{with_overwrite_url}/synced/file2.txt", "rb") as f:
+            assert f.read() == b"modified_again2"
+
+        print("All sync tests passed!")

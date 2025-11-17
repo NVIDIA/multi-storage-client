@@ -17,6 +17,7 @@ import copy
 import os
 import tempfile
 import time
+from datetime import datetime, timezone
 
 import pytest
 
@@ -24,7 +25,10 @@ import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.providers.manifest_metadata import (
     DEFAULT_MANIFEST_BASE_DIR,
+    ManifestMetadataProvider,
 )
+from multistorageclient.providers.manifest_object_metadata import ManifestObjectMetadata
+from multistorageclient.types import ObjectMetadata
 
 
 @pytest.mark.parametrize(
@@ -497,3 +501,335 @@ def test_manifest_metadata_attribute_filtering():
         # Test unsupported operator should raise error
         with pytest.raises(ValueError, match="Invalid attribute filter expression"):
             list(storage_client.list(attribute_filter_expression='model_name ~= "value"'))
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryPOSIXDirectory],
+        [tempdatastore.TemporaryAWSS3Bucket],
+    ],
+)
+def test_manifest_metadata_allow_overwrites(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """Test the allow_overwrites functionality in manifest metadata provider."""
+    with temp_data_store_type() as temp_data_store:
+        # Test with allow_overwrites=False (default)
+        profile_no_overwrite = "no_overwrite"
+        storage_client_no_overwrite = StorageClient(
+            config=StorageClientConfig.from_dict(
+                config_dict={
+                    "profiles": {
+                        profile_no_overwrite: {
+                            **temp_data_store.profile_config_dict(),
+                            "metadata_provider": {
+                                "type": "manifest",
+                                "options": {
+                                    "manifest_path": DEFAULT_MANIFEST_BASE_DIR,
+                                    "writable": True,
+                                    "allow_overwrites": False,  # Explicitly set to False
+                                },
+                            },
+                        }
+                    }
+                },
+                profile=profile_no_overwrite,
+            )
+        )
+
+        # Write a file
+        test_path = "test_file.txt"
+        test_content = b"original content"
+        storage_client_no_overwrite.write(test_path, test_content)
+        storage_client_no_overwrite.commit_metadata()
+
+        # Verify file exists
+        assert storage_client_no_overwrite.read(test_path) == test_content
+
+        # Try to overwrite with write() - should fail
+        with pytest.raises(FileExistsError, match=f"The file at path '{test_path}' already exists"):
+            storage_client_no_overwrite.write(test_path, b"new content")
+
+        # Try to overwrite with upload_file() - should fail
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp.write(b"new content from file")
+            tmp_path = tmp.name
+
+        try:
+            with pytest.raises(FileExistsError, match=f"The file at path '{test_path}' already exists"):
+                storage_client_no_overwrite.upload_file(test_path, tmp_path)
+        finally:
+            os.unlink(tmp_path)
+
+        # Try to copy to existing file - should fail
+        test_path2 = "test_file2.txt"
+        storage_client_no_overwrite.write(test_path2, b"second file")
+        storage_client_no_overwrite.commit_metadata()
+
+        with pytest.raises(FileExistsError, match=f"The file at path '{test_path2}' already exists"):
+            storage_client_no_overwrite.copy(test_path, test_path2)
+
+        # Test with allow_overwrites=True
+        profile_with_overwrite = "with_overwrite"
+        storage_client_with_overwrite = StorageClient(
+            config=StorageClientConfig.from_dict(
+                config_dict={
+                    "profiles": {
+                        profile_with_overwrite: {
+                            **temp_data_store.profile_config_dict(),
+                            "metadata_provider": {
+                                "type": "manifest",
+                                "options": {
+                                    "manifest_path": DEFAULT_MANIFEST_BASE_DIR,
+                                    "writable": True,
+                                    "allow_overwrites": True,  # Enable overwrites
+                                },
+                            },
+                        }
+                    }
+                },
+                profile=profile_with_overwrite,
+            )
+        )
+
+        # Write a file
+        test_path3 = "test_file3.txt"
+        original_content = b"original content for overwrite test"
+        storage_client_with_overwrite.write(test_path3, original_content)
+        storage_client_with_overwrite.commit_metadata()
+
+        # Verify file exists
+        assert storage_client_with_overwrite.read(test_path3) == original_content
+
+        # Overwrite with write() - should succeed
+        new_content = b"overwritten content"
+        storage_client_with_overwrite.write(test_path3, new_content)
+        storage_client_with_overwrite.commit_metadata()
+        assert storage_client_with_overwrite.read(test_path3) == new_content
+
+        # Overwrite with upload_file() - should succeed
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp.write(b"overwritten from file")
+            tmp_path = tmp.name
+
+        try:
+            storage_client_with_overwrite.upload_file(test_path3, tmp_path)
+            storage_client_with_overwrite.commit_metadata()
+            assert storage_client_with_overwrite.read(test_path3) == b"overwritten from file"
+        finally:
+            os.unlink(tmp_path)
+
+        # Copy to existing file - should succeed
+        test_path4 = "test_file4.txt"
+        test_path5 = "test_file5.txt"
+        storage_client_with_overwrite.write(test_path4, b"source file")
+        storage_client_with_overwrite.write(test_path5, b"dest file")
+        storage_client_with_overwrite.commit_metadata()
+
+        storage_client_with_overwrite.copy(test_path4, test_path5)
+        storage_client_with_overwrite.commit_metadata()
+        assert storage_client_with_overwrite.read(test_path5) == b"source file"
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryPOSIXDirectory],
+        [tempdatastore.TemporaryAWSS3Bucket],
+    ],
+)
+def test_manifest_metadata_realpath_for_write(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """Test the realpath method with for_write parameter in manifest metadata provider."""
+    with temp_data_store_type() as temp_data_store:
+        # Create storage client to get storage_provider
+        config = StorageClientConfig.from_dict(
+            config_dict={"profiles": {"test": temp_data_store.profile_config_dict()}},
+            profile="test",
+        )
+        storage_client = StorageClient(config)
+
+        # Create manifest provider with allow_overwrites=False
+        provider = ManifestMetadataProvider(
+            storage_provider=storage_client._storage_provider,
+            manifest_path=DEFAULT_MANIFEST_BASE_DIR,
+            writable=True,
+            allow_overwrites=False,
+        )
+
+        # Test realpath for non-existing file
+        resolved = provider.realpath("new_file.txt")
+        assert not resolved.exists
+        assert resolved.physical_path == "new_file.txt"
+
+        # Test generate_physical_path for non-existing file
+        resolved = provider.generate_physical_path("new_file.txt", for_overwrite=False)
+        assert resolved.physical_path == "new_file.txt"
+        assert not resolved.exists
+
+        # Add a file to the manifest
+        metadata = ObjectMetadata(
+            key="existing_file.txt",
+            content_length=1024,
+            last_modified=datetime.now(tz=timezone.utc),
+            content_type="text/plain",
+            etag="abc123",
+        )
+        provider.add_file("existing_file.txt", metadata)
+
+        # Test realpath for pending file - should NOT be found (only checks committed)
+        resolved = provider.realpath("existing_file.txt")
+        assert not resolved.exists  # Pending files are not found by realpath
+
+        # Test generate_physical_path for pending file
+        resolved = provider.generate_physical_path("existing_file.txt", for_overwrite=False)
+        assert resolved.physical_path == "existing_file.txt"
+        assert not resolved.exists
+
+        # Commit the file
+        provider.commit_updates()
+
+        # Now realpath should find the committed file
+        resolved = provider.realpath("existing_file.txt")
+        assert resolved.exists
+        assert resolved.physical_path == "existing_file.txt"
+
+        # Test generate_physical_path for existing file (overwrite scenario)
+        resolved = provider.generate_physical_path("existing_file.txt", for_overwrite=True)
+        assert resolved.physical_path == "existing_file.txt"
+        assert not resolved.exists  # generate always returns exists=False
+
+        # Create manifest provider with allow_overwrites=True
+        provider_with_overwrite = ManifestMetadataProvider(
+            storage_provider=storage_client._storage_provider,
+            manifest_path=DEFAULT_MANIFEST_BASE_DIR,
+            writable=True,
+            allow_overwrites=True,
+        )
+
+        # Add the same file
+        provider_with_overwrite.add_file("existing_file.txt", metadata)
+
+        # Test realpath for existing file with overwrites allowed
+        resolved = provider_with_overwrite.realpath("existing_file.txt")
+        assert resolved.exists
+        assert resolved.physical_path == "existing_file.txt"
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryPOSIXDirectory],
+        [tempdatastore.TemporaryAWSS3Bucket],
+    ],
+)
+def test_manifest_physical_path_tracking(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """Test that ManifestMetadataProvider properly tracks logical and physical paths."""
+    with temp_data_store_type() as temp_data_store:
+        # Create storage client to get storage_provider
+        config = StorageClientConfig.from_dict(
+            config_dict={"profiles": {"test": temp_data_store.profile_config_dict()}},
+            profile="test",
+        )
+        storage_client = StorageClient(config)
+
+        # Create manifest provider
+        provider = ManifestMetadataProvider(
+            storage_provider=storage_client._storage_provider,
+            manifest_path=DEFAULT_MANIFEST_BASE_DIR,
+            writable=True,
+            allow_overwrites=True,
+        )
+
+        # Test realpath for non-existing file
+        resolved = provider.realpath("new_file.txt")
+        assert not resolved.exists
+
+        # Test generate_physical_path for new file
+        resolved = provider.generate_physical_path("new_file.txt", for_overwrite=False)
+        assert resolved.physical_path == "new_file.txt"  # Currently, physical = logical
+
+        # Add a file - note that metadata.key is the physical path from storage
+        metadata = ObjectMetadata(
+            key="storage/path/file.txt",  # This is the actual storage path
+            content_length=1024,
+            last_modified=datetime.now(tz=timezone.utc),
+            content_type="text/plain",
+            etag="abc123",
+        )
+        provider.add_file("logical/file.txt", metadata)  # Logical path
+
+        # Test that realpath returns exists=False for uncommitted files
+        resolved = provider.realpath("logical/file.txt")
+        assert not resolved.exists  # File not yet committed
+
+        # Test generate_physical_path for uncommitted file
+        resolved = provider.generate_physical_path("logical/file.txt", for_overwrite=False)
+        assert resolved.physical_path == "logical/file.txt"
+        assert not resolved.exists
+
+        # Test that get_object_metadata returns logical path in key
+        obj_metadata = provider.get_object_metadata("logical/file.txt", include_pending=True)
+        assert obj_metadata.key == "logical/file.txt"
+
+        # Commit the pending changes
+        provider.commit_updates()
+
+        # Now realpath should find the committed file
+        resolved = provider.realpath("logical/file.txt")
+        assert resolved.exists
+        assert resolved.physical_path == "storage/path/file.txt"
+
+        # Test list_objects returns logical paths
+        objects = list(provider.list_objects(""))
+        assert len(objects) == 1
+        assert objects[0].key == "logical/file.txt"
+
+        # Test overwrite scenario
+        new_metadata = ObjectMetadata(
+            key="storage/path/file-v2.txt",  # New physical path
+            content_length=2048,
+            last_modified=datetime.now(tz=timezone.utc),
+            content_type="text/plain",
+            etag="def456",
+        )
+        provider.add_file("logical/file.txt", new_metadata)  # Same logical path
+
+        # realpath should still see old committed version
+        resolved_path = provider.realpath("logical/file.txt")
+        assert resolved_path.exists
+        assert resolved_path.physical_path == "storage/path/file.txt"  # Old committed version
+
+        # But get_object_metadata with include_pending should see new version
+        obj_metadata = provider.get_object_metadata("logical/file.txt", include_pending=True)
+        # Note: ManifestObjectMetadata stores physical path separately, but returns logical path in key
+        assert obj_metadata.key == "logical/file.txt"
+
+        # Commit and verify physical path is updated
+        provider.commit_updates()
+        resolved_path = provider.realpath("logical/file.txt")
+        assert resolved_path.exists
+        assert resolved_path.physical_path == "storage/path/file-v2.txt"  # Now committed with new physical path
+
+        # Test generate_physical_path for overwrite
+        # Currently returns same path, but in future could generate unique path
+        overwrite_path = provider.generate_physical_path("logical/file.txt", for_overwrite=True)
+        assert overwrite_path.physical_path == "logical/file.txt"
+
+        # Test that add_file can accept ManifestObjectMetadata directly
+        manifest_obj = ManifestObjectMetadata(
+            key="direct/logical.txt",
+            content_length=512,
+            last_modified=datetime.now(tz=timezone.utc),
+            content_type="text/plain",
+            etag="xyz789",
+            physical_path="direct/physical/path.txt",
+        )
+        provider.add_file("direct/logical.txt", manifest_obj)
+
+        # Verify it was added correctly
+        resolved = provider.realpath("direct/logical.txt")
+        assert not resolved.exists  # Not committed yet
+
+        provider.commit_updates()
+        resolved = provider.realpath("direct/logical.txt")
+        assert resolved.exists
+        assert resolved.physical_path == "direct/physical/path.txt"

@@ -238,9 +238,10 @@ class StorageClient:
         :return: The content of the object.
         """
         if self._metadata_provider:
-            path, exists, _ = self._metadata_provider.realpath(path)
-            if not exists:
+            resolved = self._metadata_provider.realpath(path)
+            if not resolved.exists:
                 raise FileNotFoundError(f"The file at path '{path}' was not found.")
+            path = resolved.physical_path
 
         # Handle caching logic
         if self._is_cache_enabled() and self._cache_manager:
@@ -347,12 +348,12 @@ class StorageClient:
         :param local_path: The local path where the file should be downloaded.
         """
         if self._metadata_provider:
-            real_path, exists, _ = self._metadata_provider.realpath(remote_path)
-            if not exists:
+            resolved = self._metadata_provider.realpath(remote_path)
+            if not resolved.exists:
                 raise FileNotFoundError(f"The file at path '{remote_path}' was not found by metadata provider.")
 
             metadata = self._metadata_provider.get_object_metadata(remote_path)
-            self._storage_provider.download_file(real_path, local_path, metadata)
+            self._storage_provider.download_file(resolved.physical_path, local_path, metadata)
         elif self._replica_manager:
             self._replica_manager.download_from_replica_or_primary(remote_path, local_path, self._storage_provider)
         else:
@@ -369,12 +370,23 @@ class StorageClient:
         """
         virtual_path = remote_path
         if self._metadata_provider:
-            remote_path, exists, _ = self._metadata_provider.realpath(remote_path)
-            if exists:
-                raise FileExistsError(
-                    f"The file at path '{virtual_path}' already exists; "
-                    f"overwriting is not yet allowed when using a metadata provider."
-                )
+            resolved = self._metadata_provider.realpath(remote_path)
+            if resolved.exists:
+                # File exists
+                if not self._metadata_provider.allow_overwrites():
+                    raise FileExistsError(
+                        f"The file at path '{virtual_path}' already exists; "
+                        f"overwriting is not allowed when using a metadata provider."
+                    )
+                # Generate path for overwrite (future: may return different path for versioning)
+                remote_path = self._metadata_provider.generate_physical_path(
+                    remote_path, for_overwrite=True
+                ).physical_path
+            else:
+                # New file - generate path
+                remote_path = self._metadata_provider.generate_physical_path(
+                    remote_path, for_overwrite=False
+                ).physical_path
 
             # if metdata provider is present, we only write attributes to the metadata provider
             self._storage_provider.upload_file(remote_path, local_path, attributes=None)
@@ -398,12 +410,19 @@ class StorageClient:
         """
         virtual_path = path
         if self._metadata_provider:
-            path, exists, _ = self._metadata_provider.realpath(path)
-            if exists:
-                raise FileExistsError(
-                    f"The file at path '{virtual_path}' already exists; "
-                    f"overwriting is not yet allowed when using a metadata provider."
-                )
+            resolved = self._metadata_provider.realpath(path)
+            if resolved.exists:
+                # File exists
+                if not self._metadata_provider.allow_overwrites():
+                    raise FileExistsError(
+                        f"The file at path '{virtual_path}' already exists; "
+                        f"overwriting is not allowed when using a metadata provider."
+                    )
+                # Generate path for overwrite (future: may return different path for versioning)
+                path = self._metadata_provider.generate_physical_path(path, for_overwrite=True).physical_path
+            else:
+                # New file - generate path
+                path = self._metadata_provider.generate_physical_path(path, for_overwrite=False).physical_path
 
             # if metadata provider is present, we only write attributes to the metadata provider
             self._storage_provider.put_object(path, body, attributes=None)
@@ -425,16 +444,26 @@ class StorageClient:
         """
         virtual_dest_path = dest_path
         if self._metadata_provider:
-            src_path, exists, _ = self._metadata_provider.realpath(src_path)
-            if not exists:
+            # Source: must exist
+            src_resolved = self._metadata_provider.realpath(src_path)
+            if not src_resolved.exists:
                 raise FileNotFoundError(f"The file at path '{src_path}' was not found.")
+            src_path = src_resolved.physical_path
 
-            dest_path, exists, _ = self._metadata_provider.realpath(dest_path)
-            if exists:
-                raise FileExistsError(
-                    f"The file at path '{virtual_dest_path}' already exists; "
-                    f"overwriting is not yet allowed when using a metadata provider."
-                )
+            # Destination: check for overwrites
+            dest_resolved = self._metadata_provider.realpath(dest_path)
+            if dest_resolved.exists:
+                # Destination exists
+                if not self._metadata_provider.allow_overwrites():
+                    raise FileExistsError(
+                        f"The file at path '{virtual_dest_path}' already exists; "
+                        f"overwriting is not allowed when using a metadata provider."
+                    )
+                # Generate path for overwrite
+                dest_path = self._metadata_provider.generate_physical_path(dest_path, for_overwrite=True).physical_path
+            else:
+                # New file - generate path
+                dest_path = self._metadata_provider.generate_physical_path(dest_path, for_overwrite=False).physical_path
 
             self._storage_provider.copy_object(src_path, dest_path)
 
@@ -476,11 +505,11 @@ class StorageClient:
             if is_file:
                 virtual_path = path
                 if self._metadata_provider:
-                    path, exists, _ = self._metadata_provider.realpath(path)
-                    if not exists:
+                    resolved = self._metadata_provider.realpath(path)
+                    if not resolved.exists:
                         raise FileNotFoundError(f"The file at path '{virtual_path}' was not found.")
 
-                    self._storage_provider.delete_object(path)
+                    self._storage_provider.delete_object(resolved.physical_path)
 
                     with self._metadata_provider_lock or contextlib.nullcontext():
                         self._metadata_provider.remove_file(virtual_path)
@@ -672,7 +701,8 @@ class StorageClient:
             return None
 
         if self._metadata_provider:
-            realpath, _, _ = self._metadata_provider.realpath(path)
+            resolved = self._metadata_provider.realpath(path)
+            realpath = resolved.physical_path
         else:
             realpath = path
 
@@ -687,8 +717,8 @@ class StorageClient:
         :return: ``True`` if the path points to a file, ``False`` otherwise.
         """
         if self._metadata_provider:
-            _, exists, _ = self._metadata_provider.realpath(path)
-            return exists
+            resolved = self._metadata_provider.realpath(path)
+            return resolved.exists
 
         return self._storage_provider.is_file(path)
 
@@ -703,8 +733,12 @@ class StorageClient:
                 if prefix:
                     # The logical path for each item will be the physical path with
                     # the base physical path removed from the beginning.
-                    physical_base, _, _ = self._metadata_provider.realpath("")
-                    physical_prefix, _, _ = self._metadata_provider.realpath(prefix)
+                    base_resolved = self._metadata_provider.realpath("")
+                    physical_base = base_resolved.physical_path
+
+                    prefix_resolved = self._metadata_provider.realpath(prefix)
+                    physical_prefix = prefix_resolved.physical_path
+
                     for obj in self._storage_provider.list_objects(physical_prefix):
                         virtual_path = obj.key[len(physical_base) :].lstrip("/")
                         self._metadata_provider.add_file(virtual_path, obj)

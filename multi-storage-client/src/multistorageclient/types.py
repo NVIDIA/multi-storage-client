@@ -371,14 +371,39 @@ class MetadataProvider(ABC):
         pass
 
     @abstractmethod
-    def realpath(self, path: str) -> ResolvedPath:
+    def realpath(self, logical_path: str) -> ResolvedPath:
         """
-        Returns the canonical, full real physical path for use by a
-        :py:class:`StorageProvider` or child :py:class:`StorageClient` routing information.
+        Resolves a logical path to its physical storage path.
 
-        :param path: user-supplied virtual path
+        This method checks if the object exists in the committed state and returns
+        the appropriate physical path. The exists flag indicates whether the path
+        was found.
 
-        :return: ResolvedPath with physical_path, exists flag, and optional profile for routing
+        :param logical_path: The user-facing logical path
+
+        :return: ResolvedPath with physical_path and exists flag indicating if path was found.
+            If exists=True, physical_path is the committed storage path.
+            If exists=False, physical_path is typically the logical_path as fallback.
+        """
+        pass
+
+    @abstractmethod
+    def generate_physical_path(self, logical_path: str, for_overwrite: bool = False) -> ResolvedPath:
+        """
+        Generates a physical storage path for writing a new or overwritten object.
+
+        This method is used for write operations to determine where the object should
+        be physically stored. Implementations can use this to:
+        - Generate UUID-based paths for deduplication
+        - Create versioned paths (file-v1.txt, file-v2.txt) for time travel
+        - Implement path rewriting strategies
+
+        :param logical_path: The user-facing logical path
+        :param for_overwrite: If True, indicates the path is for overwriting an existing object.
+            Implementations may generate unique paths for overwrites to support versioning.
+
+        :return: ResolvedPath with physical_path for writing. The exists flag indicates
+            whether the logical path currently exists in committed state (for overwrite scenarios).
         """
         pass
 
@@ -417,6 +442,14 @@ class MetadataProvider(ABC):
     def is_writable(self) -> bool:
         """
         Returns ``True`` if the :py:class:`MetadataProvider` supports writes else ``False``.
+        """
+        pass
+
+    @abstractmethod
+    def allow_overwrites(self) -> bool:
+        """
+        Returns ``True`` if the :py:class:`MetadataProvider` allows overwriting existing files else ``False``.
+        When ``True``, :py:meth:`add_file` will not raise an error if the file already exists.
         """
         pass
 

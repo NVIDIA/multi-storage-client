@@ -630,12 +630,22 @@ def _sync_worker_process(
                     # Skip if the file already exists and has the same content length but is newer.
                     try:
                         target_metadata = target_client.info(target_file_path, strict=False)
+                        # First check if file is already up-to-date (optimization for all cases)
                         if (
                             target_metadata.content_length == file_metadata.content_length
                             and target_metadata.last_modified >= file_metadata.last_modified
                         ):
                             logger.debug(f"File {target_file_path} already exists, skipping")
                             continue
+                        # If we reach here, file exists but needs updating - check if overwrites are allowed
+                        if target_client._metadata_provider and not target_client._metadata_provider.allow_overwrites():
+                            # TODO(NGCDP-5748): This error is raised in a daemon thread and won't properly
+                            # propagate to the caller. Need to implement proper exception handling in worker threads.
+                            raise FileExistsError(
+                                f"Cannot sync '{file_metadata.key}' to '{target_file_path}': "
+                                f"file exists and needs updating, but overwrites are not allowed. "
+                                f"Enable overwrites in metadata provider configuration or remove the existing file."
+                            )
                     except FileNotFoundError:
                         pass
 
@@ -777,7 +787,7 @@ def _update_posix_metadata(
     """Update metadata for POSIX target (metadata provider or xattr)."""
     if target_client._metadata_provider:
         physical_metadata = ObjectMetadata(
-            key=target_physical_path,
+            key=target_file_path,
             content_length=os.path.getsize(target_physical_path),
             last_modified=datetime.fromtimestamp(os.path.getmtime(target_physical_path), tz=timezone.utc),
             metadata=file_metadata.metadata,

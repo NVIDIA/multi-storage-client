@@ -46,6 +46,7 @@ class ManifestMetadataGenerator:
         manifest_storage_client: StorageClient,
         partition_keys: Optional[list[str]] = None,
         manifest_format: ManifestFormat = ManifestFormat.JSONL,
+        allow_overwrites: bool = True,
     ) -> None:
         """
         Generates a file metadata manifest.
@@ -67,12 +68,17 @@ class ManifestMetadataGenerator:
         :param manifest_storage_client: Storage client for writing manifest objects.
         :param partition_keys: Optional list of keys to partition the listing operation. If provided, objects will be listed concurrently using these keys as boundaries.
         :param manifest_format: Format for manifest parts. Defaults to ManifestFormat.JSONL.
+        :param allow_overwrites: Whether to allow overwriting existing files in the manifest. Defaults to True for backwards compatibility.
         """
         data_storage_provider = data_storage_client._storage_provider
         manifest_storage_provider = manifest_storage_client._storage_provider
 
         manifest_metadata_provider = ManifestMetadataProvider(
-            storage_provider=manifest_storage_provider, manifest_path="", writable=True, manifest_format=manifest_format
+            storage_provider=manifest_storage_provider,
+            manifest_path="",
+            writable=True,
+            manifest_format=manifest_format,
+            allow_overwrites=allow_overwrites,
         )
 
         if partition_keys is not None:

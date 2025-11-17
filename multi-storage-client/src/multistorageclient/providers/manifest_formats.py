@@ -60,7 +60,16 @@ class JsonlManifestFormatHandler(ManifestFormatHandler):
         for line in io.TextIOWrapper(io.BytesIO(content), encoding="utf-8"):
             object_metadatum_dict = json.loads(line)
             object_metadatum_dict["content_length"] = object_metadatum_dict.pop("size_bytes")
+
+            # Extract physical_path before from_dict (to set as attribute after)
+            physical_path = object_metadatum_dict.pop("physical_path", None)
+
             object_metadatum = ObjectMetadata.from_dict(object_metadatum_dict)
+
+            # Preserve physical_path as attribute if present (for ManifestObjectMetadata)
+            if physical_path is not None:
+                object_metadatum.physical_path = physical_path  # type: ignore
+
             object_metadata.append(object_metadatum)
         return object_metadata
 
@@ -90,6 +99,7 @@ class ParquetManifestFormatHandler(ManifestFormatHandler):
             "size_bytes": [m.content_length for m in object_metadata],
             "last_modified": [m.last_modified.isoformat() for m in object_metadata],
             "metadata": [json.dumps(m.metadata) if m.metadata else None for m in object_metadata],
+            "physical_path": [getattr(m, "physical_path", m.key) for m in object_metadata],
         }
         table = pa.table(data)
 
@@ -108,14 +118,19 @@ class ParquetManifestFormatHandler(ManifestFormatHandler):
         for i in range(len(table)):
             row = {col: table[col][i].as_py() for col in table.column_names}
             metadata_dict = json.loads(row["metadata"]) if row.get("metadata") else None
-            object_metadata.append(
-                ObjectMetadata(
-                    key=row["key"],
-                    content_length=row["size_bytes"],
-                    last_modified=isoparse(row["last_modified"]),
-                    metadata=metadata_dict,
-                )
+
+            obj = ObjectMetadata(
+                key=row["key"],
+                content_length=row["size_bytes"],
+                last_modified=isoparse(row["last_modified"]),
+                metadata=metadata_dict,
             )
+
+            # Preserve physical_path as attribute if present (for ManifestObjectMetadata)
+            if "physical_path" in row:
+                obj.physical_path = row["physical_path"]  # type: ignore
+
+            object_metadata.append(obj)
         return object_metadata
 
 

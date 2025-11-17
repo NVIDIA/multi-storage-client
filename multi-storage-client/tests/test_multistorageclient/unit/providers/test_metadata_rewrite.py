@@ -65,11 +65,16 @@ class UuidMetadataProvider(MetadataProvider):
     def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
         return [path for path in self._path_to_uuid.keys() if fnmatch.fnmatch(path, pattern)]
 
-    def realpath(self, path: str) -> ResolvedPath:
-        u = self._path_to_uuid.get(path)
-        if u is None:
-            return ResolvedPath(physical_path=str(uuid.uuid4()), exists=False, profile=None)
-        return ResolvedPath(physical_path=u, exists=True, profile=None)
+    def realpath(self, logical_path: str) -> ResolvedPath:
+        """Resolves a logical path to its UUID-based physical path."""
+        u = self._path_to_uuid.get(logical_path)
+        if u:
+            return ResolvedPath(physical_path=u, exists=True, profile=None)
+        return ResolvedPath(physical_path=logical_path, exists=False, profile=None)
+
+    def generate_physical_path(self, logical_path: str, for_overwrite: bool = False) -> ResolvedPath:
+        """Generates a new UUID-based physical path."""
+        return ResolvedPath(physical_path=str(uuid.uuid4()), exists=False, profile=None)
 
     def add_file(self, path: str, metadata: ObjectMetadata) -> None:
         # Keep a dictionary of pending adds
@@ -97,6 +102,9 @@ class UuidMetadataProvider(MetadataProvider):
 
     def is_writable(self) -> bool:
         return True
+
+    def allow_overwrites(self) -> bool:
+        return False
 
 
 @pytest.mark.parametrize(
