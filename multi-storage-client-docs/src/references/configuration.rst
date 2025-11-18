@@ -619,6 +619,63 @@ Options: See parameters in :py:class:`multistorageclient.providers.ais.StaticAIS
            password: ${AIS_PASSWORD}
            authn_endpoint: https://authn.example.com:52001
 
+``GoogleIdentityPoolCredentialsProvider``
+------------------------------------------
+Workload Identity Federation (WIF) credentials provider for Google Cloud Storage.
+
+Options: See parameters in :py:class:`multistorageclient.providers.gcs.GoogleIdentityPoolCredentialsProvider`.
+
+.. code-block:: yaml
+   :caption: Example configuration.
+
+   profiles:
+     my-profile:
+       credentials_provider:
+         type: GoogleIdentityPoolCredentialsProvider
+         options:
+           audience: https://iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL_ID/providers/PROVIDER_ID
+           token: token
+
+``GoogleServiceAccountCredentialsProvider``
+--------------------------------------------
+Service account credentials provider for Google Cloud Storage.
+
+Options: See parameters in :py:class:`multistorageclient.providers.gcs.GoogleServiceAccountCredentialsProvider`.
+
+.. code-block:: yaml
+   :caption: Example 1: Service account private key file.
+
+   profiles:
+     my-profile:
+       credentials_provider:
+         type: GoogleServiceAccountCredentialsProvider
+         options:
+           file: /path/to/application_default_credentials.json
+
+.. code-block:: yaml
+   :caption: Example 2: Service account private key file contents.
+
+   profiles:
+     my-profile:
+       credentials_provider:
+         type: GoogleServiceAccountCredentialsProvider
+         options:
+           info:
+             type: service_account
+             project_id: project_id
+             private_key_id: private_key_id
+             private_key: |
+               -----BEGIN PRIVATE KEY-----
+               {private key}
+               -----END PRIVATE KEY-----
+             client_email: email@example.com
+             client_id: client_id
+             auth_uri: https://accounts.google.com/o/oauth2/auth
+             token_uri: https://oauth2.googleapis.com/token
+             auth_provider_x509_cert_url: https://www.googleapis.com/oauth2/v1/certs
+             client_x509_cert_url: https://www.googleapis.com/robot/v1/metadata/x509/{key}%40{project}.iam.gserviceaccount.com
+             universe_domain: googleapis.com
+
 Retry
 =====
 
@@ -684,7 +741,7 @@ Options:
   * ``refresh_interval``: Interval in seconds to trigger cache eviction (optional, default: ``"300"``)
 
   * ``purge_factor``: (**experimental** - requires ``cache_purge_factor: true``) Percentage of cache to delete during eviction (0-100, optional, default: ``"0"``)
-    
+
     * ``0`` = Delete only what's needed to stay under limit (default behavior)
     * ``20`` = Delete 20% of max cache size (keep 80%)
     * ``50`` = Delete 50% of max cache size (keep 50%)

@@ -14,7 +14,9 @@
 # limitations under the License.
 
 import codecs
+import copy
 import io
+import json
 import logging
 import os
 import tempfile
@@ -27,6 +29,7 @@ from google.auth import identity_pool
 from google.cloud import storage
 from google.cloud.storage import transfer_manager
 from google.cloud.storage.exceptions import InvalidResponse
+from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials as OAuth2Credentials
 
 from multistorageclient_rust import RustClient, RustRetryableError
@@ -103,6 +106,45 @@ class GoogleIdentityPoolCredentialsProvider(CredentialsProvider):
         pass
 
 
+class GoogleServiceAccountCredentialsProvider(CredentialsProvider):
+    """
+    A concrete implementation of the :py:class:`multistorageclient.types.CredentialsProvider` that provides Google's service account credentials.
+    """
+
+    #: Google service account private key file contents.
+    _info: dict[str, Any]
+
+    def __init__(self, file: Optional[str] = None, info: Optional[dict[str, Any]] = None):
+        """
+        Initializes the :py:class:`GoogleServiceAccountCredentialsProvider` with either a path to a
+        `Google service account private key <https://docs.cloud.google.com/iam/docs/keys-create-delete#creating>`_ file
+        or the file contents.
+
+        :param file: Path to a Google service account private key file.
+        :param info: Google service account private key file contents.
+        """
+        if all(_ is None for _ in (file, info)) or all(_ is not None for _ in (file, info)):
+            raise ValueError("Must specify exactly one of file or info")
+
+        if file is not None:
+            with open(file, "r") as f:
+                self._info = json.load(f)
+        elif info is not None:
+            self._info = copy.deepcopy(info)
+
+    def get_credentials(self) -> Credentials:
+        return Credentials(
+            access_key="",
+            secret_key="",
+            token=None,
+            expiration=None,
+            custom_fields={"info": copy.deepcopy(self._info)},
+        )
+
+    def refresh_credentials(self) -> None:
+        pass
+
+
 class GoogleStorageProvider(BaseStorageProvider):
     """
     A concrete implementation of the :py:class:`multistorageclient.types.StorageProvider` for interacting with Google Cloud Storage.
@@ -147,7 +189,7 @@ class GoogleStorageProvider(BaseStorageProvider):
         self._rust_client = None
         if "rust_client" in kwargs:
             # Inherit the rust client options from the kwargs
-            rust_client_options = kwargs["rust_client"]
+            rust_client_options = copy.deepcopy(kwargs["rust_client"])
             if "max_concurrency" in kwargs:
                 rust_client_options["max_concurrency"] = kwargs["max_concurrency"]
             if "multipart_chunksize" in kwargs:
@@ -156,6 +198,12 @@ class GoogleStorageProvider(BaseStorageProvider):
                 rust_client_options["read_timeout"] = kwargs["read_timeout"]
             if "connect_timeout" in kwargs:
                 rust_client_options["connect_timeout"] = kwargs["connect_timeout"]
+            if "service_account_key" not in rust_client_options and isinstance(
+                self._credentials_provider, GoogleServiceAccountCredentialsProvider
+            ):
+                rust_client_options["service_account_key"] = json.dumps(
+                    self._credentials_provider.get_credentials().get_custom_field("info")
+                )
             self._rust_client = self._create_rust_client(rust_client_options)
 
     def _create_gcs_client(self) -> storage.Client:
@@ -184,6 +232,14 @@ class GoogleStorageProvider(BaseStorageProvider):
                 )
                 return storage.Client(
                     project=self._project_id, credentials=identity_pool_credentials, client_options=client_options
+                )
+            elif isinstance(self._credentials_provider, GoogleServiceAccountCredentialsProvider):
+                # Use service account key.
+                service_account_credentials = service_account.Credentials.from_service_account_info(
+                    info=self._credentials_provider.get_credentials().get_custom_field("info")
+                )
+                return storage.Client(
+                    project=self._project_id, credentials=service_account_credentials, client_options=client_options
                 )
             else:
                 # Use OAuth 2.0 token

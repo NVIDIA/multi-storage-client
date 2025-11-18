@@ -97,6 +97,7 @@ CREDENTIALS_PROVIDER_MAPPING = {
     "AzureCredentials": "StaticAzureCredentialsProvider",
     "AISCredentials": "StaticAISCredentialProvider",
     "GoogleIdentityPoolCredentialsProvider": "GoogleIdentityPoolCredentialsProvider",
+    "GoogleServiceAccountCredentialsProvider": "GoogleServiceAccountCredentialsProvider",
     "HuggingFaceCredentials": "HuggingFaceCredentialsProvider",
 }
 
