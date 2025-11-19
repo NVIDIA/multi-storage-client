@@ -151,12 +151,10 @@ async def test_rustclient_basic_operations(temp_data_store_type: Type[tempdatast
             await rust_client.get(file_path)
 
 
-@pytest.mark.skip(reason="Temporarily disabled, pending refactor of credential provider logic in the Rust client")
 @pytest.mark.parametrize(
     argnames=["temp_data_store_type"],
     argvalues=[
         [tempdatastore.TemporaryAWSS3Bucket],
-        [tempdatastore.TemporarySwiftStackBucket],
     ],
 )
 @pytest.mark.asyncio
@@ -170,6 +168,7 @@ async def test_rustclient_with_refreshable_credentials(temp_data_store_type: Typ
             secret_key=config_dict["credentials_provider"]["options"]["secret_key"],
             expiration=(datetime.now(timezone.utc) + timedelta(seconds=905)).strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
+
         rust_client = RustClient(
             provider="s3",
             configs={
@@ -212,12 +211,31 @@ async def test_rustclient_with_refreshable_credentials(temp_data_store_type: Typ
             f"Expected access error in message, but got: {error_message}"
         )
 
+        # Delete the file.
+        py_storage_client.delete(path=file_path)
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporarySwiftStackBucket],
+    ],
+)
+@pytest.mark.asyncio
+async def test_rustclient_with_refreshable_credentials_expect_error(
+    temp_data_store_type: Type[tempdatastore.TemporaryDataStore],
+):
+    with temp_data_store_type() as temp_data_store:
+        config_dict = temp_data_store.profile_config_dict()
+
+        # The credentials are valid for 899 seconds before the refresh, refresh threshold is 15 minutes for Rust Client.
         credentials_provider = RefreshableTestCredentialsProvider(
             access_key=config_dict["credentials_provider"]["options"]["access_key"],
             secret_key=config_dict["credentials_provider"]["options"]["secret_key"],
             expiration=(datetime.now(timezone.utc) + timedelta(seconds=899)).strftime("%Y-%m-%dT%H:%M:%SZ"),
             refresh_error=True,
         )
+
         rust_client = RustClient(
             provider="s3",
             configs={
@@ -228,9 +246,15 @@ async def test_rustclient_with_refreshable_credentials(temp_data_store_type: Typ
             credentials_provider=credentials_provider,
         )
 
+        # Create a file
+        file_extension = ".txt"
+        file_path_fragments = [f"{uuid.uuid4().hex}-prefix", "infix", f"suffix{file_extension}"]
+        file_path = os.path.join(*file_path_fragments)
+        file_body_bytes = b"\x00\x01\x02" * 3
+
         # Test Rust client proactively refreshes credentials 15 minutes before expiration, should call refresh_credentials and fail
         with pytest.raises(RustRetryableError) as exc_info:
-            await rust_client.get(file_path)
+            await rust_client.put(file_path, file_body_bytes)
         assert credentials_provider.refresh_count == 1
 
         # Verify the error message indicates refresh failure (Python-side exception)
@@ -238,9 +262,6 @@ async def test_rustclient_with_refreshable_credentials(temp_data_store_type: Typ
         assert "Failed to refresh credentials" in error_message, (
             f"Expected refresh failure error in message, but got: {error_message}"
         )
-
-        # Delete the file.
-        py_storage_client.delete(path=file_path)
 
 
 @pytest.mark.parametrize(

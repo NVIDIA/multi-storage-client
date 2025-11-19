@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use object_store::aws::AmazonS3Builder;
 use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::RetryConfig;
@@ -29,7 +29,7 @@ use pyo3_bytes::PyBytes;
 use std::collections::{HashMap, VecDeque};
 use std::error::Error as StdError;
 use std::path::Path as StdPath;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use tempfile::NamedTempFile;
 use thiserror::Error;
 use tokio::fs;
@@ -37,7 +37,10 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
 
+mod credentials;
 mod types;
+
+use credentials::PyCredentialsProvider;
 use types::{ListResult, ObjectMetadata};
 
 pyo3::create_exception!(multistorageclient_rust, RustRetryableError, PyException);
@@ -69,7 +72,8 @@ impl From<object_store::Error> for StorageError {
            error_msg.contains("NoSuchKey") {
             StorageError::NotFound(error_msg)
         } else if error_msg.contains("HTTP error: error sending request") ||
-           error_msg.contains("HTTP error: request or response body error") {
+           error_msg.contains("HTTP error: request or response body error") ||
+           error_msg.contains("Failed to refresh credentials") {
             StorageError::RetryExhaustedError(error_msg)
         } else if error_msg.contains("The operation lacked the necessary privileges") ||
            error_msg.contains("403 Forbidden") {
@@ -124,9 +128,6 @@ const DEFAULT_READ_TIMEOUT: u64 = 120;
 const DEFAULT_POOL_IDLE_TIMEOUT: u64 = 30;
 const DEFAULT_POOL_CONNECTIONS: usize = 32;
 
-// Refresh credentials threshold in seconds
-const DEFAULT_REFRESH_CREDENTIALS_THRESHOLD: u64 = 900; // 15 minutes
-
 fn get_timeout_secs(configs: &HashMap<String, ConfigValue>, key: &str, default: u64) -> u64 {
     configs.get(key)
         .map(|val| match val {
@@ -137,48 +138,18 @@ fn get_timeout_secs(configs: &HashMap<String, ConfigValue>, key: &str, default: 
         .unwrap_or(default)
 }
 
-fn extract_credentials_from_provider(
-    credentials_provider: &PyObject,
-    configs_map: &mut HashMap<String, ConfigValue>,
-) -> PyResult<Option<DateTime<Utc>>> {
-    let mut credentials_expire_time = None;
-    
-    Python::with_gil(|py| {
-        let credentials = credentials_provider.call_method0(py, "get_credentials")?;
-
-        if let Ok(access_key) = credentials.getattr(py, "access_key")?.extract::<String>(py) {
-            configs_map.insert("access_key".to_string(), ConfigValue::String(access_key));
-        }
-        if let Ok(secret_key) = credentials.getattr(py, "secret_key")?.extract::<String>(py) {
-            configs_map.insert("secret_key".to_string(), ConfigValue::String(secret_key));
-        }
-        if let Ok(token) = credentials.getattr(py, "token")?.extract::<Option<String>>(py) {
-            if let Some(token_val) = token {
-                configs_map.insert("token".to_string(), ConfigValue::String(token_val));
-            }
-        }
-        if let Ok(expiration) = credentials.getattr(py, "expiration")?.extract::<Option<String>>(py) {
-            if let Some(expiration_val) = expiration {
-                configs_map.insert("expiration".to_string(), ConfigValue::String(expiration_val.clone()));
-                // Parse expiration time
-                if let Ok(dt) = DateTime::parse_from_rfc3339(&expiration_val) {
-                    credentials_expire_time = Some(dt.with_timezone(&Utc));
-                }
-            }
-        }
-        Ok::<(), PyErr>(())
-    })?;
-    
-    Ok(credentials_expire_time)
-}
-
-fn create_store(provider: &str, configs: Option<&HashMap<String, ConfigValue>>, max_pool_connections: usize) -> PyResult<Arc<dyn ObjectStore>> {
+fn create_store(
+    provider: &str,
+    configs: Option<&HashMap<String, ConfigValue>>,
+    credentials_provider: Option<&PyCredentialsProvider>,
+    max_pool_connections: usize,
+) -> PyResult<Arc<dyn ObjectStore>> {
     let store = match provider {
         "s3" | "s8k" | "gcs_s3" => {
-            build_s3_store(configs)?
+            build_s3_store(configs, credentials_provider)?
         }
         "gcs" => {
-            build_gcs_store(configs)?
+            build_gcs_store(configs, credentials_provider)?
         }
         _ => {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -188,12 +159,14 @@ fn create_store(provider: &str, configs: Option<&HashMap<String, ConfigValue>>, 
         }
     };
 
-    // Wrap the store with LimitStore to control concurrency
     let limited_store = LimitStore::new(store, max_pool_connections);
     Ok(Arc::new(limited_store))
 }
 
-fn build_s3_store<'a>(configs: Option<&'a HashMap<String, ConfigValue>>) -> PyResult<Arc<dyn ObjectStore>> {
+fn build_s3_store<'a>(
+    configs: Option<&'a HashMap<String, ConfigValue>>,
+    credentials_provider: Option<&PyCredentialsProvider>,
+) -> PyResult<Arc<dyn ObjectStore>> {
     // TODO: Add support for other configuration fields of AmazonS3Builder, full list here:
     // https://docs.rs/object_store/latest/src/object_store/aws/builder.rs.html#123
     let mut builder = AmazonS3Builder::new();
@@ -214,15 +187,21 @@ fn build_s3_store<'a>(configs: Option<&'a HashMap<String, ConfigValue>>) -> PyRe
         builder = builder.with_endpoint(endpoint_val.to_string());
     }
 
-    if let Some(access_key_val) = configs.get("access_key") {
-        builder = builder.with_access_key_id(access_key_val.to_string());
+    if let Some(creds_provider) = credentials_provider {
+        builder = builder.with_credentials(Arc::new(creds_provider.clone()));
+        
+    } else {
+        if let Some(access_key_val) = configs.get("access_key") {
+            builder = builder.with_access_key_id(access_key_val.to_string());
+        }
+        if let Some(secret_key_val) = configs.get("secret_key") {
+            builder = builder.with_secret_access_key(secret_key_val.to_string());
+        }
+        if let Some(token_val) = configs.get("token") {
+            builder = builder.with_token(token_val.to_string());
+        }
     }
-    if let Some(secret_key_val) = configs.get("secret_key") {
-        builder = builder.with_secret_access_key(secret_key_val.to_string());
-    }
-    if let Some(token_val) = configs.get("token") {
-        builder = builder.with_token(token_val.to_string());
-    }
+
     if let Some(skip_signature) = configs.get("skip_signature") {
         match skip_signature {
             ConfigValue::Boolean(b) => {
@@ -276,7 +255,10 @@ fn build_s3_store<'a>(configs: Option<&'a HashMap<String, ConfigValue>>) -> PyRe
     Ok(Arc::new(store))
 }
 
-fn build_gcs_store<'a>(configs: Option<&'a HashMap<String, ConfigValue>>) -> PyResult<Arc<dyn ObjectStore>> {
+fn build_gcs_store<'a>(
+    configs: Option<&'a HashMap<String, ConfigValue>>,
+    _credentials_provider: Option<&PyCredentialsProvider>,
+) -> PyResult<Arc<dyn ObjectStore>> {
     let mut builder = GoogleCloudStorageBuilder::new();
 
     let configs = configs.ok_or_else(|| {
@@ -371,14 +353,9 @@ impl ConfigValue {
 
 #[pyclass]
 pub struct RustClient {
-    provider: String,
-    configs: RwLock<HashMap<String, ConfigValue>>,
-    store: RwLock<Arc<dyn ObjectStore>>,
+    store: Arc<dyn ObjectStore>,
     max_concurrency: usize,
-    max_pool_connections: usize,
     multipart_chunksize: usize,
-    credentials_provider: Option<PyObject>,
-    credentials_expire_time: RwLock<Option<DateTime<Utc>>>,
 }
 
 #[pymethods]
@@ -394,7 +371,6 @@ impl RustClient {
         
         // Convert Python Dict to Rust HashMap<String, ConfigValue>
         let mut configs_map = HashMap::new();
-        let mut credentials_expire_time = None;
         let mut max_concurrency = DEFAULT_MAX_CONCURRENCY;
         let mut max_pool_connections = DEFAULT_POOL_CONNECTIONS;
         let mut multipart_chunksize = DEFAULT_MULTIPART_CHUNKSIZE;
@@ -434,64 +410,27 @@ impl RustClient {
             }
         }
         
-        // Handle credentials_provider if provided
-        if let Some(creds_provider) = &credentials_provider {
-            credentials_expire_time = extract_credentials_from_provider(creds_provider, &mut configs_map)?;
-        }
+        let py_creds_provider = credentials_provider.map(|py_obj| {
+            PyCredentialsProvider::new(py_obj, None)
+        });
         
-        let store = create_store(&provider, Some(&configs_map), max_pool_connections)?;
-        
-        let client = Self { 
-            provider,
-            configs: RwLock::new(configs_map),
-            store: RwLock::new(store), 
-            max_concurrency, 
+        let store = create_store(
+            &provider,
+            Some(&configs_map),
+            py_creds_provider.as_ref(),
             max_pool_connections,
-            multipart_chunksize, 
-            credentials_provider,
-            credentials_expire_time: RwLock::new(credentials_expire_time),
-        };
+        )?;
         
-        Ok(client)
+        Ok(Self {
+            store,
+            max_concurrency,
+            multipart_chunksize,
+        })
     }
-
-    fn refresh_store_if_needed(&self) -> PyResult<()> {
-        let current_expire_time = self.credentials_expire_time.read().unwrap().clone();
-        if let (Some(credentials_provider), Some(expire_time)) = (&self.credentials_provider, current_expire_time.as_ref()) {
-            let now = Utc::now();
-            if now > (*expire_time - Duration::seconds(DEFAULT_REFRESH_CREDENTIALS_THRESHOLD as i64)) {
-                let mut expire_time_guard = self.credentials_expire_time.write().unwrap();
-                let mut store_guard = self.store.write().unwrap();
-                let mut configs_guard = self.configs.write().unwrap();
-
-                let refresh_result = Python::with_gil(|py| {
-                    credentials_provider.call_method0(py, "refresh_credentials")?;
-                    Ok::<(), PyErr>(())
-                });
-
-                match refresh_result {
-                    Ok(_) => {
-                        let new_credentials_expire_time = extract_credentials_from_provider(credentials_provider, &mut configs_guard)?;
-                        let new_store = create_store(&self.provider, Some(&configs_guard), self.max_pool_connections)?;
-                        *store_guard = new_store;
-                        *expire_time_guard = new_credentials_expire_time;
-                    }
-                    Err(e) => {
-                        return Err(RustRetryableError::new_err(
-                            format!("Failed to refresh credentials using credentials provider: {}", e)
-                        ));
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
 
     #[pyo3(signature = (path, data))]
     fn put<'p>(&self, py: Python<'p>, path: &str, data: PyBytes) -> PyResult<Bound<'p, PyAny>> {
-        self.refresh_store_if_needed()?;
-        let store = Arc::clone(&*self.store.read().unwrap());
+        let store = Arc::clone(&self.store);
         let path = Path::from(path);
         let data_bytes = data.into_inner();
         let bytes_written = data_bytes.len() as u64;
@@ -514,8 +453,7 @@ impl RustClient {
         start: Option<u64>,
         end: Option<u64>,
     ) -> PyResult<Bound<'p, PyAny>> {
-        self.refresh_store_if_needed()?;
-        let store = Arc::clone(&*self.store.read().unwrap());
+        let store = Arc::clone(&self.store);
         let path = Path::from(path);
 
         if let (Some(start_idx), Some(end_idx)) = (start, end) {
@@ -542,8 +480,7 @@ impl RustClient {
         local_path: &str,
         remote_path: &str,
     ) -> PyResult<Bound<'p, PyAny>> {
-        self.refresh_store_if_needed()?;
-        let store = Arc::clone(&*self.store.read().unwrap());
+        let store = Arc::clone(&self.store);
         let local_path = local_path.to_string();
         let remote_path = Path::from(remote_path);
 
@@ -565,8 +502,7 @@ impl RustClient {
         remote_path: &str,
         local_path: &str,
     ) -> PyResult<Bound<'p, PyAny>> {
-        self.refresh_store_if_needed()?;
-        let store = Arc::clone(&*self.store.read().unwrap());
+        let store = Arc::clone(&self.store);
         let remote_path = Path::from(remote_path);
         let local_path = local_path.to_string();
 
@@ -590,8 +526,7 @@ impl RustClient {
         multipart_chunksize: Option<usize>,
         max_concurrency: Option<usize>,
     ) -> PyResult<Bound<'p, PyAny>> {
-        self.refresh_store_if_needed()?;
-        let store = Arc::clone(&*self.store.read().unwrap());
+        let store = Arc::clone(&self.store);
         let local_path = local_path.to_string();
         let remote_path = Path::from(remote_path);
         let chunksize = multipart_chunksize.unwrap_or(self.multipart_chunksize);
@@ -629,8 +564,7 @@ impl RustClient {
         multipart_chunksize: Option<usize>,
         max_concurrency: Option<usize>,
     ) -> PyResult<Bound<'p, PyAny>> {
-        self.refresh_store_if_needed()?;
-        let store = Arc::clone(&*self.store.read().unwrap());
+        let store = Arc::clone(&self.store);
         let remote_path: Path = Path::from(remote_path);
         let data_bytes = data.into_inner();
         let bytes_uploaded = data_bytes.len() as u64;
@@ -676,8 +610,7 @@ impl RustClient {
         multipart_chunksize: Option<usize>,
         max_concurrency: Option<usize>,
     ) -> PyResult<Bound<'p, PyAny>> {
-        self.refresh_store_if_needed()?;
-        let store = Arc::clone(&*self.store.read().unwrap());
+        let store = Arc::clone(&self.store);
         let remote_path = Path::from(remote_path);
         let local_path = local_path.to_string();
         let chunksize = multipart_chunksize.unwrap_or(self.multipart_chunksize);
@@ -768,8 +701,7 @@ impl RustClient {
         multipart_chunksize: Option<usize>,
         max_concurrency: Option<usize>,
     ) -> PyResult<Bound<'p, PyAny>> {
-        self.refresh_store_if_needed()?;
-        let store = Arc::clone(&*self.store.read().unwrap());
+        let store = Arc::clone(&self.store);
         let remote_path = Path::from(remote_path);
         let chunksize = multipart_chunksize.unwrap_or(self.multipart_chunksize);
         let concurrency = max_concurrency.unwrap_or(self.max_concurrency);
@@ -838,8 +770,7 @@ impl RustClient {
         max_depth: Option<usize>,
         max_concurrency: usize,
     ) -> PyResult<Py<ListResult>> {
-        self.refresh_store_if_needed()?;
-        let store = Arc::clone(&*self.store.read().unwrap());
+        let store = Arc::clone(&self.store);
 
         async fn list_single_directory(
             store: Arc<dyn ObjectStore>,

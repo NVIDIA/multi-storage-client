@@ -798,6 +798,7 @@ dependencies = [
 name = "multistorageclient_rust"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "bytes",
  "chrono",
  "object_store",
