@@ -15,12 +15,14 @@
 
 import functools
 import mmap
+import os
 
 import pytest
 
 import multistorageclient.telemetry as telemetry
 import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
 from multistorageclient import StorageClient, StorageClientConfig
+from multistorageclient.file import PosixFile
 from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
 
 
@@ -190,3 +192,26 @@ def test_file_open_atomic(temp_data_store_type: type[tempdatastore.TemporaryData
 
         with storage_client.open(path="file.txt", mode="rb") as file:
             assert file.read() == b"\x00" * 2048
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[[tempdatastore.TemporaryPOSIXDirectory]],
+)
+def test_file_discard(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    with temp_data_store_type() as temp_data_store:
+        profile = "data"
+        storage_client = StorageClient(
+            config=StorageClientConfig.from_dict(
+                config_dict={"profiles": {profile: temp_data_store.profile_config_dict()}}, profile=profile
+            )
+        )
+
+        # Open a file for writes (atomic=True)
+        fp = storage_client.open(path="file.txt", mode="wb", atomic=True)
+        assert isinstance(fp, PosixFile)
+        assert hasattr(fp, "_temp_path"), "File should have a temporary path"
+        fp.write(b"\x00" * 2048)
+        fp.discard()
+        assert fp._file.closed
+        assert not os.path.exists(fp._temp_path)

@@ -578,6 +578,9 @@ class ObjectFile(IOBase, IO):
     def fsync(self) -> None:
         pass
 
+    def discard(self) -> None:
+        pass
+
 
 class PosixFile(IOBase, IO):
     """
@@ -721,6 +724,9 @@ class PosixFile(IOBase, IO):
         return self.read(-1)
 
     def close(self) -> None:
+        """
+        Close the file and rename the temporary file to the target file if atomic write is enabled.
+        """
         # If the file is already closed, return immediately.
         if self.closed:
             return
@@ -744,3 +750,15 @@ class PosixFile(IOBase, IO):
 
     def fsync(self) -> None:
         os.fsync(self.fileno())
+
+    def discard(self) -> None:
+        """
+        Discard the temporary file if it exists.
+        """
+        # If the file is already closed, return immediately.
+        if self.closed:
+            return
+
+        if self._atomic and "w" in self._mode:
+            self._file.close()
+            os.unlink(self._temp_path)
