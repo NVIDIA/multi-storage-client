@@ -458,21 +458,20 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         Lists objects in the HuggingFace repository under the specified path.
 
         :param path: The path to list objects under.
-        :param start_after: The key to start listing after (not supported by HuggingFace).
-        :param end_at: The key to end listing at (not supported by HuggingFace).
+        :param start_after: The key to start listing after (exclusive, used as cursor).
+        :param end_at: The key to end listing at (inclusive, used as cursor).
         :param include_directories: Whether to include directories in the listing.
         :return: An iterator over object metadata for objects under the specified path.
         :raises RuntimeError: If HuggingFace client is not initialized or API errors occur.
-        :raises ValueError: If start_after or end_at parameters are provided (not supported).
+
+        .. note::
+            HuggingFace Hub API does not natively support pagination parameters.
+            This implementation fetches all items and uses cursor-based filtering,
+            which may impact performance for large repositories. The ordering is
+            directory-first, then files, with lexicographical ordering within each group.
         """
         if not self._hf_client:
             raise RuntimeError("HuggingFace client not initialized")
-
-        if start_after is not None or end_at is not None:
-            raise ValueError(
-                "HuggingFace provider does not support pagination with start_after or end_at parameters. "
-                "These parameters are not supported by the HuggingFace Hub API."
-            )
 
         path = self._normalize_path(path)
 
@@ -496,11 +495,34 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
                 recursive=not include_directories,
             )
 
+            # Use cursor-based pagination because HuggingFace returns items with
+            # directory-first ordering (not pure lexicographical).
+            seen_start = start_after is None
+            seen_end = False
+
             for item in repo_items:
+                if seen_end:
+                    break
+
+                metadata = self._item_to_metadata(item)
+                key = metadata.key
+
+                if not seen_start:
+                    if key == start_after:
+                        seen_start = True
+                    continue
+
+                should_yield = False
                 if include_directories and isinstance(item, RepoFolder):
-                    yield self._item_to_metadata(item)
+                    should_yield = True
                 elif isinstance(item, RepoFile):
-                    yield self._item_to_metadata(item)
+                    should_yield = True
+
+                if should_yield:
+                    yield metadata
+
+                if end_at is not None and key == end_at:
+                    seen_end = True
 
         except (RepositoryNotFoundError, RevisionNotFoundError) as e:
             raise FileNotFoundError(
