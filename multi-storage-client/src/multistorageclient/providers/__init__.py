@@ -55,6 +55,8 @@ def __getattr__(name: str) -> Any:
         # HuggingFace
         "HuggingFaceStorageProvider": ".huggingface",
         "HuggingFaceCredentialsProvider": ".huggingface",
+        # File-based credentials
+        "FileBasedCredentialsProvider": ".file_credentials",
     }
 
     if name in module_map:

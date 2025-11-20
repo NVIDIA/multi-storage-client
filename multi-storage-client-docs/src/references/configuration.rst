@@ -676,6 +676,69 @@ Options: See parameters in :py:class:`multistorageclient.providers.gcs.GoogleSer
              client_x509_cert_url: https://www.googleapis.com/robot/v1/metadata/x509/{key}%40{project}.iam.gserviceaccount.com
              universe_domain: googleapis.com
 
+``FileBasedCredentials``
+-------------------------
+File-based credentials provider that reads credentials from a JSON file following the AWS external process credential provider format.
+
+This provider is designed for scenarios where credentials are managed by an external process that periodically updates
+a JSON file with fresh credentials. The credentials file can be updated by external tools, and MSC will read the latest
+credentials when :py:meth:`refresh_credentials` is called.
+
+Options: See parameters in :py:class:`multistorageclient.providers.file_credentials.FileBasedCredentialsProvider`.
+
+The JSON file must follow this schema:
+
+.. code-block:: json
+
+   {
+     "Version": 1,
+     "AccessKeyId": "your-access-key-id",
+     "SecretAccessKey": "your-secret-access-key",
+     "SessionToken": "your-session-token",
+     "Expiration": "2024-12-31T23:59:59Z"
+   }
+
+Where:
+
+* ``Version``: Must be 1 (required)
+* ``AccessKeyId``: The access key for authentication (required)
+* ``SecretAccessKey``: The secret key for authentication (required)
+* ``SessionToken``: An optional session token for temporary credentials
+* ``Expiration``: An optional ISO 8601 formatted timestamp indicating when the credentials expire
+
+.. code-block:: yaml
+   :caption: Example configuration.
+
+   profiles:
+     my-profile:
+       storage_provider:
+         type: s3
+         options:
+           base_path: my-bucket
+       credentials_provider:
+         type: FileBasedCredentials
+         options:
+           credential_file_path: /path/to/credentials.json
+
+.. code-block:: yaml
+   :caption: Example with environment variable for path.
+
+   profiles:
+     my-profile:
+       storage_provider:
+         type: s3
+         options:
+           base_path: my-bucket
+       credentials_provider:
+         type: FileBasedCredentials
+         options:
+           credential_file_path: ${CRED_FILE_PATH}
+
+.. note::
+   The credential file must exist and contain valid JSON when the provider is initialized. The provider
+   will validate the file format and schema at startup. If the file is updated by an external process,
+   call :py:meth:`refresh_credentials` to reload the credentials from the file.
+
 Retry
 =====
 

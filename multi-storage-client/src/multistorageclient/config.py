@@ -99,6 +99,7 @@ CREDENTIALS_PROVIDER_MAPPING = {
     "GoogleIdentityPoolCredentialsProvider": "GoogleIdentityPoolCredentialsProvider",
     "GoogleServiceAccountCredentialsProvider": "GoogleServiceAccountCredentialsProvider",
     "HuggingFaceCredentials": "HuggingFaceCredentialsProvider",
+    "FileBasedCredentials": "FileBasedCredentialsProvider",
 }
 
 
