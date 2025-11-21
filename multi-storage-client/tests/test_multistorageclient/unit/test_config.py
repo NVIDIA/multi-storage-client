@@ -1870,3 +1870,115 @@ def test_experimental_features_both_enabled():
         assert config.cache_config is not None
         assert config.cache_config.eviction_policy.policy == "mru"
         assert config.cache_config.eviction_policy.purge_factor == 50
+
+
+def test_storage_client_config_validation_both_provider_types():
+    """Test that StorageClientConfig rejects configs with both storage_provider and storage_provider_profiles."""
+    from multistorageclient.providers import PosixFileStorageProvider
+
+    with pytest.raises(
+        ValueError,
+        match="Cannot specify both storage_provider and storage_provider_profiles",
+    ):
+        StorageClientConfig(
+            profile="test",
+            storage_provider=PosixFileStorageProvider(base_path="/"),
+            storage_provider_profiles=["loc1", "loc2"],
+        )
+
+
+def test_storage_client_config_validation_neither_provider_type():
+    """Test that StorageClientConfig rejects configs with neither storage_provider nor storage_provider_profiles."""
+    with pytest.raises(
+        ValueError,
+        match="Must specify either storage_provider or storage_provider_profiles",
+    ):
+        StorageClientConfig(
+            profile="test",
+            storage_provider=None,
+            storage_provider_profiles=None,
+        )
+
+
+def test_load_provider_bundle_v2_single_backend():
+    """Test loading ProviderBundleV2 with single backend from config."""
+    config = StorageClientConfig.from_yaml(
+        """
+        profiles:
+          test-v2-single:
+            provider_bundle:
+              type: test_multistorageclient.unit.utils.mocks.TestProviderBundleV2SingleBackend
+        """,
+        profile="test-v2-single",
+    )
+
+    # Single backend should create a config with storage_provider (not storage_provider_profiles)
+    assert config.storage_provider is not None
+    assert isinstance(config.storage_provider, PosixFileStorageProvider)
+    assert config.storage_provider_profiles is None
+    assert isinstance(config.metadata_provider, type(config.metadata_provider))
+
+
+def test_load_provider_bundle_v2_multi_backend():
+    """Test loading ProviderBundleV2 with multiple backends from config."""
+    config = StorageClientConfig.from_yaml(
+        """
+        profiles:
+          test-v2-multi:
+            provider_bundle:
+              type: test_multistorageclient.unit.utils.mocks.TestProviderBundleV2MultiBackend
+        """,
+        profile="test-v2-multi",
+    )
+
+    # Multiple backends should create a config with storage_provider_profiles (not storage_provider)
+    assert config.storage_provider is None
+    assert config.storage_provider_profiles is not None
+    assert len(config.storage_provider_profiles) == 2
+    assert "loc1" in config.storage_provider_profiles
+    assert "loc2" in config.storage_provider_profiles
+    assert isinstance(config.metadata_provider, type(config.metadata_provider))
+
+    # Verify child profiles were injected into _config_dict
+    assert config._config_dict is not None
+    assert "profiles" in config._config_dict
+    assert "loc1" in config._config_dict["profiles"]
+    assert "loc2" in config._config_dict["profiles"]
+
+    # Verify child profile structure
+    assert config._config_dict["profiles"]["loc1"]["storage_provider"]["type"] == "file"
+    assert config._config_dict["profiles"]["loc1"]["storage_provider"]["options"]["base_path"] == "/tmp/loc1"
+    assert config._config_dict["profiles"]["loc2"]["storage_provider"]["type"] == "file"
+    assert config._config_dict["profiles"]["loc2"]["storage_provider"]["options"]["base_path"] == "/tmp/loc2"
+
+
+def test_load_direct_provider_bundle_v2_single_backend():
+    """Test loading ProviderBundleV2 with single backend directly."""
+    from test_multistorageclient.unit.utils.mocks import (
+        TestProviderBundleV2SingleBackend,
+    )
+
+    bundle = TestProviderBundleV2SingleBackend()
+    config = StorageClientConfig.from_provider_bundle(config_dict={}, provider_bundle=bundle)
+
+    # Single backend should result in storage_provider being set
+    assert config.storage_provider is not None
+    assert isinstance(config.storage_provider, PosixFileStorageProvider)
+    assert config.storage_provider_profiles is None
+
+
+def test_load_direct_provider_bundle_v2_multi_backend():
+    """Test loading ProviderBundleV2 with multiple backends directly."""
+    from test_multistorageclient.unit.utils.mocks import (
+        TestProviderBundleV2MultiBackend,
+    )
+
+    bundle = TestProviderBundleV2MultiBackend()
+    config = StorageClientConfig.from_provider_bundle(config_dict={}, provider_bundle=bundle)
+
+    # Multiple backends should result in storage_provider_profiles being set
+    assert config.storage_provider is None
+    assert config.storage_provider_profiles is not None
+    assert len(config.storage_provider_profiles) == 2
+    assert "loc1" in config.storage_provider_profiles
+    assert "loc2" in config.storage_provider_profiles

@@ -466,6 +466,17 @@ class StorageProviderConfig:
     options: Optional[dict[str, Any]] = None
 
 
+@dataclass
+class StorageBackend:
+    """
+    Represents configuration for a single storage backend.
+    """
+
+    storage_provider_config: StorageProviderConfig
+    credentials_provider: Optional[CredentialsProvider] = None
+    replicas: list["Replica"] = field(default_factory=list)
+
+
 class ProviderBundle(ABC):
     """
     Abstract base class that serves as a container for various providers (storage, credentials, and metadata)
@@ -504,6 +515,31 @@ class ProviderBundle(ABC):
     def replicas(self) -> list["Replica"]:
         """
         :return: The replicas configuration for this provider bundle, if any.
+        """
+        pass
+
+
+class ProviderBundleV2(ABC):
+    """
+    Abstract base class that serves as a container for various providers (storage, credentials, and metadata)
+    that interact with one or multiple storage service. The :py:class:`ProviderBundleV2` abstracts access to these providers, allowing for
+    flexible implementations of cloud storage solutions.
+
+    """
+
+    @property
+    @abstractmethod
+    def storage_backends(self) -> dict[str, StorageBackend]:
+        """
+        :return: Mapping of storage backend name -> StorageBackend. Must have at least one backend.
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def metadata_provider(self) -> Optional[MetadataProvider]:
+        """
+        :return: The metadata provider responsible for retrieving metadata about objects in the storage service. If there are multiple backends, this is required.
         """
         pass
 

@@ -21,7 +21,7 @@ import tempfile
 from collections import defaultdict
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Union
 from urllib.parse import urlparse
 
 import yaml
@@ -42,8 +42,10 @@ from .types import (
     CredentialsProvider,
     MetadataProvider,
     ProviderBundle,
+    ProviderBundleV2,
     Replica,
     RetryConfig,
+    StorageBackend,
     StorageProvider,
     StorageProviderConfig,
 )
@@ -203,6 +205,12 @@ class ImmutableDict(dict):
         """
         return copy.deepcopy(dict(self), memo)
 
+    def __reduce__(self):
+        """
+        Support for pickle serialization.
+        """
+        return (self.__class__, (dict(self),))
+
     def _copy_value(self, value):
         """
         Convert frozen structures back to mutable equivalents.
@@ -283,11 +291,40 @@ class SimpleProviderBundle(ProviderBundle):
         return self._replicas
 
 
+class SimpleProviderBundleV2(ProviderBundleV2):
+    def __init__(
+        self, storage_backends: dict[str, StorageBackend], metadata_provider: Optional[MetadataProvider] = None
+    ):
+        self._storage_backends = storage_backends
+        self._metadata_provider = metadata_provider
+
+    @staticmethod
+    def from_v1_bundle(profile_name: str, v1_bundle: ProviderBundle) -> "SimpleProviderBundleV2":
+        backend = StorageBackend(
+            storage_provider_config=v1_bundle.storage_provider_config,
+            credentials_provider=v1_bundle.credentials_provider,
+            replicas=v1_bundle.replicas,
+        )
+
+        return SimpleProviderBundleV2(
+            storage_backends={profile_name: backend},
+            metadata_provider=v1_bundle.metadata_provider,
+        )
+
+    @property
+    def storage_backends(self) -> dict[str, StorageBackend]:
+        return self._storage_backends
+
+    @property
+    def metadata_provider(self) -> Optional[MetadataProvider]:
+        return self._metadata_provider
+
+
 DEFAULT_CACHE_REFRESH_INTERVAL = 300
 
 
 class StorageClientConfigLoader:
-    _provider_bundle: Optional[ProviderBundle]
+    _provider_bundle: ProviderBundleV2
     _resolved_config_dict: dict[str, Any]
     _profiles: dict[str, Any]
     _profile: str
@@ -300,7 +337,7 @@ class StorageClientConfigLoader:
         self,
         config_dict: dict[str, Any],
         profile: str = DEFAULT_POSIX_PROFILE_NAME,
-        provider_bundle: Optional[ProviderBundle] = None,
+        provider_bundle: Optional[Union[ProviderBundle, ProviderBundleV2]] = None,
         telemetry_provider: Optional[Callable[[], Telemetry]] = None,
     ) -> None:
         """
@@ -310,12 +347,9 @@ class StorageClientConfigLoader:
 
         :param config_dict: Dictionary of configuration options.
         :param profile: Name of profile in ``config_dict`` to use to build configuration.
-        :param provider_bundle: Optional pre-built :py:class:`multistorageclient.types.ProviderBundle`, takes precedence over ``config_dict``.
+        :param provider_bundle: Optional pre-built :py:class:`multistorageclient.types.ProviderBundle` or :py:class:`multistorageclient.types.ProviderBundleV2`, takes precedence over ``config_dict``.
         :param telemetry_provider: A function that provides a telemetry instance. The function must be defined at the top level of a module to work with pickling.
         """
-        # ProviderBundle takes precedence
-        self._provider_bundle = provider_bundle
-
         # Interpolates all environment variables into actual values.
         config_dict = expand_env_vars(config_dict)
         self._resolved_config_dict = ImmutableDict(config_dict)
@@ -353,6 +387,9 @@ class StorageClientConfigLoader:
 
         self._cache_dict = config_dict.get("cache", None)
         self._experimental_features = config_dict.get("experimental_features", None)
+
+        self._provider_bundle = self._build_provider_bundle(provider_bundle)
+        self._inject_profiles_from_bundle()
 
     def _build_storage_provider(
         self,
@@ -523,16 +560,67 @@ class StorageClientConfigLoader:
         options = provider_bundle_dict.get("options", {})
         return cls(**options)
 
-    def _build_provider_bundle(self) -> ProviderBundle:
-        if self._provider_bundle:
-            return self._provider_bundle  # Return if previously provided.
+    def _build_provider_bundle(
+        self, provider_bundle: Optional[Union[ProviderBundle, ProviderBundleV2]]
+    ) -> ProviderBundleV2:
+        if provider_bundle:
+            bundle = provider_bundle
+        else:
+            provider_bundle_dict = self._profile_dict.get("provider_bundle", None)
+            if provider_bundle_dict:
+                bundle = self._build_provider_bundle_from_extension(provider_bundle_dict)
+            else:
+                bundle = self._build_provider_bundle_from_config(self._profile_dict)
 
-        # Load 3rd party extension
-        provider_bundle_dict = self._profile_dict.get("provider_bundle", None)
-        if provider_bundle_dict:
-            return self._build_provider_bundle_from_extension(provider_bundle_dict)
+        if isinstance(bundle, ProviderBundle) and not isinstance(bundle, ProviderBundleV2):
+            bundle = SimpleProviderBundleV2.from_v1_bundle(self._profile, bundle)
 
-        return self._build_provider_bundle_from_config(self._profile_dict)
+        return bundle
+
+    def _inject_profiles_from_bundle(self) -> None:
+        if len(self._provider_bundle.storage_backends) > 1:
+            profiles = copy.deepcopy(self._profiles)
+
+            for child_name, backend in self._provider_bundle.storage_backends.items():
+                if child_name in self._profiles:
+                    raise ValueError(f"Profile '{child_name}' already exists in configuration.")
+                child_config = {
+                    "storage_provider": {
+                        "type": backend.storage_provider_config.type,
+                        "options": backend.storage_provider_config.options,
+                    }
+                }
+                profiles[child_name] = child_config
+
+            resolved_config_dict = copy.deepcopy(self._resolved_config_dict)
+            resolved_config_dict["profiles"] = profiles
+
+            self._profiles = ImmutableDict(profiles)
+            self._resolved_config_dict = ImmutableDict(resolved_config_dict)
+
+    def _build_retry_config(self) -> RetryConfig:
+        """Build retry config from profile dict."""
+        retry_config_dict = self._profile_dict.get("retry", None)
+        if retry_config_dict:
+            attempts = retry_config_dict.get("attempts", DEFAULT_RETRY_ATTEMPTS)
+            delay = retry_config_dict.get("delay", DEFAULT_RETRY_DELAY)
+            backoff_multiplier = retry_config_dict.get("backoff_multiplier", DEFAULT_RETRY_BACKOFF_MULTIPLIER)
+            return RetryConfig(attempts=attempts, delay=delay, backoff_multiplier=backoff_multiplier)
+        else:
+            return RetryConfig(
+                attempts=DEFAULT_RETRY_ATTEMPTS,
+                delay=DEFAULT_RETRY_DELAY,
+                backoff_multiplier=DEFAULT_RETRY_BACKOFF_MULTIPLIER,
+            )
+
+    def _build_autocommit_config(self) -> AutoCommitConfig:
+        """Build autocommit config from profile dict."""
+        autocommit_dict = self._profile_dict.get("autocommit", None)
+        if autocommit_dict:
+            interval_minutes = autocommit_dict.get("interval_minutes", None)
+            at_exit = autocommit_dict.get("at_exit", False)
+            return AutoCommitConfig(interval_minutes=interval_minutes, at_exit=at_exit)
+        return AutoCommitConfig()
 
     def _verify_cache_config(self, cache_dict: dict[str, Any]) -> None:
         if "size_mb" in cache_dict:
@@ -614,16 +702,52 @@ class StorageClientConfigLoader:
                 )
 
     def build_config(self) -> "StorageClientConfig":
-        bundle = self._build_provider_bundle()
+        bundle = self._provider_bundle
+        backends = bundle.storage_backends
+
+        if len(backends) > 1:
+            if not bundle.metadata_provider:
+                raise ValueError(
+                    f"Multi-backend configuration for profile '{self._profile}' requires metadata_provider "
+                    "for routing between storage locations."
+                )
+
+            child_profile_names = list(backends.keys())
+            retry_config = self._build_retry_config()
+            autocommit_config = self._build_autocommit_config()
+
+            # config for Composite StorageClient
+            config = StorageClientConfig(
+                profile=self._profile,
+                storage_provider=None,
+                credentials_provider=None,
+                storage_provider_profiles=child_profile_names,
+                metadata_provider=bundle.metadata_provider,
+                cache_config=None,
+                cache_manager=None,
+                retry_config=retry_config,
+                telemetry_provider=self._telemetry_provider,
+                replicas=[],
+                autocommit_config=autocommit_config,
+            )
+
+            config._config_dict = self._resolved_config_dict
+            return config
+
+        # Single-backend (len == 1)
+        _, backend = list(backends.items())[0]
+        storage_provider = self._build_storage_provider(
+            backend.storage_provider_config.type,
+            backend.storage_provider_config.options,
+            backend.credentials_provider,
+        )
+        credentials_provider = backend.credentials_provider
+        metadata_provider = bundle.metadata_provider
+        replicas = backend.replicas
 
         # Validate replicas to prevent circular references
-        self._validate_replicas(bundle.replicas)
-
-        storage_provider = self._build_storage_provider(
-            bundle.storage_provider_config.type,
-            bundle.storage_provider_config.options,
-            bundle.credentials_provider,
-        )
+        if replicas:
+            self._validate_replicas(replicas)
 
         cache_config: Optional[CacheConfig] = None
         cache_manager: Optional[CacheManager] = None
@@ -705,40 +829,25 @@ class StorageClientConfigLoader:
         elif self._cache_dict is None and caching_enabled:
             logger.warning(f"Caching is enabled for profile '{self._profile}' but no cache configuration is provided")
 
-        # retry options
-        retry_config_dict = self._profile_dict.get("retry", None)
-        if retry_config_dict:
-            attempts = retry_config_dict.get("attempts", DEFAULT_RETRY_ATTEMPTS)
-            delay = retry_config_dict.get("delay", DEFAULT_RETRY_DELAY)
-            backoff_multiplier = retry_config_dict.get("backoff_multiplier", DEFAULT_RETRY_BACKOFF_MULTIPLIER)
-            retry_config = RetryConfig(attempts=attempts, delay=delay, backoff_multiplier=backoff_multiplier)
-        else:
-            retry_config = RetryConfig(
-                attempts=DEFAULT_RETRY_ATTEMPTS,
-                delay=DEFAULT_RETRY_DELAY,
-                backoff_multiplier=DEFAULT_RETRY_BACKOFF_MULTIPLIER,
-            )
+        retry_config = self._build_retry_config()
+        autocommit_config = self._build_autocommit_config()
 
-        # autocommit options
-        autocommit_config = AutoCommitConfig()
-        autocommit_dict = self._profile_dict.get("autocommit", None)
-        if autocommit_dict:
-            interval_minutes = autocommit_dict.get("interval_minutes", None)
-            at_exit = autocommit_dict.get("at_exit", False)
-            autocommit_config = AutoCommitConfig(interval_minutes=interval_minutes, at_exit=at_exit)
-
-        return StorageClientConfig(
+        config = StorageClientConfig(
             profile=self._profile,
             storage_provider=storage_provider,
-            credentials_provider=bundle.credentials_provider,
-            metadata_provider=bundle.metadata_provider,
+            credentials_provider=credentials_provider,
+            storage_provider_profiles=None,
+            metadata_provider=metadata_provider,
             cache_config=cache_config,
             cache_manager=cache_manager,
             retry_config=retry_config,
             telemetry_provider=self._telemetry_provider,
-            replicas=bundle.replicas,
+            replicas=replicas,
             autocommit_config=autocommit_config,
         )
+
+        config._config_dict = self._resolved_config_dict
+        return config
 
 
 class PathMapping:
@@ -883,8 +992,9 @@ class StorageClientConfig:
     """
 
     profile: str
-    storage_provider: StorageProvider
+    storage_provider: Optional[StorageProvider]
     credentials_provider: Optional[CredentialsProvider]
+    storage_provider_profiles: Optional[list[str]]
     metadata_provider: Optional[MetadataProvider]
     cache_config: Optional[CacheConfig]
     cache_manager: Optional[CacheManager]
@@ -898,8 +1008,9 @@ class StorageClientConfig:
     def __init__(
         self,
         profile: str,
-        storage_provider: StorageProvider,
+        storage_provider: Optional[StorageProvider] = None,
         credentials_provider: Optional[CredentialsProvider] = None,
+        storage_provider_profiles: Optional[list[str]] = None,
         metadata_provider: Optional[MetadataProvider] = None,
         cache_config: Optional[CacheConfig] = None,
         cache_manager: Optional[CacheManager] = None,
@@ -908,11 +1019,21 @@ class StorageClientConfig:
         replicas: Optional[list[Replica]] = None,
         autocommit_config: Optional[AutoCommitConfig] = None,
     ):
+        # exactly one of storage_provider or storage_provider_profiles must be set
+        if storage_provider and storage_provider_profiles:
+            raise ValueError(
+                "Cannot specify both storage_provider and storage_provider_profiles. "
+                "Use storage_provider for SingleStorageClient or storage_provider_profiles for CompositeStorageClient."
+            )
+        if not storage_provider and not storage_provider_profiles:
+            raise ValueError("Must specify either storage_provider or storage_provider_profiles.")
+
         if replicas is None:
             replicas = []
         self.profile = profile
         self.storage_provider = storage_provider
         self.credentials_provider = credentials_provider
+        self.storage_provider_profiles = storage_provider_profiles
         self.metadata_provider = metadata_provider
         self.cache_config = cache_config
         self.cache_manager = cache_manager
@@ -981,7 +1102,6 @@ class StorageClientConfig:
             config_dict=config_dict, profile=profile, telemetry_provider=telemetry_provider
         )
         config = loader.build_config()
-        config._config_dict = config_dict
 
         return config
 
@@ -1051,7 +1171,7 @@ class StorageClientConfig:
     @staticmethod
     def from_provider_bundle(
         config_dict: dict[str, Any],
-        provider_bundle: ProviderBundle,
+        provider_bundle: Union[ProviderBundle, ProviderBundleV2],
         telemetry_provider: Optional[Callable[[], Telemetry]] = None,
     ) -> "StorageClientConfig":
         loader = StorageClientConfigLoader(
@@ -1164,6 +1284,7 @@ class StorageClientConfig:
         self.profile = new_config.profile
         self.storage_provider = new_config.storage_provider
         self.credentials_provider = new_config.credentials_provider
+        self.storage_provider_profiles = new_config.storage_provider_profiles
         self.metadata_provider = new_config.metadata_provider
         self.cache_config = new_config.cache_config
         self.cache_manager = new_config.cache_manager

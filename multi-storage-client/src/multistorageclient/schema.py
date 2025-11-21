@@ -146,6 +146,12 @@ PROFILE_SCHEMA = {
             },
             "comment": {"type": "string"},
             "caching_enabled": {"type": "boolean", "default": False},
+            "storage_provider_profiles": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "description": "List of child profile names for multi-location storage.",
+            },
         },
         "oneOf": [
             {
@@ -153,6 +159,9 @@ PROFILE_SCHEMA = {
             },
             {
                 "required": ["provider_bundle"],
+            },
+            {
+                "required": ["storage_provider_profiles", "metadata_provider"],
             },
         ],
     },

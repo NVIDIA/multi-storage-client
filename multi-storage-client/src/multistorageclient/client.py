@@ -40,6 +40,7 @@ from .types import (
     Range,
     Replica,
     SourceVersionCheckMode,
+    StorageProvider,
 )
 from .utils import NullStorageClient, PatternMatcher, join_paths
 
@@ -52,6 +53,7 @@ class StorageClient:
     """
 
     _config: StorageClientConfig
+    _storage_provider: StorageProvider
     _metadata_provider_lock: Optional[threading.Lock] = None
     _stop_event: Optional[threading.Event] = None
     _replica_manager: Optional[ReplicaManager] = None
@@ -66,9 +68,13 @@ class StorageClient:
         self._initialize_replicas(config.replicas)
 
     def _initialize_providers(self, config: StorageClientConfig) -> None:
+        # TODO: Support composite clients with storage_provider_profiles
+        if config.storage_provider is None or config.storage_provider_profiles:
+            raise NotImplementedError("StorageClient with storage_provider_profiles is not yet supported.")
+
         self._config = config
         self._credentials_provider = self._config.credentials_provider
-        self._storage_provider = self._config.storage_provider
+        self._storage_provider = cast(StorageProvider, self._config.storage_provider)
         self._metadata_provider = self._config.metadata_provider
         self._cache_config = self._config.cache_config
         self._retry_config = self._config.retry_config

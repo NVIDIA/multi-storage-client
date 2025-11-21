@@ -37,7 +37,7 @@ from .shortcuts import (
     upload_file,
     write,
 )
-from .types import ResolvedPath
+from .types import ProviderBundleV2, ResolvedPath, StorageBackend
 
 __version__ = version("multi-storage-client")
 
@@ -49,6 +49,8 @@ __all__ = [
     "Path",
     # Types
     "ResolvedPath",
+    "ProviderBundleV2",
+    "StorageBackend",
     # Shortcuts
     "commit_metadata",
     "download_file",

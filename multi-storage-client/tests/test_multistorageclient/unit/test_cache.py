@@ -601,6 +601,7 @@ def test_storage_provider_cache_configs(config_creator, temp_data_store_type, tm
         else:
             storage_config = StorageClientConfig.from_dict(config_dict, profile="s3-local")
             real_storage_provider = storage_config.storage_provider
+            assert real_storage_provider is not None
             tmpdir_path = os.path.abspath(str(tmpdir))
             for obj in real_storage_provider.list_objects(path=tmpdir_path):
                 real_storage_provider.delete_object(obj.key)

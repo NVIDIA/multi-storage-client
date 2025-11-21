@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import argparse
+import copy
 import json
 import sys
 
@@ -86,7 +87,7 @@ class ConfigAction(Action):
 
             # Get the merged and validated config
             config_obj = StorageClientConfig.from_file(config_file_paths=config_file_paths)
-            config_dict = config_obj._config_dict
+            config_dict = copy.deepcopy(config_obj._config_dict)
 
             # Output in requested format
             if args.format == "json":

@@ -73,6 +73,88 @@ def test_validate_profiles():
         )
 
 
+def test_validate_storage_provider_profiles():
+    metadata_provider = {"metadata_provider": {"type": "module.MyMetadataProvider"}}
+
+    # Valid: storage_provider_profiles with metadata_provider
+    validate_config(
+        {
+            "profiles": {
+                "composite": {
+                    "storage_provider_profiles": ["loc1", "loc2"],
+                    **metadata_provider,
+                }
+            }
+        }
+    )
+
+    # Invalid: storage_provider_profiles without metadata_provider
+    with pytest.raises(RuntimeError):
+        validate_config(
+            {
+                "profiles": {
+                    "composite": {
+                        "storage_provider_profiles": ["loc1", "loc2"],
+                    }
+                }
+            }
+        )
+
+    # Invalid: storage_provider_profiles with empty array
+    with pytest.raises(RuntimeError):
+        validate_config(
+            {
+                "profiles": {
+                    "composite": {
+                        "storage_provider_profiles": [],
+                        **metadata_provider,
+                    }
+                }
+            }
+        )
+
+    # Invalid: storage_provider_profiles with storage_provider (conflict)
+    with pytest.raises(RuntimeError):
+        validate_config(
+            {
+                "profiles": {
+                    "composite": {
+                        "storage_provider": {"type": "s3", "options": {"base_path": "bucket/prefix"}},
+                        "storage_provider_profiles": ["loc1", "loc2"],
+                        **metadata_provider,
+                    }
+                }
+            }
+        )
+
+    # Invalid: storage_provider_profiles with provider_bundle (conflict)
+    with pytest.raises(RuntimeError):
+        validate_config(
+            {
+                "profiles": {
+                    "composite": {
+                        "provider_bundle": {"type": "module.MyProviderBundle"},
+                        "storage_provider_profiles": ["loc1", "loc2"],
+                        **metadata_provider,
+                    }
+                }
+            }
+        )
+
+    # Invalid: storage_provider_profiles with non-string items
+    with pytest.raises(RuntimeError):
+        validate_config(
+            {
+                "profiles": {
+                    "composite": {
+                        "storage_provider_profiles": ["loc1", 123],
+                        **metadata_provider,
+                    }
+                }
+            }
+        )
+
+
 def test_validate_cache():
     default_storage_provider = {"storage_provider": {"type": "s3", "options": {"base_path": "bucket/prefix"}}}
 

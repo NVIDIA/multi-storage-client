@@ -23,8 +23,10 @@ from multistorageclient.types import (
     MetadataProvider,
     ObjectMetadata,
     ProviderBundle,
+    ProviderBundleV2,
     Replica,
     ResolvedPath,
+    StorageBackend,
     StorageProviderConfig,
 )
 from multistorageclient.utils import glob as glob_util
@@ -144,3 +146,44 @@ class TestProviderBundle(ProviderBundle):
         Returns the replicas configuration for this provider bundle, if any.
         """
         return []
+
+
+class TestProviderBundleV2SingleBackend(ProviderBundleV2):
+    """Test ProviderBundleV2 with single backend."""
+
+    @property
+    def storage_backends(self) -> dict[str, StorageBackend]:
+        return {
+            "backend1": StorageBackend(
+                storage_provider_config=StorageProviderConfig(type="file", options={"base_path": "/tmp/backend1"}),
+                credentials_provider=TestCredentialsProvider(),
+                replicas=[],
+            )
+        }
+
+    @property
+    def metadata_provider(self) -> Optional[MetadataProvider]:
+        return TestMetadataProvider()
+
+
+class TestProviderBundleV2MultiBackend(ProviderBundleV2):
+    """Test ProviderBundleV2 with multiple backends."""
+
+    @property
+    def storage_backends(self) -> dict[str, StorageBackend]:
+        return {
+            "loc1": StorageBackend(
+                storage_provider_config=StorageProviderConfig(type="file", options={"base_path": "/tmp/loc1"}),
+                credentials_provider=TestCredentialsProvider(),
+                replicas=[],
+            ),
+            "loc2": StorageBackend(
+                storage_provider_config=StorageProviderConfig(type="file", options={"base_path": "/tmp/loc2"}),
+                credentials_provider=None,
+                replicas=[Replica("loc2-backup", 1)],  # Example: loc2 has a replica
+            ),
+        }
+
+    @property
+    def metadata_provider(self) -> Optional[MetadataProvider]:
+        return TestMetadataProvider()
