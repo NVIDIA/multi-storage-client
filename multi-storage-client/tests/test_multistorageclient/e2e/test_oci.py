@@ -56,3 +56,10 @@ def test_oci_attributes(profile_name):
     """Test OCI attributes functionality - storing custom metadata with msc_ prefix."""
     profile = profile_name
     common.test_attributes(profile)
+
+
+@pytest.mark.parametrize("profile_name", ["test-oci"])
+def test_oci_list_exact_file_no_prefix_match(profile_name):
+    """Test that listing exact file path doesn't match files with same prefix."""
+    profile = profile_name
+    common.test_list_exact_file_no_prefix_match(profile)

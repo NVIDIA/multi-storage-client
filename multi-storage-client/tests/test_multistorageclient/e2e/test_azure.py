@@ -63,3 +63,10 @@ def test_azure_attributes(profile_name):
     """Test Azure attributes functionality - storing custom metadata with msc_ prefix."""
     profile = profile_name
     common.test_attributes(profile)
+
+
+@pytest.mark.parametrize("profile_name", ["test-azure-uswest"])
+def test_azure_list_exact_file_no_prefix_match(profile_name):
+    """Test that listing exact file path doesn't match files with same prefix."""
+    profile = profile_name
+    common.test_list_exact_file_no_prefix_match(profile)

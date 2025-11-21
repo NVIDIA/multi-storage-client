@@ -1012,3 +1012,72 @@ def test_on_demand_replica_fetch_with_cache_using_read(profile: str):
 
     # Clean up
     _do_cleanup(client, prefix + "/")
+
+
+def test_list_exact_file_no_prefix_match(profile: str) -> None:
+    """
+    Test that listing an exact file path returns only that file, not files with matching prefix.
+
+    This tests the fix for the bug where Test_1kb_file.1 would incorrectly match Test_1kb_file.10
+    when using msc.list() on object storage providers.
+    """
+    prefix = f"test-list-exact-file-{uuid.uuid4()}"
+
+    client, _ = msc.resolve_storage_client(f"msc://{profile}/")
+
+    try:
+        # Create files with similar names where one is a prefix of another
+        test_files = [
+            f"{prefix}/Test_1kb_file.1",
+            f"{prefix}/Test_1kb_file.10",
+            f"{prefix}/Test_1kb_file.2",
+            f"{prefix}/Test_1kb_file.20",
+        ]
+
+        test_content = b"test content for validation\n"
+
+        # Upload all test files
+        for file_path in test_files:
+            client.write(file_path, test_content)
+
+        # Wait for files to be available (eventual consistency)
+        wait(
+            waitable=lambda: list(client.list(prefix)),
+            should_wait=len_should_wait(expected_len=4),
+            max_attempts=10,
+            attempt_interval_seconds=1,
+        )
+
+        # Test 1: List exact file Test_1kb_file.1 - should return only that file
+        exact_file_path = f"{prefix}/Test_1kb_file.1"
+        results = list(client.list(exact_file_path))
+
+        # Should return exactly 1 file
+        assert len(results) == 1, f"Expected 1 file, got {len(results)}: {[r.key for r in results]}"
+
+        # Should be the exact file, not Test_1kb_file.10
+        assert results[0].key == exact_file_path, f"Expected {exact_file_path}, got {results[0].key}"
+        assert "Test_1kb_file.10" not in results[0].key, "Test_1kb_file.10 should NOT be matched as prefix"
+
+        # Test 2: List exact file Test_1kb_file.2 - should return only that file
+        exact_file_path_2 = f"{prefix}/Test_1kb_file.2"
+        results_2 = list(client.list(exact_file_path_2))
+
+        assert len(results_2) == 1, f"Expected 1 file, got {len(results_2)}: {[r.key for r in results_2]}"
+        assert results_2[0].key == exact_file_path_2, f"Expected {exact_file_path_2}, got {results_2[0].key}"
+        assert "Test_1kb_file.20" not in results_2[0].key, "Test_1kb_file.20 should NOT be matched as prefix"
+
+        # Test 3: List directory - should return all 4 files
+        dir_results = list(client.list(prefix))
+        assert len(dir_results) == 4, f"Expected 4 files in directory, got {len(dir_results)}"
+
+        # Test 4: Using shortcuts API
+        exact_url = f"msc://{profile}/{prefix}/Test_1kb_file.1"
+        shortcut_results = list(msc.list(exact_url))
+
+        assert len(shortcut_results) == 1, f"Shortcuts API: Expected 1 file, got {len(shortcut_results)}"
+        assert exact_url in shortcut_results[0].key, f"Shortcuts API: Expected {exact_url} in {shortcut_results[0].key}"
+
+    finally:
+        # Clean up
+        _do_cleanup(client, prefix + "/")

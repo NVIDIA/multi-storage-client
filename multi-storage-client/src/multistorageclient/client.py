@@ -606,10 +606,24 @@ class StorageClient:
 
         # Use path if provided, otherwise fall back to prefix
         effective_path = path if path else prefix
-        if effective_path and not self.is_file(effective_path):
-            effective_path = (
-                effective_path.rstrip("/") + "/"
-            )  # assume it's a directory if the effective path is not empty
+
+        if effective_path:
+            if self.is_file(effective_path):
+                try:
+                    object_metadata = self.info(effective_path)
+                    if include_url_prefix:
+                        if self.is_default_profile():
+                            object_metadata.key = str(PurePosixPath("/") / object_metadata.key)
+                        else:
+                            object_metadata.key = join_paths(
+                                f"{MSC_PROTOCOL}{self._config.profile}", object_metadata.key
+                            )
+                    yield object_metadata  # short circuit if the path is a file
+                    return
+                except FileNotFoundError:
+                    pass
+            else:
+                effective_path = effective_path.rstrip("/") + "/"
 
         if self._metadata_provider:
             objects = self._metadata_provider.list_objects(

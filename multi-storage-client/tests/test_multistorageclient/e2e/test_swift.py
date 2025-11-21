@@ -55,6 +55,13 @@ def test_swift_storage_client_rust(profile_name):
     common.test_storage_client(profile)
 
 
+@pytest.mark.parametrize("profile_name", ["test-swift-pdx"])
+def test_swift_list_exact_file_no_prefix_match(profile_name):
+    """Test that listing exact file path doesn't match files with same prefix (S8K bug fix)."""
+    profile = profile_name
+    common.test_list_exact_file_no_prefix_match(profile)
+
+
 def test_swift_content_type_inference():
     """
     Test that WAV files are uploaded with correct content-type when infer_content_type is enabled.

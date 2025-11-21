@@ -59,6 +59,13 @@ def test_gcs_attributes(profile_name):
     common.test_attributes(profile)
 
 
+@pytest.mark.parametrize("profile_name", ["test-gcs"])
+def test_gcs_list_exact_file_no_prefix_match(profile_name):
+    """Test that listing exact file path doesn't match files with same prefix."""
+    profile = profile_name
+    common.test_list_exact_file_no_prefix_match(profile)
+
+
 @pytest.mark.parametrize("profile_name", ["test-gcs-hmac"])
 @pytest.mark.parametrize("config_suffix", ["", "-rust"])
 def test_gcs_hmac_shortcuts(profile_name, config_suffix):

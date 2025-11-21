@@ -35,8 +35,11 @@ class MockBaseStorageProvider(BaseStorageProvider):
     def _delete_object(self, path: str, etag: Optional[str] = None) -> None:
         pass
 
-    def _get_object_metadata(self, path: str) -> ObjectMetadata:
-        return ObjectMetadata(key=path, content_length=0, type="file", last_modified=datetime.now())
+    def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
+        if not path.endswith("txt"):
+            return ObjectMetadata(key=path, content_length=0, type="directory", last_modified=datetime.now())
+        else:
+            return ObjectMetadata(key=path, content_length=0, type="file", last_modified=datetime.now())
 
     def _list_objects(
         self,

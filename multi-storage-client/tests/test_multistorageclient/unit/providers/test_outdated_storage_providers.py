@@ -50,7 +50,10 @@ class OutdatedStorageProvider(BaseStorageProvider):
         pass
 
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
-        return ObjectMetadata(key=path, content_length=0, type="file", last_modified=datetime.now())
+        if not path.endswith("txt"):
+            return ObjectMetadata(key=path, content_length=0, type="directory", last_modified=datetime.now())
+        else:
+            return ObjectMetadata(key=path, content_length=0, type="file", last_modified=datetime.now())
 
     def _list_objects(
         self,
