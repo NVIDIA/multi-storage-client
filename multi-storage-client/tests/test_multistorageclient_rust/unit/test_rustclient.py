@@ -27,7 +27,11 @@ import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.constants import MEMORY_LOAD_LIMIT
 from multistorageclient.providers.s3 import StaticS3CredentialsProvider
-from multistorageclient_rust import RustClient, RustRetryableError  # pyright: ignore[reportAttributeAccessIssue]
+from multistorageclient.types import Range
+from multistorageclient_rust import (  # pyright: ignore[reportAttributeAccessIssue]
+    RustClient,
+    RustRetryableError,
+)
 
 from .utils import RefreshableTestCredentialsProvider
 
@@ -80,10 +84,11 @@ async def test_rustclient_basic_operations(temp_data_store_type: Type[tempdatast
         assert result == file_body_bytes
 
         # Test range get
-        result = await rust_client.get(file_path, 1, 4)
+        result = await rust_client.get(file_path, range=Range(1, 4))
+        assert len(result) == 4
         assert result == file_body_bytes[1:5]
 
-        result = await rust_client.get(file_path, 0, len(file_body_bytes))
+        result = await rust_client.get(file_path, range=Range(0, len(file_body_bytes)))
         assert result == file_body_bytes
 
         # Test upload the file.
@@ -422,8 +427,7 @@ async def test_rustclient_explicit_multipart_chunksize(temp_data_store_type: Typ
         # Test download_multipart_to_bytes with range
         result = await rust_client.download_multipart_to_bytes(
             large_file_path,
-            start=10,
-            end=10 + chunk_size * max_concurrency,
+            range=Range(10, chunk_size * max_concurrency + 1),
             multipart_chunksize=chunk_size,
             max_concurrency=max_concurrency,
         )
@@ -481,5 +485,6 @@ async def test_rustclient_public_bucket():
 
     if objects:
         first_object = objects[0]
-        data = await rust_client.get(first_object.key, start=0, end=100)
+        data = await rust_client.get(first_object.key, range=Range(0, 100))
+        assert len(data) == 100
         assert len(data) > 0, "Should be able to read data from public bucket"

@@ -153,10 +153,12 @@ class CredentialsProvider(ABC):
 @dataclass
 class Range:
     """
-    Byte-range read.
+    A data class that represents a byte range for read operations.
     """
 
+    #: The start offset in bytes.
     offset: int
+    #: The number of bytes to read.
     size: int
 
 

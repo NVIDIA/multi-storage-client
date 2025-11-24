@@ -55,3 +55,11 @@ impl ListResult {
         Self { objects, prefixes }
     }
 }
+
+#[derive(FromPyObject)]
+pub struct ByteRangeLike {
+    #[pyo3(attribute)]
+    pub offset: u64,
+    #[pyo3(attribute)]
+    pub size: u64,
+}

@@ -41,7 +41,7 @@ mod credentials;
 mod types;
 
 use credentials::PyCredentialsProvider;
-use types::{ListResult, ObjectMetadata};
+use types::{ByteRangeLike, ListResult, ObjectMetadata};
 
 pyo3::create_exception!(multistorageclient_rust, RustRetryableError, PyException);
 
@@ -445,21 +445,22 @@ impl RustClient {
         })
     }
 
-    #[pyo3(signature = (path, start=None, end=None))]
+    #[pyo3(signature = (path, range=None))]
     fn get<'p>(
         &self,
         py: Python<'p>,
         path: &str,
-        start: Option<u64>,
-        end: Option<u64>,
+        range: Option<ByteRangeLike>,
     ) -> PyResult<Bound<'p, PyAny>> {
         let store = Arc::clone(&self.store);
         let path = Path::from(path);
 
-        if let (Some(start_idx), Some(end_idx)) = (start, end) {
+        if let Some(byte_range) = range {
             future_into_py(py, async move {
+                let start = byte_range.offset;
+                let length = byte_range.size;
                 let result = store
-                    .get_range(&path, start_idx..end_idx+1)
+                    .get_range(&path, start..start + length)
                     .await
                     .map_err(StorageError::from)?;
                 Ok(PyBytes::new(result))
@@ -691,13 +692,12 @@ impl RustClient {
         })
     }
 
-    #[pyo3(signature = (remote_path, start=None, end=None, multipart_chunksize=None, max_concurrency=None))]
+    #[pyo3(signature = (remote_path, range=None, multipart_chunksize=None, max_concurrency=None))]
     fn download_multipart_to_bytes<'p>(
         &self,
         py: Python<'p>,
         remote_path: &str,
-        start: Option<u64>,
-        end: Option<u64>,
+        range: Option<ByteRangeLike>,
         multipart_chunksize: Option<usize>,
         max_concurrency: Option<usize>,
     ) -> PyResult<Bound<'p, PyAny>> {
@@ -707,9 +707,12 @@ impl RustClient {
         let concurrency = max_concurrency.unwrap_or(self.max_concurrency);
 
         future_into_py(py, async move {
-            let (start_offset, end_offset, total_size) = if let (Some(start_val), Some(end_val)) = (start, end) {
+            let (start_offset, end_offset, total_size) = if let Some(byte_range) = range {
                 // Range read - no HEAD request needed, we know the exact range
-                (start_val, end_val, end_val - start_val + 1)
+                let start_val = byte_range.offset;
+                let length = byte_range.size;
+                let end_val = start_val + length - 1;
+                (start_val, end_val, length)
             } else {
                 // Full file download - need HEAD request to get total size for chunking
                 let result = store.head(&remote_path).await.map_err(StorageError::from)?;

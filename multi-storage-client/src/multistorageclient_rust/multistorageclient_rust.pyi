@@ -15,6 +15,8 @@
 
 from typing import Any
 
+from multistorageclient.types import Range
+
 class RustClient:
     """
     RustClient provides asynchronous methods for interacting with an object storage backend (e.g., S3).
@@ -39,12 +41,11 @@ class RustClient:
         """
         ...
 
-    async def get(self, path: str, start: int | None = ..., end: int | None = ...) -> bytes:
+    async def get(self, path: str, range: Range | None = ...) -> bytes:
         """
         Download data from the object store at the specified path.
         :param path: The remote object path in the storage backend.
-        :param start: Optional start byte index for range download (inclusive).
-        :param end: Optional end byte index for range download (inclusive).
+        :param range: Optional byte range for download.
         :return: The downloaded data as bytes.
         """
         ...
@@ -136,8 +137,7 @@ class RustClient:
     async def download_multipart_to_bytes(
         self,
         remote_path: str,
-        start: int | None = ...,
-        end: int | None = ...,
+        range: Range | None = ...,
         multipart_chunksize: int | None = ...,
         max_concurrency: int | None = ...,
     ) -> bytes:
@@ -149,8 +149,7 @@ class RustClient:
         compared to get() method.
 
         :param remote_path: The destination path in the storage backend.
-        :param start: Optional start byte index for range download (inclusive).
-        :param end: Optional end byte index for range download (inclusive).
+        :param range: Optional byte range for download.
         :param multipart_chunksize: The size of the multipart chunks.
         :param max_concurrency: The maximum number of concurrent operations.
         """

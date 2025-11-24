@@ -424,7 +424,10 @@ class S3StorageProvider(BaseStorageProvider):
                 bytes_range = f"bytes={byte_range.offset}-{byte_range.offset + byte_range.size - 1}"
                 if self._rust_client:
                     response = run_async_rust_client_method(
-                        self._rust_client, "get", key, byte_range.offset, byte_range.offset + byte_range.size - 1
+                        self._rust_client,
+                        "get",
+                        key,
+                        byte_range,
                     )
                     return response
                 else:
