@@ -30,6 +30,7 @@ from multistorageclient.providers.s3 import StaticS3CredentialsProvider
 from multistorageclient.types import Range
 from multistorageclient_rust import (  # pyright: ignore[reportAttributeAccessIssue]
     RustClient,
+    RustClientError,
     RustRetryableError,
 )
 
@@ -152,8 +153,9 @@ async def test_rustclient_basic_operations(temp_data_store_type: Type[tempdatast
         storage_client.delete(path=large_file_path)
 
         # Test get a non-existent file
-        with pytest.raises(FileNotFoundError):
+        with pytest.raises(RustClientError) as exc_info:
             await rust_client.get(file_path)
+        assert exc_info.value.args[1] == 404
 
 
 @pytest.mark.parametrize(
@@ -207,8 +209,9 @@ async def test_rustclient_with_refreshable_credentials(temp_data_store_type: Typ
 
         # Test Rust client proactively refreshes credentials 15 minutes before expiration, should call refresh_credentials and fail
         time.sleep(6)
-        with pytest.raises(PermissionError) as exc_info:
+        with pytest.raises(RustClientError) as exc_info:
             await rust_client.get(file_path)
+        assert exc_info.value.args[1] == 403
         assert credentials_provider.refresh_count == 1
 
         error_message = str(exc_info.value)

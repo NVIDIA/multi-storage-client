@@ -36,6 +36,7 @@ use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
+use http::StatusCode;
 
 mod credentials;
 mod types;
@@ -44,6 +45,7 @@ use credentials::PyCredentialsProvider;
 use types::{ByteRangeLike, ListResult, ObjectMetadata};
 
 pyo3::create_exception!(multistorageclient_rust, RustRetryableError, PyException);
+pyo3::create_exception!(multistorageclient_rust, RustClientError, PyException);
 
 #[derive(Error, Debug)]
 pub enum StorageError {
@@ -57,33 +59,33 @@ pub enum StorageError {
     TempFileError(#[from] tempfile::PersistError),
     #[error("Connection error: {0}")]
     RetryExhaustedError(String),
-    #[error("Object not found: {0}")]
-    NotFound(String),
-    #[error("Permission error: {0}")]
-    PermissionError(String),
+    #[error("HTTP error: {0}")]
+    HttpError(String, Option<u16>),
 }
 
-impl From<object_store::Error> for StorageError {
-    fn from(err: object_store::Error) -> Self {
-        let error_msg = format_error_chain(&err);
-        
-        if error_msg.contains("not found") ||
-           error_msg.contains("404 Not Found") ||
-           error_msg.contains("NoSuchKey") {
-            StorageError::NotFound(error_msg)
-        } else if error_msg.contains("HTTP error: error sending request") ||
-           error_msg.contains("HTTP error: request or response body error") ||
-           error_msg.contains("Failed to refresh credentials") {
-            StorageError::RetryExhaustedError(error_msg)
-        } else if error_msg.contains("The operation lacked the necessary privileges") ||
-           error_msg.contains("403 Forbidden") {
-            StorageError::PermissionError(error_msg)
-        } else {
-            StorageError::ObjectStoreError(error_msg)
-        }
+/// Extracts an HTTP status code from an `object_store::Error`.
+///
+/// Maps specific `object_store::Error` variants (e.g., `NotFound`, `PermissionDenied`)
+/// to their corresponding HTTP status codes (e.g., 404, 403).
+/// Returns `None` if the error doesn't map to a specific status code.
+fn extract_status_code(err: &object_store::Error) -> Option<u16> {
+    match err {
+        object_store::Error::NotFound { .. } => return Some(StatusCode::NOT_FOUND.as_u16()),
+        object_store::Error::NotModified { .. } => return Some(StatusCode::NOT_MODIFIED.as_u16()),
+        object_store::Error::Precondition { .. } => return Some(StatusCode::PRECONDITION_FAILED.as_u16()),
+        object_store::Error::AlreadyExists { .. } => return Some(StatusCode::CONFLICT.as_u16()),
+        object_store::Error::PermissionDenied { .. } => return Some(StatusCode::FORBIDDEN.as_u16()),
+        object_store::Error::Unauthenticated { .. } => return Some(StatusCode::UNAUTHORIZED.as_u16()),
+        _ => {}
     }
+
+    None
 }
 
+/// Formats the full error chain into a readable string.
+///
+/// Iterates through the error causes (sources) and joins their string representations
+/// with " -> " to provide a complete trace of the error context.
 fn format_error_chain(err: &object_store::Error) -> String {
     let mut chain = vec![err.to_string()];
     let mut current = err.source();
@@ -96,7 +98,44 @@ fn format_error_chain(err: &object_store::Error) -> String {
     chain.join(" -> ")
 }
 
+impl From<object_store::Error> for StorageError {
+    /// Converts an `object_store::Error` into a `StorageError`.
+    ///
+    /// This conversion:
+    /// 1. Formats the entire error chain for better debugging.
+    /// 2. Extracts HTTP status codes for specific error types (NotFound, PermissionDenied, etc.).
+    /// 3. Classifies specific connection and credential errors as `RetryExhaustedError`.
+    /// 4. Wraps other errors as generic `ObjectStoreError`.
+    fn from(err: object_store::Error) -> Self {
+        let error_msg = format_error_chain(&err);
+        
+        // Attempt to extract status code from the error chain if it's an HTTP error
+        let status_code = extract_status_code(&err);
+
+        if let Some(code) = status_code {
+            return StorageError::HttpError(error_msg, Some(code))
+        } else {
+            // Errors cannot be classified as retryable
+            if error_msg.contains("HTTP error: error sending request") ||
+                error_msg.contains("HTTP error: request or response body error") ||
+                error_msg.contains("Failed to refresh credentials") {
+                return StorageError::RetryExhaustedError(error_msg)
+            }
+
+            // Let the Python layer to handle the extra retry
+            return StorageError::ObjectStoreError(error_msg)
+        }
+    }
+}
+
 impl From<StorageError> for PyErr {
+    /// Converts a `StorageError` into a Python exception `PyErr`.
+    ///
+    /// Maps Rust error variants to appropriate Python exceptions:
+    /// - `ConfigError` -> `ValueError`
+    /// - `RetryExhaustedError` -> `RustRetryableError` (custom Python exception)
+    /// - `HttpError` -> `RustClientError` (custom Python exception with status code)
+    /// - Others -> `RuntimeError`
     fn from(err: StorageError) -> PyErr {
         match err {
             StorageError::ConfigError(msg) => {
@@ -105,11 +144,8 @@ impl From<StorageError> for PyErr {
             StorageError::RetryExhaustedError(msg) => {
                 RustRetryableError::new_err(msg)
             }
-            StorageError::PermissionError(msg) => {
-                pyo3::exceptions::PyPermissionError::new_err(msg)
-            }
-            StorageError::NotFound(msg) => {
-                pyo3::exceptions::PyFileNotFoundError::new_err(msg)
+            StorageError::HttpError(msg, status) => {
+                RustClientError::new_err((msg, status))
             }
             _ => {
                 pyo3::exceptions::PyRuntimeError::new_err(err.to_string())
@@ -939,6 +975,7 @@ fn multistorageclient_rust(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()>
     m.add_class::<ObjectMetadata>()?;
     m.add_class::<ListResult>()?;
     m.add("RustRetryableError", _py.get_type::<RustRetryableError>())?;
+    m.add("RustClientError", _py.get_type::<RustClientError>())?;
     Ok(())
 }
 
@@ -976,23 +1013,6 @@ mod tests {
                 assert!(msg.contains(" -> "));
             }
             _ => panic!("Expected RetryExhaustedError for HTTP error pattern"),
-        }
-    }
-
-    #[test]
-    fn test_permission_error() {
-        let access_error = object_store::Error::Generic {
-            store: "S3",
-            source: Box::new(io::Error::new(io::ErrorKind::PermissionDenied, "The operation lacked the necessary privileges")),
-        };
-
-        let storage_error = StorageError::from(access_error);
-        match storage_error {
-            StorageError::PermissionError(msg) => {
-                assert!(msg.contains("The operation lacked the necessary privileges"));
-                assert!(msg.contains(" -> "));
-            }
-            _ => panic!("Expected PermissionError for access error pattern"),
         }
     }
 

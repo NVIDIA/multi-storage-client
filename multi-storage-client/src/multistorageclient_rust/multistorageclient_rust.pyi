@@ -204,3 +204,10 @@ class RustRetryableError(Exception):
     """
 
     ...
+
+class RustClientError(Exception):
+    """
+    RustClientError is raised when a client error occurs.
+    """
+
+    ...

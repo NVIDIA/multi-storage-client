@@ -32,7 +32,7 @@ from google.cloud.storage.exceptions import InvalidResponse
 from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials as OAuth2Credentials
 
-from multistorageclient_rust import RustClient, RustRetryableError
+from multistorageclient_rust import RustClient, RustClientError, RustRetryableError
 
 from ..rust_utils import run_async_rust_client_method
 from ..telemetry import Telemetry
@@ -336,8 +336,19 @@ class GoogleStorageProvider(BaseStorageProvider):
                 f"Failed to {operation} object(s) at {bucket}/{key} due to retryable error from Rust. "
                 f"error_type: {type(error).__name__}"
             ) from error
-        except FileNotFoundError:
-            raise
+        except RustClientError as error:
+            message = error.args[0]
+            status_code = error.args[1]
+            if status_code == 404:
+                raise FileNotFoundError(f"Object {bucket}/{key} does not exist. {message}") from error
+            elif status_code == 403:
+                raise PermissionError(
+                    f"Permission denied to {operation} object(s) at {bucket}/{key}. {message}"
+                ) from error
+            else:
+                raise RetryableError(
+                    f"Failed to {operation} object(s) at {bucket}/{key}. {message}. status_code: {status_code}"
+                ) from error
         except Exception as error:
             error_details = str(error)
             raise RuntimeError(
