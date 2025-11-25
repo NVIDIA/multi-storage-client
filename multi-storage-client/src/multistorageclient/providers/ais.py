@@ -303,10 +303,16 @@ class AIStoreStorageProvider(BaseStorageProvider):
                     headers = obj.head()
                     props = ObjectProps(headers)
 
+                    # The access time is not always present in the response.
+                    if props.access_time:
+                        last_modified = datetime.fromtimestamp(int(props.access_time) / 1e9).astimezone(timezone.utc)
+                    else:
+                        last_modified = AWARE_DATETIME_MIN
+
                     return ObjectMetadata(
                         key=key,
                         content_length=int(props.size),  # pyright: ignore [reportArgumentType]
-                        last_modified=datetime.fromtimestamp(int(props.access_time) / 1e9).astimezone(timezone.utc),
+                        last_modified=last_modified,
                         etag=props.checksum_value,
                         metadata=props.custom_metadata,
                     )
@@ -358,12 +364,16 @@ class AIStoreStorageProvider(BaseStorageProvider):
                 obj = bucket_entry.object
                 key = obj.name
                 props = bucket_entry.generate_object_props()
+
+                # The access time is not always present in the response.
+                if props.access_time:
+                    last_modified = dateutil_parser(props.access_time).astimezone(timezone.utc)
+                else:
+                    last_modified = AWARE_DATETIME_MIN
+
                 if (start_after is None or start_after < key) and (end_at is None or key <= end_at):
                     yield ObjectMetadata(
-                        key=key,
-                        content_length=int(props.size),
-                        last_modified=dateutil_parser(props.access_time).astimezone(timezone.utc),
-                        etag=props.checksum_value,
+                        key=key, content_length=int(props.size), last_modified=last_modified, etag=props.checksum_value
                     )
                 elif end_at is not None and end_at < key:
                     return
