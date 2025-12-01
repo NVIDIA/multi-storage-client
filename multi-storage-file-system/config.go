@@ -15,7 +15,12 @@ import (
 )
 
 const (
-	defaultMountPoint              = "/mnt"
+	defaultMountPoint = "/mnt"
+
+	defaultAIStoreSkipTLSCertificateVerify = true
+	defaultAIStoreProvider                 = "s3"
+	defaultAIStoreTimeout                  = 30000 * time.Millisecond
+
 	defaultRAMMaxTotalObjects      = uint64(10000)
 	defaultRAMMaxTotalObjectSpace  = uint64(1073741824) // 2^30 == 1Gi
 	defaultRAMMaxDirectoryPageSize = uint64(100)
@@ -258,6 +263,9 @@ func checkConfigFile() (err error) {
 		backendConfigS3AsInterface            interface{}
 		backendConfigS3AsMap                  map[string]interface{}
 		backendConfigS3AsStruct               *backendConfigS3Struct
+		backendConfigAIStoreAsInterface       interface{}
+		backendConfigAIStoreAsMap             map[string]interface{}
+		backendConfigAIStoreAsStruct          *backendConfigAIStoreStruct
 		config                                *configStruct
 		configFileContent                     []byte
 		configFileMap                         map[string]interface{}
@@ -902,15 +910,64 @@ func checkConfigFile() (err error) {
 			}
 
 			switch backendAsStructNew.backendType {
-			case "Azure":
-				err = fmt.Errorf("backends[%v (\"%s\")] specified currently unsupported backend_type \"%s\"", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName, backendAsStructNew.backendType)
-				return
-			case "GCP":
-				err = fmt.Errorf("backends[%v (\"%s\")] specified currently unsupported backend_type \"%s\"", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName, backendAsStructNew.backendType)
-				return
-			case "OCI":
-				err = fmt.Errorf("backends[%v (\"%s\")] specified currently unsupported backend_type \"%s\"", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName, backendAsStructNew.backendType)
-				return
+			case "AIStore":
+				backendConfigAIStoreAsInterface, ok = backendAsMap["AIStore"]
+				if ok {
+					backendConfigAIStoreAsMap, ok = backendConfigAIStoreAsInterface.(map[string]interface{})
+					if !ok {
+						err = fmt.Errorf("bad AIStore section at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigAIStoreAsStruct = &backendConfigAIStoreStruct{}
+
+					backendConfigAIStoreAsStruct.endpoint, ok = parseString(backendConfigAIStoreAsMap, "endpoint", "${AIS_ENDPOINT}")
+					if !ok {
+						err = fmt.Errorf("bad AIStore.endpoint at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigAIStoreAsStruct.skipTLSCertificateVerify, ok = parseBool(backendConfigAIStoreAsMap, "skip_tls_certificate_verify", defaultAIStoreSkipTLSCertificateVerify)
+					if !ok {
+						err = fmt.Errorf("bad AIStore.skip_tls_certificate_verify at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigAIStoreAsStruct.authnToken, ok = parseString(backendConfigAIStoreAsMap, "authn_token", "${AIS_AUTHN_TOKEN}")
+					if !ok {
+						err = fmt.Errorf("bad AIStore.authn_token at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigAIStoreAsStruct.authnTokenFile, ok = parseString(backendConfigAIStoreAsMap, "authn_token_file", "${AIS_AUTHN_TOKEN_FILE:-${HOME}/.config/ais/cli/auth.token}")
+					if !ok {
+						err = fmt.Errorf("bad AIStore.authn_token_file at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigAIStoreAsStruct.provider, ok = parseString(backendConfigAIStoreAsMap, "provider", defaultAIStoreProvider)
+					if !ok {
+						err = fmt.Errorf("bad AIStore.provider at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigAIStoreAsStruct.timeout, ok = parseMilliseconds(backendConfigAIStoreAsMap, "timeout", defaultAIStoreTimeout)
+					if !ok {
+						err = fmt.Errorf("bad AIStore.timeout at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+				} else {
+					backendConfigAIStoreAsStruct = &backendConfigAIStoreStruct{
+						endpoint:                 os.Getenv("AIS_ENDPOINT"),
+						skipTLSCertificateVerify: defaultAIStoreSkipTLSCertificateVerify,
+						authnToken:               os.Getenv("AIS_AUTHN_TOKEN"),
+						authnTokenFile:           os.Getenv("AIS_AUTHN_TOKEN_FILE"),
+						provider:                 defaultAIStoreProvider,
+						timeout:                  defaultAIStoreTimeout,
+					}
+				}
+
+				backendAsStructNew.backendTypeSpecifics = backendConfigAIStoreAsStruct
 			case "RAM":
 				backendConfigRAMAsInterface, ok = backendAsMap["RAM"]
 				if ok {
@@ -1268,15 +1325,36 @@ func checkConfigFile() (err error) {
 				}
 
 				switch backendAsStructOld.backendType {
-				case "Azure": // not currently supported
-					err = fmt.Errorf("logic error comparing backend_type specifics in backends[\"%s\"] - backend_type == \"Azure\"", dirName)
-					return
-				case "GCP": // not currently supported
-					err = fmt.Errorf("logic error comparing backend_type specifics in backends[\"%s\"] - backend_type == \"GCP\"", dirName)
-					return
-				case "OCI": // not currently supported
-					err = fmt.Errorf("logic error comparing backend_type specifics in backends[\"%s\"] - backend_type == \"OCI\"", dirName)
-					return
+				case "AIStore":
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigAIStoreStruct).endpoint != backendAsStructNew.backendTypeSpecifics.(*backendConfigAIStoreStruct).endpoint {
+						err = fmt.Errorf("cannot change AIStore.endpoint in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigAIStoreStruct).skipTLSCertificateVerify != backendAsStructNew.backendTypeSpecifics.(*backendConfigAIStoreStruct).skipTLSCertificateVerify {
+						err = fmt.Errorf("cannot change AIStore.skip_tls_certificate_verify in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigAIStoreStruct).authnToken != backendAsStructNew.backendTypeSpecifics.(*backendConfigAIStoreStruct).authnToken {
+						err = fmt.Errorf("cannot change AIStore.authn_token in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigAIStoreStruct).authnTokenFile != backendAsStructNew.backendTypeSpecifics.(*backendConfigAIStoreStruct).authnTokenFile {
+						err = fmt.Errorf("cannot change AIStore.authn_token_file in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigAIStoreStruct).provider != backendAsStructNew.backendTypeSpecifics.(*backendConfigAIStoreStruct).provider {
+						err = fmt.Errorf("cannot change AIStore.provider in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigAIStoreStruct).timeout != backendAsStructNew.backendTypeSpecifics.(*backendConfigAIStoreStruct).timeout {
+						err = fmt.Errorf("cannot change AIStore.timeout in backends[\"%s\"]", dirName)
+						return
+					}
 				case "RAM":
 					if backendAsStructOld.backendTypeSpecifics.(*backendConfigRAMStruct).maxTotalObjects != backendAsStructNew.backendTypeSpecifics.(*backendConfigRAMStruct).maxTotalObjects {
 						err = fmt.Errorf("cannot change RAM.max_total_objects in backends[\"%s\"]", dirName)

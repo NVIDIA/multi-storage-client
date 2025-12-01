@@ -19,15 +19,16 @@ const (
 	MSFSVersionOne                 = uint64(1)
 )
 
-type backendConfigAzureStruct struct{} // not currently supported
-type backendConfigGCPStruct struct{}   // not currently supported
-type backendConfigOCIStruct struct{}   // not currently supported
-
-// `backendConfigRAMStruct` describes a backend's RAM-specific settings.
-type backendConfigRAMStruct struct {
-	maxTotalObjects      uint64 //             JSON/YAML "max_total_objects"            default:10000
-	maxTotalObjectSpace  uint64 //             JSON/YAML "max_total_object_space"       default:1073741824
-	maxDirectoryPageSize uint64 //             JSON/YAML "max_directory_page_size"      default:100
+// `backendConfigAIStoreStruct` describes a backend's AIStore-specific settings.
+// Note: AIStore SDK handles retries internally, so no retry config needed.
+type backendConfigAIStoreStruct struct {
+	// From <config-file>
+	endpoint                 string        //  JSON/YAML "endpoint"                     default:"${AIS_ENDPOINT}"
+	skipTLSCertificateVerify bool          //  JSON/YAML "skip_tls_certificate_verify"  default:true
+	authnToken               string        //  JSON/YAML "authn_token"                  default:"${AIS_AUTHN_TOKEN}"
+	authnTokenFile           string        //  JSON/YAML "authn_token_file"             default:"${AIS_AUTHN_TOKEN_FILE:=~/.config/ais/cli/auth.token}"
+	provider                 string        //  JSON/YAML "provider"                     default:"s3"
+	timeout                  time.Duration //  JSON/YAML "timeout"                      default:30000
 }
 
 // `backendConfigS3Struct` describes a backend's S3-specific settings.
@@ -52,6 +53,14 @@ type backendConfigS3Struct struct {
 	retryDelay []time.Duration //              Delay slice indexed by RetryDelay()'s attempt arg - 1
 }
 
+// `backendConfigRAMStruct` describes a backend's RAM-specific settings.
+type backendConfigRAMStruct struct {
+	// From <config-file>
+	maxTotalObjects      uint64 //             JSON/YAML "max_total_objects"            default:10000
+	maxTotalObjectSpace  uint64 //             JSON/YAML "max_total_object_space"       default:1073741824
+	maxDirectoryPageSize uint64 //             JSON/YAML "max_directory_page_size"      default:100
+}
+
 // `backendStruct` contains the generic backend's settings and runtime
 // particulars as well is references to backendType-specific details.
 type backendStruct struct {
@@ -70,8 +79,8 @@ type backendStruct struct {
 	bucketContainerName         string      // JSON/YAML "bucket_container_name"          required
 	prefix                      string      // JSON/YAML "prefix"                         default:""
 	traceLevel                  uint64      // JSON/YAML "trace_level"                    default:0
-	backendType                 string      // JSON/YAML "backend_type"                   required(one of "Azure", "GCP", "OCI", "S3")
-	backendTypeSpecifics        interface{} //                                            required(one of *backendConfig{Azure|GCP|OCI|RAM|S3}Struct)
+	backendType                 string      // JSON/YAML "backend_type"                   required(one of "AIStore", "RAM", "S3")
+	backendTypeSpecifics        interface{} //                                            required(one of *backendConfig{AIStore|S3|RAM}Struct)
 	// Runtime state
 	backendPath string                  //     URL incorporating each of the above path-related values
 	context     backendContextIf        //
@@ -82,6 +91,7 @@ type backendStruct struct {
 
 // `configStruct` describes the global configuration settings as well as the array of backendStruct's configured.
 type configStruct struct {
+	// From <config-file>
 	msfsVersion                 uint64                     // JSON/YAML "msfs_version"                    default:0
 	mountName                   string                     // JSON/YAML "mountname"                       default:"msfs"
 	mountPoint                  string                     // JSON/YAML "mountpoint"                      default:"${MSFS_MOUNTPOINT:-/mnt}""

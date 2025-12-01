@@ -79,12 +79,14 @@ func (backend *backendStruct) setupContext() (err error) {
 	backend.backendPath = "<unknown>"
 
 	switch backend.backendType {
+	case "AIStore":
+		err = backend.setupAIStoreContext()
 	case "RAM":
 		err = backend.setupRAMContext()
 	case "S3":
 		err = backend.setupS3Context()
 	default:
-		err = fmt.Errorf("for backend.dir_name \"%s\", unexpected backend_type \"%s\" (must be \"RAM\" or \"S3\")", backend.dirName, backend.backendType)
+		err = fmt.Errorf("for backend.dir_name \"%s\", unexpected backend_type \"%s\" (must be \"AIStore\", \"RAM\", or \"S3\")", backend.dirName, backend.backendType)
 	}
 
 	return

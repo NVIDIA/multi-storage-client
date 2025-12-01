@@ -19,7 +19,7 @@ linters:
     - gochecksumtype
     - gocritic
     - goheader
-    - gomoddirectives
+    # - gomoddirectives
     - goprintffuncname
     - gosec
     - govet

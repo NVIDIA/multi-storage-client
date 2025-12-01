@@ -19,6 +19,11 @@ backends: [
   {
     dir_name: ais,
     bucket_container_name: dev,
+    backend_type: AIStore,
+  },
+  {
+    dir_name: aisS3,
+    bucket_container_name: dev,
     backend_type: S3,
     S3: {
       use_config_env: true,

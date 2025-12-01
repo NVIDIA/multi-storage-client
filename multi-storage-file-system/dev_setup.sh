@@ -2,9 +2,9 @@
 
 function usage() {
     echo "Usage: $0 {ais|aisMinio|minio}"
-    echo "  ais       - AIStore only (objects stored in AIStore local bucket)"
-    echo "  aisMinio  - AIStore caching MinIO (AIStore as cache front end for MinIO)"
-    echo "  minio     - MinIO only (direct MinIO access, no AIStore)"
+    echo "  ais      - AIStore only (objects stored in AIStore native bucket)"
+    echo "  aisMinio - AIStore caching MinIO (AIStore as cache front end for MinIO)"
+    echo "  minio    - MinIO only (direct MinIO access, no AIStore)"
     exit 1
 }
 
@@ -45,6 +45,9 @@ case "$1" in
         waitForAIStore
         ais create s3://dev --skip-lookup
         ais bucket props set s3://dev features S3-Use-Path-Style
+        # ais create ais://dev
+        # ais bucket props set ais://dev backend_bck=s3://dev
+        # ais ls ais://dev --all
         ais ls s3://dev --all
         ;;
     minio)

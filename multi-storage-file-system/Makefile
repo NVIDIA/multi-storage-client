@@ -22,14 +22,15 @@ PKG_TYPE := $(shell \
 			fi \
 		fi)
 
-.PHONY: quick all build clean cover fmt lint lint-update msfs-linux-amd64 msfs-linux-arm64 publish test install uninstall deb-packages deb-amd64 deb-arm64 _build-deb clean-deb rpm-packages rpm-amd64 rpm-arm64 _build-rpm clean-rpm
+.PHONY: quick all build clean cover fmt lint lint-update msfs-linux-amd64 msfs-linux-arm64 test install uninstall deb-packages deb-amd64 deb-arm64 _build-deb clean-deb rpm-packages rpm-amd64 rpm-arm64 _build-rpm clean-rpm
 
 build:
-	go build $(BUILD_LDFLAGS) -o msfs .
+	go build $(BUILD_LDFLAGS) -o msfs . 
 
 clean: clean-deb clean-rpm
+	go clean -cache
 	go clean -i .
-	rm -f msfs msfs.test
+	rm -f msfs
 	rm -f msfs-linux-amd64
 	rm -f msfs-linux-arm64
 
@@ -51,13 +52,6 @@ msfs-linux-amd64:
 
 msfs-linux-arm64:
 	GOOS=linux GOARCH=arm64 go build $(BUILD_LDFLAGS) -o msfs-linux-arm64 .
-
-publish:
-	 (cd .. && docker build --file multi-storage-file-system/Dockerfile --target built --tag msfs_built:$(GIT_TAG) .)
-	 docker create --name msfs_built msfs_built:$(GIT_TAG) --entrypoint /msfs && \
-	 docker cp msfs_built:/msfs-linux-amd64 ./msfs-linux-amd64 && \
-	 docker cp msfs_built:/msfs-linux-arm64 ./msfs-linux-arm64 && \
-	 docker rm msfs_built
 
 test:
 	go test $(TEST_LDFLAGS)

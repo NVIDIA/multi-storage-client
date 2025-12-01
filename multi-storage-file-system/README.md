@@ -71,28 +71,44 @@ It is also possible to configure a periodic check for changes to the configurati
 file as well. In any event, each `backend` is described in an array element of
 the `backends` array as described by settings in the following table:
 
-| Setting                         | Units                | Default             | Description                                                                                                                                 |
-| :------------------------------ | :------------------- | ------------------: | :------------------------------------------------------------------------------------------------------------------------------------------ |
-| dir_name                        | string               |                     | Name of the pseudo-direcory underneath `mountpoint` where this backend's files will appear                                                  |
-| readonly                        | boolean              |                true | If true, the entire pseudo-directory for this backend will be read only                                                                     |
-| flush_on_close                  | boolean              |                true | If true, last close of a modified file will trigger a synchronous flush                                                                     |
-| uid                             | decimal              |      (current euid) | UserID of this backend's top-level directory and every element underneath it                                                                |
-| gid                             | decimal              |      (current egid) | GroupID of this backend's top-level directory and every element underneath it                                                               |
-| dir_perm                        | string (in octal)    | "555"(ro)/"777"(rw) | Permission (Mode) Bits (in 3-digit octal form) of this backend's top-level directory and all directories below it                           |
-| file_perm                       | string (in octal)    | "444"(ro)/"666"(rw) | Permission (Mode) Bits (in 3-digit octal form) of files underneath this backend's top level directory                                       |
-| directory_page_size             | decimal              |                   0 | Maximum number of directory elements fetched at a time; if == 0, object store endpoint default is used                                      |
-| multipart_cache_line_threshold  | decimal              |                 512 | Files that fit in this many cache lines will be uploaded in a single PUT; otherwise, Multi-Part Upload will be performed                    |
-| upload_part_cache_lines         | decimal              |                  32 | Consecutive cache lines that make up each Multi-Part Upload `part`                                                                          |
-| upload_part_concurrency         | decimal              |                  32 | Number of Multi-Part Uploads simultaneously employed for a single file                                                                      |
-| bucket_container_name           | string               |                     | Name of `bucket` (a.k.a. `container`) to present via POSIX                                                                                  |
-| prefix                          | string               |                  "" | Subdirectory inside `bucket_container_name` to narrow what to present via POSIX; if !="", should end with "/"                               |
-| trace_level                     | decimal              |                   0 | If == 0, no tracing; if >= 1, errors traced; if >= 2, successes traced; if > 2, success details traced                                      |
-| backend_type                    | string               |                     | One of the supported object store backends (i.e. `Azure`, `GCP`, `OCI`, `RAM`, or `S3` (though only `RAM` and `S3` are currently supported) |
-| <backend_type_specific>         | (sub-field section)  |         (see below) | A section containing `backend-type`-specific settings                                                                                       |
+| Setting                         | Units                | Default             | Description                                                                                                              |
+| :------------------------------ | :------------------- | ------------------: | :----------------------------------------------------------------------------------------------------------------------- |
+| dir_name                        | string               |                     | Name of the pseudo-direcory underneath `mountpoint` where this backend's files will appear                               |
+| readonly                        | boolean              |                true | If true, the entire pseudo-directory for this backend will be read only                                                  |
+| flush_on_close                  | boolean              |                true | If true, last close of a modified file will trigger a synchronous flush                                                  |
+| uid                             | decimal              |      (current euid) | UserID of this backend's top-level directory and every element underneath it                                             |
+| gid                             | decimal              |      (current egid) | GroupID of this backend's top-level directory and every element underneath it                                            |
+| dir_perm                        | string (in octal)    | "555"(ro)/"777"(rw) | Permission (Mode) Bits (in 3-digit octal form) of this backend's top-level directory and all directories below it        |
+| file_perm                       | string (in octal)    | "444"(ro)/"666"(rw) | Permission (Mode) Bits (in 3-digit octal form) of files underneath this backend's top level directory                    |
+| directory_page_size             | decimal              |                   0 | Maximum number of directory elements fetched at a time; if == 0, object store endpoint default is used                   |
+| multipart_cache_line_threshold  | decimal              |                 512 | Files that fit in this many cache lines will be uploaded in a single PUT; otherwise, Multi-Part Upload will be performed |
+| upload_part_cache_lines         | decimal              |                  32 | Consecutive cache lines that make up each Multi-Part Upload `part`                                                       |
+| upload_part_concurrency         | decimal              |                  32 | Number of Multi-Part Uploads simultaneously employed for a single file                                                   |
+| bucket_container_name           | string               |                     | Name of `bucket` (a.k.a. `container`) to present via POSIX                                                               |
+| prefix                          | string               |                  "" | Subdirectory inside `bucket_container_name` to narrow what to present via POSIX; if !="", should end with "/"            |
+| trace_level                     | decimal              |                   0 | If == 0, no tracing; if >= 1, errors traced; if >= 2, successes traced; if > 2, success details traced                   |
+| backend_type                    | string               |                     | One of the supported object store backends (i.e. `AIStore`, `RAM`, or `S3`                                               |
+| <backend_type_specific>         | (sub-field section)  |         (see below) | A section containing `backend-type`-specific settings                                                                    |
 
 Note that precisely one section (specific content appropriate for the
 specified `backup_type`) must be present. The following sub-sections
 describe the `backup_type`-specific settings.
+
+### AIStore Backend
+
+If `backend_type` is specificd as "AIStore", a sub-section of the `backend`
+configuration (whose name is `AIStore`) may be provided. The AIStore-specific
+settings must be provided (or the defaults accepted) as described in
+the following table:
+
+| Setting                     | Units                | Default                                                 | Description                                                            |
+| :-------------------------- | :------------------- | ------------------------------------------------------: | :--------------------------------------------------------------------- |
+| endpoint                    | string               |                                       "${AIS_ENDPOINT}" | AIStore Endpoint (including the "http:// or "https://" schemd)         |
+| skip_tls_certificate_verify | boolean              |                                                    true | If true & using HTTPS (TLS), TLS Certificate Verification skipped      |
+| authnToken                  | string               |                                    "${AIS_AUTHN_TOKEN}" | If != "", specifies AUTHN Token                                        |
+| authnTokenFile              | string               | "${AIS_AUTHN_TOKEN_FILE:=~/.config/ais/cli/auth.token}" | If != "", specifies location of AUTHN Token file                       |
+| provider                    | string               |                                                    "s3" | IF != "ais", specifies the backend of which bucket contents are cached |
+| timeout                     | decimal milliseconds |                                                   30000 | Limit on allowed duration of requests (including retries)              |
 
 ### RAM Backend Configuration
 
@@ -326,20 +342,11 @@ sudo mount -a  # Mount all filesystems in fstab
 
 The mountpoint is defined in the configuration file's `mountpoint` setting (default: `/mnt`). The filesystem name displayed in `df` and `mount` output is controlled by the `mountname` setting (default: `msfs`).
 
-## Deployment Aids
+### Publication
 
-A mechanism for distributing the binary executable version of msfs is via a Docker Container
-Image is described here. These steps have been automated by Makefile rule `publish` with the
-resultant extracted binaries named for their target OS and CPU.
+Inside the `dev` container, one may type the following to produce `.deb` and `.rpm`
+packages for both AMD64 and ARM64 architectures:
 
-### Creation of a Scratch-based Docker Container Image having only /msfs
-
-`(cd .. && docker build --file multi-storage-file-system/Dockerfile --target built --tag msfs_built:$(git describe --tags --always --dirty) .)`
-
-### Extraction of Linuxon-AMD64 msfs from the Scratch-based Docker Container Image
-
-`docker create --name msfs_built msfs_built:<tag> --entrypoint /msfs && docker cp msfs_built:/msfs-linux-amd64 ./msfs && docker rm msfs_built`
-
-### Extraction of Linuxon-ARM64 msfs from the Scratch-based Docker Container Image
-
-`docker create --name msfs_built msfs_built:<tag> --entrypoint /msfs && docker cp msfs_built:/msfs-linux-arm64 ./msfs && docker rm msfs_built`
+```
+make deb-packages rpm-packages
+```

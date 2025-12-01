@@ -1,0 +1,15 @@
+# test_aistore_local.yaml - Test with local Docker AIStore
+msfs_version: 1
+mountpoint: /tmp/ais-test
+backends:
+  - dir_name: ais-test
+    readonly: false  # Enable write operations for testing delete
+    bucket_container_name: testbucket
+    backend_type: AIStore
+    trace_level: 2
+    AIStore:
+      endpoint: "ais:8080"
+      use_https: false
+      skip_tls_verify: false
+      provider: s3
+      timeout: 30000

@@ -167,7 +167,7 @@ func (ramContext *ramContextStruct) listDirectory(listDirectoryInput *listDirect
 			}
 		default:
 			if err == nil {
-				globals.logger.Printf("[INFO] %s.listDirectory(%#v) returning deleteFileOutput: %#v", ramContext.backend.dirName, listDirectoryInput, listDirectoryOutput)
+				globals.logger.Printf("[INFO] %s.listDirectory(%#v) returning listDirectoryOutput: %#v", ramContext.backend.dirName, listDirectoryInput, listDirectoryOutput)
 			} else {
 				globals.logger.Printf("[WARN] %s.listDirectory(%#v) returning err: %v", ramContext.backend.dirName, listDirectoryInput, err)
 			}
@@ -298,7 +298,7 @@ func (ramContext *ramContextStruct) readFile(readFileInput *readFileInputStruct)
 			}
 		default:
 			if err == nil {
-				globals.logger.Printf("[INFO] %s.readFile(%#v) returning deleteFileOutput: {\"eTag\":\"%s\",len(\"buf\":%v)}", ramContext.backend.dirName, readFileInput, readFileOutput.eTag, len(readFileOutput.buf))
+				globals.logger.Printf("[INFO] %s.readFile(%#v) returning readFileOutput: {\"eTag\":\"%s\",len(\"buf\":%v)}", ramContext.backend.dirName, readFileInput, readFileOutput.eTag, len(readFileOutput.buf))
 			} else {
 				globals.logger.Printf("[WARN] %s.readFile(%#v) returning err: %v", ramContext.backend.dirName, readFileInput, err)
 			}
@@ -375,7 +375,7 @@ func (ramContext *ramContextStruct) statDirectory(statDirectoryInput *statDirect
 			}
 		default:
 			if err == nil {
-				globals.logger.Printf("[INFO] %s.statDirectory(%#v) returning deleteFileOutput: %#v", ramContext.backend.dirName, statDirectoryInput, statDirectoryOutput)
+				globals.logger.Printf("[INFO] %s.statDirectory(%#v) returning statDirectoryOutput: %#v", ramContext.backend.dirName, statDirectoryInput, statDirectoryOutput)
 			} else {
 				globals.logger.Printf("[WARN] %s.statDirectory(%#v) returning err: %v", ramContext.backend.dirName, statDirectoryInput, err)
 			}
@@ -422,7 +422,7 @@ func (ramContext *ramContextStruct) statFile(statFileInput *statFileInputStruct)
 			}
 		default:
 			if err == nil {
-				globals.logger.Printf("[INFO] %s.statFile(%#v) returning deleteFileOutput: %#v", ramContext.backend.dirName, statFileInput, statFileOutput)
+				globals.logger.Printf("[INFO] %s.statFile(%#v) returning statFileOutput: %#v", ramContext.backend.dirName, statFileInput, statFileOutput)
 			} else {
 				globals.logger.Printf("[WARN] %s.statFile(%#v) returning err: %v", ramContext.backend.dirName, statFileInput, err)
 			}

@@ -35,6 +35,17 @@ Tests OpenTelemetry metrics instrumentation:
 - Verifies specific attributes exported: msc.user, msc.hostname, msc.otel_endpoint, msc.secret_hash
 - Note: Metrics only (tracing not yet implemented)
 
+### test_ais.sh
+
+Tests the native AIStore backend implementation:
+
+- Uses AIStore's native protocol (not S3-compatible API)
+- Requires Docker environment with AIStore cluster running
+- Automatically creates native `ais://` bucket and uploads test files
+- Tests POSIX operations: list, read, stat, delete
+- Verifies all backend operations work correctly
+- Validates backend logs for operation traces
+
 ## Running the Tests
 
 ### Docker 
@@ -65,6 +76,38 @@ docker logs mscp_otel_collector 2>&1 | grep -A 15 "multistorageclient.request.su
 # Clean up
 docker-compose down
 ```
+
+### AIStore Native Backend Test (multi-storage-file-system)
+
+```bash
+# Start Docker environment with AIStore
+cd multi-storage-file-system
+docker-compose up -d
+
+# Wait for AIStore to initialize (~45 seconds)
+sleep 45
+
+# Run dev_setup.sh to create native AIStore bucket and upload test files
+# Note: This runs from HOST (not inside container) as it uses docker exec commands
+./dev_setup.sh ais
+
+# Run automated AIStore native backend test (runs inside msfs_dev container)
+docker exec msfs_dev /multi-storage-client/multi-storage-client/tests/test_mscp/test_ais.sh
+
+# Clean up
+docker-compose down
+```
+
+The test will:
+- Mount filesystem using native AIStore backend
+- Test listDirectory() - list all files
+- Test readFile() - read file contents  
+- Test statFile() - get file metadata
+- Test deleteFile() - verify expected behavior (FUSE layer TODO)
+- Verify filesystem remains functional
+
+**Note:** The `dev_setup.sh ais` mode creates a native `ais://testbucket` bucket (not S3-backed).
+This is different from `dev_setup.sh aisMinio` which creates an S3-backed bucket.
 
 ### Local Linux System
 

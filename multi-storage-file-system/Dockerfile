@@ -1,16 +1,7 @@
 # This Dockerfile has two uses:
 #
 #   1) As the Dockerfile referenced in docker-compose.yaml in support of a dev/test environment
-#   2) As the Dockerfile used to build a scratch-based container having the built program
-#
-# To create a scratch-based container named `msfs_built` having the resultant binary at `/msfs`:
-#
-#   (cd .. && docker build --file multi-storage-file-system/Dockerfile --target built --tag msfs_built:$(git describe --tags --always --dirty) .)
-#
-# To then extract the AMD64 and/or ARM64 binariwes from that container:
-#
-#   docker create --name msfs_built msfs_built:<tag> --entrypoint /msfs && docker cp msfs_built:/msfs-linux-amd64 ./msfs-linux-amd64 && docker rm msfs_built
-#   docker create --name msfs_built msfs_built:<tag> --entrypoint /msfs && docker cp msfs_built:/msfs-linux-arm64 ./msfs-linux-arm64 && docker rm msfs_built
+#   2) As the Dockerfile used to build .deb and .rpm packages for both AMD64 and ARM64 architectures
 
 FROM ubuntu:24.04 AS base
 
@@ -32,6 +23,7 @@ RUN    apt-get update \
                         dnsutils \
                         fuse3 \
                         git \
+                        git-lfs \
                         iputils-ping \
                         jq \
                         libfuse3-dev \
@@ -49,7 +41,7 @@ RUN    apt-get update \
 RUN echo "user_allow_other" >> /etc/fuse.conf
 
 ARG TARGETARCH
-ARG GolangVersion=1.25.1
+ARG GolangVersion=1.25.4
 WORKDIR /tmp
 RUN GolangBasename="go${GolangVersion}.linux-${TARGETARCH}.tar.gz"; \
     GolangURL="https://golang.org/dl/${GolangBasename}"; \
@@ -73,12 +65,12 @@ WORKDIR /root
 
 RUN  echo '#!/bin/bash'                  >  .bashrc_additions
 RUN  echo 'export PS1="\w$ "'            >> .bashrc_additions
-RUN  echo 'export GOPATH=${HOME}/go'     >> .bashrc_additions
+RUN  echo 'export GOPATH=/root/go'       >> .bashrc_additions
 RUN  echo 'export GOBIN=${GOPATH}/bin'   >> .bashrc_additions
 RUN  echo 'export PATH=${GOBIN}:${PATH}' >> .bashrc_additions
 
 RUN  echo ""                             >> .bashrc
-RUN  echo ". ~/.bashrc_additions"        >> .bashrc
+RUN  echo ". /root/.bashrc_additions"    >> .bashrc
 
 COPY multi-storage-file-system/minio.s3cfg            .s3cfg
 RUN  mkdir                                            .aws
@@ -93,7 +85,7 @@ RUN git config --global --add safe.directory /multi-storage-client
 
 WORKDIR /multi-storage-client/multi-storage-file-system
 
-RUN (. ~/.bashrc_additions && make lint-update)
+RUN (. /root/.bashrc_additions && make lint-update)
 
 WORKDIR /
 
@@ -113,15 +105,6 @@ RUN mkdir /data
 
 FROM buildable AS ais
 
-WORKDIR /root/.aws
-
-RUN echo "[default]"                          >  config
-RUN echo "region = us-east-1"                 >> config
-
-RUN echo "[default]"                          >  credentials
-RUN echo "aws_access_key_id = minioadmin"     >> credentials
-RUN echo "aws_secret_access_key = minioadmin" >> credentials
-
 WORKDIR /
 
 RUN git clone --depth 1 --branch v1.4.0 https://github.com/NVIDIA/aistore.git
@@ -134,7 +117,7 @@ WORKDIR /aistore
 #   compilation on ARM64 uses the correct SYSCALL constant. Once AIstore has applied
 #   the final fix (and updated cmd/cli's go.mod to reference it), these steps should
 #   be removed (and, of course, the branch tag being checked out updated).
-RUN . ~/.bashrc_additions && \
+RUN . /root/.bashrc_additions && \
     cd ios && \
     mv fsutils_linux.go       fsutils_linux_amd64.go && \
     cp fsutils_linux_amd64.go fsutils_linux_arm64.go && \
@@ -151,28 +134,15 @@ RUN echo 'HOSTNAME_LIST="ais" AIS_ENDPOINT="http://ais:8080" scripts/clean_deplo
 RUN echo 'sleep infinity'                                                                                                >> /root/deploy_1_1.sh
 RUN chmod +x                                                                                                                /root/deploy_1_1.sh
 
-FROM buildable AS dev
-
-COPY --from=ais /aistore/cmd/cli/autocomplete/bash    /root/cmd_cli_autocomplete_bash
-COPY --from=ais /root/go/bin/ais                      /root/go/bin/ais
-RUN echo "source ~/cmd_cli_autocomplete_bash"      >> /root/.bashrc_additions
-
-WORKDIR /multi-storage-client/multi-storage-file-system
-
-FROM buildable AS build
-
-WORKDIR /multi-storage-client
-
-COPY . .
+# AIStore compile failure on Linux/ARM64 workaround:
+#   Here we will temporarily derive `dev` from `ais` instead of from
+#   `buildable` such that the `replace` line temporarily added to msfs's
+#   go.mod file can pick up the patched copy of AIStore's source
+FROM ais AS dev
 
 WORKDIR /multi-storage-client/multi-storage-file-system
 
-RUN (. ~/.bashrc_additions && make build msfs-linux-amd64 msfs-linux-arm64)
+COPY --from=ais /aistore/cmd/cli/autocomplete/bash /root/cmd_cli_autocomplete_bash
+COPY --from=ais /root/go/bin/ais                   /root/go/bin/ais
 
-FROM scratch AS built
-
-WORKDIR /
-
-COPY --from=build /multi-storage-client/multi-storage-file-system/msfs             /msfs
-COPY --from=build /multi-storage-client/multi-storage-file-system/msfs-linux-amd64 /msfs-linux-amd64
-COPY --from=build /multi-storage-client/multi-storage-file-system/msfs-linux-arm64 /msfs-linux-arm64
+RUN echo "source /root/cmd_cli_autocomplete_bash"  >> /root/.bashrc_additions
