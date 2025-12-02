@@ -31,7 +31,7 @@ from wcmatch import glob as wcmatch_glob
 from .types import ExecutionMode, ObjectMetadata, PatternList, PatternType
 
 if TYPE_CHECKING:
-    from .client import StorageClient
+    from .client.types import AbstractStorageClient
 
 logger = logging.getLogger(__name__)
 
@@ -325,8 +325,8 @@ def get_available_cpu_count() -> int:
 def calculate_worker_processes_and_threads(
     num_worker_processes: Optional[int] = None,
     execution_mode: ExecutionMode = ExecutionMode.LOCAL,
-    source_client: Optional["StorageClient"] = None,
-    target_client: Optional["StorageClient"] = None,
+    source_client: Optional["AbstractStorageClient"] = None,
+    target_client: Optional["AbstractStorageClient"] = None,
 ):
     """
     Calculate the number of worker processes and threads based on CPU count and environment variables.

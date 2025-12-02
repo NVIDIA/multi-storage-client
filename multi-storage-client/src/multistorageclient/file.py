@@ -35,7 +35,7 @@ from .types import Range, SourceVersionCheckMode
 from .utils import validate_attributes
 
 if TYPE_CHECKING:
-    from .client import StorageClient
+    from .client.types import AbstractStorageClient
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ class RemoteFileReader(IO[bytes]):
         self,
         remote_path: str,
         file_size: int,
-        storage_client: StorageClient,
+        storage_client: AbstractStorageClient,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
     ):
         self._remote_path = remote_path
@@ -110,7 +110,7 @@ class RemoteFileReader(IO[bytes]):
         # If the storage client is using the Rust client, convert the Rust bytes-like buffer to Python bytes
         # to support Python bytes operations like startswith()
         if self._storage_client._is_rust_client_enabled() and hasattr(data, "to_bytes"):
-            data = data.to_bytes()
+            data = data.to_bytes()  # type: ignore[attr-defined]
         # Update the position by the number of bytes read
         bytes_read = len(data)
         self._pos += bytes_read
@@ -197,7 +197,7 @@ class ObjectFile(IOBase, IO):
     _file: IO
     _mode: str
     _remote_path: str
-    _storage_client: StorageClient
+    _storage_client: AbstractStorageClient
     _cache_manager: Optional[CacheManager] = None
 
     _local_path: Optional[str] = None
@@ -205,7 +205,7 @@ class ObjectFile(IOBase, IO):
 
     def __init__(
         self,
-        storage_client: StorageClient,
+        storage_client: AbstractStorageClient,
         remote_path: str,
         mode: str = "rb",
         encoding: Optional[str] = None,
@@ -594,13 +594,13 @@ class PosixFile(IOBase, IO):
     see the old content or the new content, but never partial content.
     """
 
-    _storage_client: StorageClient
+    _storage_client: AbstractStorageClient
     _file: IO
     _attributes: Optional[dict[str, str]] = None
 
     def __init__(
         self,
-        storage_client: StorageClient,
+        storage_client: AbstractStorageClient,
         path: str,
         mode: str = "rb",
         buffering: int = -1,

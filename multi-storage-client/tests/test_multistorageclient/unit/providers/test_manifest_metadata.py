@@ -303,7 +303,7 @@ def test_autocommit(temp_data_store_type: type[tempdatastore.TemporaryDataStore]
         for i in range(file_count):
             fname = f"folder/filename-{i}.txt"
             if not storage_client.is_file(fname):
-                storage_client.write(fname, f"contents for {i}")
+                storage_client.write(fname, f"contents for {i}".encode())
 
         # Wait 3 seconds for the autocommit to commit the files.
         time.sleep(5)
@@ -648,6 +648,7 @@ def test_manifest_metadata_realpath_for_write(temp_data_store_type: type[tempdat
         storage_client = StorageClient(config)
 
         # Create manifest provider with allow_overwrites=False
+        assert storage_client._storage_provider is not None
         provider = ManifestMetadataProvider(
             storage_provider=storage_client._storage_provider,
             manifest_path=DEFAULT_MANIFEST_BASE_DIR,
@@ -732,6 +733,7 @@ def test_manifest_physical_path_tracking(temp_data_store_type: type[tempdatastor
         storage_client = StorageClient(config)
 
         # Create manifest provider
+        assert storage_client._storage_provider is not None
         provider = ManifestMetadataProvider(
             storage_provider=storage_client._storage_provider,
             manifest_path=DEFAULT_MANIFEST_BASE_DIR,

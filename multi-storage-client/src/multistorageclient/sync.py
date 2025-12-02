@@ -52,7 +52,7 @@ DEFAULT_LOCK_TIMEOUT = 600  # 10 minutes
 HAVE_RAY = is_ray_available()
 
 if TYPE_CHECKING:
-    from .client import StorageClient
+    from .client.types import AbstractStorageClient
 
 _Queue = Any  # queue.Queue | multiprocessing.Queue | SharedQueue
 
@@ -86,9 +86,9 @@ class ProducerThread(threading.Thread):
 
     def __init__(
         self,
-        source_client: "StorageClient",
+        source_client: "AbstractStorageClient",
         source_path: str,
-        target_client: "StorageClient",
+        target_client: "AbstractStorageClient",
         target_path: str,
         progress: ProgressBar,
         file_queue: _Queue,
@@ -249,7 +249,9 @@ class ResultConsumerThread(threading.Thread):
     operations performed.
     """
 
-    def __init__(self, target_client: "StorageClient", target_path: str, progress: ProgressBar, result_queue: _Queue):
+    def __init__(
+        self, target_client: "AbstractStorageClient", target_path: str, progress: ProgressBar, result_queue: _Queue
+    ):
         super().__init__(daemon=True)
         self.target_client = target_client
         self.target_path = target_path
@@ -287,9 +289,9 @@ class SyncManager:
 
     def __init__(
         self,
-        source_client: "StorageClient",
+        source_client: "AbstractStorageClient",
         source_path: str,
-        target_client: "StorageClient",
+        target_client: "AbstractStorageClient",
         target_path: str,
     ):
         self.source_client = source_client
@@ -297,9 +299,14 @@ class SyncManager:
         self.source_path = source_path.lstrip("/")
         self.target_path = target_path.lstrip("/")
 
-        if source_client == target_client and (
-            source_path.startswith(target_path) or target_path.startswith(source_path)
-        ):
+        same_client = source_client == target_client
+        # Profile check is necessary because source might be StorageClient facade while target is SingleStorageClient.
+        # NullStorageClient (used for delete through sync) doesn't have profile attribute so we need to explicitly check here.
+        if not same_client and hasattr(source_client, "profile") and hasattr(target_client, "profile"):
+            same_client = source_client.profile == target_client.profile
+
+        # Check for overlapping paths on same storage backend
+        if same_client and (source_path.startswith(target_path) or target_path.startswith(source_path)):
             raise ValueError("Source and target paths cannot overlap on same StorageClient.")
 
     def sync_objects(
@@ -584,9 +591,9 @@ class SyncManager:
 
 
 def _sync_worker_process(
-    source_client: "StorageClient",
+    source_client: "AbstractStorageClient",
     source_path: str,
-    target_client: "StorageClient",
+    target_client: "AbstractStorageClient",
     target_path: str,
     num_worker_threads: int,
     file_queue: _Queue,
@@ -710,8 +717,8 @@ def _sync_worker_process(
 
 
 def _check_posix_paths(
-    source_client: "StorageClient",
-    target_client: "StorageClient",
+    source_client: "AbstractStorageClient",
+    target_client: "AbstractStorageClient",
     source_key: str,
     target_key: str,
 ) -> tuple[Optional[str], Optional[str]]:
@@ -731,7 +738,7 @@ def _copy_posix_to_posix(
 
 
 def _copy_posix_to_remote(
-    target_client: "StorageClient",
+    target_client: "AbstractStorageClient",
     source_physical_path: str,
     target_file_path: str,
     file_metadata: ObjectMetadata,
@@ -745,7 +752,7 @@ def _copy_posix_to_remote(
 
 
 def _copy_remote_to_posix(
-    source_client: "StorageClient",
+    source_client: "AbstractStorageClient",
     source_key: str,
     target_physical_path: str,
 ) -> None:
@@ -754,8 +761,8 @@ def _copy_remote_to_posix(
 
 
 def _copy_remote_to_remote(
-    source_client: "StorageClient",
-    target_client: "StorageClient",
+    source_client: "AbstractStorageClient",
+    target_client: "AbstractStorageClient",
     source_key: str,
     target_file_path: str,
     file_metadata: ObjectMetadata,
@@ -779,7 +786,7 @@ def _copy_remote_to_remote(
 
 
 def _update_posix_metadata(
-    target_client: "StorageClient",
+    target_client: "AbstractStorageClient",
     target_physical_path: str,
     target_file_path: str,
     file_metadata: ObjectMetadata,

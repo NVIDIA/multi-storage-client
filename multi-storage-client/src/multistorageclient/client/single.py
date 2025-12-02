@@ -24,14 +24,14 @@ from io import BytesIO
 from pathlib import PurePosixPath
 from typing import IO, Any, List, Optional, Union, cast
 
-from .config import StorageClientConfig
-from .constants import MEMORY_LOAD_LIMIT
-from .file import ObjectFile, PosixFile
-from .providers.posix_file import PosixFileStorageProvider
-from .replica_manager import ReplicaManager
-from .retry import retry
-from .sync import SyncManager
-from .types import (
+from ..config import StorageClientConfig
+from ..constants import MEMORY_LOAD_LIMIT
+from ..file import ObjectFile, PosixFile
+from ..providers.posix_file import PosixFileStorageProvider
+from ..replica_manager import ReplicaManager
+from ..retry import retry
+from ..sync import SyncManager
+from ..types import (
     AWARE_DATETIME_MIN,
     MSC_PROTOCOL,
     ExecutionMode,
@@ -42,14 +42,17 @@ from .types import (
     SourceVersionCheckMode,
     StorageProvider,
 )
-from .utils import NullStorageClient, PatternMatcher, join_paths
+from ..utils import NullStorageClient, PatternMatcher, join_paths
+from .types import AbstractStorageClient
 
 logger = logging.getLogger(__name__)
 
 
-class StorageClient:
+class SingleStorageClient(AbstractStorageClient):
     """
-    A client for interacting with different storage providers.
+    Storage client for single-backend configurations.
+
+    Supports full read and write operations against a single storage provider.
     """
 
     _config: StorageClientConfig
@@ -60,17 +63,23 @@ class StorageClient:
 
     def __init__(self, config: StorageClientConfig):
         """
-        Initializes the :py:class:`StorageClient` with the given configuration.
+        Initialize the :py:class:`SingleStorageClient` with the given configuration.
 
-        :param config: The configuration object for the storage client.
+        :param config: Storage client configuration with storage_provider set
+        :raises ValueError: If config has storage_provider_profiles (multi-backend)
         """
         self._initialize_providers(config)
         self._initialize_replicas(config.replicas)
 
     def _initialize_providers(self, config: StorageClientConfig) -> None:
-        # TODO: Support composite clients with storage_provider_profiles
-        if config.storage_provider is None or config.storage_provider_profiles:
-            raise NotImplementedError("StorageClient with storage_provider_profiles is not yet supported.")
+        if config.storage_provider_profiles:
+            raise ValueError(
+                "SingleStorageClient requires storage_provider, not storage_provider_profiles. "
+                "Use CompositeStorageClient for multi-backend configurations."
+            )
+
+        if config.storage_provider is None:
+            raise ValueError("SingleStorageClient requires storage_provider to be set.")
 
         self._config = config
         self._credentials_provider = self._config.credentials_provider
@@ -102,8 +111,11 @@ class StorageClient:
                 logger.debug("No metadata provider configured, auto-commit will not be enabled")
 
     def _initialize_replicas(self, replicas: list[Replica]) -> None:
-        """Initialize replica StorageClient instances."""
-        # Sort replicas by read_priority, the first one is the primary replica
+        """Initialize replica StorageClient instances (facade)."""
+        # Import here to avoid circular dependency
+        from .client import StorageClient as StorageClientFacade
+
+        # Sort replicas by read_priority, the first one is the primary replica.
         sorted_replicas = sorted(replicas, key=lambda r: r.read_priority)
 
         replica_clients = []
@@ -114,7 +126,7 @@ class StorageClient:
                 config_dict=self._config._config_dict, profile=replica.replica_profile
             )
 
-            storage_client = StorageClient(config=replica_config)
+            storage_client = StorageClientFacade(config=replica_config)
             replica_clients.append(storage_client)
 
         self._replicas = replica_clients
@@ -150,11 +162,14 @@ class StorageClient:
         return enabled
 
     def _is_posix_file_storage_provider(self) -> bool:
+        """
+        :return: ``True`` if the storage client is using a POSIX file storage provider, ``False`` otherwise.
+        """
         return isinstance(self._storage_provider, PosixFileStorageProvider)
 
     def _is_rust_client_enabled(self) -> bool:
         """
-        Return True if the storage provider is using the Rust client.
+        :return: ``True`` if the storage provider is using the Rust client, ``False`` otherwise.
         """
         return hasattr(self._storage_provider, "_rust_client")
 
@@ -207,12 +222,6 @@ class StorageClient:
         if self._metadata_provider:
             self._metadata_provider_lock = threading.Lock()
 
-    def is_default_profile(self) -> bool:
-        """
-        Return True if the storage client is using the default profile.
-        """
-        return self._config.profile == "default"
-
     @property
     def profile(self) -> str:
         """
@@ -220,10 +229,16 @@ class StorageClient:
         """
         return self._config.profile
 
-    @property
-    def replicas(self) -> list["StorageClient"]:
+    def is_default_profile(self) -> bool:
         """
-        :return: StorageClient instances for all replicas, sorted by read priority.
+        :return: ``True`` if the storage client is using the default profile, ``False`` otherwise.
+        """
+        return self._config.profile == "default"
+
+    @property
+    def replicas(self) -> List[AbstractStorageClient]:
+        """
+        :return: List of replica storage clients, sorted by read priority.
         """
         return self._replicas
 
@@ -235,13 +250,13 @@ class StorageClient:
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
     ) -> bytes:
         """
-        Reads an object from the specified logical path.
+        Read bytes from a file at the specified logical path.
 
         :param path: The logical path of the object to read.
-        :param byte_range: Optional byte range to read.
+        :param byte_range: Optional byte range to read (offset and length).
         :param check_source_version: Whether to check the source version of cached objects.
-        :param size: Optional file size for range reads.
-        :return: The content of the object.
+        :return: The content of the object as bytes.
+        :raises FileNotFoundError: If the file at the specified path does not exist.
         """
         if self._metadata_provider:
             resolved = self._metadata_provider.realpath(path)
@@ -285,21 +300,13 @@ class StorageClient:
                 # Full file read with cache
                 source_version = self._get_source_version(path)
                 data = self._cache_manager.read(path, source_version)
-
-        # Read from cache if the file exists
-        if self._is_cache_enabled():
-            if self._cache_manager is None:
-                raise RuntimeError("Cache manager is not initialized")
-            source_version = self._get_source_version(path)
-            data = self._cache_manager.read(path, source_version)
-
-            if data is None:
-                if self._replica_manager:
-                    data = self._read_from_replica_or_primary(path)
-                else:
-                    data = self._storage_provider.get_object(path)
-                self._cache_manager.set(path, data, source_version)
-            return data
+                if data is None:
+                    if self._replica_manager:
+                        data = self._read_from_replica_or_primary(path)
+                    else:
+                        data = self._storage_provider.get_object(path)
+                    self._cache_manager.set(path, data, source_version)
+                return data
         elif self._replica_manager:
             # No cache, but replicas available
             return self._read_from_replica_or_primary(path)
@@ -309,12 +316,12 @@ class StorageClient:
 
     def info(self, path: str, strict: bool = True) -> ObjectMetadata:
         """
-        Retrieves metadata or information about an object stored at the specified path.
+        Get metadata for a file at the specified path.
 
-        :param path: The logical path to the object for which metadata or information is being retrieved.
-        :param strict: If True, performs additional validation to determine whether the path refers to a directory.
-
-        :return: A dictionary containing metadata about the object.
+        :param path: The logical path of the object.
+        :param strict: When ``True``, only return committed metadata. When ``False``, include pending changes.
+        :return: ObjectMetadata containing file information (size, last modified, etc.).
+        :raises FileNotFoundError: If the file at the specified path does not exist.
         """
         if not path or path == ".":  # for the empty path provided by the user
             if self._is_posix_file_storage_provider():
@@ -348,10 +355,11 @@ class StorageClient:
     @retry
     def download_file(self, remote_path: str, local_path: Union[str, IO]) -> None:
         """
-        Downloads a file to the local file system.
+        Download a remote file to a local path or file-like object.
 
-        :param remote_path: The logical path of the file in the storage provider.
-        :param local_path: The local path where the file should be downloaded.
+        :param remote_path: The logical path of the remote file to download.
+        :param local_path: The local file path or file-like object to write to.
+        :raises FileNotFoundError: If the remote file does not exist.
         """
         if self._metadata_provider:
             resolved = self._metadata_provider.realpath(remote_path)
@@ -366,13 +374,16 @@ class StorageClient:
             self._storage_provider.download_file(remote_path, local_path)
 
     @retry
-    def upload_file(self, remote_path: str, local_path: str, attributes: Optional[dict[str, str]] = None) -> None:
+    def upload_file(
+        self, remote_path: str, local_path: Union[str, IO], attributes: Optional[dict[str, str]] = None
+    ) -> None:
         """
-        Uploads a file from the local file system.
+        Uploads a file from the local file system to the storage provider.
 
-        :param remote_path: The logical path where the file should be stored.
-        :param local_path: The local path of the file to upload.
-        :param attributes: The attributes to add to the file.
+        :param remote_path: The path where the object will be stored.
+        :param local_path: The source file to upload. This can either be a string representing the local
+            file path, or a file-like object (e.g., an open file handle).
+        :param attributes: The attributes to add to the file if a new file is created.
         """
         virtual_path = remote_path
         if self._metadata_provider:
@@ -408,11 +419,11 @@ class StorageClient:
     @retry
     def write(self, path: str, body: bytes, attributes: Optional[dict[str, str]] = None) -> None:
         """
-        Writes an object at the specified path.
+        Write bytes to a file at the specified path.
 
-        :param path: The logical path where the object should be written.
-        :param body: The content to write to the object.
-        :param attributes: The attributes to add to the file.
+        :param path: The logical path where the object will be written.
+        :param body: The content to write as bytes.
+        :param attributes: Optional attributes to add to the file.
         """
         virtual_path = path
         if self._metadata_provider:
@@ -443,10 +454,11 @@ class StorageClient:
 
     def copy(self, src_path: str, dest_path: str) -> None:
         """
-        Copies an object from source to destination path.
+        Copy a file from source path to destination path.
 
-        :param src_path: The logical path of the source object to copy.
-        :param dest_path: The logical path of the destination.
+        :param src_path: The logical path of the source object.
+        :param dest_path: The logical path where the object will be copied to.
+        :raises FileNotFoundError: If the source file does not exist.
         """
         virtual_dest_path = dest_path
         if self._metadata_provider:
@@ -492,7 +504,7 @@ class StorageClient:
         is_file = obj_metadata and obj_metadata.type == "file"
         if recursive and is_dir:
             self.sync_from(
-                cast(StorageClient, NullStorageClient()),
+                cast(AbstractStorageClient, NullStorageClient()),
                 path,
                 path,
                 delete_unmatched_files=True,
@@ -543,14 +555,12 @@ class StorageClient:
         attribute_filter_expression: Optional[str] = None,
     ) -> list[str]:
         """
-        Matches and retrieves a list of objects in the storage provider that
-        match the specified pattern.
+        Matches and retrieves a list of object keys in the storage provider that match the specified pattern.
 
-        :param pattern: The pattern to match object paths against, supporting wildcards (e.g., ``*.txt``).
+        :param pattern: The pattern to match object keys against, supporting wildcards (e.g., ``*.txt``).
         :param include_url_prefix: Whether to include the URL prefix ``msc://profile`` in the result.
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
-
-        :return: A list of object paths that match the pattern.
+        :return: A list of object paths that match the specified pattern.
         """
         if self._metadata_provider:
             results = self._metadata_provider.glob(pattern, attribute_filter_expression)
@@ -575,7 +585,7 @@ class StorageClient:
         follow_symlinks: bool = True,
     ) -> Iterator[ObjectMetadata]:
         """
-        Lists objects in the storage provider under the specified path.
+        List objects in the storage provider under the specified path.
 
         **IMPORTANT**: Use the ``path`` parameter for new code. The ``prefix`` parameter is
         deprecated and will be removed in a future version.
@@ -586,14 +596,12 @@ class StorageClient:
                     Cannot be used together with ``prefix``.
         :param start_after: The key to start after (i.e. exclusive). An object with this key doesn't have to exist.
         :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
-        :param include_directories: Whether to include directories in the result. When True, directories are returned alongside objects.
+        :param include_directories: Whether to include directories in the result. when ``True``, directories are returned alongside objects.
         :param include_url_prefix: Whether to include the URL prefix ``msc://profile`` in the result.
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
-        :param show_attributes: Whether to return attributes in the result.  WARNING: Depend on implementation, there might be performance impact if this set to True.
-        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers. When False, symlinks are skipped during listing.
-
-        :return: An iterator over objects.
-
+        :param show_attributes: Whether to return attributes in the result. WARNING: Depend on implementation, there might be performance impact if this set to ``True``.
+        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers. When ``False``, symlinks are skipped during listing.
+        :return: An iterator over ObjectMetadata for matching objects.
         :raises ValueError: If both ``path`` and ``prefix`` parameters are provided (both non-empty).
         """
         # Parameter validation - either path or prefix, not both
@@ -673,22 +681,25 @@ class StorageClient:
         prefetch_file: bool = True,
     ) -> Union[PosixFile, ObjectFile]:
         """
-        Returns a file-like object from the specified path.
+        Open a file for reading or writing.
 
-        :param path: The logical path of the object to read.
-        :param mode: The file mode, only "w", "r", "a", "wb", "rb" and "ab" are supported.
+        :param path: The logical path of the object to open.
+        :param mode: The file mode. Supported modes: "r", "rb", "w", "wb", "a", "ab".
         :param buffering: The buffering mode. Only applies to PosixFile.
         :param encoding: The encoding to use for text files.
-        :param disable_read_cache: When set to True, disables caching for the file content.
+        :param disable_read_cache: When set to ``True``, disables caching for file content.
             This parameter is only applicable to ObjectFile when the mode is "r" or "rb".
         :param memory_load_limit: Size limit in bytes for loading files into memory. Defaults to 512MB.
-            This parameter is only applicable to ObjectFile when the mode is "r" or "rb".
-        :param atomic: When set to True, the file will be written atomically (rename upon close).
+            This parameter is only applicable to ObjectFile when the mode is "r" or "rb". Defaults to 512MB.
+        :param atomic: When set to ``True``, file will be written atomically (rename upon close).
             This parameter is only applicable to PosixFile in write mode.
         :param check_source_version: Whether to check the source version of cached objects.
-        :param attributes: The attributes to add to the file.  This parameter is only applicable when the mode is "w" or "wb" or "a" or "ab".
-
+        :param attributes: Attributes to add to the file.
+            This parameter is only applicable when the mode is "w" or "wb" or "a" or "ab". Defaults to None.
+        :param prefetch_file: Whether to prefetch the file content.
+            This parameter is only applicable to ObjectFile when the mode is "r" or "rb". Defaults to True.
         :return: A file-like object (PosixFile or ObjectFile) for the specified path.
+        :raises FileNotFoundError: If the file does not exist (read mode).
         """
         if self._is_posix_file_storage_provider():
             return PosixFile(
@@ -730,11 +741,10 @@ class StorageClient:
 
     def is_file(self, path: str) -> bool:
         """
-        Checks whether the specified path points to a file (rather than a directory or folder).
+        Checks whether the specified path points to a file (rather than a folder or directory).
 
         :param path: The logical path to check.
-
-        :return: ``True`` if the path points to a file, ``False`` otherwise.
+        :return: ``True`` if the key points to a file, ``False`` otherwise.
         """
         if self._metadata_provider:
             resolved = self._metadata_provider.realpath(path)
@@ -766,11 +776,10 @@ class StorageClient:
 
     def is_empty(self, path: str) -> bool:
         """
-        Checks whether the specified path is empty. A path is considered empty if there are no
+        Check whether the specified path is empty. A path is considered empty if there are no
         objects whose keys start with the given path as a prefix.
 
-        :param path: The logical path to check. This is typically a prefix representing a directory or folder.
-
+        :param path: The logical path to check (typically a directory or folder prefix).
         :return: ``True`` if no objects exist under the specified path prefix, ``False`` otherwise.
         """
         if self._metadata_provider:
@@ -787,7 +796,7 @@ class StorageClient:
 
     def sync_from(
         self,
-        source_client: "StorageClient",
+        source_client: AbstractStorageClient,
         source_path: str = "",
         target_path: str = "",
         delete_unmatched_files: bool = False,
@@ -813,17 +822,17 @@ class StorageClient:
         :param patterns: PatternList for include/exclude filtering. If None, all files are included.
             Cannot be used together with source_files.
         :param preserve_source_attributes: Whether to preserve source file metadata attributes during synchronization.
-            When False (default), only file content is copied. When True, custom metadata attributes are also preserved.
+            When ``False`` (default), only file content is copied. When ``True``, custom metadata attributes are also preserved.
 
             .. warning::
                 **Performance Impact**: When enabled without a ``metadata_provider`` configured, this will make a HEAD
                 request for each object to retrieve attributes, which can significantly impact performance on large-scale
                 sync operations. For production use at scale, configure a ``metadata_provider`` in your storage profile.
 
-        :param follow_symlinks: If the source StorageClient is PosixFile, whether to follow symbolic links. Default is True.
+        :param follow_symlinks: If the source StorageClient is PosixFile, whether to follow symbolic links. Default is ``True``.
         :param source_files: Optional list of file paths (relative to source_path) to sync. When provided, only these
             specific files will be synced, skipping enumeration of the source path. Cannot be used together with patterns.
-        :param ignore_hidden: Whether to ignore hidden files and directories. Default is True.
+        :param ignore_hidden: Whether to ignore hidden files and directories. Default is ``True``.
         :raises ValueError: If both source_files and patterns are provided.
         """
         if source_files and patterns:
@@ -833,7 +842,10 @@ class StorageClient:
 
         # Disable the replica manager during sync
         if not isinstance(source_client, NullStorageClient) and source_client._replica_manager:
-            source_client = StorageClient(source_client._config)
+            # Import here to avoid circular dependency
+            from .client import StorageClient as StorageClientFacade
+
+            source_client = StorageClientFacade(source_client._config)
             source_client._replica_manager = None
 
         m = SyncManager(source_client, source_path, self, target_path)
@@ -862,16 +874,16 @@ class StorageClient:
         ignore_hidden: bool = True,
     ) -> None:
         """
-        Sync files from the source storage client to target replicas.
+        Sync files from this client to its replica storage clients.
 
         :param source_path: The logical path to sync from.
-        :param replica_indices: Specify the indices of the replicas to sync to. If not provided, all replicas will be synced. Index starts from 0.
-        :param delete_unmatched_files: Whether to delete files at the target that are not present at the source.
+        :param replica_indices: Specific replica indices to sync to (0-indexed). If None, syncs to all replicas.
+        :param delete_unmatched_files: When set to ``True``, delete files in replicas that don't exist in source.
         :param description: Description of sync process for logging purposes.
-        :param num_worker_processes: The number of worker processes to use.
-        :param execution_mode: The execution mode to use. Currently supports "local" and "ray".
+        :param num_worker_processes: Number of worker processes for parallel sync.
+        :param execution_mode: Execution mode (LOCAL or REMOTE).
         :param patterns: PatternList for include/exclude filtering. If None, all files are included.
-        :param ignore_hidden: Whether to ignore hidden files and directories (starting with dot). Default is True.
+        :param ignore_hidden: When set to ``True``, ignore hidden files (starting with '.'). Defaults to ``True``.
         """
         if not self._replicas:
             logger.warning(
@@ -891,7 +903,10 @@ class StorageClient:
 
         # Disable the replica manager during sync
         if self._replica_manager:
-            source_client = StorageClient(self._config)
+            # Import here to avoid circular dependency
+            from .client import StorageClient as StorageClientFacade
+
+            source_client = StorageClientFacade(self._config)
             source_client._replica_manager = None
         else:
             source_client = self

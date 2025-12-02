@@ -17,7 +17,8 @@ import importlib
 from importlib.metadata import version
 
 from .cache import CacheConfig
-from .client import StorageClient, StorageClientConfig
+from .client import StorageClient
+from .config import StorageClientConfig
 from .pathlib import MultiStoragePath as Path
 from .shortcuts import (
     commit_metadata,

@@ -683,6 +683,7 @@ def test_conditional_put(
     data = b"test data"
 
     storage_provider = storage_client._storage_provider
+    assert storage_provider is not None
 
     try:
         # First test if_none_match="*" - this should either succeed or raise NotImplementedError
@@ -736,6 +737,7 @@ def test_open_with_source_version_check(profile: str):
     """Test the open method with different source version check modes using an actual S3 profile."""
     client, _ = msc.resolve_storage_client(f"msc://{profile}/")
     storage_provider = client._storage_provider
+    assert storage_provider is not None
     key = f"test-source-version-check-{uuid.uuid4()}"
     content1 = b"test content for cache"
     content2 = b"modified content for cache"

@@ -73,6 +73,12 @@ class ManifestMetadataGenerator:
         data_storage_provider = data_storage_client._storage_provider
         manifest_storage_provider = manifest_storage_client._storage_provider
 
+        if data_storage_provider is None or manifest_storage_provider is None:
+            raise ValueError(
+                "ManifestMetadataGenerator requires SingleStorageClient with _storage_provider. "
+                "CompositeStorageClient (multi-backend) is not supported."
+            )
+
         manifest_metadata_provider = ManifestMetadataProvider(
             storage_provider=manifest_storage_provider,
             manifest_path="",

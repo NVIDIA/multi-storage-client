@@ -6,8 +6,29 @@ API Reference
 Storage Client
 **************
 
+Main Facade
+===========
+
 .. autoclass:: multistorageclient.StorageClient
    :members:
+   :undoc-members:
+   :show-inheritance:
+
+Client Implementations
+======================
+
+.. autoclass:: multistorageclient.client.single.SingleStorageClient
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. autoclass:: multistorageclient.client.composite.CompositeStorageClient
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Configuration
+=============
 
 .. autoclass:: multistorageclient.StorageClientConfig
    :members:

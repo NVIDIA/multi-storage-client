@@ -104,7 +104,8 @@ def write_and_verify_origin_file(
     origin_client: StorageClient, test_file_path: str, test_content: Union[str, bytes]
 ) -> None:
     """Write content to origin and verify it exists."""
-    origin_client.write(test_file_path, test_content)
+    content_bytes = test_content.encode() if isinstance(test_content, str) else test_content
+    origin_client.write(test_file_path, content_bytes)
     assert origin_client.is_file(test_file_path), f"File {test_file_path} should exist in origin storage"
 
 
@@ -280,7 +281,8 @@ def test_async_replica_upload_with_different_content_types(
             else:
                 origin_client.write(test_file_path, test_content)
         else:
-            origin_client.write(test_file_path, test_content)
+            content_bytes = test_content.encode() if isinstance(test_content, str) else test_content
+            origin_client.write(test_file_path, content_bytes)
 
         # Step 2: Use client.read to read file (should trigger async upload to replicas)
         content_from_replica = origin_with_replica_client.read(test_file_path)

@@ -582,14 +582,23 @@ class StorageClientConfigLoader:
             profiles = copy.deepcopy(self._profiles)
 
             for child_name, backend in self._provider_bundle.storage_backends.items():
-                if child_name in self._profiles:
-                    raise ValueError(f"Profile '{child_name}' already exists in configuration.")
                 child_config = {
                     "storage_provider": {
                         "type": backend.storage_provider_config.type,
                         "options": backend.storage_provider_config.options,
                     }
                 }
+
+                if child_name in self._profiles:
+                    # Profile already exists - check if it matches what we would inject
+                    existing = self._profiles[child_name]
+                    if existing.get("storage_provider") == child_config["storage_provider"]:
+                        continue
+                    else:
+                        raise ValueError(
+                            f"Profile '{child_name}' already exists in configuration with different settings."
+                        )
+
                 profiles[child_name] = child_config
 
             resolved_config_dict = copy.deepcopy(self._resolved_config_dict)
