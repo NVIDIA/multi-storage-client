@@ -21,6 +21,9 @@ const (
 		fission.InitFlagsDoReadDirPlus |
 		fission.InitFlagsParallelDirops
 
+	initOutFlags2 = uint32(0) |
+		fission.InitFlags2DirectIoAllowMmap
+
 	initOutMaxBackgound         = uint16(100)
 	initOutCongestionThreshhold = uint16(0)
 
@@ -32,6 +35,9 @@ const (
 	statFSBlkSize = uint64(1024)
 
 	maxNameLen = uint32(4096)
+
+	openOutFlags = uint32(0) |
+		fission.FOpenResponseDirectIO
 )
 
 // `performFissionMount` is called to do the single FUSE mount at startup.
@@ -390,7 +396,7 @@ func (*globalsStruct) DoOpen(inHeader *fission.InHeader, openIn *fission.OpenIn)
 
 	openOut = &fission.OpenOut{
 		FH:        fh.nonce,
-		OpenFlags: 0,
+		OpenFlags: openOutFlags,
 		Padding:   0,
 	}
 
@@ -632,7 +638,7 @@ func (*globalsStruct) DoInit(inHeader *fission.InHeader, initIn *fission.InitIn)
 		TimeGran:             0, // accept default
 		MaxPages:             maxPages,
 		MapAlignment:         0, // accept default
-		Flags2:               0,
+		Flags2:               initOutFlags2,
 		MaxStackDepth:        0,
 		RequestTimeout:       0,
 		Unused:               [11]uint16{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},

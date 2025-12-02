@@ -2,8 +2,8 @@ github.com/AzureAD/microsoft-authentication-library-for-go v1.5.0 h1:XkkQbfMyuH2
 github.com/AzureAD/microsoft-authentication-library-for-go v1.5.0/go.mod h1:HKpQxkWaGLJ+D/5H8QRpyQXA1eKjxkFlOMwck5+33Jk=
 github.com/NVIDIA/cstruct v1.30.0 h1:IsIj9R6XQIiF9949CodrJQ5LRl8PYbO35xqw21vpYxw=
 github.com/NVIDIA/cstruct v1.30.0/go.mod h1:Vjlom704MubZmUijKBqJt0yONPC4355FTjPS72GYCio=
-github.com/NVIDIA/fission/v3 v3.0.3 h1:eJS3edvJnVApDgq1O+cyYGnrXN7LwW/FBIzdd+iMEWE=
-github.com/NVIDIA/fission/v3 v3.0.3/go.mod h1:jQEMxfgLIKaKpANbMcpPLcnOI0JDKIsrX6+nDuUKM8c=
+github.com/NVIDIA/fission/v3 v3.0.4 h1:jc0a5MKkpu5CiXG+8nqhn4w93Ssi9k1+VxfiLCZ+xaM=
+github.com/NVIDIA/fission/v3 v3.0.4/go.mod h1:jQEMxfgLIKaKpANbMcpPLcnOI0JDKIsrX6+nDuUKM8c=
 github.com/NVIDIA/sortedmap v1.30.0 h1:cba/v/0Tj28jLw0fbQdKI7MULkMCdNwPJpiXNrsPF6w=
 github.com/NVIDIA/sortedmap v1.30.0/go.mod h1:ZEHi/G6D8lDXeGITn8gLVwfrxKwash85B6d6ZWVlGao=
 github.com/OneOfOne/xxhash v1.2.8 h1:31czK/TI9sNkxIKfaUfGlU47BAxQ0ztGgd9vPyqimf8=

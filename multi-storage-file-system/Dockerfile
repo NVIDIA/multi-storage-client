@@ -21,6 +21,7 @@ RUN    apt-get update \
                         build-essential \
                         curl \
                         dnsutils \
+                        fio \
                         fuse3 \
                         git \
                         git-lfs \

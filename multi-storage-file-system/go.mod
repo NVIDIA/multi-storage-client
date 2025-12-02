@@ -11,7 +11,7 @@ replace github.com/NVIDIA/aistore => /aistore
 require (
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.5.0
 	github.com/NVIDIA/aistore v1.4.0
-	github.com/NVIDIA/fission/v3 v3.0.3
+	github.com/NVIDIA/fission/v3 v3.0.4
 	github.com/NVIDIA/sortedmap v1.30.0
 	github.com/aws/aws-sdk-go-v2 v1.39.2
 	github.com/aws/aws-sdk-go-v2/config v1.31.12
