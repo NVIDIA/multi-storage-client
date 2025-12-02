@@ -147,7 +147,7 @@ class ProducerThread(threading.Thread):
 
     def run(self):
         try:
-            if self.source_files:
+            if self.source_files is not None:
                 source_iter = iter(self._create_source_files_iterator())
             else:
                 source_iter = iter(

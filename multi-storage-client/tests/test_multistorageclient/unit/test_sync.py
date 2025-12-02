@@ -775,6 +775,10 @@ def test_sync_from_with_source_files(temp_data_store_type: type[tempdatastore.Te
         source_client, source_path = msc.resolve_storage_client(source_msc_url)
         target_client, target_path = msc.resolve_storage_client(target_msc_url)
 
+        # Test case 0: Sync nothing if source_files is an empty list
+        target_client.sync_from(source_client, source_path, target_path, source_files=[])
+        verify_sync_and_contents(target_url=target_msc_url, expected_files={})
+
         # Test case 1: Basic source_files sync
         files_to_sync = ["dir1/file0.txt", "dir2/file2.txt"]
         expected_files = {file: all_files[file] for file in files_to_sync}
