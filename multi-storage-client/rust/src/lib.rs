@@ -37,11 +37,12 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
 use http::StatusCode;
+use aws_config::BehaviorVersion;
 
 mod credentials;
 mod types;
 
-use credentials::PyCredentialsProvider;
+use credentials::{AwsSdkCredentialsProvider, PyCredentialsProvider};
 use types::{ByteRangeLike, ListResult, ObjectMetadata};
 
 pyo3::create_exception!(multistorageclient_rust, RustRetryableError, PyException);
@@ -199,6 +200,33 @@ fn create_store(
     Ok(Arc::new(limited_store))
 }
 
+/// Load AWS credentials provider from the default credential chain
+fn load_aws_credentials_provider() -> Result<AwsSdkCredentialsProvider, StorageError> {
+    // Load AWS config asynchronously
+    let sdk_config = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.block_on(async {
+            aws_config::defaults(BehaviorVersion::latest())
+                .load()
+                .await
+        })
+    } else {
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| StorageError::ConfigError(format!("Failed to create tokio runtime: {}", e)))?;
+        rt.block_on(async {
+            aws_config::defaults(BehaviorVersion::latest())
+                .load()
+                .await
+        })
+    };
+
+    let credentials_provider = sdk_config.credentials_provider()
+        .ok_or_else(|| StorageError::ConfigError(
+            "No AWS credentials provider found in SDK config".to_string()
+        ))?;
+
+    Ok(AwsSdkCredentialsProvider::new(credentials_provider))
+}
+
 fn build_s3_store<'a>(
     configs: Option<&'a HashMap<String, ConfigValue>>,
     credentials_provider: Option<&PyCredentialsProvider>,
@@ -211,6 +239,14 @@ fn build_s3_store<'a>(
         StorageError::ConfigError("Configuration dictionary is required for S3 provider.".to_string())
     })?;
 
+    if let Some(creds_provider) = credentials_provider {
+        builder = builder.with_credentials(Arc::new(creds_provider.clone()));
+    } else {
+        // Use AWS SDK default credential chain
+        let aws_provider = load_aws_credentials_provider()?;
+        builder = builder.with_credentials(Arc::new(aws_provider));
+    }
+
     if let Some(bucket_val) = configs.get("bucket") {
         builder = builder.with_bucket_name(bucket_val.to_string());
     }
@@ -221,21 +257,6 @@ fn build_s3_store<'a>(
 
     if let Some(endpoint_val) = configs.get("endpoint_url") {
         builder = builder.with_endpoint(endpoint_val.to_string());
-    }
-
-    if let Some(creds_provider) = credentials_provider {
-        builder = builder.with_credentials(Arc::new(creds_provider.clone()));
-        
-    } else {
-        if let Some(access_key_val) = configs.get("access_key") {
-            builder = builder.with_access_key_id(access_key_val.to_string());
-        }
-        if let Some(secret_key_val) = configs.get("secret_key") {
-            builder = builder.with_secret_access_key(secret_key_val.to_string());
-        }
-        if let Some(token_val) = configs.get("token") {
-            builder = builder.with_token(token_val.to_string());
-        }
     }
 
     if let Some(skip_signature) = configs.get("skip_signature") {

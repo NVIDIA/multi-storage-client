@@ -86,11 +86,6 @@ Publish Package:
         ARTIFACTORY_ARCH: arm64
         ARTIFACTORY_OS: macosx
       - PYTHON_TAG: ["cp39", "cp310", "cp311", "cp312", "cp313"]
-        WHEEL_ARCH: x86_64
-        WHEEL_OS: macosx
-        ARTIFACTORY_ARCH: x86_64
-        ARTIFACTORY_OS: macosx
-      - PYTHON_TAG: ["cp39", "cp310", "cp311", "cp312", "cp313"]
         WHEEL_ARCH: aarch64
         WHEEL_OS: manylinux
         ARTIFACTORY_ARCH: aarch64

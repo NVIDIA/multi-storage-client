@@ -37,6 +37,95 @@ from multistorageclient_rust import (  # pyright: ignore[reportAttributeAccessIs
 from .utils import RefreshableTestCredentialsProvider
 
 
+async def run_rust_client_operations(rust_client: RustClient, storage_client: StorageClient):
+    file_extension = ".txt"
+    # add a random string to the file path below so concurrent tests don't conflict
+    file_path_fragments = [f"{uuid.uuid4().hex}-prefix", "infix", f"suffix{file_extension}"]
+    file_path = os.path.join(*file_path_fragments)
+    file_body_bytes = b"\x00\x01\x02" * 3
+
+    # Test put
+    result = await rust_client.put(file_path, file_body_bytes)
+    assert result == len(file_body_bytes)
+
+    # Test get
+    result = await rust_client.get(file_path)
+    assert result == file_body_bytes
+
+    # Test range get
+    result = await rust_client.get(file_path, range=Range(1, 4))
+    assert len(result) == 4
+    assert result == file_body_bytes[1:5]
+
+    result = await rust_client.get(file_path, range=Range(0, len(file_body_bytes)))
+    assert result == file_body_bytes
+
+    # Test upload the file.
+    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+        temp_file.write(file_body_bytes)
+        temp_file.close()
+        result = await rust_client.upload(temp_file.name, file_path)
+        assert result == len(file_body_bytes)
+
+    # Verify the file was uploaded successfully using multi-storage client
+    assert storage_client.is_file(path=file_path)
+    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+        temp_file.close()
+        storage_client.download_file(remote_path=file_path, local_path=temp_file.name)
+        with open(temp_file.name, "rb") as f:
+            assert f.read() == file_body_bytes
+
+    # Test upload_multipart_from_file with a large file
+    large_file_size = MEMORY_LOAD_LIMIT + 1
+    large_file_body = os.urandom(large_file_size)
+    large_file_path_fragments = [f"{uuid.uuid4().hex}-prefix", "infix", f"multipart_suffix{file_extension}"]
+    large_file_path = os.path.join(*large_file_path_fragments)
+    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+        temp_file.write(large_file_body)
+        temp_file.close()
+        result = await rust_client.upload_multipart_from_file(temp_file.name, large_file_path)
+        assert result == large_file_size
+
+    # Verify the large file was uploaded successfully using multi-storage client
+    assert storage_client.is_file(path=large_file_path)
+    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+        temp_file.close()
+        storage_client.download_file(remote_path=large_file_path, local_path=temp_file.name)
+        assert os.path.getsize(temp_file.name) == large_file_size
+        # Assert file content is the same
+        with open(temp_file.name, "rb") as f:
+            downloaded = f.read()
+        assert downloaded == large_file_body
+
+    # Test download the file
+    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+        temp_file.close()
+        result = await rust_client.download(file_path, temp_file.name)
+        assert result == len(file_body_bytes)
+        with open(temp_file.name, "rb") as f:
+            assert f.read() == file_body_bytes
+
+    # Test download_multipart_to_file with a large file
+    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+        temp_file.close()
+        result = await rust_client.download_multipart_to_file(large_file_path, temp_file.name)
+        assert result == large_file_size
+        assert os.path.getsize(temp_file.name) == large_file_size
+        # Assert file content is the same
+        with open(temp_file.name, "rb") as f:
+            downloaded = f.read()
+        assert downloaded == large_file_body
+
+    # Delete the file.
+    storage_client.delete(path=file_path)
+    storage_client.delete(path=large_file_path)
+
+    # Test get a non-existent file
+    with pytest.raises(RustClientError) as exc_info:
+        await rust_client.get(file_path)
+    assert exc_info.value.args[1] == 404
+
+
 @pytest.mark.parametrize(
     argnames=["temp_data_store_type"],
     argvalues=[
@@ -53,6 +142,7 @@ async def test_rustclient_basic_operations(temp_data_store_type: Type[tempdatast
             access_key=config_dict["credentials_provider"]["options"]["access_key"],
             secret_key=config_dict["credentials_provider"]["options"]["secret_key"],
         )
+
         rust_client = RustClient(
             provider="s3",
             configs={
@@ -70,92 +160,8 @@ async def test_rustclient_basic_operations(temp_data_store_type: Type[tempdatast
         config_dict = {"profiles": {profile: temp_data_store.profile_config_dict()}}
         storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
 
-        file_extension = ".txt"
-        # add a random string to the file path below so concurrent tests don't conflict
-        file_path_fragments = [f"{uuid.uuid4().hex}-prefix", "infix", f"suffix{file_extension}"]
-        file_path = os.path.join(*file_path_fragments)
-        file_body_bytes = b"\x00\x01\x02" * 3
-
-        # Test put
-        result = await rust_client.put(file_path, file_body_bytes)
-        assert result == len(file_body_bytes)
-
-        # Test get
-        result = await rust_client.get(file_path)
-        assert result == file_body_bytes
-
-        # Test range get
-        result = await rust_client.get(file_path, range=Range(1, 4))
-        assert len(result) == 4
-        assert result == file_body_bytes[1:5]
-
-        result = await rust_client.get(file_path, range=Range(0, len(file_body_bytes)))
-        assert result == file_body_bytes
-
-        # Test upload the file.
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            temp_file.write(file_body_bytes)
-            temp_file.close()
-            result = await rust_client.upload(temp_file.name, file_path)
-            assert result == len(file_body_bytes)
-
-        # Verify the file was uploaded successfully using multi-storage client
-        assert storage_client.is_file(path=file_path)
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            temp_file.close()
-            storage_client.download_file(remote_path=file_path, local_path=temp_file.name)
-            with open(temp_file.name, "rb") as f:
-                assert f.read() == file_body_bytes
-
-        # Test upload_multipart_from_file with a large file
-        large_file_size = MEMORY_LOAD_LIMIT + 1
-        large_file_body = os.urandom(large_file_size)
-        large_file_path_fragments = [f"{uuid.uuid4().hex}-prefix", "infix", f"multipart_suffix{file_extension}"]
-        large_file_path = os.path.join(*large_file_path_fragments)
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            temp_file.write(large_file_body)
-            temp_file.close()
-            result = await rust_client.upload_multipart_from_file(temp_file.name, large_file_path)
-            assert result == large_file_size
-
-        # Verify the large file was uploaded successfully using multi-storage client
-        assert storage_client.is_file(path=large_file_path)
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            temp_file.close()
-            storage_client.download_file(remote_path=large_file_path, local_path=temp_file.name)
-            assert os.path.getsize(temp_file.name) == large_file_size
-            # Assert file content is the same
-            with open(temp_file.name, "rb") as f:
-                downloaded = f.read()
-            assert downloaded == large_file_body
-
-        # Test download the file
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            temp_file.close()
-            result = await rust_client.download(file_path, temp_file.name)
-            assert result == len(file_body_bytes)
-            with open(temp_file.name, "rb") as f:
-                assert f.read() == file_body_bytes
-
-        # Test download_multipart_to_file with a large file
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            temp_file.close()
-            result = await rust_client.download_multipart_to_file(large_file_path, temp_file.name)
-            assert result == large_file_size
-            assert os.path.getsize(temp_file.name) == large_file_size
-            # Assert file content is the same
-            with open(temp_file.name, "rb") as f:
-                downloaded = f.read()
-            assert downloaded == large_file_body
-
-        # Delete the file.
-        storage_client.delete(path=file_path)
-        storage_client.delete(path=large_file_path)
-
-        # Test get a non-existent file
-        with pytest.raises(RustClientError) as exc_info:
-            await rust_client.get(file_path)
-        assert exc_info.value.args[1] == 404
+        # Run tests
+        await run_rust_client_operations(rust_client, storage_client)
 
 
 @pytest.mark.parametrize(
@@ -491,3 +497,89 @@ async def test_rustclient_public_bucket():
         data = await rust_client.get(first_object.key, range=Range(0, 100))
         assert len(data) == 100
         assert len(data) > 0, "Should be able to read data from public bucket"
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryAWSS3Bucket],
+    ],
+)
+@pytest.mark.asyncio
+async def test_rustclient_with_aws_credentials(
+    temp_data_store_type: Type[tempdatastore.TemporaryDataStore], monkeypatch: pytest.MonkeyPatch
+):
+    with temp_data_store_type() as temp_data_store:
+        # Create a Rust client from the temp data store profile config dict
+        config_dict = temp_data_store.profile_config_dict()
+
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", config_dict["credentials_provider"]["options"]["access_key"])
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", config_dict["credentials_provider"]["options"]["secret_key"])
+
+        rust_client = RustClient(
+            provider="s3",
+            configs={
+                "bucket": config_dict["storage_provider"]["options"]["base_path"],
+                "endpoint_url": config_dict["storage_provider"]["options"]["endpoint_url"],
+                "allow_http": config_dict["storage_provider"]["options"]["endpoint_url"].startswith("http://"),
+                "max_concurrency": 16,
+                "multipart_chunksize": 10 * 1024 * 1024,
+            },
+        )
+
+        # Create a storage client as well for operations that are not supported by the Rust client
+        profile = "data"
+        config_dict = {"profiles": {profile: temp_data_store.profile_config_dict()}}
+        storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
+
+        await run_rust_client_operations(rust_client, storage_client)
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryAWSS3Bucket],
+    ],
+)
+@pytest.mark.asyncio
+async def test_rustclient_with_aws_credentials_file(
+    temp_data_store_type: Type[tempdatastore.TemporaryDataStore], monkeypatch: pytest.MonkeyPatch
+):
+    with temp_data_store_type() as temp_data_store:
+        # Create a Rust client from the temp data store profile config dict
+        config_dict = temp_data_store.profile_config_dict()
+
+        # Create a temporary AWS credentials file
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".credentials", delete=False) as creds_file:
+            creds_file.write("[default]\n")
+            creds_file.write(f"aws_access_key_id = {config_dict['credentials_provider']['options']['access_key']}\n")
+            creds_file.write(
+                f"aws_secret_access_key = {config_dict['credentials_provider']['options']['secret_key']}\n"
+            )
+            creds_file_path = creds_file.name
+
+        try:
+            monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", creds_file_path)
+
+            rust_client = RustClient(
+                provider="s3",
+                configs={
+                    "bucket": config_dict["storage_provider"]["options"]["base_path"],
+                    "endpoint_url": config_dict["storage_provider"]["options"]["endpoint_url"],
+                    "allow_http": config_dict["storage_provider"]["options"]["endpoint_url"].startswith("http://"),
+                    "max_concurrency": 16,
+                    "multipart_chunksize": 10 * 1024 * 1024,
+                },
+            )
+
+            # Create a storage client as well for operations that are not supported by the Rust client
+            profile = "data"
+            config_dict = {"profiles": {profile: temp_data_store.profile_config_dict()}}
+            storage_client = StorageClient(
+                config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile)
+            )
+
+            await run_rust_client_operations(rust_client, storage_client)
+        finally:
+            if os.path.exists(creds_file_path):
+                os.unlink(creds_file_path)

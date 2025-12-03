@@ -5,7 +5,7 @@
 #
 
 # Compiler targets.
-compiler-targets := "aarch64-apple-darwin aarch64-unknown-linux-gnu x86_64-apple-darwin x86_64-unknown-linux-gnu"
+compiler-targets := "aarch64-apple-darwin aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu"
 
 # Default to the first Python binary on `PATH`.
 python-binary := "python"
@@ -169,6 +169,8 @@ run-load-tests: prepare-toolchain start-storage-systems && stop-storage-systems
 
 # Create package archives.
 package: prepare-toolchain
+    # Clean Rust build artifacts to prevent stale object files.
+    cd rust && cargo clean --target x86_64-apple-darwin
     # Remove package archives.
     rm -rf dist
     # Create a source distribution.
@@ -180,19 +182,22 @@ package: prepare-toolchain
     # https://github.com/rust-cross/cargo-zigbuild#caveats
     # https://github.com/PyO3/maturin/discussions/2586#discussioncomment-13095109
     # https://github.com/PyO3/maturin/blob/d95faa64f2c9971820314d228da9a7e71d2e4b87/src/build_context.rs#L1160
+    set -e; \
     for TARGET in {{compiler-targets}}; do \
         case "$TARGET" in \
             (aarch64-apple-darwin) \
                 export MACOSX_DEPLOYMENT_TARGET=$APPLE_SDK_VERSION_AARCH64 \
                 export SDKROOT=$APPLE_SDK_AARCH64 \
-                ;; \
-            (x86_64-apple-darwin) \
-                export MACOSX_DEPLOYMENT_TARGET=$APPLE_SDK_VERSION_X86_64 \
-                export SDKROOT=$APPLE_SDK_X86_64 \
+                export AWS_LC_SYS_CMAKE_BUILDER=1 \
+                export CFLAGS="-march=armv8-a+crypto -Wno-error=deprecated-declarations" \
+                export CXXFLAGS="-march=armv8-a+crypto -Wno-error=deprecated-declarations" \
                 ;; \
             (*) \
                 unset MACOSX_DEPLOYMENT_TARGET \
                 unset SDKROOT \
+                unset AWS_LC_SYS_CMAKE_BUILDER \
+                unset CFLAGS \
+                unset CXXFLAGS \
                 ;; \
         esac; \
         PYTHON_VERSION=$(uv run {{python-binary}} -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')") && \

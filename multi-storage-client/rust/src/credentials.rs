@@ -18,6 +18,7 @@ use chrono::{DateTime, Duration, Utc};
 use object_store::aws::AwsCredential;
 use pyo3::prelude::*;
 use std::sync::{Arc, RwLock};
+use aws_credential_types::provider::{ProvideCredentials, SharedCredentialsProvider};
 
 const DEFAULT_REFRESH_CREDENTIALS_THRESHOLD: i64 = 900; // 15 minutes
 
@@ -191,6 +192,50 @@ impl object_store::CredentialProvider for PyCredentialsProvider {
             }
         })
         .map(Arc::new)
+    }
+}
+
+/// Wrapper for AWS SDK credentials provider that implements object_store's CredentialProvider.
+/// This allows using AWS SDK's default credential chain (environment variables, instance metadata, etc.)
+pub struct AwsSdkCredentialsProvider {
+    sdk_provider: SharedCredentialsProvider,
+}
+
+impl std::fmt::Debug for AwsSdkCredentialsProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AwsSdkCredentialsProvider").finish()
+    }
+}
+
+impl AwsSdkCredentialsProvider {
+    pub fn new(sdk_provider: SharedCredentialsProvider) -> Self {
+        Self { sdk_provider }
+    }
+}
+
+#[async_trait]
+impl object_store::CredentialProvider for AwsSdkCredentialsProvider {
+    type Credential = AwsCredential;
+
+    async fn get_credential(&self) -> object_store::Result<Arc<Self::Credential>> {
+        let creds = self.sdk_provider
+            .provide_credentials()
+            .await
+            .map_err(|e| {
+                object_store::Error::Generic {
+                    store: "AwsSdkCredentialsProvider",
+                    source: Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("Failed to get AWS credentials: {}", e),
+                    )),
+                }
+            })?;
+
+        Ok(Arc::new(AwsCredential {
+            key_id: creds.access_key_id().to_string(),
+            secret_key: creds.secret_access_key().to_string(),
+            token: creds.session_token().map(|s| s.to_string()),
+        }))
     }
 }
 

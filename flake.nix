@@ -188,13 +188,16 @@
                 openssh
                 # GitHub CLI.
                 gh
+                # CMake .
+                cmake
+                # LLVM (provides llvm-install-name-tool for cross-compilation).
+                llvm
               ];
 
               shellHook =
                 let
                   apple-sdk = {
-                    aarch64 = inputs.nixpkgs.legacyPackages.aarch64-darwin.apple-sdk_11;
-                    x86_64 = inputs.nixpkgs.legacyPackages.x86_64-darwin.apple-sdk_11;
+                    aarch64 = inputs.nixpkgs.legacyPackages.aarch64-darwin.apple-sdk_14;
                   };
                 in
                 ''
@@ -212,14 +215,17 @@
 
                   # Apple SDKs.
                   export APPLE_SDK_AARCH64=${apple-sdk.aarch64}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
-                  export APPLE_SDK_X86_64=${apple-sdk.x86_64}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
                   export APPLE_SDK_VERSION_AARCH64=${apple-sdk.aarch64.version}
-                  export APPLE_SDK_VERSION_X86_64=${apple-sdk.x86_64.version}
 
                   # Disable Objective-C fork safety on macOS for pytest-xdist.
                   #
                   # https://github.com/python/cpython/issues/77906
                   export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
+
+                  # Alias install_name_tool to llvm-install-name-tool for cross-compilation.
+                  mkdir -p .bin
+                  ln -sf ${inputs.nixpkgs.legacyPackages.${system}.llvm}/bin/llvm-install-name-tool .bin/install_name_tool
+                  export PATH=$PWD/.bin:$PATH
 
                   echo "⚗️"
                 '';
