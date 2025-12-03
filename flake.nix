@@ -188,10 +188,16 @@
                 openssh
                 # GitHub CLI.
                 gh
-                # CMake .
+                # CMake.
                 cmake
-                # LLVM (provides llvm-install-name-tool for cross-compilation).
-                llvm
+                # LLVM.
+                #
+                # Using `llvm-install-name-tool` (aliased as `install_name_tool`) for cross-compilation.
+                #
+                # https://github.com/aws/aws-lc-rs/issues/495
+                (writeShellScriptBin "install_name_tool" ''
+                  ${lib.meta.getExe' libllvm "llvm-install-name-tool"} "$@"
+                '')
               ];
 
               shellHook =
@@ -221,11 +227,6 @@
                   #
                   # https://github.com/python/cpython/issues/77906
                   export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
-
-                  # Alias install_name_tool to llvm-install-name-tool for cross-compilation.
-                  mkdir -p .bin
-                  ln -sf ${inputs.nixpkgs.legacyPackages.${system}.llvm}/bin/llvm-install-name-tool .bin/install_name_tool
-                  export PATH=$PWD/.bin:$PATH
 
                   echo "⚗️"
                 '';

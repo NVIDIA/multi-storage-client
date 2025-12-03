@@ -170,7 +170,7 @@ run-load-tests: prepare-toolchain start-storage-systems && stop-storage-systems
 # Create package archives.
 package: prepare-toolchain
     # Clean Rust build artifacts to prevent stale object files.
-    cd rust && cargo clean --target x86_64-apple-darwin
+    cd rust && cargo clean
     # Remove package archives.
     rm -rf dist
     # Create a source distribution.
