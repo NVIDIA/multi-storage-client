@@ -1,7 +1,13 @@
 package main
 
 import (
-	"fmt"
+	"container/list"
+	"sync"
+	"time"
+)
+
+const (
+	pauseForCacheLineFillToPopulateCleanCacheLineLRU = 1 * time.Millisecond
 )
 
 // `fetch` is run in a goroutine for an allocated cacheLineStruct that
@@ -22,14 +28,14 @@ func (cacheLine *cacheLineStruct) fetch() {
 
 	inode, ok = globals.inodeMap[cacheLine.inodeNumber]
 	if !ok {
-		fmt.Printf("[TODO] (*cacheLineStruct) fetch() needs to handle missing inodeStruct\n")
+		globals.logger.Printf("[WARN] [TODO] (*cacheLineStruct) fetch() needs to handle missing inodeStruct")
 		cacheLine.state = CacheLineClean
 		cacheLine.eTag = ""
 		cacheLine.content = make([]byte, 0)
 		globals.inboundCacheLineCount--
 		cacheLine.listElement = globals.cleanCacheLineLRU.PushBack(cacheLine)
+		cacheLine.notifyWaiters()
 		globals.Unlock()
-		cacheLine.Done()
 		return
 	}
 
@@ -46,29 +52,25 @@ func (cacheLine *cacheLineStruct) fetch() {
 	readFileOutput, err = backend.context.readFile(readFileInput)
 	if err != nil {
 		globals.Lock()
-		fmt.Printf("[TODO] (*cacheLineStruct) fetch() needs to handle error reading cache line\n")
+		globals.logger.Printf("[WARN] [TODO] (*cacheLineStruct) fetch() needs to handle error reading cache line")
 		cacheLine.state = CacheLineClean
 		cacheLine.eTag = ""
 		cacheLine.content = make([]byte, 0)
 		globals.inboundCacheLineCount--
 		cacheLine.listElement = globals.cleanCacheLineLRU.PushBack(cacheLine)
+		cacheLine.notifyWaiters()
 		globals.Unlock()
-		cacheLine.Done()
 		return
 	}
 
 	globals.Lock()
-
 	cacheLine.state = CacheLineClean
 	cacheLine.eTag = readFileOutput.eTag
 	cacheLine.content = readFileOutput.buf
-
 	globals.inboundCacheLineCount--
 	cacheLine.listElement = globals.cleanCacheLineLRU.PushBack(cacheLine)
-
+	cacheLine.notifyWaiters()
 	globals.Unlock()
-
-	cacheLine.Done()
 }
 
 // `touch` is called while globals.Lock() is held to update the placement of
@@ -89,4 +91,81 @@ func (cacheLine *cacheLineStruct) touch() {
 	default:
 		globals.logger.Fatalf("cacheLine.state (%v) unexpected", cacheLine.state)
 	}
+}
+
+// `notifyWaiters` is called while holding glohbals.Lock() to notify all those
+// in the .waiters slice awaiting a state change of this cacheLine. Upon return,
+// // the .waiters slice will be emptied.
+func (cacheLine *cacheLineStruct) notifyWaiters() {
+	var (
+		waiter *sync.WaitGroup
+	)
+
+	for _, waiter = range cacheLine.waiters {
+		waiter.Done()
+	}
+
+	cacheLine.waiters = make([]*sync.WaitGroup, 0, 1)
+}
+
+// `cacheFull` reports whether or not the cache is currently at (or
+// exceeding) the configured cap on cache lines. This call must be
+// made while holding the global lock.
+func cacheFull() (isFull bool) {
+	isFull = (globals.inboundCacheLineCount + uint64(globals.cleanCacheLineLRU.Len())) >= globals.config.cacheLines
+	return
+}
+
+// `cachePrune` is called to immediately force the cache to make room
+// for a cacheLineStruct to be added. As this opereation will possibly
+// block, callers should not hold any locks.
+func cachePrune() {
+	var (
+		cacheLineToEvict *cacheLineStruct
+		inode            *inodeStruct
+		listElement      *list.Element
+		ok               bool
+	)
+
+	globals.Lock()
+
+	if !cacheFull() {
+		globals.Unlock()
+		return
+	}
+
+	listElement = globals.cleanCacheLineLRU.Front()
+
+	if listElement == nil {
+		// [TODO] Non-ideal simple pause/retry awaiting an element on cleanCacheLineLRU to evict
+
+		globals.Unlock()
+
+		time.Sleep(pauseForCacheLineFillToPopulateCleanCacheLineLRU)
+
+		return
+	}
+
+	_ = globals.cleanCacheLineLRU.Remove(listElement)
+
+	cacheLineToEvict, ok = listElement.Value.(*cacheLineStruct)
+	if !ok {
+		globals.logger.Fatalf("listElement.Value.(*cacheLineStruct) returned !ok")
+	}
+
+	inode, ok = globals.inodeMap[cacheLineToEvict.inodeNumber]
+	if !ok {
+		globals.logger.Fatalf("globals.inodeMap[cacheLineToEvict.inodeNumber] returned !ok")
+	}
+
+	_, ok = inode.cache[cacheLineToEvict.lineNumber]
+	if !ok {
+		globals.logger.Fatalf("inode.cache[cacheLineToEvict.lineNumber] returned !ok")
+	}
+
+	delete(inode.cache, cacheLineToEvict.lineNumber)
+
+	globals.Unlock()
+
+	return
 }

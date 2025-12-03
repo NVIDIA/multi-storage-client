@@ -208,13 +208,13 @@ const (
 
 // `cacheLineStruct` contains both the stat and content of a cache line used to hold file inode content.
 type cacheLineStruct struct {
-	sync.WaitGroup               // Waiters should not block while holding globals.Lock
-	listElement    *list.Element // If state == CacheLineClean, link into globals.cleanCacheLineLRU; if state == CacheLineDirty, link into globals.dirtyCacheLineLRU; otherwise == nil
-	state          uint8         // One of CacheLine*; determines membership in one of globals.inboundCacheLineCount, globals.cleanCacheLineLRU, globals.outboundCacheLineCount, or globals.dirtyCacheLineLRU
-	inodeNumber    uint64        // Reference to an inodeStruct.inodeNumber
-	lineNumber     uint64        // Identifies file/object range covered by content as up to [lineNumber * globals.config.cacheLineSize:(lineNumber + 1) * global.config.cacheLineSize)
-	eTag           string        // If state == CacheLineClean, value of inodeStruct.eTag when when fetched from backend; Otherwise, == ""
-	content        []byte        // File/Object content for the range (up to) [lineNumber * globals.config.cacheLineSize:(lineNumber + 1) * global.config.cacheLineSize)
+	listElement *list.Element     // If state == CacheLineClean, link into globals.cleanCacheLineLRU; if state == CacheLineDirty, link into globals.dirtyCacheLineLRU; otherwise == nil
+	state       uint8             // One of CacheLine*; determines membership in one of globals.inboundCacheLineCount, globals.cleanCacheLineLRU, globals.outboundCacheLineCount, or globals.dirtyCacheLineLRU
+	waiters     []*sync.WaitGroup // List of those awaiting a state change
+	inodeNumber uint64            // Reference to an inodeStruct.inodeNumber
+	lineNumber  uint64            // Identifies file/object range covered by content as up to [lineNumber * globals.config.cacheLineSize:(lineNumber + 1) * global.config.cacheLineSize)
+	eTag        string            // If state == CacheLineClean, value of inodeStruct.eTag when when fetched from backend; Otherwise, == ""
+	content     []byte            // File/Object content for the range (up to) [lineNumber * globals.config.cacheLineSize:(lineNumber + 1) * global.config.cacheLineSize)
 }
 
 // `inodeStruct` contains the state of an inode.

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"sync"
 	"syscall"
 
 	"github.com/NVIDIA/fission/v3"
@@ -413,6 +414,7 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 		cacheLineNumber      uint64
 		cacheLineOffsetLimit uint64 // One greater than offset to last byte to return
 		cacheLineOffsetStart uint64
+		cacheLineWaiter      sync.WaitGroup
 		curOffset            = readIn.Offset
 		fh                   *fhStruct
 		inode                *inodeStruct
@@ -454,30 +456,42 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 
 		cacheLine, ok = inode.cache[cacheLineNumber]
 		if !ok {
+			if cacheFull() {
+				globals.Unlock()
+				cachePrune()
+				continue
+			}
+
 			cacheLine = &cacheLineStruct{
 				state:       CacheLineInbound,
+				waiters:     make([]*sync.WaitGroup, 1, 1),
 				inodeNumber: inode.inodeNumber,
 				lineNumber:  cacheLineNumber,
 			}
+
+			cacheLineWaiter.Add(1)
+			cacheLine.waiters[0] = &cacheLineWaiter
 
 			inode.cache[cacheLineNumber] = cacheLine
 
 			globals.inboundCacheLineCount++
 
-			cacheLine.Add(1)
 			go cacheLine.fetch()
 
 			globals.Unlock()
 
-			cacheLine.Wait()
+			cacheLineWaiter.Wait()
 
 			continue
 		}
 
 		if cacheLine.state == CacheLineInbound {
+			cacheLineWaiter.Add(1)
+			cacheLine.waiters = append(cacheLine.waiters, &cacheLineWaiter)
+
 			globals.Unlock()
 
-			cacheLine.Wait()
+			cacheLineWaiter.Wait()
 
 			continue
 		}
@@ -620,7 +634,7 @@ func (*globalsStruct) DoRemoveXAttr(inHeader *fission.InHeader, removeXAttrIn *f
 // `DoFlush` implements the package fission callback to ensure both modified metadata and
 // content for a file inode is flushed to the underlying object.
 func (*globalsStruct) DoFlush(inHeader *fission.InHeader, flushIn *fission.FlushIn) (errno syscall.Errno) {
-	fmt.Println("[TODO] fission.go::DoFlush()")
+	// fmt.Println("[TODO] fission.go::DoFlush()")
 	errno = syscall.ENOSYS
 	return
 }
