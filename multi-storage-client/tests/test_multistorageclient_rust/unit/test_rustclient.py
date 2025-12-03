@@ -325,7 +325,7 @@ async def test_rustclient_list_recursive(temp_data_store_type: Type[tempdatastor
         for file_path in test_files:
             await rust_client.put(file_path, file_content)
 
-        result = rust_client.list_recursive([test_prefix])
+        result = await rust_client.list_recursive([test_prefix])
 
         assert hasattr(result, "objects")
         assert hasattr(result, "prefixes")
@@ -357,21 +357,21 @@ async def test_rustclient_list_recursive(temp_data_store_type: Type[tempdatastor
                 f"Expected directory {expected_dir} not found in {dir_keys}"
             )
 
-        limited_result = rust_client.list_recursive([test_prefix], limit=3)
+        limited_result = await rust_client.list_recursive([test_prefix], limit=3)
         assert len(limited_result.objects) == 3
 
-        txt_result = rust_client.list_recursive([test_prefix], suffix=".txt")
+        txt_result = await rust_client.list_recursive([test_prefix], suffix=".txt")
         assert all(obj.key.endswith(".txt") for obj in txt_result.objects)
 
-        depth_1_result = rust_client.list_recursive([test_prefix], max_depth=1)
+        depth_1_result = await rust_client.list_recursive([test_prefix], max_depth=1)
         for obj in depth_1_result.objects:
             path_parts = obj.key.replace(test_prefix + "/", "").split("/")
             assert len(path_parts) <= 2, f"File {obj.key} exceeds max_depth=1"
 
-        multi_prefix_result = rust_client.list_recursive([f"{test_prefix}/subdir1", f"{test_prefix}/subdir2"])
+        multi_prefix_result = await rust_client.list_recursive([f"{test_prefix}/subdir1", f"{test_prefix}/subdir2"])
         assert len(multi_prefix_result.objects) == 4
 
-        concurrency_result = rust_client.list_recursive([test_prefix], max_concurrency=4)
+        concurrency_result = await rust_client.list_recursive([test_prefix], max_concurrency=4)
         assert len(concurrency_result.objects) == 6
 
         for file_path in test_files:
@@ -489,7 +489,8 @@ async def test_rustclient_public_bucket():
     )
 
     # Test that we can list objects using the Rust client directly
-    objects = rust_client.list_recursive(["csv/"], limit=10).objects
+    result = await rust_client.list_recursive(["csv/"], limit=10)
+    objects = result.objects
     assert len(objects) > 0, "Should be able to list objects from public bucket"
 
     if objects:

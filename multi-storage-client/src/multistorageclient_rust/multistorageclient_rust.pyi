@@ -155,7 +155,7 @@ class RustClient:
         """
         ...
 
-    def list_recursive(
+    async def list_recursive(
         self,
         prefixes: list[str],
         limit: int | None = ...,

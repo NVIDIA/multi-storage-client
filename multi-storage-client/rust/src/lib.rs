@@ -829,53 +829,46 @@ impl RustClient {
         suffix: Option<String>,
         max_depth: Option<usize>,
         max_concurrency: usize,
-    ) -> PyResult<Py<ListResult>> {
+    ) -> PyResult<Bound<'p, PyAny>> {
         let store = Arc::clone(&self.store);
 
-        async fn list_single_directory(
-            store: Arc<dyn ObjectStore>,
-            prefix: Path,
-            limit: Option<usize>,
-            suffix: Option<&str>,
-            depth: usize,
-        ) -> Result<(Vec<ObjectMeta>, Vec<Path>, usize), StorageError> {
-            let mut objects = Vec::new();
-            let mut directories = Vec::new();
+        future_into_py(py, async move {
+            async fn list_single_directory(
+                store: Arc<dyn ObjectStore>,
+                prefix: Path,
+                limit: Option<usize>,
+                suffix: Option<&str>,
+                depth: usize,
+            ) -> Result<(Vec<ObjectMeta>, Vec<Path>, usize), StorageError> {
+                let mut objects = Vec::new();
+                let mut directories = Vec::new();
 
-            let list_result = store
-                .list_with_delimiter(Some(&prefix))
-                .await
-                .map_err(StorageError::from)?;
+                let list_result = store
+                    .list_with_delimiter(Some(&prefix))
+                    .await
+                    .map_err(StorageError::from)?;
 
-            for entry in list_result.objects {
-                if limit.is_some_and(|x| objects.len() >= x) {
-                    break;
-                }
-
-                if let Some(suffix_filter) = suffix {
-                    if !entry.location.to_string().ends_with(suffix_filter) {
-                        continue;
+                for entry in list_result.objects {
+                    if limit.is_some_and(|x| objects.len() >= x) {
+                        break;
                     }
+
+                    if let Some(suffix_filter) = suffix {
+                        if !entry.location.to_string().ends_with(suffix_filter) {
+                            continue;
+                        }
+                    }
+
+                    objects.push(entry);
                 }
 
-                objects.push(entry);
+                for common_prefix in list_result.common_prefixes {
+                    directories.push(common_prefix);
+                }
+
+                Ok((objects, directories, depth))
             }
 
-            for common_prefix in list_result.common_prefixes {
-                directories.push(common_prefix);
-            }
-
-            Ok((objects, directories, depth))
-        }
-
-        async fn list_recursive_async(
-            store: Arc<dyn ObjectStore>,
-            prefixes: Vec<String>,
-            limit: Option<usize>,
-            suffix: Option<String>,
-            max_depth: Option<usize>,
-            max_concurrency: usize,
-        ) -> Result<(Vec<ObjectMetadata>, Vec<ObjectMetadata>), StorageError> {
             let mut dirs_to_visit = VecDeque::new();
             for prefix in prefixes {
                 dirs_to_visit.push_back((Path::from(prefix), 0));
@@ -958,35 +951,8 @@ impl RustClient {
                 all_objects.truncate(limit_val);
             }
 
-            Ok((all_objects, all_directories))
-        }
-
-        let result = if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.block_on(list_recursive_async(
-                Arc::clone(&store),
-                prefixes,
-                limit,
-                suffix,
-                max_depth,
-                max_concurrency,
-            ))
-        } else {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(list_recursive_async(
-                Arc::clone(&store),
-                prefixes,
-                limit,
-                suffix,
-                max_depth,
-                max_concurrency,
-            ))
-        }?;
-
-        let (all_objects, all_directories) = result;
-
-        let list_result = ListResult::new(all_objects, all_directories);
-
-        Ok(Py::new(py, list_result).unwrap())
+            Ok(ListResult::new(all_objects, all_directories))
+        })
     }
 }
 
