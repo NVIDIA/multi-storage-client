@@ -208,9 +208,14 @@ class DiperiodicExportingMetricReader(sdk_metrics_export.MetricReader):
                         timeout_millis=timeout_millis or self._export_timeout_millis,
                     )
                 except sdk_metrics.MetricsTimeoutError:
-                    logger.warning("Metrics export timed out.", exc_info=True)
+                    logger.warning(
+                        f"Metrics export timed out. {sum(len(rm.scope_metrics) for rm in self._export_metrics_data.resource_metrics)} data points lost.",
+                        exc_info=True,
+                    )
                 except Exception:
-                    logger.exception("Exception while exporting metrics.")
+                    logger.exception(
+                        f"Exception while exporting metrics. {sum(len(rm.scope_metrics) for rm in self._export_metrics_data.resource_metrics)} data points lost."
+                    )
                 finally:
                     # Immediately empty the export buffer for garbage collection.
                     self._export_metrics_data = None

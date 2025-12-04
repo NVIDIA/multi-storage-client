@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import logging
+import os
 from typing import Any
 
 import requests
@@ -47,6 +48,8 @@ class _OTLPMSALMetricExporter(OTLPMetricExporter):
                 backoff_factor=_OTLPMSALMetricExporter._BACKOFF_FACTOR,
                 connect=max_retries,
                 read=max_retries,
+                status_forcelist=[429, 500, 502, 503, 504],
+                method_whitelist=["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE", "POST"],
             )
             super().__init__(*args, **kwargs)
             self._access_token_provider = access_token_provider
@@ -71,8 +74,11 @@ class _OTLPMSALMetricExporter(OTLPMetricExporter):
         """
 
         session = requests.Session()
-        # Disable keep-alive.
-        session.headers.update({"Connection": "close"})
+
+        # Disable keep-alive if MSC_OTEL_EXPORTER_KEEP_ALIVE is not set.
+        if not os.environ.get("MSC_OTEL_EXPORTER_KEEP_ALIVE", ""):
+            session.headers.update({"Connection": "close"})
+
         adapter = _OTLPMSALMetricExporter.AccessTokenHTTPAdapter(
             access_token_provider=AzureAccessTokenProvider(auth),
             max_retries=_OTLPMSALMetricExporter._MAX_RETRIES,
