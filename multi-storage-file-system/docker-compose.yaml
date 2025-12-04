@@ -86,8 +86,8 @@ services:
       - otel-collector
       - minio
       - ais
-      # - ubuntu
-      # - rocky
+      - ubuntu
+      - rocky
     cap_add:
       - SYS_ADMIN
     devices:

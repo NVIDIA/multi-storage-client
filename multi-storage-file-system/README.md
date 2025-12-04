@@ -36,7 +36,9 @@ configuration language is also available. This configuration mode is selected
 by supplying a top-level key `msfs_version` with a supported version number
 (see below).
 
-**Environment Variable Integration:** When using the mount helper (`mount -t msfs <config> <mountpoint>`),
+**Environment Variable Integration:**
+
+When using the mount helper (`mount -t msfs <config> <mountpoint>`),
 the `MSFS_MOUNTPOINT` environment variable is automatically set and takes precedence over the
 `mountpoint` setting in the configuration file. This allows the same configuration file to be
 mounted at different locations. The `MSC_CONFIG` environment variable is similarly set with the
@@ -350,3 +352,11 @@ packages for both AMD64 and ARM64 architectures:
 ```
 make deb-packages rpm-packages
 ```
+
+To actually create .tar.gz and .zip assets:
+
+```
+make assets
+```
+
+Those assets include `msfs_install.sh` and `msfs_uninstall.sh` scripts automating the process for installing and uninstalling the appropriate package for the platform.

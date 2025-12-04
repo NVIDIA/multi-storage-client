@@ -37,7 +37,8 @@ RUN    apt-get update \
                         tree \
                         unzip \
                         vim \
-                        wget
+                        wget \
+                        zip
 
 RUN echo "user_allow_other" >> /etc/fuse.conf
 

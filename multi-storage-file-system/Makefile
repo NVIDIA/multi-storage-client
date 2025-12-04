@@ -1,6 +1,6 @@
 quick: build
 
-all: fmt build lint test cover deb-packages rpm-packages
+all: fmt build lint test cover assets
 
 GIT_TAG := $(shell git describe --tags --always --dirty)
 BUILD_LDFLAGS := -ldflags="-X 'main.GitTag=$(GIT_TAG)'"
@@ -14,15 +14,14 @@ NUM_RPM_PKGS := $(shell (rpm -qa  2>/dev/null) | wc -l)
 PKG_TYPE := $(shell \
 		if [ "$(NUM_DEB_PKGS)" -ne 0 ]; then \
 			echo "deb"; \
+		elif [ "$(NUM_RPM_PKGS)" -ne 0 ]; then \
+			echo "rpm"; \
 		else \
-			if [ "$(NUM_RPM_PKGS)" -ne 0 ]; then \
-				echo "rpm"; \
-			else \
-				echo "<unknown>"; \
-			fi \
+			echo "<unknown>"; \
 		fi)
 
-.PHONY: quick all build clean cover fmt lint lint-update msfs-linux-amd64 msfs-linux-arm64 test install uninstall deb-packages deb-amd64 deb-arm64 _build-deb clean-deb rpm-packages rpm-amd64 rpm-arm64 _build-rpm clean-rpm
+
+.PHONY: quick all build clean cover fmt lint lint-update msfs-linux-amd64 msfs-linux-arm64 test install uninstall assets deb-packages deb-amd64 deb-arm64 _build-deb clean-deb rpm-packages rpm-amd64 rpm-arm64 _build-rpm clean-rpm
 
 build:
 	go build $(BUILD_LDFLAGS) -o msfs . 
@@ -33,6 +32,9 @@ clean: clean-deb clean-rpm
 	rm -f msfs
 	rm -f msfs-linux-amd64
 	rm -f msfs-linux-arm64
+	rm -f msfs.tar.gz
+	rm -f msfs.zip
+	rm -rf $(ASSETS_BUILD_DIR)
 
 cover:
 	go test $(TEST_LDFLAGS) -cover
@@ -88,6 +90,26 @@ uninstall:
 		echo "ERROR: Installation for PKG_TYPE $(PKG_TYPE) not supported."; \
 		exit 1; \
 	fi
+
+ASSETS_BUILD_DIR := build/assets
+
+assets: deb-packages rpm-packages
+	@echo "Creating release .tar.gz/.zip assets"
+	rm -rf $(ASSETS_BUILD_DIR)
+	mkdir -p $(ASSETS_BUILD_DIR)
+	cp msfs_$(DEB_VERSION)_amd64.deb $(ASSETS_BUILD_DIR)/.
+	cp msfs_$(DEB_VERSION)_arm64.deb $(ASSETS_BUILD_DIR)/.
+	cp msfs-$(RPM_VERSION)-$(RPM_RELEASE).aarch64.rpm $(ASSETS_BUILD_DIR)/.
+	cp msfs-$(RPM_VERSION)-$(RPM_RELEASE).x86_64.rpm $(ASSETS_BUILD_DIR)/.
+	@cp msfs_install_uninstall_template.sh $(ASSETS_BUILD_DIR)/msfs_install.sh
+	@sed -i '/DEB_AMD64_PACKAGE_BASENAME=/s/=/=msfs_$(DEB_VERSION)_amd64.deb/' $(ASSETS_BUILD_DIR)/msfs_install.sh
+	@sed -i '/DEB_ARM64_PACKAGE_BASENAME=/s/=/=msfs_$(DEB_VERSION)_arm64.deb/' $(ASSETS_BUILD_DIR)/msfs_install.sh
+	@sed -i '/RPM_AMD64_PACKAGE_BASENAME=/s/=/=msfs-$(RPM_VERSION)-$(RPM_RELEASE).x86_64.rpm/' $(ASSETS_BUILD_DIR)/msfs_install.sh
+	@sed -i '/RPM_ARM64_PACKAGE_BASENAME=/s/=/=msfs-$(RPM_VERSION)-$(RPM_RELEASE).aarch64.rpm/' $(ASSETS_BUILD_DIR)/msfs_install.sh
+	@chmod +x $(ASSETS_BUILD_DIR)/msfs_install.sh
+	@cp $(ASSETS_BUILD_DIR)/msfs_install.sh $(ASSETS_BUILD_DIR)/msfs_uninstall.sh
+	(rm -f msfs.tar.gz && cd $(ASSETS_BUILD_DIR) && tar -czvf ../../msfs.tar.gz .)
+	(rm -f msfs.zip    && cd $(ASSETS_BUILD_DIR) && zip       ../../msfs.zip *)
 
 # Debian package variables
 DEB_PACKAGE_NAME := msfs
