@@ -634,16 +634,37 @@ def _sync_worker_process(
                     exclusive_lock = contextlib.nullcontext()
 
                 with exclusive_lock:
-                    # Skip if the file already exists and has the same content length but is newer.
+                    # Since this is an ADD operation, the file doesn't exist in the metadata provider.
+                    # Check if it exists physically to support resume functionality.
+                    target_metadata = None
+                    if not target_client._storage_provider:
+                        raise RuntimeError("Invalid state, no storage provider configured.")
+
                     try:
-                        target_metadata = target_client.info(target_file_path, strict=False)
+                        target_metadata = target_client._storage_provider.get_object_metadata(target_file_path)
+                    except FileNotFoundError:
+                        pass
+
+                    # If file exists physically, check if sync is needed
+                    if target_metadata is not None:
                         # First check if file is already up-to-date (optimization for all cases)
                         if (
                             target_metadata.content_length == file_metadata.content_length
                             and target_metadata.last_modified >= file_metadata.last_modified
                         ):
-                            logger.debug(f"File {target_file_path} already exists, skipping")
+                            logger.debug(f"File {target_file_path} already exists and is up-to-date, skipping copy")
+
+                            # Since this is an ADD operation, the file exists physically but not in metadata provider.
+                            # Add it to metadata provider for tracking.
+                            if target_client._metadata_provider:
+                                logger.debug(
+                                    f"Adding existing file {target_file_path} to metadata provider for tracking"
+                                )
+                                with target_client._metadata_provider_lock or contextlib.nullcontext():
+                                    target_client._metadata_provider.add_file(target_file_path, target_metadata)
+
                             continue
+
                         # If we reach here, file exists but needs updating - check if overwrites are allowed
                         if target_client._metadata_provider and not target_client._metadata_provider.allow_overwrites():
                             # TODO(NGCDP-5748): This error is raised in a daemon thread and won't properly
@@ -653,8 +674,6 @@ def _sync_worker_process(
                                 f"file exists and needs updating, but overwrites are not allowed. "
                                 f"Enable overwrites in metadata provider configuration or remove the existing file."
                             )
-                    except FileNotFoundError:
-                        pass
 
                     source_physical_path, target_physical_path = _check_posix_paths(
                         source_client, target_client, file_metadata.key, target_file_path

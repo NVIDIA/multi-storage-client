@@ -1227,3 +1227,146 @@ def test_sync_with_manifest_overwrite_behavior():
             assert f.read() == b"modified_again2"
 
         print("All sync tests passed!")
+
+
+def test_sync_resume_with_metadata_provider():
+    """Test sync resume functionality with metadata provider - existing files should not be overwritten.
+
+    This test verifies that the sync process properly detects files that exist physically but are not
+    tracked by the metadata provider. The enhanced sync logic now checks both the metadata provider
+    AND the physical storage, ensuring that existing files are not overwritten and are added to the
+    metadata provider for tracking.
+    """
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    source_profile = "source"
+    target_profile = "target_with_metadata"
+
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as source_store,
+        tempdatastore.TemporaryPOSIXDirectory() as target_store,
+    ):
+        # Configure profiles
+        config_dict = {
+            "profiles": {
+                source_profile: source_store.profile_config_dict(),
+                target_profile: copy.deepcopy(target_store.profile_config_dict())
+                | {
+                    "metadata_provider": {
+                        "type": "manifest",
+                        "options": {
+                            "manifest_path": DEFAULT_MANIFEST_BASE_DIR,
+                            "writable": True,
+                            "allow_overwrites": False,  # Don't allow overwrites for this test
+                        },
+                    }
+                },
+            }
+        }
+        config.setup_msc_config(config_dict=config_dict)
+
+        source_url = f"msc://{source_profile}"
+        target_url = f"msc://{target_profile}"
+
+        print("Creating source files...")
+        source_files = {
+            "file1.txt": "content1",
+            "file2.txt": "content2",
+            "dir/file3.txt": "content3",
+            "dir/file4.txt": "content4",
+            "dir/subdir/file5.txt": "content5",
+        }
+
+        for file_path, content in source_files.items():
+            msc.write(f"{source_url}/{file_path}", content.encode())
+
+        print("Manually copying some files to simulate partial sync...")
+        manually_copied_files = ["file1.txt", "dir/file3.txt", "dir/subdir/file5.txt"]
+
+        target_client, target_path = msc.resolve_storage_client(target_url)
+        source_client, source_path = msc.resolve_storage_client(source_url)
+
+        assert source_client._storage_provider
+        assert target_client._storage_provider
+
+        for file_path in manually_copied_files:
+            # Use storage provider directly to copy files (bypassing metadata provider)
+            # Do NOT tell the metadata provider about these files - sync should discover them
+            content = source_client._storage_provider.get_object(file_path)
+            target_client._storage_provider.put_object(file_path, content)
+
+        print("Recording timestamps of manually copied files...")
+        timestamps_before = {}
+        for file_path in manually_copied_files:
+            info = target_client._storage_provider.get_object_metadata(file_path)
+            timestamps_before[file_path] = info.last_modified
+            print(f"File {file_path} timestamp before sync: {info.last_modified}")
+
+        # Wait to ensure timestamp differences would be detectable
+        time.sleep(1.0)
+
+        # Now run sync - this should copy the missing files but not overwrite existing ones
+        print("Running sync operation...")
+        msc.sync(source_url, target_url)
+
+        print("Verifying all files exist in target...")
+        for file_path, expected_content in source_files.items():
+            with msc.open(f"{target_url}/{file_path}", "rb") as f:
+                actual_content = f.read().decode()
+                assert actual_content == expected_content, f"Content mismatch for {file_path}"
+
+            print("Verifying manually copied files were not overwritten...")
+
+            for file_path in manually_copied_files:
+                info = target_client._storage_provider.get_object_metadata(file_path)
+                timestamp_after = info.last_modified
+                timestamp_before = timestamps_before[file_path]
+
+                print(f"File {file_path} timestamp after sync: {timestamp_after}")
+                # This assertion will FAIL due to current limitation - files are being overwritten
+                assert timestamp_after == timestamp_before, (
+                    f"File {file_path} was overwritten during sync! "
+                    f"Before: {timestamp_before}, After: {timestamp_after}. "
+                    f"This indicates the sync process is not properly detecting existing files that aren't tracked by metadata provider."
+                )
+
+        # Verify that files NOT manually copied were created during sync
+        print("Verifying new files were created during sync...")
+        not_manually_copied = [f for f in source_files.keys() if f not in manually_copied_files]
+
+        for file_path in not_manually_copied:
+            info = target_client._storage_provider.get_object_metadata(file_path)
+            # These files should exist (we verified content above)
+            print(f"New file {file_path} created with timestamp: {info.last_modified}")
+
+        print("Testing that files are now tracked in metadata provider after sync...")
+
+        # After sync, the files should now be tracked in the metadata provider
+        for file_path in manually_copied_files:
+            try:
+                # This should now work because sync added the files to metadata provider
+                info = target_client.info(file_path)
+                print(f"File {file_path} is now tracked in metadata provider with timestamp: {info.last_modified}")
+            except FileNotFoundError:
+                assert False, f"File {file_path} should be tracked in metadata provider after sync"
+
+        print("Testing resume behavior with tracked files...")
+
+        # Modify one of the source files
+        modified_file = "file1.txt"
+        new_content = "modified_content1"
+        msc.write(f"{source_url}/{modified_file}", new_content.encode())
+
+        # Run sync again - now the file is tracked, so overwrite protection should work
+        print("Running sync after source modification (should be blocked by overwrite protection)...")
+        msc.sync(source_url, target_url)
+
+        # Verify the file was NOT updated because it's now tracked and overwrites are disabled
+        with msc.open(f"{target_url}/{modified_file}", "rb") as f:
+            actual_content = f.read().decode()
+            original_content = source_files[modified_file]  # Get original content
+            assert actual_content == original_content, (
+                f"Modified file {modified_file} should not have been updated due to allow_overwrites=False"
+            )
+
+        print("All sync resume tests passed!")
