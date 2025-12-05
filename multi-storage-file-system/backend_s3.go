@@ -116,6 +116,7 @@ func (backend *backendStruct) setupS3Context() (err error) {
 		s3Client: s3.NewFromConfig(s3Config, func(o *s3.Options) {
 			o.BaseEndpoint = aws.String(s3Endpoint)
 			o.UsePathStyle = !backendS3.virtualHostedStyleRequest
+			o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 		}),
 	}
 
