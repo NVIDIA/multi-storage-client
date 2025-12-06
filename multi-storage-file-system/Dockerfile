@@ -109,26 +109,11 @@ FROM buildable AS ais
 
 WORKDIR /
 
-RUN git clone --depth 1 --branch v1.4.0 https://github.com/NVIDIA/aistore.git
+RUN git clone --depth 1 --branch v1.4.1 https://github.com/NVIDIA/aistore.git
 
 WORKDIR /aistore
 
-# AIStore compile failure on Linux/ARM64 workaround:
-#   The steps injected below (after .bashrc_additions & before the make cli step)
-#   create distinct versions of fsutils_linux.go for AMD64 and ARM64 such that the
-#   compilation on ARM64 uses the correct SYSCALL constant. Once AIstore has applied
-#   the final fix (and updated cmd/cli's go.mod to reference it), these steps should
-#   be removed (and, of course, the branch tag being checked out updated).
-RUN . /root/.bashrc_additions && \
-    cd ios && \
-    mv fsutils_linux.go       fsutils_linux_amd64.go && \
-    cp fsutils_linux_amd64.go fsutils_linux_arm64.go && \
-    sed -i 's/SYS_NEWFSTATAT/SYS_FSTATAT/' fsutils_linux_arm64.go && \
-    cd ../cmd/cli && \
-    echo "replace github.com/NVIDIA/aistore => ../.." >> go.mod && \
-    go mod tidy && \
-    cd ../.. && \
-    make cli
+RUN (. /root/.bashrc_additions && make cli)
 
 RUN echo '#!/bin/bash'                                                                                                   >  /root/deploy_1_1.sh
 RUN echo                     'AIS_ENDPOINT="http://ais:8080" scripts/clean_deploy.sh --target-cnt 1 --proxy-cnt 1 --aws' >> /root/deploy_1_1.sh
@@ -136,11 +121,7 @@ RUN echo 'HOSTNAME_LIST="ais" AIS_ENDPOINT="http://ais:8080" scripts/clean_deplo
 RUN echo 'sleep infinity'                                                                                                >> /root/deploy_1_1.sh
 RUN chmod +x                                                                                                                /root/deploy_1_1.sh
 
-# AIStore compile failure on Linux/ARM64 workaround:
-#   Here we will temporarily derive `dev` from `ais` instead of from
-#   `buildable` such that the `replace` line temporarily added to msfs's
-#   go.mod file can pick up the patched copy of AIStore's source
-FROM ais AS dev
+FROM buildable AS dev
 
 WORKDIR /multi-storage-client/multi-storage-file-system
 
