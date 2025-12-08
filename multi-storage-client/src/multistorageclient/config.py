@@ -105,6 +105,199 @@ CREDENTIALS_PROVIDER_MAPPING = {
 }
 
 
+def _resolve_include_path(include_path: str, parent_config_path: str) -> str:
+    """
+    Resolve include path (absolute or relative to parent config file).
+
+    :param include_path: Path from include keyword (can be absolute or relative)
+    :param parent_config_path: Absolute path of the config file containing the include
+    :return: Absolute, normalized path to the included config file
+    """
+    if os.path.isabs(include_path):
+        return os.path.abspath(include_path)
+    else:
+        parent_dir = os.path.dirname(parent_config_path)
+        return os.path.abspath(os.path.join(parent_dir, include_path))
+
+
+def _merge_profiles(
+    base_profiles: dict[str, Any],
+    new_profiles: dict[str, Any],
+    base_path: str,
+    new_path: str,
+) -> dict[str, Any]:
+    """
+    Merge profiles from two config files with conflict detection.
+
+    Profiles with the same name are allowed if their definitions are identical (idempotent).
+    If a profile name exists in both configs with different definitions, an error is raised.
+
+    NOTE: This function performs SHALLOW merging - each profile is treated as a complete unit.
+    We cannot use merge_dictionaries_no_overwrite() here because it would recursively merge
+    profile fields, which could lead to unintended behavior. For example:
+
+    base_config:
+        profiles:
+            my-profile:
+                storage_provider:
+                    type: s3
+                    options:
+                        base_path: bucket
+
+    new_config:
+        profiles:
+            my-profile:
+                credentials_provider:
+                    type: S3Credentials,
+                    options:
+                        access_key: foo
+                        secret_key: bar
+
+    If we used merge_dictionaries_no_overwrite(), the result would be a profile with BOTH storage_provider
+    and credentials_provider, which might not be the intended configuration.
+
+    :param base_profiles: Profiles from the base config
+    :param new_profiles: Profiles from the new config to merge
+    :param base_path: Path to the base config file (for error messages)
+    :param new_path: Path to the new config file (for error messages)
+    :return: Merged profiles dictionary
+    :raises ValueError: If any profile name exists in both configs with different definitions
+    """
+    result = base_profiles.copy()
+    conflicting_profiles = []
+
+    for profile_name, new_profile_def in new_profiles.items():
+        if profile_name in result:
+            if result[profile_name] != new_profile_def:
+                conflicting_profiles.append(profile_name)
+        else:
+            result[profile_name] = new_profile_def
+
+    if conflicting_profiles:
+        conflicts_list = ", ".join(f"'{p}'" for p in sorted(conflicting_profiles))
+        raise ValueError(f"Profile conflict: {conflicts_list} defined differently in {base_path} and {new_path}")
+
+    return result
+
+
+def _merge_configs(
+    base_config: dict[str, Any],
+    new_config: dict[str, Any],
+    base_path: str,
+    new_path: str,
+) -> dict[str, Any]:
+    """
+    Merge two config dictionaries with field-specific strategies.
+
+    Different config fields have different merge strategies:
+    - profiles: Shallow merge with idempotent check (uses _merge_profiles)
+    - path_mapping: Flat dict merge with idempotent check
+    - experimental_features: Flat dict merge with idempotent check
+    - cache, opentelemetry, posix: Global configs, idempotent if identical, error if different
+
+    :param base_config: Base configuration dictionary
+    :param new_config: New configuration to merge
+    :param base_path: Path to base config file (for error messages)
+    :param new_path: Path to new config file (for error messages)
+    :return: Merged configuration dictionary
+    :raises ValueError: If conflicts are detected
+    """
+    result = {}
+
+    all_keys = set(base_config.keys()) | set(new_config.keys())
+
+    for key in all_keys:
+        base_value = base_config.get(key)
+        new_value = new_config.get(key)
+
+        # Key only in base
+        if key not in new_config:
+            result[key] = base_value
+            continue
+
+        # Key only in new
+        if key not in base_config:
+            result[key] = new_value
+            continue
+
+        # Key in both - need to merge or detect conflict
+        if key == "profiles":
+            result["profiles"] = _merge_profiles(base_value or {}, new_value or {}, base_path, new_path)
+
+        elif key in ("path_mapping", "experimental_features"):
+            merged, conflicts = merge_dictionaries_no_overwrite(
+                (base_value or {}).copy(), new_value or {}, allow_idempotent=True
+            )
+            if conflicts:
+                conflicts_list = ", ".join(f"'{k}'" for k in sorted(conflicts))
+                raise ValueError(
+                    f"Config merge conflict: {conflicts_list} have different values in {base_path} and {new_path}"
+                )
+            result[key] = merged
+
+        elif key in ("cache", "opentelemetry", "posix"):
+            if base_value != new_value:
+                raise ValueError(f"'{key}' defined differently in {base_path} and {new_path}")
+            result[key] = base_value
+
+        elif key == "include":
+            # 'include' is processed by _load_and_merge_includes, not part of final config
+            pass
+
+        else:
+            # This should never happen and all top level fields must have explicit handling above
+            raise ValueError(f"Unknown field '{key}' in config file.")
+
+    return result
+
+
+def _load_and_merge_includes(
+    main_config_path: str,
+    main_config_dict: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Load and merge included config files.
+
+    Processes the 'include' directive in the main config, loading and merging all
+    specified config files. Only supports one level of includes - included files
+    cannot themselves have 'include' directives.
+
+    :param main_config_path: Absolute path to the main config file
+    :param main_config_dict: Dictionary loaded from the main config file
+    :return: Merged configuration dictionary (without 'include' field)
+    :raises ValueError: If include file not found, malformed, or contains nested includes
+    """
+    include_paths = main_config_dict.get("include", [])
+
+    if not include_paths:
+        return {k: v for k, v in main_config_dict.items() if k != "include"}
+
+    merged_config = {k: v for k, v in main_config_dict.items() if k != "include"}
+
+    for include_path in include_paths:
+        resolved_path = _resolve_include_path(include_path, main_config_path)
+
+        if not os.path.exists(resolved_path):
+            raise ValueError(f"Included config file not found: {resolved_path} (from {main_config_path})")
+
+        try:
+            with open(resolved_path) as f:
+                if resolved_path.endswith(".json"):
+                    included_config = json.load(f)
+                else:
+                    included_config = yaml.safe_load(f)
+        except Exception as e:
+            raise ValueError(f"Failed to load included config {resolved_path}: {e}")
+
+        validate_config(included_config)
+        if "include" in included_config:
+            raise ValueError(f"Nested includes not allowed: {resolved_path} contains 'include' directive")
+
+        merged_config = _merge_configs(merged_config, included_config, main_config_path, resolved_path)
+
+    return merged_config
+
+
 def _find_config_file_paths() -> tuple[str]:
     """
     Get configuration file search paths.
@@ -1250,6 +1443,10 @@ class StorageClientConfig:
 
         if config_dict:
             validate_config(config_dict)
+
+            if "include" in config_dict and config_file_path:
+                config_dict = _load_and_merge_includes(config_file_path, config_dict)
+
         return config_dict, config_file_path
 
     @staticmethod

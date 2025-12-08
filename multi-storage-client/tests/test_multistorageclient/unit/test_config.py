@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
 import os
 import pickle
 import sys
@@ -25,7 +26,13 @@ import yaml
 import multistorageclient.telemetry as telemetry
 import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
 from multistorageclient import StorageClient, StorageClientConfig
-from multistorageclient.config import SimpleProviderBundle, _find_config_file_paths
+from multistorageclient.config import (
+    SimpleProviderBundle,
+    _find_config_file_paths,
+    _merge_configs,
+    _merge_profiles,
+    _resolve_include_path,
+)
 from multistorageclient.providers import (
     ManifestMetadataProvider,
     PosixFileStorageProvider,
@@ -33,6 +40,7 @@ from multistorageclient.providers import (
     S8KStorageProvider,
     StaticS3CredentialsProvider,
 )
+from multistorageclient.schema import CONFIG_SCHEMA
 from multistorageclient.types import StorageProviderConfig
 from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
 
@@ -1982,3 +1990,289 @@ def test_load_direct_provider_bundle_v2_multi_backend():
     assert len(config.storage_provider_profiles) == 2
     assert "loc1" in config.storage_provider_profiles
     assert "loc2" in config.storage_provider_profiles
+
+
+def test_resolve_include_path():
+    """Test _resolve_include_path for absolute and relative path resolution."""
+    # Test absolute path - should return normalized absolute path
+    parent_config = "/home/user/configs/main.yaml"
+    absolute_include = "/etc/msc/shared.yaml"
+    result = _resolve_include_path(absolute_include, parent_config)
+    assert result == "/etc/msc/shared.yaml"
+    assert os.path.isabs(result)
+
+    # Test relative path - should resolve relative to parent config directory
+    parent_config = "/home/user/configs/main.yaml"
+    relative_include = "shared/telemetry.yaml"
+    result = _resolve_include_path(relative_include, parent_config)
+    assert result == "/home/user/configs/shared/telemetry.yaml"
+    assert os.path.isabs(result)
+
+    # Test relative path with .. (parent directory)
+    parent_config = "/home/user/configs/team/main.yaml"
+    relative_include = "../common/profiles.yaml"
+    result = _resolve_include_path(relative_include, parent_config)
+    assert result == "/home/user/configs/common/profiles.yaml"
+    assert os.path.isabs(result)
+
+    # Test relative path with . (current directory)
+    parent_config = "/home/user/configs/main.yaml"
+    relative_include = "./local.yaml"
+    result = _resolve_include_path(relative_include, parent_config)
+    assert result == "/home/user/configs/local.yaml"
+    assert os.path.isabs(result)
+
+
+def test_merge_profiles():
+    """Test _merge_profiles for merging profile dictionaries with conflict detection."""
+    # Test case 1: No conflict - different profile names can merge
+    base_profiles = {
+        "profile-a": {
+            "storage_provider": {"type": "s3", "options": {"base_path": "bucket-a"}},
+        },
+        "profile-b": {
+            "storage_provider": {"type": "gcs", "options": {"base_path": "bucket-b"}},
+        },
+    }
+    new_profiles = {
+        "profile-c": {
+            "storage_provider": {"type": "azure", "options": {"base_path": "container-c"}},
+        },
+        "profile-d": {
+            "storage_provider": {"type": "file", "options": {"base_path": "/tmp"}},
+        },
+    }
+
+    result = _merge_profiles(base_profiles, new_profiles, "/base/config.yaml", "/new/config.yaml")
+
+    assert len(result) == 4
+    assert "profile-a" in result and result["profile-a"] == base_profiles["profile-a"]
+    assert "profile-b" in result and result["profile-b"] == base_profiles["profile-b"]
+    assert "profile-c" in result and result["profile-c"] == new_profiles["profile-c"]
+    assert "profile-d" in result and result["profile-d"] == new_profiles["profile-d"]
+
+    # Test case 2: Conflict - same profile name with different definitions should raise ValueError
+    base_profiles = {
+        "shared-profile": {
+            "storage_provider": {"type": "s3", "options": {"base_path": "bucket-1"}},
+        },
+    }
+    new_profiles = {
+        "shared-profile": {
+            "storage_provider": {"type": "s3", "options": {"base_path": "bucket-2"}},
+        },
+    }
+
+    with pytest.raises(ValueError) as exc_info:
+        _merge_profiles(base_profiles, new_profiles, "/config1.yaml", "/config2.yaml")
+
+    error_msg = str(exc_info.value)
+    assert "Profile conflict" in error_msg
+    assert "shared-profile" in error_msg
+
+    # Test case 3: Identical profile definitions should be allowed
+    base_profiles = {
+        "identical-profile": {
+            "storage_provider": {"type": "s3", "options": {"base_path": "bucket"}},
+            "credentials_provider": {"type": "S3Credentials"},
+        },
+    }
+    new_profiles = {
+        "identical-profile": {
+            "storage_provider": {"type": "s3", "options": {"base_path": "bucket"}},
+            "credentials_provider": {"type": "S3Credentials"},
+        },
+    }
+
+    result = _merge_profiles(base_profiles, new_profiles, "/config1.yaml", "/config2.yaml")
+    assert "identical-profile" in result and result["identical-profile"] == base_profiles["identical-profile"]
+
+
+def test_config_include_basic():
+    """Test basic include functionality with multiple config files."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create shared telemetry config
+        telemetry_config_path = os.path.join(tmpdir, "telemetry.yaml")
+        with open(telemetry_config_path, "w") as f:
+            yaml.dump(
+                {
+                    "opentelemetry": {
+                        "metrics": {
+                            "exporter": {"type": "console"},
+                        },
+                    },
+                },
+                f,
+            )
+
+        # Create shared profiles config
+        profiles_config_path = os.path.join(tmpdir, "profiles.yaml")
+        with open(profiles_config_path, "w") as f:
+            yaml.dump(
+                {
+                    "profiles": {
+                        "shared-s3": {
+                            "storage_provider": {"type": "s3", "options": {"base_path": "shared-bucket"}},
+                        },
+                    },
+                },
+                f,
+            )
+
+        # Create main config with includes
+        main_config_path = os.path.join(tmpdir, "main.yaml")
+        with open(main_config_path, "w") as f:
+            yaml.dump(
+                {
+                    "include": [
+                        telemetry_config_path,
+                        profiles_config_path,
+                    ],
+                    "profiles": {
+                        "my-local": {
+                            "storage_provider": {"type": "file", "options": {"base_path": "/tmp"}},
+                        },
+                    },
+                },
+                f,
+            )
+
+        # Load config
+        config_dict, config_path = StorageClientConfig.read_msc_config([main_config_path])
+
+        # Verify merged result
+        assert config_path == main_config_path
+        assert config_dict is not None
+        assert "profiles" in config_dict
+        assert len(config_dict["profiles"]) == 2
+        assert "shared-s3" in config_dict["profiles"]
+        assert "my-local" in config_dict["profiles"]
+        assert "opentelemetry" in config_dict
+        assert config_dict["opentelemetry"]["metrics"]["exporter"]["type"] == "console"
+
+        # Verify 'include' field was removed from final config
+        assert "include" not in config_dict
+
+
+def test_config_include_with_conflicts(clean_msc_env_vars):
+    """Test that include properly detects and reports conflicts."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create first config with a profile
+        config1_path = os.path.join(tmpdir, "config1.yaml")
+        with open(config1_path, "w") as f:
+            yaml.dump(
+                {
+                    "profiles": {
+                        "conflicting-profile": {
+                            "storage_provider": {"type": "s3", "options": {"base_path": "bucket-1"}},
+                        },
+                    },
+                },
+                f,
+            )
+
+        # Create main config with same profile but different definition
+        main_config_path = os.path.join(tmpdir, "main.yaml")
+        with open(main_config_path, "w") as f:
+            yaml.dump(
+                {
+                    "include": [config1_path],
+                    "profiles": {
+                        "conflicting-profile": {
+                            "storage_provider": {"type": "s3", "options": {"base_path": "bucket-2"}},  # Different!
+                        },
+                    },
+                },
+                f,
+            )
+
+        # Should raise ValueError about profile conflict
+        with pytest.raises(ValueError) as exc_info:
+            StorageClientConfig.read_msc_config([main_config_path])
+
+        error_msg = str(exc_info.value)
+        assert "Profile conflict" in error_msg
+        assert "conflicting-profile" in error_msg
+
+
+def test_config_include_nested_not_allowed(clean_msc_env_vars):
+    """Test that nested includes are not allowed."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create a nested config that tries to include another file
+        nested_config_path = os.path.join(tmpdir, "nested.yaml")
+        with open(nested_config_path, "w") as f:
+            yaml.dump(
+                {
+                    "include": ["/some/other/config.yaml"],  # Not allowed!
+                    "profiles": {"test": {"storage_provider": {"type": "file", "options": {"base_path": "/tmp"}}}},
+                },
+                f,
+            )
+
+        # Create main config that includes the nested config
+        main_config_path = os.path.join(tmpdir, "main.yaml")
+        with open(main_config_path, "w") as f:
+            yaml.dump(
+                {
+                    "include": [nested_config_path],
+                    "profiles": {"main": {"storage_provider": {"type": "file", "options": {"base_path": "/tmp"}}}},
+                },
+                f,
+            )
+
+        # Should raise ValueError about nested includes
+        with pytest.raises(ValueError) as exc_info:
+            StorageClientConfig.read_msc_config([main_config_path])
+
+        error_msg = str(exc_info.value)
+        assert "Nested includes not allowed" in error_msg
+        assert nested_config_path in error_msg
+
+
+def test_config_include_file_not_found():
+    """Test error handling when included file doesn't exist."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create main config that includes non-existent file
+        main_config_path = os.path.join(tmpdir, "main.yaml")
+        nonexistent_path = os.path.join(tmpdir, "does_not_exist.yaml")
+
+        with open(main_config_path, "w") as f:
+            yaml.dump(
+                {
+                    "include": [nonexistent_path],
+                    "profiles": {"test": {"storage_provider": {"type": "file", "options": {"base_path": "/tmp"}}}},
+                },
+                f,
+            )
+
+        # Should raise ValueError about missing file
+        with pytest.raises(ValueError) as exc_info:
+            StorageClientConfig.read_msc_config([main_config_path])
+
+        error_msg = str(exc_info.value)
+        assert "not found" in error_msg.lower()
+        assert nonexistent_path in error_msg
+
+
+def test_merge_configs_handles_all_schema_fields():
+    """
+    Test that _merge_configs has explicit handling for all top-level schema fields.
+
+    This test ensures that when new top-level fields are added to CONFIG_SCHEMA,
+    developers are forced to implement the merging logic in _merge_configs.
+
+    If this test fails, you must:
+    1. Add merging logic for the new field in _merge_configs()
+    2. Add unit tests for the new field's merging behavior
+    """
+
+    # Get all actual config fields from schema
+    # Filter out JSON Schema validation keywords like 'additionalProperties'
+    schema_metadata_keys = {"type", "additionalProperties", "required", "description"}
+    schema_fields = set(CONFIG_SCHEMA["properties"].keys()) - schema_metadata_keys
+
+    source = inspect.getsource(_merge_configs)
+    for field in schema_fields:
+        assert f'"{field}"' in source or f"'{field}'" in source, (
+            f"Field '{field}' not explicitly handled in _merge_configs. Please add merging logic for this field."
+        )

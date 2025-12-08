@@ -448,3 +448,74 @@ def test_validate_posix():
                 },
             }
         )
+
+
+def test_validate_include():
+    default_storage_provider = {"storage_provider": {"type": "s3", "options": {"base_path": "bucket/prefix"}}}
+
+    # Valid: include with array of strings
+    validate_config(
+        {
+            "include": [
+                "/common_config/telemetry_config.yaml",
+                "/common_config/shared_profiles.yaml",
+                "./local_overrides.yaml",
+            ],
+            "profiles": {
+                "default": default_storage_provider,
+            },
+        }
+    )
+
+    # Valid: include with single file
+    validate_config(
+        {
+            "include": ["/path/to/config.yaml"],
+            "profiles": {
+                "default": default_storage_provider,
+            },
+        }
+    )
+
+    # Valid: empty include array
+    validate_config(
+        {
+            "include": [],
+            "profiles": {
+                "default": default_storage_provider,
+            },
+        }
+    )
+
+    # Invalid: include is not an array
+    with pytest.raises(RuntimeError):
+        validate_config(
+            {
+                "include": "/single/path.yaml",  # Should be array
+                "profiles": {
+                    "default": default_storage_provider,
+                },
+            }
+        )
+
+    # Invalid: include array contains non-string
+    with pytest.raises(RuntimeError):
+        validate_config(
+            {
+                "include": ["/valid/path.yaml", 123, "/another/path.yaml"],  # 123 is not a string
+                "profiles": {
+                    "default": default_storage_provider,
+                },
+            }
+        )
+
+    # Invalid: include array contains object instead of string
+    with pytest.raises(RuntimeError):
+        validate_config(
+            {
+                "include": [{"path": "/config.yaml"}],  # Should be string, not object
+                "profiles": {
+                    "default": default_storage_provider,
+                },
+            }
+        )

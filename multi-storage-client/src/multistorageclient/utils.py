@@ -192,6 +192,7 @@ def merge_dictionaries_no_overwrite(
     dict1: Optional[dict[str, Any]] = None,
     dict2: Optional[dict[str, Any]] = None,
     conflicted_keys: Optional[list[str]] = None,
+    allow_idempotent: bool = False,
 ) -> tuple[dict[str, Any], list[str]]:
     """
     Recursively merges two dictionaries without overwriting existing keys.
@@ -200,6 +201,8 @@ def merge_dictionaries_no_overwrite(
     :param dict2: second dictionary to be merged
     :param conflicted_keys: a list that collects any keys for which there is a collision.
         If not provided, a new list is created.
+    :param allow_idempotent: If True, keys with identical values are not considered conflicts (idempotent).
+        If False (default), any duplicate key is a conflict regardless of value.
 
     :return: A tuple of:
             - The merged dictionary from dict1 and dict2 with no overwritten keys.
@@ -224,9 +227,12 @@ def merge_dictionaries_no_overwrite(
 
             # If both values are dicts, recurse to check nested fields
             if isinstance(value1, dict) and isinstance(value2, dict):
-                merge_dictionaries_no_overwrite(value1, value2, conflicted_keys)
+                merge_dictionaries_no_overwrite(value1, value2, conflicted_keys, allow_idempotent)
             else:
-                conflicted_keys.append(key)
+                if allow_idempotent and value1 == value2:
+                    pass
+                else:
+                    conflicted_keys.append(key)
 
     return dict1, conflicted_keys
 

@@ -214,6 +214,57 @@ def test_merge_dictionaries_no_overwrite_with_conflict():
     assert "type" in conflicts, "Expected a conflict on 'type' but it wasn't recorded."
 
 
+def test_merge_dictionaries_no_overwrite_allow_idempotent():
+    """Test merge_dictionaries_no_overwrite with allow_idempotent parameter."""
+
+    # Test case 1: Idempotent - same key, same value, no conflict when allow_idempotent=True
+    dict_a = {
+        "path_mapping": {
+            "s3://bucket/data/": "msc://profile-a/",
+            "gs://bucket/data/": "msc://profile-b/",
+        },
+        "experimental_features": {
+            "cache_mru_eviction": True,
+        },
+    }
+    dict_b = {
+        "path_mapping": {
+            "s3://bucket/data/": "msc://profile-a/",  # Identical - idempotent
+            "s3://bucket2/data/": "msc://profile-c/",  # New key
+        },
+        "experimental_features": {
+            "cache_mru_eviction": True,  # Identical - idempotent
+            "cache_purge_factor": False,  # New key
+        },
+    }
+
+    merged, conflicts = merge_dictionaries_no_overwrite(dict_a, dict_b, allow_idempotent=True)
+
+    # No conflicts because identical values are idempotent
+    assert conflicts == [], f"Expected no conflicts with allow_idempotent=True, but found: {conflicts}"
+    assert len(merged["path_mapping"]) == 3
+    assert merged["path_mapping"]["s3://bucket/data/"] == "msc://profile-a/"
+    assert merged["path_mapping"]["s3://bucket2/data/"] == "msc://profile-c/"
+    assert len(merged["experimental_features"]) == 2
+    assert merged["experimental_features"]["cache_mru_eviction"] is True
+    assert merged["experimental_features"]["cache_purge_factor"] is False
+
+    # Test case 2: Conflict - same key, different value, conflict even with allow_idempotent=True
+    dict_a = {
+        "path_mapping": {
+            "s3://bucket/data/": "msc://profile-a/",
+        },
+    }
+    dict_b = {
+        "path_mapping": {
+            "s3://bucket/data/": "msc://profile-b/",  # Different value - conflict!
+        },
+    }
+
+    _, conflicts = merge_dictionaries_no_overwrite(dict_a, dict_b, allow_idempotent=True)
+    assert "s3://bucket/data/" in conflicts, "Expected conflict on different values"
+
+
 def test_insert_directories():
     """Test directory insertion with nested folder structure."""
     keys = ["folder1/file1.txt", "folder1/subfolder/file2.txt", "folder2/file3.txt"]

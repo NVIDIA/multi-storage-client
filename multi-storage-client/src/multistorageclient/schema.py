@@ -209,6 +209,11 @@ POSIX_SCHEMA = {
 CONFIG_SCHEMA = {
     "type": "object",
     "properties": {
+        "include": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "List of config file paths to include and merge (no nesting allowed)",
+        },
         "experimental_features": {
             "type": "object",
             "properties": {
