@@ -188,16 +188,10 @@ package: prepare-toolchain
             (aarch64-apple-darwin) \
                 export MACOSX_DEPLOYMENT_TARGET=$APPLE_SDK_VERSION_AARCH64 \
                 export SDKROOT=$APPLE_SDK_AARCH64 \
-                export AWS_LC_SYS_CMAKE_BUILDER=1 \
-                export CFLAGS="-march=armv8-a+crypto -Wno-error=deprecated-declarations" \
-                export CXXFLAGS="-march=armv8-a+crypto -Wno-error=deprecated-declarations" \
                 ;; \
             (*) \
                 unset MACOSX_DEPLOYMENT_TARGET \
                 unset SDKROOT \
-                unset AWS_LC_SYS_CMAKE_BUILDER \
-                unset CFLAGS \
-                unset CXXFLAGS \
                 ;; \
         esac; \
         PYTHON_VERSION=$(uv run {{python-binary}} -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')") && \
