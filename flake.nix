@@ -56,23 +56,20 @@
           with inputs.nixpkgs.legacyPackages.${system};
           buildGoModule (finalAttrs: {
             pname = "aistore";
-            version = "1.4.1-dev";
+            version = "1.4.1";
 
             src = fetchFromGitHub {
               owner = "NVIDIA";
               repo = "aistore";
-              # 1.4.0 is broken for Darwin due to missing platform-specific functions.
-              #
-              # https://github.com/NVIDIA/aistore/commit/2ca4149a254293289152390818210d42555be721
-              rev = "2ca4149a254293289152390818210d42555be721";
-              hash = "sha256-6fGxqQKFB7Ccmevg3HBNHuSw069o+akPypwXVMEX0OU=";
+              tag = "v${finalAttrs.version}";
+              hash = "sha256-mklGF7rxmgVSOMd/ySnPaZe5NkwabzXuAAhkrpyQ6tk=";
             };
 
-            vendorHash = "sha256-BbSIWf6bdeupPttq2fphoxA4wpJOa0dnv0VqS0Yc9sg=";
+            vendorHash = "sha256-phOI8oSt/c1PbtoRFFp8M/2AfZcKHPoo0xmpyI+j0EY=";
 
             # Exclude `cmd/cli` and `cmd/ishard` which are separate Go modules.
             #
-            # https://github.com/NVIDIA/aistore/tree/v1.4.0/cmd
+            # https://github.com/NVIDIA/aistore/tree/v1.4.1/cmd
             subPackages = [
               "cmd/aisinit"
               "cmd/aisloader"
@@ -84,7 +81,7 @@
 
             # Needed for version strings.
             #
-            # https://github.com/NVIDIA/aistore/blob/v1.4.0/Makefile#L80
+            # https://github.com/NVIDIA/aistore/blob/v1.4.1/Makefile#L86
             ldflags =
               let
                 ldflagsPackageVariablePrefix = "main";
@@ -97,7 +94,7 @@
             tags = [
               # Monotonic time.
               #
-              # https://github.com/NVIDIA/aistore/blob/v1.4.0/Makefile#L86
+              # https://github.com/NVIDIA/aistore/blob/v1.4.1/Makefile#L98
               "mono"
             ];
 

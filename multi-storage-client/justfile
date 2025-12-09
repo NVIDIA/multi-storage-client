@@ -65,19 +65,19 @@ start-storage-systems: stop-storage-systems
     # - fake-gcs-server -> 4443
     # - MinIO           -> 9000
 
-    # Start AIStore proxy
+    # Start an AIStore proxy.
     cd .aistore/sandbox/0 && aisnode -config="config/ais.json" -local_config="config/ais_local.json" -role=proxy -ntargets=1 > log/stdout.log 2>&1 &
 
-    # Wait for proxy to be ready before starting target
+    # Wait for the proxy to be ready before starting the target.
     timeout 30s bash -c 'until curl -sf "http://localhost:51080/v1/daemon?what=snode" >/dev/null 2>&1; do sleep 0.5; done' || { echo "ERROR: AIStore proxy failed to start"; exit 1; }
 
-    # Start AIStore target
+    # Start an AIStore target.
     cd .aistore/sandbox/1 && aisnode -config="config/ais.json" -local_config="config/ais_local.json" -role=target > log/stdout.log 2>&1 &
 
-    # Wait for target to join cluster
+    # Wait for the target to join the cluster.
     timeout 30s bash -c 'until [ $(curl -s "http://localhost:51080/v1/cluster?what=smap" 2>/dev/null | grep -o "\"daemon_type\":\"target\"" | wc -l) -ge 1 ]; do sleep 0.5; done' || { echo "ERROR: AIStore target failed to join"; exit 1; }
 
-    # Wait for AIStore cluster to be operational by creating a bucket and deleting it
+    # Wait for the AIStore cluster to be operational by creating a bucket and deleting it.
     timeout 60s bash -c 'until curl -sf -X POST "http://localhost:51080/v1/buckets/msc-readiness-check?provider=ais" -H "Content-Type: application/json" -d "{\"action\":\"create-bck\"}" >/dev/null 2>&1; do sleep 1; done' || { echo "ERROR: AIStore cluster not operational"; exit 1; }
     curl -sf -X DELETE "http://localhost:51080/v1/buckets/msc-readiness-check?provider=ais" -H "Content-Type: application/json" -d '{"action":"destroy-bck"}' >/dev/null 2>&1 || true
 
