@@ -14,14 +14,19 @@
 # limitations under the License.
 
 import copy
+import json
 import os
 import queue
+import sys
+import tempfile
+import threading
 import time
 from datetime import datetime
 from typing import Optional, cast
 from unittest import mock
 
 import pytest
+import xattr
 
 import multistorageclient as msc
 from multistorageclient.client import StorageClient
@@ -30,6 +35,8 @@ from multistorageclient.progress_bar import ProgressBar
 from multistorageclient.providers.base import BaseStorageProvider
 from multistorageclient.providers.manifest_metadata import DEFAULT_MANIFEST_BASE_DIR
 from multistorageclient.sync import (
+    ErrorConsumerThread,
+    ErrorInfo,
     ProducerThread,
     ResultConsumerThread,
     SyncManager,
@@ -512,6 +519,7 @@ def test_producer_thread_error():
         progress=ProgressBar(desc="", show_progress=False),
         file_queue=queue.Queue(),
         num_workers=1,
+        shutdown_event=threading.Event(),
     )
 
     producer_thread.start()
@@ -553,7 +561,7 @@ def test_sync_function_return_producer_error():
         target_client=cast(StorageClient, target_client),
         target_path="",
     )
-    with pytest.raises(RuntimeError, match="Errors in sync operation, caused by: .*"):
+    with pytest.raises(RuntimeError, match="Errors in sync operation:"):
         manager.sync_objects()
 
 
@@ -581,6 +589,7 @@ def test_progress_bar_update_in_producer_thread_without_deletion():
 
     progress = ProgressBar(desc="Syncing", show_progress=True)
     file_queue = queue.Queue()
+    shutdown_event = threading.Event()
 
     producer_thread = ProducerThread(
         source_client=cast(StorageClient, source_client),
@@ -590,6 +599,7 @@ def test_progress_bar_update_in_producer_thread_without_deletion():
         progress=progress,
         file_queue=file_queue,
         num_workers=1,
+        shutdown_event=shutdown_event,
         delete_unmatched_files=False,
     )
 
@@ -619,6 +629,7 @@ def test_progress_bar_update_in_producer_thread_with_deletion():
 
     progress = ProgressBar(desc="Syncing", show_progress=True)
     file_queue = queue.Queue()
+    shutdown_event = threading.Event()
 
     producer_thread = ProducerThread(
         source_client=cast(StorageClient, source_client),
@@ -628,6 +639,7 @@ def test_progress_bar_update_in_producer_thread_with_deletion():
         progress=progress,
         file_queue=file_queue,
         num_workers=1,
+        shutdown_event=shutdown_event,
         delete_unmatched_files=True,
     )
 
@@ -856,8 +868,6 @@ def test_sync_posix_large_files_no_temp_optimization(
         msc.write(source_url, large_file_content.encode())
         time.sleep(0.5)
 
-        import sys
-
         sync_module = sys.modules["multistorageclient.sync"]
 
         # Test POSIX → POSIX: no temp files should be created in sync.py
@@ -930,8 +940,6 @@ def test_check_posix_paths(temp_data_store_type: type[tempdatastore.TemporaryDat
 
 def test_copy_posix_to_posix():
     """Test _copy_posix_to_posix correctly copies files between POSIX locations."""
-    import tempfile
-
     with tempfile.TemporaryDirectory() as tmpdir:
         source_file = os.path.join(tmpdir, "source.txt")
         target_file = os.path.join(tmpdir, "subdir", "target.txt")
@@ -1068,10 +1076,6 @@ def test_copy_remote_to_remote(
 )
 def test_update_posix_metadata(use_metadata_provider: bool):
     """Test _update_posix_metadata updates metadata via provider or xattr."""
-    import json
-
-    import xattr
-
     msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
 
     with tempdatastore.TemporaryPOSIXDirectory() as temp_posix:
@@ -1184,16 +1188,13 @@ def test_sync_with_manifest_overwrite_behavior():
         msc.write(f"{source_url}/file1.txt", "modified1".encode())
         msc.write(f"{source_url}/file2.txt", "modified2".encode())
 
-        # Second sync with allow_overwrites=False should fail in worker thread
-        # TODO(NGCDP-5748): Currently the exception is raised in a daemon thread and doesn't
-        # properly propagate to the caller.
-        # Once NGCDP-5748 is fixed, update this test to expect FileExistsError.
-        # For now, we just verify the sync completes but files are not overwritten
-        # (some files may fail to sync due to thread exceptions)
-        msc.sync(f"{source_url}/", f"{no_overwrite_url}/synced/")
+        # Second sync with allow_overwrites=False should now fail with RuntimeError
+        # This validates that NGCDP-5748 is fixed - errors from worker threads are now
+        # properly propagated to the caller
+        with pytest.raises(RuntimeError, match="Errors in sync operation"):
+            msc.sync(f"{source_url}/", f"{no_overwrite_url}/synced/")
 
-        # Original content should be preserved (files with overwrites failed in thread)
-        # This behavior is not ideal - see NGCDP-5748
+        # Original content should be preserved (sync failed before overwrites)
         with msc.open(f"{no_overwrite_url}/synced/file1.txt", "rb") as f:
             assert f.read() == b"content1"
         with msc.open(f"{no_overwrite_url}/synced/file2.txt", "rb") as f:
@@ -1357,9 +1358,10 @@ def test_sync_resume_with_metadata_provider():
         new_content = "modified_content1"
         msc.write(f"{source_url}/{modified_file}", new_content.encode())
 
-        # Run sync again - now the file is tracked, so overwrite protection should work
+        # Run sync again - now the file is tracked, so overwrite protection should raise an error
         print("Running sync after source modification (should be blocked by overwrite protection)...")
-        msc.sync(source_url, target_url)
+        with pytest.raises(RuntimeError, match="Errors in sync operation"):
+            msc.sync(source_url, target_url)
 
         # Verify the file was NOT updated because it's now tracked and overwrites are disabled
         with msc.open(f"{target_url}/{modified_file}", "rb") as f:
@@ -1370,3 +1372,153 @@ def test_sync_resume_with_metadata_provider():
             )
 
         print("All sync resume tests passed!")
+
+
+def test_error_info_dataclass():
+    """Test ErrorInfo dataclass can be created with proper fields."""
+    error_info = ErrorInfo(
+        worker_id="process-123-thread-0",
+        exception_type="ValueError",
+        exception_message="Invalid value",
+        traceback_str="Traceback...",
+        file_key="test.txt",
+        operation="add",
+    )
+
+    assert error_info.worker_id == "process-123-thread-0"
+    assert error_info.exception_type == "ValueError"
+    assert error_info.exception_message == "Invalid value"
+    assert error_info.traceback_str == "Traceback..."
+    assert error_info.file_key == "test.txt"
+    assert error_info.operation == "add"
+
+
+def test_error_consumer_thread_fail_fast():
+    """Test ErrorConsumerThread signals shutdown on first error."""
+    error_queue = queue.Queue()
+    shutdown_event = threading.Event()
+
+    error_consumer = ErrorConsumerThread(
+        error_queue=error_queue,
+        shutdown_event=shutdown_event,
+    )
+    error_consumer.start()
+
+    # Send an error
+    error_info = ErrorInfo(
+        worker_id="test-worker",
+        exception_type="TestException",
+        exception_message="Test error",
+        traceback_str="Test traceback",
+        file_key="test.txt",
+        operation="add",
+    )
+    error_queue.put(error_info)
+
+    # Wait for error consumer to process
+    time.sleep(0.1)
+
+    # Shutdown event should be set on first error
+    assert shutdown_event.is_set()
+    assert len(error_consumer.errors) == 1
+    assert error_consumer.errors[0].worker_id == "test-worker"
+
+    # Stop the consumer
+    error_queue.put(None)
+    error_consumer.join(timeout=1)
+    assert not error_consumer.is_alive()
+
+
+def test_producer_thread_with_shutdown_event():
+    """Test ProducerThread respects shutdown event."""
+    source_client = MockStorageClient()
+    target_client = MockStorageClient()
+
+    # Create long list of files to ensure producer is interruptible
+    source_files = [
+        ObjectMetadata(key=f"file{i}.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0))
+        for i in range(1_000_000)
+    ]
+
+    source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
+    target_client.list = lambda **kwargs: iter([])  # type: ignore
+
+    progress = ProgressBar(desc="Syncing", show_progress=False)
+    file_queue = queue.Queue()
+    shutdown_event = threading.Event()
+
+    producer_thread = ProducerThread(
+        source_client=cast(StorageClient, source_client),
+        source_path="",
+        target_client=cast(StorageClient, target_client),
+        target_path="",
+        progress=progress,
+        file_queue=file_queue,
+        num_workers=1,
+        shutdown_event=shutdown_event,
+    )
+
+    producer_thread.start()
+
+    # Let it process a few files
+    time.sleep(0.01)
+
+    # Signal shutdown
+    shutdown_event.set()
+
+    # Wait for producer to stop
+    producer_thread.join(timeout=1.0)
+
+    # Producer thread should be stopped
+    assert not producer_thread.is_alive()
+
+    # Given that producer thread is not alive, the queue should have some files left
+    queue_size = file_queue.qsize()
+    assert queue_size > 0
+
+
+def test_sync_with_worker_error_fail_fast():
+    """Test sync operation with worker error - sync should fail fast."""
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    source_profile = "source"
+    target_profile = "target"
+
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as source_store,
+        tempdatastore.TemporaryPOSIXDirectory() as target_store,
+    ):
+        config.setup_msc_config(
+            config_dict={
+                "profiles": {
+                    source_profile: source_store.profile_config_dict(),
+                    target_profile: target_store.profile_config_dict(),
+                }
+            }
+        )
+
+        source_url = f"msc://{source_profile}"
+        target_url = f"msc://{target_profile}"
+
+        # Create source files
+        msc.write(f"{source_url}/file1.txt", b"content1")
+        msc.write(f"{source_url}/file2.txt", b"content2")
+
+        source_client, source_path = msc.resolve_storage_client(source_url)
+        target_client, target_path = msc.resolve_storage_client(target_url)
+
+        # Mock shutil.copy2 to raise error on first file (POSIX to POSIX uses shutil.copy2)
+        sync_module = sys.modules["multistorageclient.sync"]
+        original_copy2 = sync_module.shutil.copy2
+        call_count = [0]
+
+        def mock_copy2(src: str, dst: str, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise PermissionError("Simulated permission error")
+            return original_copy2(src, dst, **kwargs)
+
+        with mock.patch.object(sync_module.shutil, "copy2", side_effect=mock_copy2):
+            # Sync should raise RuntimeError containing worker errors
+            with pytest.raises(RuntimeError, match="Errors in sync operation"):
+                target_client.sync_from(source_client, source_path, target_path)

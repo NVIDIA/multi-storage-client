@@ -834,6 +834,7 @@ class SingleStorageClient(AbstractStorageClient):
             specific files will be synced, skipping enumeration of the source path. Cannot be used together with patterns.
         :param ignore_hidden: Whether to ignore hidden files and directories. Default is ``True``.
         :raises ValueError: If both source_files and patterns are provided.
+        :raises RuntimeError: If errors occur during sync operations. The sync will stop on first error (fail-fast).
         """
         if source_files and patterns:
             raise ValueError("Cannot specify both 'source_files' and 'patterns'. Please use only one filtering method.")

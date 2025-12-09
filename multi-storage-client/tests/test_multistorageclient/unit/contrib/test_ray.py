@@ -22,7 +22,7 @@ import pytest
 import ray
 
 from multistorageclient import StorageClient, StorageClientConfig
-from multistorageclient.contrib.ray import SharedQueue
+from multistorageclient.contrib.ray import SharedEvent, SharedQueue
 from multistorageclient.sync import _SyncOp
 from multistorageclient.types import ExecutionMode, ObjectMetadata
 
@@ -140,6 +140,19 @@ def test_ray_queue_producer_consumer(ray_cluster):
     assert input_queue.qsize() == 0
     assert output_queue.qsize() == 300
     assert sum(results) == 300
+
+
+def test_ray_shared_event(ray_cluster):
+    """
+    Test shared event with Ray.
+    """
+    event = SharedEvent()
+    assert not event.is_set()
+    event.set()
+    assert event.is_set()
+    event.clear()
+
+    assert not event.is_set()
 
 
 def test_storage_client_sync_no_files(ray_cluster):

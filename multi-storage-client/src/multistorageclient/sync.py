@@ -24,9 +24,11 @@ import shutil
 import tempfile
 import threading
 import time
+import traceback
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Optional, cast
+from typing import TYPE_CHECKING, Any, Optional, Union, cast
 
 import xattr
 from filelock import FileLock
@@ -39,6 +41,23 @@ from .types import ExecutionMode, ObjectMetadata
 from .utils import PatternMatcher, calculate_worker_processes_and_threads
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ErrorInfo:
+    """Information about an error that occurred during sync operation.
+
+    This dataclass encapsulates all relevant information about an exception
+    that occurred in a worker thread, including context about what file was
+    being processed and which operation failed.
+    """
+
+    worker_id: str
+    exception_type: str
+    exception_message: str
+    traceback_str: str
+    file_key: Optional[str]
+    operation: str
 
 
 def is_ray_available():
@@ -55,6 +74,7 @@ if TYPE_CHECKING:
     from .client.types import AbstractStorageClient
 
 _Queue = Any  # queue.Queue | multiprocessing.Queue | SharedQueue
+_Event = Any  # threading.Event | multiprocessing.Event | SharedEvent
 
 
 class _SyncOp(Enum):
@@ -93,6 +113,7 @@ class ProducerThread(threading.Thread):
         progress: ProgressBar,
         file_queue: _Queue,
         num_workers: int,
+        shutdown_event: _Event,
         delete_unmatched_files: bool = False,
         pattern_matcher: Optional[PatternMatcher] = None,
         preserve_source_attributes: bool = False,
@@ -108,6 +129,7 @@ class ProducerThread(threading.Thread):
         self.progress = progress
         self.file_queue = file_queue
         self.num_workers = num_workers
+        self.shutdown_event = shutdown_event
         self.delete_unmatched_files = delete_unmatched_files
         self.pattern_matcher = pattern_matcher
         self.preserve_source_attributes = preserve_source_attributes
@@ -165,6 +187,10 @@ class ProducerThread(threading.Thread):
             target_file = next(target_iter, None)
 
             while source_file or target_file:
+                if self.shutdown_event.is_set():
+                    logger.info("ProducerThread: Shutdown event detected, stopping file enumeration")
+                    break
+
                 # Update progress and count each pair (or single) considered for syncing
                 self.progress.update_total(total_count)
 
@@ -278,6 +304,50 @@ class ResultConsumerThread(threading.Thread):
             self.error = e
 
 
+class ErrorConsumerThread(threading.Thread):
+    """
+    A consumer thread that monitors and processes errors from worker threads.
+
+    This thread is responsible for consuming error information from worker
+    processes/threads that encounter exceptions during sync operations.
+    On the first error, it signals graceful shutdown to stop further work.
+    """
+
+    def __init__(
+        self,
+        error_queue: _Queue,
+        shutdown_event: _Event,
+    ):
+        super().__init__(daemon=True)
+        self.error_queue = error_queue
+        self.shutdown_event = shutdown_event
+        self.errors: list[ErrorInfo] = []
+        self.error = None
+
+    def run(self):
+        try:
+            while True:
+                error_info = self.error_queue.get()
+
+                if error_info is None:
+                    break
+
+                logger.error(
+                    f"Error in worker {error_info.worker_id} during {error_info.operation} "
+                    f"on file {error_info.file_key}: {error_info.exception_type}: {error_info.exception_message}"
+                )
+
+                self.errors.append(error_info)
+
+                # Signal shutdown on first error (fail-fast)
+                if len(self.errors) == 1:
+                    logger.info("Error detected, signaling shutdown")
+                    self.shutdown_event.set()
+
+        except Exception as e:
+            self.error = e
+
+
 class SyncManager:
     """
     Manages the synchronization of files between two storage locations.
@@ -333,7 +403,6 @@ class SyncManager:
         determine if files need to be copied. Files are processed in parallel
         using configurable numbers of worker processes and threads.
 
-
         :param execution_mode: Execution mode for sync operations.
         :param description: Description text shown in the progress bar.
         :param num_worker_processes: Number of worker processes to use. If None, automatically determined based on available CPU cores.
@@ -350,6 +419,8 @@ class SyncManager:
         :param source_files: Optional list of file paths (relative to source_path) to sync. When provided, only these
             specific files will be synced, skipping enumeration of the source path.
         :param ignore_hidden: Whether to ignore hidden files and directories (starting with dot). Default is True.
+        :raises RuntimeError: If errors occur during sync operations. Exception message contains details of all errors encountered.
+            The sync operation will stop on the first error (fail-fast) and report all errors collected up to that point.
         """
         logger.debug(f"Starting sync operation {description}")
 
@@ -368,9 +439,13 @@ class SyncManager:
             if num_worker_processes == 1:
                 file_queue = queue.Queue()
                 result_queue = queue.Queue()
+                error_queue = queue.Queue()
+                shutdown_event = threading.Event()
             else:
                 file_queue = multiprocessing.Queue()
                 result_queue = multiprocessing.Queue()
+                error_queue = multiprocessing.Queue()
+                shutdown_event = multiprocessing.Event()
         else:
             if not HAVE_RAY:
                 raise RuntimeError(
@@ -379,10 +454,12 @@ class SyncManager:
                     "Alternatively, use ExecutionMode.LOCAL for single-machine sync operations."
                 )
 
-            from .contrib.ray.utils import SharedQueue
+            from .contrib.ray.utils import SharedEvent, SharedQueue
 
             file_queue = SharedQueue(maxsize=100000)
             result_queue = SharedQueue()
+            error_queue = SharedQueue()
+            shutdown_event = SharedEvent()
 
         # Create a progress bar to track the progress of the sync operation.
         progress = ProgressBar(desc=description, show_progress=True, total_items=0)
@@ -396,6 +473,7 @@ class SyncManager:
             progress,
             file_queue,
             num_workers,
+            shutdown_event,
             delete_unmatched_files,
             pattern_matcher,
             preserve_source_attributes,
@@ -414,6 +492,13 @@ class SyncManager:
         )
         result_consumer_thread.start()
 
+        # Start the error consumer thread to monitor and handle errors from worker threads
+        error_consumer_thread = ErrorConsumerThread(
+            error_queue,
+            shutdown_event,
+        )
+        error_consumer_thread.start()
+
         if execution_mode == ExecutionMode.LOCAL:
             if num_worker_processes == 1:
                 # Single process does not require multiprocessing.
@@ -425,6 +510,8 @@ class SyncManager:
                     num_worker_threads,
                     file_queue,
                     result_queue,
+                    error_queue,
+                    shutdown_event,
                 )
             else:
                 # Create individual processes so they can share the multiprocessing.Queue
@@ -440,6 +527,8 @@ class SyncManager:
                             num_worker_threads,
                             file_queue,
                             result_queue,
+                            error_queue,
+                            shutdown_event,
                         ),
                     )
                     processes.append(process)
@@ -550,6 +639,8 @@ class SyncManager:
                             num_worker_threads,
                             file_queue,
                             result_queue,
+                            error_queue,
+                            shutdown_event,
                         )
                         for worker_index in range(int(num_worker_processes))
                     ]
@@ -574,6 +665,10 @@ class SyncManager:
         result_queue.put((_SyncOp.STOP, None, None))
         result_consumer_thread.join()
 
+        # Signal the error consumer thread to stop.
+        error_queue.put(None)
+        error_consumer_thread.join()
+
         # Commit the metadata to the target storage client.
         self.target_client.commit_metadata()
 
@@ -581,17 +676,33 @@ class SyncManager:
         progress.close()
         logger.debug(f"Completed sync operation {description}")
 
-        # Raise an error if the producer or result consumer thread encountered an error.
-        errors = []
+        # Collect all errors from various sources
+        error_messages = []
 
         if producer_thread.error:
-            errors.append(f"Producer thread error: {producer_thread.error}")
+            error_messages.append(f"Producer thread error: {producer_thread.error}")
 
         if result_consumer_thread.error:
-            errors.append(f"Result consumer thread error: {result_consumer_thread.error}")
+            error_messages.append(f"Result consumer thread error: {result_consumer_thread.error}")
 
-        if errors:
-            raise RuntimeError(f"Errors in sync operation, caused by: {errors}")
+        if error_consumer_thread.error:
+            error_messages.append(f"Error consumer thread error: {error_consumer_thread.error}")
+
+        # Add worker errors with detailed information
+        if error_consumer_thread.errors:
+            error_messages.append(f"\nWorker errors ({len(error_consumer_thread.errors)} total):")
+            for i, error_info in enumerate(error_consumer_thread.errors, 1):
+                error_messages.append(
+                    f"\n  Error {i}:\n"
+                    f"    Worker: {error_info.worker_id}\n"
+                    f"    Operation: {error_info.operation}\n"
+                    f"    File: {error_info.file_key}\n"
+                    f"    Exception: {error_info.exception_type}: {error_info.exception_message}\n"
+                    f"    Traceback:\n{error_info.traceback_str}"
+                )
+
+        if error_messages:
+            raise RuntimeError(f"Errors in sync operation: {''.join(error_messages)}")
 
 
 def _sync_worker_process(
@@ -601,7 +712,9 @@ def _sync_worker_process(
     target_path: str,
     num_worker_threads: int,
     file_queue: _Queue,
-    result_queue: Optional[_Queue],
+    result_queue: _Queue,
+    error_queue: _Queue,
+    shutdown_event: _Event,
 ):
     """
     Worker process that handles file synchronization operations using multiple threads.
@@ -609,111 +722,109 @@ def _sync_worker_process(
     This function is designed to run in a separate process as part of a multiprocessing
     sync operation. It spawns multiple worker threads that consume sync operations from
     the file_queue and perform the actual file transfers (ADD) or deletions (DELETE).
+
+    Exceptions that occur during file operations are caught, packaged as ErrorInfo
+    objects, and sent to the error_queue for centralized error handling. The shutdown_event
+    is checked periodically to enable graceful shutdown when errors occur elsewhere.
     """
 
-    def _sync_consumer() -> None:
+    def _sync_consumer(thread_id: int) -> None:
         """Processes files from the queue and copies them."""
+        worker_id = f"process-{os.getpid()}-thread-{thread_id}"
+
         while True:
+            if shutdown_event.is_set():
+                logger.debug(f"Worker {worker_id}: Shutdown event detected, exiting")
+                break
+
             op, file_metadata = file_queue.get()
+
             if op == _SyncOp.STOP:
                 break
 
             source_key = file_metadata.key[len(source_path) :].lstrip("/")
             target_file_path = os.path.join(target_path, source_key)
 
-            if op == _SyncOp.ADD:
-                logger.debug(f"sync {file_metadata.key} -> {target_file_path}")
-                # Acquire exclusive lock to prevent race conditions when multiple worker processes attempt concurrent
-                # writes to the same target location on shared filesystems. This can occur when users run multiple sync
-                # operations targeting the same filesystem location simultaneously.
-                if target_client._is_posix_file_storage_provider():
-                    target_lock_file_path = os.path.join(
-                        os.path.dirname(target_file_path), f".{os.path.basename(target_file_path)}.lock"
-                    )
-                    lock_path = cast(BaseStorageProvider, target_client._storage_provider)._prepend_base_path(
-                        target_lock_file_path
-                    )
-                    exclusive_lock = FileLock(lock_path, timeout=DEFAULT_LOCK_TIMEOUT)
-                else:
-                    exclusive_lock = contextlib.nullcontext()
+            try:
+                if op == _SyncOp.ADD:
+                    logger.debug(f"sync {file_metadata.key} -> {target_file_path}")
+                    with _create_exclusive_filelock(target_client, target_file_path):
+                        # Since this is an ADD operation, the file doesn't exist in the metadata provider.
+                        # Check if it exists physically to support resume functionality.
+                        target_metadata = None
+                        if not target_client._storage_provider:
+                            raise RuntimeError("Invalid state, no storage provider configured.")
 
-                with exclusive_lock:
-                    # Since this is an ADD operation, the file doesn't exist in the metadata provider.
-                    # Check if it exists physically to support resume functionality.
-                    target_metadata = None
-                    if not target_client._storage_provider:
-                        raise RuntimeError("Invalid state, no storage provider configured.")
+                        try:
+                            target_metadata = target_client._storage_provider.get_object_metadata(target_file_path)
+                        except FileNotFoundError:
+                            pass
 
-                    try:
-                        target_metadata = target_client._storage_provider.get_object_metadata(target_file_path)
-                    except FileNotFoundError:
-                        pass
+                        # If file exists physically, check if sync is needed
+                        if target_metadata is not None:
+                            # First check if file is already up-to-date (optimization for all cases)
+                            if (
+                                target_metadata.content_length == file_metadata.content_length
+                                and target_metadata.last_modified >= file_metadata.last_modified
+                            ):
+                                logger.debug(f"File {target_file_path} already exists and is up-to-date, skipping copy")
 
-                    # If file exists physically, check if sync is needed
-                    if target_metadata is not None:
-                        # First check if file is already up-to-date (optimization for all cases)
-                        if (
-                            target_metadata.content_length == file_metadata.content_length
-                            and target_metadata.last_modified >= file_metadata.last_modified
-                        ):
-                            logger.debug(f"File {target_file_path} already exists and is up-to-date, skipping copy")
+                                # Since this is an ADD operation, the file exists physically but not in metadata provider.
+                                # Add it to metadata provider for tracking.
+                                if target_client._metadata_provider:
+                                    logger.debug(
+                                        f"Adding existing file {target_file_path} to metadata provider for tracking"
+                                    )
+                                    with target_client._metadata_provider_lock or contextlib.nullcontext():
+                                        target_client._metadata_provider.add_file(target_file_path, target_metadata)
 
-                            # Since this is an ADD operation, the file exists physically but not in metadata provider.
-                            # Add it to metadata provider for tracking.
-                            if target_client._metadata_provider:
-                                logger.debug(
-                                    f"Adding existing file {target_file_path} to metadata provider for tracking"
+                                continue
+
+                            # If we reach here, file exists but needs updating - check if overwrites are allowed
+                            if (
+                                target_client._metadata_provider
+                                and not target_client._metadata_provider.allow_overwrites()
+                            ):
+                                raise FileExistsError(
+                                    f"Cannot sync '{file_metadata.key}' to '{target_file_path}': "
+                                    f"file exists and needs updating, but overwrites are not allowed. "
+                                    f"Enable overwrites in metadata provider configuration or remove the existing file."
                                 )
-                                with target_client._metadata_provider_lock or contextlib.nullcontext():
-                                    target_client._metadata_provider.add_file(target_file_path, target_metadata)
 
-                            continue
-
-                        # If we reach here, file exists but needs updating - check if overwrites are allowed
-                        if target_client._metadata_provider and not target_client._metadata_provider.allow_overwrites():
-                            # TODO(NGCDP-5748): This error is raised in a daemon thread and won't properly
-                            # propagate to the caller. Need to implement proper exception handling in worker threads.
-                            raise FileExistsError(
-                                f"Cannot sync '{file_metadata.key}' to '{target_file_path}': "
-                                f"file exists and needs updating, but overwrites are not allowed. "
-                                f"Enable overwrites in metadata provider configuration or remove the existing file."
-                            )
-
-                    source_physical_path, target_physical_path = _check_posix_paths(
-                        source_client, target_client, file_metadata.key, target_file_path
-                    )
-
-                    source_is_posix = source_physical_path is not None
-                    target_is_posix = target_physical_path is not None
-
-                    if source_is_posix and target_is_posix:
-                        _copy_posix_to_posix(source_physical_path, target_physical_path)
-                        _update_posix_metadata(target_client, target_physical_path, target_file_path, file_metadata)
-                    elif source_is_posix and not target_is_posix:
-                        _copy_posix_to_remote(target_client, source_physical_path, target_file_path, file_metadata)
-                    elif not source_is_posix and target_is_posix:
-                        _copy_remote_to_posix(source_client, file_metadata.key, target_physical_path)
-                        _update_posix_metadata(target_client, target_physical_path, target_file_path, file_metadata)
-                    else:
-                        _copy_remote_to_remote(
-                            source_client, target_client, file_metadata.key, target_file_path, file_metadata
+                        source_physical_path, target_physical_path = _check_posix_paths(
+                            source_client, target_client, file_metadata.key, target_file_path
                         )
 
-                # Clean up the lock file for POSIX file storage providers
-                if target_client._is_posix_file_storage_provider():
-                    try:
-                        os.remove(lock_path)
-                    except OSError:
-                        # Lock file might already be removed or not accessible
-                        pass
-            elif op == _SyncOp.DELETE:
-                logger.debug(f"rm {file_metadata.key}")
-                target_client.delete(file_metadata.key)
-            else:
-                raise ValueError(f"Unknown operation: {op}")
+                        source_is_posix = source_physical_path is not None
+                        target_is_posix = target_physical_path is not None
 
-            if result_queue:
-                if op == _SyncOp.ADD:
+                        if source_is_posix and target_is_posix:
+                            _copy_posix_to_posix(source_physical_path, target_physical_path)
+                            _update_posix_metadata(target_client, target_physical_path, target_file_path, file_metadata)
+                        elif source_is_posix and not target_is_posix:
+                            _copy_posix_to_remote(target_client, source_physical_path, target_file_path, file_metadata)
+                        elif not source_is_posix and target_is_posix:
+                            _copy_remote_to_posix(source_client, file_metadata.key, target_physical_path)
+                            _update_posix_metadata(target_client, target_physical_path, target_file_path, file_metadata)
+                        else:
+                            _copy_remote_to_remote(
+                                source_client, target_client, file_metadata.key, target_file_path, file_metadata
+                            )
+
+                    # Clean up the lock file for POSIX file storage providers
+                    if target_client._is_posix_file_storage_provider():
+                        try:
+                            target_lock_file_path = os.path.join(
+                                os.path.dirname(target_file_path), f".{os.path.basename(target_file_path)}.lock"
+                            )
+                            lock_path = cast(BaseStorageProvider, target_client._storage_provider)._prepend_base_path(
+                                target_lock_file_path
+                            )
+                            os.remove(lock_path)
+                        except OSError:
+                            # Lock file might already be removed or not accessible
+                            pass
+
                     # add tuple of (virtual_path, physical_metadata) to result_queue
                     if target_client._metadata_provider:
                         physical_metadata = target_client._metadata_provider.get_object_metadata(
@@ -723,20 +834,58 @@ def _sync_worker_process(
                         physical_metadata = None
                     result_queue.put((op, target_file_path, physical_metadata))
                 elif op == _SyncOp.DELETE:
+                    logger.debug(f"rm {file_metadata.key}")
+                    target_client.delete(file_metadata.key)
                     result_queue.put((op, target_file_path, None))
                 else:
-                    raise RuntimeError(f"Unknown operation: {op}")
+                    raise ValueError(f"Unknown operation: {op}")
+            except Exception as e:
+                if error_queue:
+                    error_info = ErrorInfo(
+                        worker_id=worker_id,
+                        exception_type=type(e).__name__,
+                        exception_message=str(e),
+                        traceback_str=traceback.format_exc(),
+                        file_key=file_metadata.key if file_metadata else None,
+                        operation=op.value if op else "unknown",
+                    )
+                    error_queue.put(error_info)
+                else:
+                    logger.error(
+                        f"Worker {worker_id}: Exception during {op} on {file_metadata.key}: {e}\n{traceback.format_exc()}"
+                    )
+                    raise
 
     # Worker process that spawns threads to handle syncing.
     threads = []
-    for _ in range(num_worker_threads):
-        thread = threading.Thread(target=_sync_consumer, daemon=True)
+    for thread_id in range(num_worker_threads):
+        thread = threading.Thread(target=_sync_consumer, args=(thread_id,), daemon=True)
         thread.start()
         threads.append(thread)
 
     # Wait for all threads to complete
     for thread in threads:
         thread.join()
+
+
+def _create_exclusive_filelock(
+    target_client: "AbstractStorageClient",
+    target_file_path: str,
+) -> Union[FileLock, contextlib.AbstractContextManager]:
+    """Create an exclusive file lock for POSIX file storage providers.
+
+    Acquires exclusive lock to prevent race conditions when multiple worker processes attempt concurrent
+    writes to the same target location on shared filesystems. This can occur when users run multiple sync
+    operations targeting the same filesystem location simultaneously.
+    """
+    if target_client._is_posix_file_storage_provider():
+        target_lock_file_path = os.path.join(
+            os.path.dirname(target_file_path), f".{os.path.basename(target_file_path)}.lock"
+        )
+        lock_path = cast(BaseStorageProvider, target_client._storage_provider)._prepend_base_path(target_lock_file_path)
+        return FileLock(lock_path, timeout=DEFAULT_LOCK_TIMEOUT)
+    else:
+        return contextlib.nullcontext()
 
 
 def _check_posix_paths(
