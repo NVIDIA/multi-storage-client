@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import queue
 import time
 from datetime import datetime
@@ -28,15 +29,36 @@ from multistorageclient.types import ExecutionMode, ObjectMetadata
 from ..utils import tempdatastore
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="module")
 def ray_cluster():
+    # Get project root (where pyproject.toml is)
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+
+    # Set environment variables for the main process
+    os.environ["MSC_NUM_PROCESSES"] = "1"
+    os.environ["MSC_NUM_THREADS_PER_PROCESS"] = "2"
+
     ray.init(
-        address="127.0.0.1:6379",
+        num_cpus=2,
+        num_gpus=0,
         ignore_reinit_error=True,
-        runtime_env={"excludes": [".git", ".git/**"]},
+        runtime_env={
+            "excludes": [".git", ".git/**", "*.pyc", "__pycache__"],
+            "working_dir": project_root,
+            # Ensure workers can import from the project and inherit env vars
+            "env_vars": {
+                "PYTHONPATH": project_root,
+                "MSC_NUM_PROCESSES": "2",
+                "MSC_NUM_THREADS_PER_PROCESS": "2",
+            },
+        },
     )
     yield
     ray.shutdown()
+
+    # Clean up environment variables after tests
+    os.environ.pop("MSC_NUM_PROCESSES", None)
+    os.environ.pop("MSC_NUM_THREADS_PER_PROCESS", None)
 
 
 @ray.remote

@@ -460,6 +460,7 @@ class SyncManager:
 
             # Create a placement group to spread the workers across the cluster.
             from ray.util.placement_group import placement_group
+            from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
             cluster_resources = ray.cluster_resources()
             available_resources = ray.available_resources()
@@ -536,8 +537,11 @@ class SyncManager:
             try:
                 ray.get(
                     [
-                        _sync_worker_process_ray.options(  # type: ignore
-                            placement_group=msc_sync_placement_group, placement_group_bundle_index=worker_index
+                        _sync_worker_process_ray.options(
+                            scheduling_strategy=PlacementGroupSchedulingStrategy(
+                                placement_group=msc_sync_placement_group,
+                                placement_group_bundle_index=worker_index,
+                            )
                         ).remote(
                             self.source_client,
                             self.source_path,

@@ -135,26 +135,6 @@ start-telemetry-systems: stop-telemetry-systems
     # Wait for Tempo.
     timeout 60s bash -c "until curl --fail --output /dev/null --silent http://localhost:8081/ready; do sleep 1; done"
 
-# Stop Ray cluster.
-stop-ray-cluster:
-    # Stop Ray cluster.
-    #
-    # Use ray stop to gracefully shut down the cluster
-    -uv run --active ray stop -g 60
-    # Remove Ray temporary directories
-    -rm -rf /tmp/ray
-
-# Start Ray cluster.
-start-ray-cluster: stop-ray-cluster
-    # Start Ray cluster.
-    #
-    # Start a local Ray cluster with default settings
-    echo "🚀 Starting Ray cluster..."
-    uv run --active ray start --head --port=6379 --disable-usage-stats --num-cpus 2
-
-    # Wait for Ray cluster to be ready.
-    timeout 30s bash -c "until uv run python -c 'import ray; ray.init(address=\"auto\", runtime_env={\"excludes\": [\".git\", \".git/**\"]}, ignore_reinit_error=True); print(\"Ray cluster ready\"); ray.shutdown()'; do sleep 1; done"
-
 # Run unit tests.
 run-unit-tests: prepare-toolchain start-storage-systems && stop-storage-systems
     # Remove test artifacts.
@@ -166,6 +146,11 @@ run-unit-tests: prepare-toolchain start-storage-systems && stop-storage-systems
 run-load-tests: prepare-toolchain start-storage-systems && stop-storage-systems
     # Load test.
     uv run pytest --minutes 30 tests/test_multistorageclient/load/local.py
+
+# Run Ray tests.
+run-ray-tests:
+    # Ray test.
+    uv run pytest --cov --cov-append --cov-report term --cov-report html --cov-report xml --timeout 120 tests/test_multistorageclient/unit/contrib/test_ray.py
 
 # Create package archives.
 package: prepare-toolchain
@@ -200,7 +185,7 @@ package: prepare-toolchain
     done
 
 # Release build.
-build: analyze run-unit-tests
+build: analyze run-unit-tests run-ray-tests
     if [[ -n "${CI:-}" ]]; then just package; fi
 
 # Run E2E tests.
