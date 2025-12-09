@@ -27,7 +27,7 @@ jobs:
         shell: nix develop '.#"${{ matrix.python-binary }}"' --command bash -e {0}
     steps:
       - uses: DeterminateSystems/nix-installer-action@main
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - working-directory: ./multi-storage-client
         run: |
           just python-binary=${{ matrix.python-binary }} build
@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: DeterminateSystems/nix-installer-action@main
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - working-directory: ./multi-storage-client-docs
         run: |
           just build

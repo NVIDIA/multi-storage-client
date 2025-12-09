@@ -188,16 +188,6 @@
                 openssh
                 # GitHub CLI.
                 gh
-                # CMake.
-                cmake
-                # LLVM.
-                #
-                # Using `llvm-install-name-tool` (aliased as `install_name_tool`) for cross-compilation.
-                #
-                # https://github.com/aws/aws-lc-rs/issues/495
-                (writeShellScriptBin "install_name_tool" ''
-                  ${lib.meta.getExe' libllvm "llvm-install-name-tool"} "$@"
-                '')
               ];
 
               shellHook =

@@ -18,7 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: DeterminateSystems/nix-installer-action@main
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref }}
       - id: get-tag-message
         run: |
           git tag --list --format '%(contents)' ${{ github.ref_name }} | cat <(echo -n 'tag-message=') - >> $GITHUB_OUTPUT
@@ -38,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: DeterminateSystems/nix-installer-action@main
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       # Set locale for Sphinx.
       #
       # `locale` comes with most Unix-like operating systems.
@@ -67,7 +69,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: DeterminateSystems/nix-installer-action@main
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       # Skip creation if a release for the tag already exists.
       - run: |
           gh release --repo ${{ github.repository }} view ${{ github.ref_name }} || gh release --repo ${{ github.repository }} create ${{ github.ref_name }} --latest=$([[ '${{ needs.get-tag-message.outputs.tag-message }}' == 'latest' ]] && echo true || echo false) --notes-file .release_notes/${{ github.ref_name }}.md --title ${{ github.ref_name }} --verify-tag
