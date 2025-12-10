@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
 import logging
 import os
 from typing import Any
@@ -43,14 +44,22 @@ class _OTLPMSALMetricExporter(OTLPMetricExporter):
 
         def __init__(self, access_token_provider: AccessTokenProvider, *args, **kwargs):
             max_retries = kwargs.get("max_retries", _OTLPMSALMetricExporter._MAX_RETRIES)
-            kwargs["max_retries"] = requests_adapters.Retry(
-                total=max_retries,
-                backoff_factor=_OTLPMSALMetricExporter._BACKOFF_FACTOR,
-                connect=max_retries,
-                read=max_retries,
-                status_forcelist=[429, 500, 502, 503, 504],
-                method_whitelist=["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE", "POST"],
-            )
+
+            retry_kwargs = {
+                "total": max_retries,
+                "backoff_factor": _OTLPMSALMetricExporter._BACKOFF_FACTOR,
+                "connect": max_retries,
+                "read": max_retries,
+                "status_forcelist": [429, 500, 502, 503, 504],
+            }
+
+            retry_sig = inspect.signature(requests_adapters.Retry.__init__)
+            if "allowed_methods" in retry_sig.parameters:
+                retry_kwargs["allowed_methods"] = ["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE", "POST"]
+            elif "method_whitelist" in retry_sig.parameters:
+                retry_kwargs["method_whitelist"] = ["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE", "POST"]
+
+            kwargs["max_retries"] = requests_adapters.Retry(**retry_kwargs)
             super().__init__(*args, **kwargs)
             self._access_token_provider = access_token_provider
 
