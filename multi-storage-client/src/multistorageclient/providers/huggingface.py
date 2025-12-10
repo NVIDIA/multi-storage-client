@@ -18,15 +18,17 @@ import io
 import os
 import tempfile
 from collections.abc import Callable, Iterator
-from typing import IO, Any, Optional, Union
+from typing import IO, Any, Optional, TypeVar, Union
 
 from huggingface_hub import CommitOperationCopy, HfApi
 from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError, RepositoryNotFoundError, RevisionNotFoundError
 from huggingface_hub.hf_api import RepoFile, RepoFolder
 
 from ..telemetry import Telemetry
-from ..types import AWARE_DATETIME_MIN, Credentials, CredentialsProvider, ObjectMetadata, Range
+from ..types import AWARE_DATETIME_MIN, Credentials, CredentialsProvider, ObjectMetadata, Range, RetryableError
 from .base import BaseStorageProvider
+
+_T = TypeVar("_T")
 
 PROVIDER = "huggingface"
 
@@ -155,6 +157,168 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         if hf_transfer_enabled and importlib.util.find_spec("hf_transfer") is None:
             raise ValueError(HF_TRANSFER_UNAVAILABLE_ERROR_MESSAGE)
 
+    def _parse_rate_limit_headers(self, response) -> str:
+        """
+        Parses HuggingFace rate limit headers and returns formatted information.
+
+        HuggingFace returns rate limit information in these headers:
+        - RateLimit: "api";r=0;t=142
+          - r = requests remaining in the current window
+          - t = seconds until rate limit resets
+        - RateLimit-Policy: "fixed window";"api";q=10000;w=300
+          - q = total requests allowed per window
+          - w = window size in seconds
+
+        Reference: https://huggingface.co/docs/hub/rate-limits
+
+        :param response: The HTTP response object containing rate limit headers.
+        :return: Formatted string with rate limit information, or empty string if headers not found.
+        """
+
+        try:
+            headers = response.headers
+        except Exception:
+            return ""
+
+        rate_limit_info = []
+
+        # Note: HTTP headers are case-insensitive, but we use the canonical casing from HF docs
+        if "RateLimit" in headers:
+            rate_limit = headers["RateLimit"]
+            # Extract r (remaining) and t (time until reset)
+            remaining = None
+            reset_seconds = None
+
+            parts = rate_limit.split(";")
+            for part in parts:
+                part = part.strip()
+                if part.startswith("r="):
+                    try:
+                        remaining = int(part[2:])
+                    except ValueError:
+                        pass
+                elif part.startswith("t="):
+                    try:
+                        reset_seconds = int(part[2:])
+                    except ValueError:
+                        pass
+
+            if remaining is not None:
+                rate_limit_info.append(f"Requests remaining in current window: {remaining}")
+            if reset_seconds is not None:
+                rate_limit_info.append(f"Rate limit resets in: {reset_seconds} seconds")
+
+        if "RateLimit-Policy" in headers:
+            policy = headers["RateLimit-Policy"]
+            # Extract q (quota) and w (window size)
+            quota = None
+            window_seconds = None
+
+            parts = policy.split(";")
+            for part in parts:
+                part = part.strip()
+                if part.startswith("q="):
+                    try:
+                        quota = int(part[2:])
+                    except ValueError:
+                        pass
+                elif part.startswith("w="):
+                    try:
+                        window_seconds = int(part[2:])
+                    except ValueError:
+                        pass
+
+            if quota is not None and window_seconds is not None:
+                window_minutes = window_seconds / 60
+                rate_limit_info.append(f"Rate limit policy: {quota} requests per {window_minutes:.0f}-minute window")
+
+        if rate_limit_info:
+            return " | ".join(rate_limit_info)
+
+        return ""
+
+    def _translate_errors(
+        self,
+        func: Callable[[], _T],
+        operation: str,
+        repo_id: str,
+        path: str,
+    ) -> _T:
+        """
+        Translates HuggingFace errors into standardized exceptions with retry logic.
+
+        Parses HuggingFace rate limit headers (RateLimit and RateLimit-Policy) to provide
+        detailed information about rate limiting to users. See https://huggingface.co/docs/hub/rate-limits
+
+        :param func: The function that performs the actual HuggingFace operation.
+        :param operation: The type of operation being performed (e.g., "upload", "download", "delete").
+        :param repo_id: The HuggingFace repository ID.
+        :param path: The path of the object within the repository.
+        :return: The result of the HuggingFace operation.
+        :raises RetryableError: For transient errors that can be retried (429, 503, connection errors).
+        :raises FileNotFoundError: When the requested resource is not found.
+        :raises RuntimeError: For other non-retryable errors.
+        """
+        try:
+            return func()
+        except RepositoryNotFoundError as error:
+            raise FileNotFoundError(
+                f"Repository not found or access denied: {repo_id}. "
+                f"Verify the repository exists and you have access permissions."
+            ) from error
+        except RevisionNotFoundError as error:
+            raise FileNotFoundError(
+                f"Revision '{self._repo_revision}' not found in repository {repo_id}. "
+                f"Verify the branch, tag, or commit exists."
+            ) from error
+        except EntryNotFoundError as error:
+            raise FileNotFoundError(f"File not found in HuggingFace repository: {path}") from error
+        except FileNotFoundError:
+            raise
+        except HfHubHTTPError as error:
+            # Extract status code and parse rate limit headers
+            # Don't use hasattr() - it's unreliable with response objects
+            status_code = None
+            response = None
+
+            try:
+                response = error.response
+                if response is not None:
+                    status_code = response.status_code
+            except AttributeError:
+                pass
+
+            rate_limit_info = self._parse_rate_limit_headers(response)
+            quota_suffix = f" | {rate_limit_info}" if rate_limit_info else ""
+
+            error_info = f"repo_id: {repo_id}, path: {path}, status_code: {status_code}, error: {error}"
+
+            if status_code == 404:
+                raise FileNotFoundError(f"Object {repo_id}/{path} does not exist. {error_info}") from error
+            elif status_code == 409:
+                raise RetryableError(f"Conflict Error for {repo_id}. {error_info}{quota_suffix}") from error
+            elif status_code == 429:
+                base_message = f"Rate limit exceeded when {operation} object(s) at {repo_id}/{path}. {error_info}"
+                raise RetryableError(f"{base_message}{quota_suffix}") from error
+            elif status_code == 503:
+                raise RetryableError(
+                    f"Service unavailable when {operation} object(s) at {repo_id}/{path}. {error_info}{quota_suffix}"
+                ) from error
+            elif status_code in (408, 500, 502, 504):
+                raise RetryableError(
+                    f"Transient error ({status_code}) when {operation} object(s) at {repo_id}/{path}. {error_info}{quota_suffix}"
+                ) from error
+            else:
+                raise RuntimeError(
+                    f"HuggingFace API error during {operation} of {path}: {error}{quota_suffix}"
+                ) from error
+        except (ConnectionError, TimeoutError, OSError) as error:
+            raise RetryableError(
+                f"Connection error when {operation} object(s) at {repo_id}/{path}, error type: {type(error).__name__}"
+            ) from error
+        except Exception as error:
+            raise RuntimeError(f"Unexpected error during {operation} of {path}: {error}") from error
+
     def _put_object(
         self,
         path: str,
@@ -199,7 +363,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
 
         path = self._normalize_path(path)
 
-        try:
+        def _invoke_api():
             with tempfile.NamedTemporaryFile(delete=False) as temp_file:
                 temp_file.write(body)
                 temp_file_path = temp_file.name
@@ -221,14 +385,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
             finally:
                 os.unlink(temp_file_path)
 
-        except (RepositoryNotFoundError, RevisionNotFoundError) as e:
-            raise FileNotFoundError(
-                f"Repository or revision not found: {self._repository_id}@{self._repo_revision}"
-            ) from e
-        except HfHubHTTPError as e:
-            raise RuntimeError(f"HuggingFace API error during upload of {path}: {e}") from e
-        except Exception as e:
-            raise RuntimeError(f"Unexpected error during upload of {path}: {e}") from e
+        return self._translate_errors(_invoke_api, "PUT", self._repository_id, path)
 
     def _get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
         """
@@ -254,7 +411,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
 
         path = self._normalize_path(path)
 
-        try:
+        def _invoke_api():
             with tempfile.TemporaryDirectory() as temp_dir:
                 downloaded_path = self._hf_client.hf_hub_download(
                     repo_id=self._repository_id,
@@ -269,12 +426,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
 
                 return data
 
-        except (RepositoryNotFoundError, RevisionNotFoundError) as e:
-            raise FileNotFoundError(f"File not found in HuggingFace repository: {path}") from e
-        except HfHubHTTPError as e:
-            raise RuntimeError(f"HuggingFace API error during download of {path}: {e}") from e
-        except Exception as e:
-            raise RuntimeError(f"Unexpected error during download of {path}: {e}") from e
+        return self._translate_errors(_invoke_api, "GET", self._repository_id, path)
 
     def _copy_object(self, src_path: str, dest_path: str) -> int:
         """
@@ -298,7 +450,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
 
         src_object = self._get_object_metadata(src_path)
 
-        try:
+        def _invoke_api():
             operations = [
                 CommitOperationCopy(
                     src_path_in_repo=src_path,
@@ -316,14 +468,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
 
             return src_object.content_length
 
-        except (RepositoryNotFoundError, RevisionNotFoundError) as e:
-            raise FileNotFoundError(
-                f"Repository or revision not found: {self._repository_id}@{self._repo_revision}"
-            ) from e
-        except HfHubHTTPError as e:
-            raise RuntimeError(f"HuggingFace API error during copy from {src_path} to {dest_path}: {e}") from e
-        except Exception as e:
-            raise RuntimeError(f"Unexpected error during copy from {src_path} to {dest_path}: {e}") from e
+        return self._translate_errors(_invoke_api, "COPY", self._repository_id, f"{src_path} to {dest_path}")
 
     def _delete_object(self, path: str, if_match: Optional[str] = None) -> None:
         """
@@ -345,7 +490,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
 
         path = self._normalize_path(path)
 
-        try:
+        def _invoke_api():
             self._hf_client.delete_file(
                 path_in_repo=path,
                 repo_id=self._repository_id,
@@ -354,12 +499,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
                 commit_message=f"Delete {path}",
             )
 
-        except (RepositoryNotFoundError, RevisionNotFoundError) as e:
-            raise FileNotFoundError(
-                f"Repository or revision not found: {self._repository_id}@{self._repo_revision}"
-            ) from e
-        except Exception as e:
-            raise RuntimeError(f"Unexpected error during deletion of {path}: {e}") from e
+        self._translate_errors(_invoke_api, "DELETE", self._repository_id, path)
 
     def _item_to_metadata(self, item: Union[RepoFile, RepoFolder]) -> ObjectMetadata:
         """
@@ -410,7 +550,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
 
         path = self._normalize_path(path)
 
-        try:
+        def _invoke_api():
             items = self._hf_client.get_paths_info(
                 repo_id=self._repository_id,
                 paths=[path],
@@ -424,6 +564,9 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
 
             item = items[0]
             return self._item_to_metadata(item)
+
+        try:
+            return self._translate_errors(_invoke_api, "HEAD", self._repository_id, path)
         except FileNotFoundError as error:
             if strict:
                 dir_path = path.rstrip("/") + "/"
@@ -439,12 +582,6 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
                         metadata=None,
                     )
             raise error
-        except (RepositoryNotFoundError, RevisionNotFoundError) as e:
-            raise FileNotFoundError(
-                f"Repository or revision not found: {self._repository_id}@{self._repo_revision}"
-            ) from e
-        except Exception as e:
-            raise RuntimeError(f"Unexpected error getting metadata for {path}: {e}") from e
 
     def _list_objects(
         self,
@@ -483,7 +620,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         except FileNotFoundError:
             pass
 
-        try:
+        def _invoke_api():
             dir_path = path.rstrip("/")
 
             repo_items = self._hf_client.list_repo_tree(
@@ -495,12 +632,17 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
                 recursive=not include_directories,
             )
 
+            return list(repo_items)
+
+        try:
+            items = self._translate_errors(_invoke_api, "LIST", self._repository_id, path)
+
             # Use cursor-based pagination because HuggingFace returns items with
             # directory-first ordering (not pure lexicographical).
             seen_start = start_after is None
             seen_end = False
 
-            for item in repo_items:
+            for item in items:
                 if seen_end:
                     break
 
@@ -524,17 +666,9 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
                 if end_at is not None and key == end_at:
                     seen_end = True
 
-        except (RepositoryNotFoundError, RevisionNotFoundError) as e:
-            raise FileNotFoundError(
-                f"Repository or revision not found: {self._repository_id}@{self._repo_revision}"
-            ) from e
-        except EntryNotFoundError:
+        except FileNotFoundError:
             # Directory doesn't exist - return empty (matches POSIX behavior)
             pass
-        except HfHubHTTPError as e:
-            raise RuntimeError(f"HuggingFace API error during listing of {path}: {e}") from e
-        except Exception as e:
-            raise RuntimeError(f"Unexpected error during listing of {path}: {e}") from e
 
     def _upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, str]] = None) -> int:
         """
@@ -565,7 +699,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
 
         remote_path = self._normalize_path(remote_path)
 
-        try:
+        def _invoke_api():
             if isinstance(f, str):
                 file_size = os.path.getsize(f)
 
@@ -611,14 +745,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
                 finally:
                     os.unlink(temp_file_path)
 
-        except (RepositoryNotFoundError, RevisionNotFoundError) as e:
-            raise FileNotFoundError(
-                f"Repository or revision not found: {self._repository_id}@{self._repo_revision}"
-            ) from e
-        except HfHubHTTPError as e:
-            raise RuntimeError(f"HuggingFace API error during upload of {remote_path}: {e}") from e
-        except Exception as e:
-            raise RuntimeError(f"Unexpected error during upload of {remote_path}: {e}") from e
+        return self._translate_errors(_invoke_api, "PUT", self._repository_id, remote_path)
 
     def _download_file(self, remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> int:
         """
@@ -634,7 +761,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
 
         remote_path = self._normalize_path(remote_path)
 
-        try:
+        def _invoke_api():
             if isinstance(f, str):
                 parent_dir = os.path.dirname(f)
                 if parent_dir:
@@ -673,12 +800,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
 
                         return len(data)
 
-        except (RepositoryNotFoundError, RevisionNotFoundError) as e:
-            raise FileNotFoundError(f"File not found in HuggingFace repository: {remote_path}") from e
-        except HfHubHTTPError as e:
-            raise RuntimeError(f"HuggingFace API error during download: {e}") from e
-        except Exception as e:
-            raise RuntimeError(f"Unexpected error during download: {e}") from e
+        return self._translate_errors(_invoke_api, "GET", self._repository_id, remote_path)
 
     def _is_dir(self, path: str) -> bool:
         """
@@ -698,13 +820,22 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
                 paths=[path],
                 repo_type=self._repo_type,
                 revision=self._repo_revision,
-            )[0]
+            )
 
-            return isinstance(path_info, RepoFolder)
+            if not path_info:
+                return False
 
-        except (RepositoryNotFoundError, RevisionNotFoundError) as e:
+            return isinstance(path_info[0], RepoFolder)
+
+        except RepositoryNotFoundError as e:
             raise FileNotFoundError(
-                f"Repository or revision not found: {self._repository_id}@{self._repo_revision}"
+                f"Repository not found or access denied: {self._repository_id}. "
+                f"Verify the repository exists and you have access permissions."
+            ) from e
+        except RevisionNotFoundError as e:
+            raise FileNotFoundError(
+                f"Revision '{self._repo_revision}' not found in repository {self._repository_id}. "
+                f"Verify the branch, tag, or commit exists."
             ) from e
         except IndexError:
             return False

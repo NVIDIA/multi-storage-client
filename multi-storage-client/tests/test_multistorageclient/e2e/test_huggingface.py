@@ -76,14 +76,18 @@ def test_hf_transfer_failure_when_unavailable(profile_name):
 
     enable_transfer()
 
+    # Save the original find_spec before mocking
+    import importlib.util
+
+    original_find_spec = importlib.util.find_spec
+
     with patch("importlib.util.find_spec") as mock_find_spec:
 
         def mock_find_spec_func(name):
             if name == "hf_transfer":
                 return None
-            import importlib.util
-
-            return importlib.util.find_spec.__wrapped__(name)
+            # Use the saved original function
+            return original_find_spec(name)
 
         mock_find_spec.side_effect = mock_find_spec_func
 
@@ -94,3 +98,56 @@ def test_hf_transfer_failure_when_unavailable(profile_name):
 
         with pytest.raises(ValueError, match=re.escape(HF_TRANSFER_UNAVAILABLE_ERROR_MESSAGE)):
             HuggingFaceStorageProvider(repository_id="test/repo", repo_type="dataset")
+
+
+def test_parse_rate_limit_headers_basic():
+    """Test basic rate limit header parsing."""
+    from unittest.mock import Mock
+
+    from multistorageclient.providers.huggingface import HuggingFaceStorageProvider
+
+    provider = HuggingFaceStorageProvider(repository_id="test/repo", repo_type="model")
+
+    # Test with full rate limit info
+    mock_response = Mock()
+    mock_response.headers = {
+        "RateLimit": '"api";r=50;t=142',
+        "RateLimit-Policy": '"fixed window";"api";q=10000;w=300',
+    }
+
+    result = provider._parse_rate_limit_headers(mock_response)
+
+    assert "Requests remaining in current window: 50" in result
+    assert "Rate limit resets in: 142 seconds" in result
+    assert "10000 requests per 5-minute window" in result
+
+
+def test_parse_rate_limit_headers_zero_remaining():
+    """Test rate limit header parsing when quota is exhausted."""
+    from unittest.mock import Mock
+
+    from multistorageclient.providers.huggingface import HuggingFaceStorageProvider
+
+    provider = HuggingFaceStorageProvider(repository_id="test/repo", repo_type="model")
+
+    mock_response = Mock()
+    mock_response.headers = {
+        "RateLimit": '"api";r=0;t=299',
+        "RateLimit-Policy": '"fixed window";"api";q=2500;w=300',
+    }
+
+    result = provider._parse_rate_limit_headers(mock_response)
+
+    assert "Requests remaining in current window: 0" in result
+    assert "Rate limit resets in: 299 seconds" in result
+
+
+def test_parse_rate_limit_headers_none_response():
+    """Test rate limit header parsing with None response."""
+    from multistorageclient.providers.huggingface import HuggingFaceStorageProvider
+
+    provider = HuggingFaceStorageProvider(repository_id="test/repo", repo_type="model")
+
+    result = provider._parse_rate_limit_headers(None)
+
+    assert result == ""
