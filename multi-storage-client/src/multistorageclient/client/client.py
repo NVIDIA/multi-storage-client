@@ -433,6 +433,7 @@ class StorageClient(AbstractStorageClient):
         follow_symlinks: bool = True,
         source_files: Optional[List[str]] = None,
         ignore_hidden: bool = True,
+        commit_metadata: bool = True,
     ) -> None:
         """
         Syncs files from the source storage client to "path/".
@@ -458,6 +459,8 @@ class StorageClient(AbstractStorageClient):
         :param source_files: Optional list of file paths (relative to source_path) to sync. When provided, only these
             specific files will be synced, skipping enumeration of the source path. Cannot be used together with patterns.
         :param ignore_hidden: Whether to ignore hidden files and directories. Default is ``True``.
+        :param commit_metadata: When ``True`` (default), calls :py:meth:`StorageClient.commit_metadata` after sync completes.
+            Set to ``False`` to skip the commit, allowing batching of multiple sync operations before committing manually.
         :raises ValueError: If both source_files and patterns are provided.
         :raises NotImplementedError: If sync operations are not supported (e.g., CompositeStorageClient as target).
         """
@@ -474,6 +477,7 @@ class StorageClient(AbstractStorageClient):
             follow_symlinks,
             source_files,
             ignore_hidden,
+            commit_metadata,
         )
 
     def sync_replicas(

@@ -1230,6 +1230,60 @@ def test_sync_with_manifest_overwrite_behavior():
         print("All sync tests passed!")
 
 
+def test_sync_objects_commits_metadata_by_default():
+    """Test that sync_objects calls commit_metadata when commit_metadata is True (default)."""
+    source_client = MockStorageClient()
+    target_client = MockStorageClient()
+
+    source_files = [
+        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+    ]
+    target_files = [
+        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 1, 0, 0)),
+    ]
+
+    source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
+    target_client.list = lambda **kwargs: iter(target_files)  # type: ignore
+
+    manager = SyncManager(
+        source_client=cast(StorageClient, source_client),
+        source_path="",
+        target_client=cast(StorageClient, target_client),
+        target_path="",
+    )
+
+    with mock.patch.object(target_client, "commit_metadata") as mock_commit:
+        manager.sync_objects(num_worker_processes=1, commit_metadata=True)
+        mock_commit.assert_called_once()
+
+
+def test_sync_objects_skips_commit_when_commit_metadata_false():
+    """Test that sync_objects does NOT call commit_metadata when commit_metadata is False."""
+    source_client = MockStorageClient()
+    target_client = MockStorageClient()
+
+    source_files = [
+        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+    ]
+    target_files = [
+        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 1, 0, 0)),
+    ]
+
+    source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
+    target_client.list = lambda **kwargs: iter(target_files)  # type: ignore
+
+    manager = SyncManager(
+        source_client=cast(StorageClient, source_client),
+        source_path="",
+        target_client=cast(StorageClient, target_client),
+        target_path="",
+    )
+
+    with mock.patch.object(target_client, "commit_metadata") as mock_commit:
+        manager.sync_objects(num_worker_processes=1, commit_metadata=False)
+        mock_commit.assert_not_called()
+
+
 def test_sync_resume_with_metadata_provider():
     """Test sync resume functionality with metadata provider - existing files should not be overwritten.
 

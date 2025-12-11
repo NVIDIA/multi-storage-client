@@ -390,6 +390,7 @@ class SyncManager:
         follow_symlinks: bool = True,
         source_files: Optional[list[str]] = None,
         ignore_hidden: bool = True,
+        commit_metadata: bool = True,
     ):
         """
         Synchronize objects from source to target storage location.
@@ -419,6 +420,8 @@ class SyncManager:
         :param source_files: Optional list of file paths (relative to source_path) to sync. When provided, only these
             specific files will be synced, skipping enumeration of the source path.
         :param ignore_hidden: Whether to ignore hidden files and directories (starting with dot). Default is True.
+        :param commit_metadata: When True (default), calls :py:meth:`StorageClient.commit_metadata` after sync completes.
+            Set to False to skip the commit, allowing batching of multiple sync operations before committing manually.
         :raises RuntimeError: If errors occur during sync operations. Exception message contains details of all errors encountered.
             The sync operation will stop on the first error (fail-fast) and report all errors collected up to that point.
         """
@@ -669,8 +672,9 @@ class SyncManager:
         error_queue.put(None)
         error_consumer_thread.join()
 
-        # Commit the metadata to the target storage client.
-        self.target_client.commit_metadata()
+        # Commit the metadata to the target storage client (if commit_metadata is True).
+        if commit_metadata:
+            self.target_client.commit_metadata()
 
         # Log the completion of the sync operation.
         progress.close()
