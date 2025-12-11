@@ -148,7 +148,7 @@ def _merge_profiles(
         profiles:
             my-profile:
                 credentials_provider:
-                    type: S3Credentials,
+                    type: S3Credentials
                     options:
                         access_key: foo
                         secret_key: bar
@@ -180,6 +180,62 @@ def _merge_profiles(
     return result
 
 
+def _merge_opentelemetry(
+    base_otel: dict[str, Any],
+    new_otel: dict[str, Any],
+    base_path: str,
+    new_path: str,
+) -> dict[str, Any]:
+    """
+    Merge opentelemetry configurations with special handling for metrics.attributes.
+
+    Merge strategy:
+    - metrics.attributes: Concatenate arrays (preserve order for fallback mechanism)
+    - Other fields: Use idempotent check (must be identical)
+
+    Attributes providers are concatenated to support fallback scenarios where multiple
+    providers of the same type supply the same attribute key with different sources.
+    The order matters - later providers override earlier ones.
+
+    :param base_otel: Base opentelemetry config
+    :param new_otel: New opentelemetry config to merge
+    :param base_path: Path to base config file (for error messages)
+    :param new_path: Path to new config file (for error messages)
+    :return: Merged opentelemetry configuration
+    :raises ValueError: If conflicts are detected
+    """
+    # Merge metrics.attributes
+    base_attrs = base_otel.get("metrics", {}).get("attributes", [])
+    new_attrs = new_otel.get("metrics", {}).get("attributes", [])
+    merged_attrs = base_attrs + new_attrs
+
+    # Merge other opentelemetry fields
+    base_otel_without_attrs = copy.deepcopy(base_otel)
+    if "metrics" in base_otel_without_attrs and "attributes" in base_otel_without_attrs["metrics"]:
+        del base_otel_without_attrs["metrics"]["attributes"]
+
+    new_otel_without_attrs = copy.deepcopy(new_otel)
+    if "metrics" in new_otel_without_attrs and "attributes" in new_otel_without_attrs["metrics"]:
+        del new_otel_without_attrs["metrics"]["attributes"]
+
+    merged, conflicts = merge_dictionaries_no_overwrite(
+        base_otel_without_attrs, new_otel_without_attrs, allow_idempotent=True
+    )
+
+    if conflicts:
+        conflicts_list = ", ".join(f"'{k}'" for k in sorted(conflicts))
+        raise ValueError(
+            f"opentelemetry config conflict: {conflicts_list} defined differently in {base_path} and {new_path}"
+        )
+
+    if "metrics" in merged:
+        merged["metrics"]["attributes"] = merged_attrs
+    elif merged_attrs:
+        merged["metrics"] = {"attributes": merged_attrs}
+
+    return merged
+
+
 def _merge_configs(
     base_config: dict[str, Any],
     new_config: dict[str, Any],
@@ -193,7 +249,8 @@ def _merge_configs(
     - profiles: Shallow merge with idempotent check (uses _merge_profiles)
     - path_mapping: Flat dict merge with idempotent check
     - experimental_features: Flat dict merge with idempotent check
-    - cache, opentelemetry, posix: Global configs, idempotent if identical, error if different
+    - opentelemetry: Hybrid merge (attributes concatenate, others idempotent)
+    - cache, posix: Global configs, idempotent if identical, error if different
 
     :param base_config: Base configuration dictionary
     :param new_config: New configuration to merge
@@ -235,7 +292,10 @@ def _merge_configs(
                 )
             result[key] = merged
 
-        elif key in ("cache", "opentelemetry", "posix"):
+        elif key == "opentelemetry":
+            result["opentelemetry"] = _merge_opentelemetry(base_value or {}, new_value or {}, base_path, new_path)
+
+        elif key in ("cache", "posix"):
             if base_value != new_value:
                 raise ValueError(f"'{key}' defined differently in {base_path} and {new_path}")
             result[key] = base_value

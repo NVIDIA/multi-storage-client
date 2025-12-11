@@ -2276,3 +2276,156 @@ def test_merge_configs_handles_all_schema_fields():
         assert f'"{field}"' in source or f"'{field}'" in source, (
             f"Field '{field}' not explicitly handled in _merge_configs. Please add merging logic for this field."
         )
+
+
+def test_config_include_opentelemetry_merge():
+    """Test opentelemetry config merging: attributes concatenation, same-type merge, idempotent fields."""
+    # Test case 1: Metrics Attributes concatenation
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base_config_path = os.path.join(tmpdir, "base.yaml")
+        user_config_path = os.path.join(tmpdir, "user.yaml")
+        main_config_path = os.path.join(tmpdir, "main.yaml")
+
+        with open(base_config_path, "w") as f:
+            yaml.dump(
+                {
+                    "opentelemetry": {
+                        "metrics": {
+                            "attributes": [
+                                {"type": "process", "options": {"attributes": {"msc.process": "pid"}}},
+                                {
+                                    "type": "environment_variables",
+                                    "options": {"attributes": {"msc.cluster": "CLUSTER"}},
+                                },
+                            ],
+                            "reader": {"options": {"collect_interval_millis": 10}},
+                            "exporter": {"type": "console"},
+                        }
+                    }
+                },
+                f,
+            )
+
+        with open(user_config_path, "w") as f:
+            yaml.dump(
+                {
+                    "opentelemetry": {
+                        "metrics": {
+                            "attributes": [
+                                {"type": "process", "options": {"attributes": {"msc.process_name": "name"}}},
+                                {"type": "environment_variables", "options": {"attributes": {"msc.user": "USER"}}},
+                                {"type": "msc_config", "options": {"attributes": {"msc.profile": "test"}}},
+                            ],
+                            "reader": {"options": {"collect_interval_millis": 10}},
+                            "exporter": {"type": "console"},
+                        }
+                    }
+                },
+                f,
+            )
+
+        with open(main_config_path, "w") as f:
+            yaml.dump(
+                {
+                    "include": [base_config_path, user_config_path],
+                    "profiles": {"test": {"storage_provider": {"type": "file", "options": {"base_path": "/tmp"}}}},
+                },
+                f,
+            )
+
+        config, _ = StorageClientConfig.read_msc_config([main_config_path])
+        assert config is not None
+
+        attributes = config["opentelemetry"]["metrics"]["attributes"]
+        assert len(attributes) == 5
+
+        assert attributes[0] == {"type": "process", "options": {"attributes": {"msc.process": "pid"}}}
+        assert attributes[1] == {
+            "type": "environment_variables",
+            "options": {"attributes": {"msc.cluster": "CLUSTER"}},
+        }
+        assert attributes[2] == {"type": "process", "options": {"attributes": {"msc.process_name": "name"}}}
+        assert attributes[3] == {"type": "environment_variables", "options": {"attributes": {"msc.user": "USER"}}}
+        assert attributes[4] == {"type": "msc_config", "options": {"attributes": {"msc.profile": "test"}}}
+
+        assert config["opentelemetry"]["metrics"]["reader"] == {"options": {"collect_interval_millis": 10}}
+        assert config["opentelemetry"]["metrics"]["exporter"] == {"type": "console"}
+
+        # Test case 2: merge attributes with reader and exporter among multiple files
+        reader_exporter_config_path = os.path.join(tmpdir, "reader_exporter.yaml")
+        attributes_only_config_path = os.path.join(tmpdir, "attributes_only.yaml")
+        main2_config_path = os.path.join(tmpdir, "main2.yaml")
+
+        with open(reader_exporter_config_path, "w") as f:
+            yaml.dump(
+                {
+                    "opentelemetry": {
+                        "metrics": {
+                            "reader": {"options": {"collect_interval_millis": 20}},
+                            "exporter": {"type": "otlp", "options": {"endpoint": "http://localhost:4318"}},
+                        }
+                    }
+                },
+                f,
+            )
+
+        with open(attributes_only_config_path, "w") as f:
+            yaml.dump(
+                {
+                    "opentelemetry": {
+                        "metrics": {
+                            "attributes": [{"type": "process", "options": {"attributes": {"msc.pid": "12345"}}}]
+                        }
+                    }
+                },
+                f,
+            )
+
+        with open(main2_config_path, "w") as f:
+            yaml.dump(
+                {
+                    "include": [reader_exporter_config_path, attributes_only_config_path],
+                    "profiles": {"test": {"storage_provider": {"type": "file", "options": {"base_path": "/tmp"}}}},
+                },
+                f,
+            )
+
+        config2, _ = StorageClientConfig.read_msc_config([main2_config_path])
+        assert config2 is not None
+
+        assert config2["opentelemetry"]["metrics"]["reader"] == {"options": {"collect_interval_millis": 20}}
+        assert config2["opentelemetry"]["metrics"]["exporter"] == {
+            "type": "otlp",
+            "options": {"endpoint": "http://localhost:4318"},
+        }
+        assert len(config2["opentelemetry"]["metrics"]["attributes"]) == 1
+        assert config2["opentelemetry"]["metrics"]["attributes"][0]["type"] == "process"
+
+
+def test_config_include_opentelemetry_conflicts():
+    """Test opentelemetry config conflict detection for non-attributes fields."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config1_path = os.path.join(tmpdir, "config1.yaml")
+        config2_path = os.path.join(tmpdir, "config2.yaml")
+        main_config_path = os.path.join(tmpdir, "main.yaml")
+
+        with open(config1_path, "w") as f:
+            yaml.dump({"opentelemetry": {"metrics": {"exporter": {"type": "console"}}}}, f)
+
+        with open(config2_path, "w") as f:
+            yaml.dump({"opentelemetry": {"metrics": {"exporter": {"type": "otlp"}}}}, f)
+
+        with open(main_config_path, "w") as f:
+            yaml.dump(
+                {
+                    "include": [config1_path, config2_path],
+                    "profiles": {"test": {"storage_provider": {"type": "file", "options": {"base_path": "/tmp"}}}},
+                },
+                f,
+            )
+
+        with pytest.raises(ValueError) as exc_info:
+            StorageClientConfig.read_msc_config([main_config_path])
+
+        error_msg = str(exc_info.value)
+        assert "opentelemetry config conflict" in error_msg
