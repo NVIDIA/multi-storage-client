@@ -27,6 +27,7 @@ from unittest import mock
 
 import pytest
 import xattr
+from filelock import FileLock
 
 import multistorageclient as msc
 from multistorageclient.client import StorageClient
@@ -35,6 +36,7 @@ from multistorageclient.progress_bar import ProgressBar
 from multistorageclient.providers.base import BaseStorageProvider
 from multistorageclient.providers.manifest_metadata import DEFAULT_MANIFEST_BASE_DIR
 from multistorageclient.sync import (
+    FILE_LOCK_SIZE_THRESHOLD,
     ErrorConsumerThread,
     ErrorInfo,
     ProducerThread,
@@ -45,6 +47,7 @@ from multistorageclient.sync import (
     _copy_posix_to_remote,
     _copy_remote_to_posix,
     _copy_remote_to_remote,
+    _create_exclusive_filelock,
     _SyncOp,
     _update_posix_metadata,
 )
@@ -1576,3 +1579,45 @@ def test_sync_with_worker_error_fail_fast():
             # Sync should raise RuntimeError containing worker errors
             with pytest.raises(RuntimeError, match="Errors in sync operation"):
                 target_client.sync_from(source_client, source_path, target_path)
+
+
+def test_create_exclusive_filelock():
+    """Test size-based selective file locking behavior.
+
+    Validates that _create_exclusive_filelock:
+    - Creates locks for large files (>= threshold) on POSIX storage
+    - Skips locks for small files (< threshold) on POSIX storage
+    - Never creates locks on non-POSIX storage regardless of size
+    """
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as posix_store,
+        tempdatastore.TemporaryAWSS3Bucket() as s3_store,
+    ):
+        config.setup_msc_config(
+            config_dict={
+                "profiles": {
+                    "posix_target": posix_store.profile_config_dict(),
+                    "s3_target": s3_store.profile_config_dict(),
+                }
+            }
+        )
+
+        posix_client, _ = msc.resolve_storage_client("msc://posix_target")
+        s3_client, _ = msc.resolve_storage_client("msc://s3_target")
+        target_file_path = "test_file.txt"
+
+        # Test 1: Small file on POSIX - should NOT create lock
+        small_file_size = FILE_LOCK_SIZE_THRESHOLD - 1
+        lock_small = _create_exclusive_filelock(posix_client, target_file_path, small_file_size)
+        assert not isinstance(lock_small, FileLock), "Small files on POSIX should not create locks"
+
+        # Test 2: Large file on POSIX - should create lock
+        large_file_size = FILE_LOCK_SIZE_THRESHOLD * 2
+        lock_large = _create_exclusive_filelock(posix_client, target_file_path, large_file_size)
+        assert isinstance(lock_large, FileLock), "Large files on POSIX should create locks"
+
+        # Test 3: Large file on non-POSIX (S3) - should NOT create lock
+        lock_s3 = _create_exclusive_filelock(s3_client, target_file_path, large_file_size)
+        assert not isinstance(lock_s3, FileLock), "Non-POSIX storage should never create locks"

@@ -67,6 +67,7 @@ def is_ray_available():
 PLACEMENT_GROUP_STRATEGY = "SPREAD"
 PLACEMENT_GROUP_TIMEOUT_SECONDS = 60  # Timeout for placement group creation
 DEFAULT_LOCK_TIMEOUT = 600  # 10 minutes
+FILE_LOCK_SIZE_THRESHOLD = 64 * 1024 * 1024  # 64 MB - only lock files larger than this
 
 HAVE_RAY = is_ray_available()
 
@@ -752,7 +753,7 @@ def _sync_worker_process(
             try:
                 if op == _SyncOp.ADD:
                     logger.debug(f"sync {file_metadata.key} -> {target_file_path}")
-                    with _create_exclusive_filelock(target_client, target_file_path):
+                    with _create_exclusive_filelock(target_client, target_file_path, file_metadata.content_length):
                         # Since this is an ADD operation, the file doesn't exist in the metadata provider.
                         # Check if it exists physically to support resume functionality.
                         target_metadata = None
@@ -815,8 +816,11 @@ def _sync_worker_process(
                                 source_client, target_client, file_metadata.key, target_file_path, file_metadata
                             )
 
-                    # Clean up the lock file for POSIX file storage providers
-                    if target_client._is_posix_file_storage_provider():
+                    # Clean up the lock file for large files on POSIX file storage providers
+                    if (
+                        target_client._is_posix_file_storage_provider()
+                        and file_metadata.content_length >= FILE_LOCK_SIZE_THRESHOLD
+                    ):
                         try:
                             target_lock_file_path = os.path.join(
                                 os.path.dirname(target_file_path), f".{os.path.basename(target_file_path)}.lock"
@@ -875,14 +879,22 @@ def _sync_worker_process(
 def _create_exclusive_filelock(
     target_client: "AbstractStorageClient",
     target_file_path: str,
+    file_size: int,
 ) -> Union[FileLock, contextlib.AbstractContextManager]:
-    """Create an exclusive file lock for POSIX file storage providers.
+    """Create an exclusive file lock for large files on POSIX file storage providers.
 
     Acquires exclusive lock to prevent race conditions when multiple worker processes attempt concurrent
     writes to the same target location on shared filesystems. This can occur when users run multiple sync
     operations targeting the same filesystem location simultaneously.
+
+    Uses size-based selective locking to balance performance and safety:
+    - Small files (< 64MB): No lock - minimizes overhead for high-volume operations
+    - Large files (≥ 64MB): Exclusive lock - prevents wasteful concurrent writes
+
+    This approach avoids distributed lock overhead on parallel filesystems like Lustre
+    when syncing millions of small files, while still protecting expensive large file transfers.
     """
-    if target_client._is_posix_file_storage_provider():
+    if target_client._is_posix_file_storage_provider() and file_size >= FILE_LOCK_SIZE_THRESHOLD:
         target_lock_file_path = os.path.join(
             os.path.dirname(target_file_path), f".{os.path.basename(target_file_path)}.lock"
         )
