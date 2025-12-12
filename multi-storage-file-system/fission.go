@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"math"
 	"sync"
 	"syscall"
@@ -43,7 +44,11 @@ const (
 
 // `performFissionMount` is called to do the single FUSE mount at startup.
 func performFissionMount() (err error) {
-	globals.fissionVolume = fission.NewVolume(globals.config.mountName, globals.config.mountPoint, fuseSubtype, maxRead, maxWrite, true, globals.config.allowOther, &globals, globals.logger, globals.errChan)
+	var (
+		fissionLogger = log.New(globals.logger.Writer(), "[FISSION] ", globals.logger.Flags()) // set prefix to differentiate package fission logging
+	)
+
+	globals.fissionVolume = fission.NewVolume(globals.config.mountName, globals.config.mountPoint, fuseSubtype, maxRead, maxWrite, true, globals.config.allowOther, &globals, fissionLogger, globals.errChan)
 
 	err = globals.fissionVolume.DoMount()
 
@@ -151,7 +156,7 @@ func (*globalsStruct) DoLookup(inHeader *fission.InHeader, lookupIn *fission.Loo
 
 		childInode, ok = globals.inodeMap[childInodeNumber]
 		if !ok {
-			globals.logger.Fatalf("globals.inodeMap[childInodeNumber] returned !ok")
+			globals.logger.Fatalf("[FATAL] globals.inodeMap[childInodeNumber] returned !ok")
 		}
 	} else {
 		// We only know parentInode is a BackendRootDir or a PseudoDir
@@ -241,7 +246,7 @@ func (*globalsStruct) DoGetAttr(inHeader *fission.InHeader, getAttrIn *fission.G
 		uid = uint32(thisInode.backend.uid)
 		gid = uint32(thisInode.backend.gid)
 	default:
-		globals.logger.Fatalf("unrecognized inodeType (%v)", thisInode.inodeType)
+		globals.logger.Fatalf("[FATAL] unrecognized inodeType (%v)", thisInode.inodeType)
 	}
 
 	attrValidSec, attrValidNSec = timeDurationToAttrDuration(globals.config.entryAttrTTL)
@@ -826,12 +831,12 @@ Restart:
 			virtChildDirMapIndex = int(curOffset)
 			childInodeBasename, childInodeNumber, ok = parentInode.virtChildDirMap.GetByIndex(virtChildDirMapIndex)
 			if !ok {
-				globals.logger.Fatalf("parentInode.virtChildDirMap.GetByIndex(virtChildDirMapIndex < virtChildDirMapLen) returned !ok")
+				globals.logger.Fatalf("[FATAL] parentInode.virtChildDirMap.GetByIndex(virtChildDirMapIndex < virtChildDirMapLen) returned !ok")
 			}
 
 			childInode, ok = globals.inodeMap[childInodeNumber]
 			if !ok {
-				globals.logger.Fatalf("globals.inodeMap[childInodeNumber] returned !ok")
+				globals.logger.Fatalf("[FATAL] globals.inodeMap[childInodeNumber] returned !ok")
 			}
 
 			curOffset++
@@ -898,7 +903,7 @@ Restart:
 
 			if err != nil {
 				globals.Unlock()
-				globals.logger.Printf("unable to access backend \"%s\"", parentInode.backend.dirName)
+				globals.logger.Printf("[WARN] unable to access backend \"%s\"", parentInode.backend.dirName)
 				errno = syscall.EACCES
 				return
 			}
@@ -961,21 +966,21 @@ Restart:
 			virtChildDirMapIndex = int(curOffset - curOffsetInListDirectorySubdirectoryListCap)
 			childInodeBasename, childInodeNumber, ok = parentInode.virtChildDirMap.GetByIndex(virtChildDirMapIndex)
 			if !ok {
-				globals.logger.Fatalf("parentInode.virtChildDirMap.GetByIndex(virtChildDirMapIndex) returned !ok")
+				globals.logger.Fatalf("[FATAL] parentInode.virtChildDirMap.GetByIndex(virtChildDirMapIndex) returned !ok")
 			}
 			childInode, ok = globals.inodeMap[childInodeNumber]
 			if !ok {
-				globals.logger.Fatalf("globals.inodeMap[childInodeNumber] returned !ok")
+				globals.logger.Fatalf("[FATAL] globals.inodeMap[childInodeNumber] returned !ok")
 			}
 		case curOffset < curOffsetInVirtChildFileMapCap:
 			virtChildFileMapIndex = int(curOffset - curOffsetInVirtChildDirMapCap)
 			childInodeBasename, childInodeNumber, ok = parentInode.virtChildFileMap.GetByIndex(virtChildFileMapIndex)
 			if !ok {
-				globals.logger.Fatalf("parentInode.virtChildFileMap.GetByIndex(virtChildFileMapIndex) returned !ok")
+				globals.logger.Fatalf("[FATAL] parentInode.virtChildFileMap.GetByIndex(virtChildFileMapIndex) returned !ok")
 			}
 			childInode, ok = globals.inodeMap[childInodeNumber]
 			if !ok {
-				globals.logger.Fatalf("globals.inodeMap[childInodeNumber] returned !ok")
+				globals.logger.Fatalf("[FATAL] globals.inodeMap[childInodeNumber] returned !ok")
 			}
 		default:
 			globals.Unlock()
@@ -1269,12 +1274,12 @@ Restart:
 			virtChildDirMapIndex = int(curOffset)
 			childInodeBasename, childInodeNumber, ok = parentInode.virtChildDirMap.GetByIndex(virtChildDirMapIndex)
 			if !ok {
-				globals.logger.Fatalf("parentInode.virtChildDirMap.GetByIndex(virtChildDirMapIndex < virtChildDirMapLen) returned !ok")
+				globals.logger.Fatalf("[FATAL] parentInode.virtChildDirMap.GetByIndex(virtChildDirMapIndex < virtChildDirMapLen) returned !ok")
 			}
 
 			childInode, ok = globals.inodeMap[childInodeNumber]
 			if !ok {
-				globals.logger.Fatalf("globals.inodeMap[childInodeNumber] returned !ok")
+				globals.logger.Fatalf("[FATAL] globals.inodeMap[childInodeNumber] returned !ok")
 			}
 
 			curOffset++
@@ -1341,7 +1346,7 @@ Restart:
 
 			if err != nil {
 				globals.Unlock()
-				globals.logger.Printf("unable to access backend \"%s\"", parentInode.backend.dirName)
+				globals.logger.Printf("[WARN] unable to access backend \"%s\"", parentInode.backend.dirName)
 				errno = syscall.EACCES
 				return
 			}
@@ -1404,21 +1409,21 @@ Restart:
 			virtChildDirMapIndex = int(curOffset - curOffsetInListDirectorySubdirectoryListCap)
 			childInodeBasename, childInodeNumber, ok = parentInode.virtChildDirMap.GetByIndex(virtChildDirMapIndex)
 			if !ok {
-				globals.logger.Fatalf("parentInode.virtChildDirMap.GetByIndex(virtChildDirMapIndex) returned !ok")
+				globals.logger.Fatalf("[FATAL] parentInode.virtChildDirMap.GetByIndex(virtChildDirMapIndex) returned !ok")
 			}
 			childInode, ok = globals.inodeMap[childInodeNumber]
 			if !ok {
-				globals.logger.Fatalf("globals.inodeMap[childInodeNumber] returned !ok")
+				globals.logger.Fatalf("[FATAL] globals.inodeMap[childInodeNumber] returned !ok")
 			}
 		case curOffset < curOffsetInVirtChildFileMapCap:
 			virtChildFileMapIndex = int(curOffset - curOffsetInVirtChildDirMapCap)
 			childInodeBasename, childInodeNumber, ok = parentInode.virtChildFileMap.GetByIndex(virtChildFileMapIndex)
 			if !ok {
-				globals.logger.Fatalf("parentInode.virtChildFileMap.GetByIndex(virtChildFileMapIndex) returned !ok")
+				globals.logger.Fatalf("[FATAL] parentInode.virtChildFileMap.GetByIndex(virtChildFileMapIndex) returned !ok")
 			}
 			childInode, ok = globals.inodeMap[childInodeNumber]
 			if !ok {
-				globals.logger.Fatalf("globals.inodeMap[childInodeNumber] returned !ok")
+				globals.logger.Fatalf("[FATAL] globals.inodeMap[childInodeNumber] returned !ok")
 			}
 		default:
 			globals.Unlock()
@@ -1490,7 +1495,7 @@ func (*globalsStruct) DoStatX(inHeader *fission.InHeader, statXIn *fission.StatX
 		gid = uint32(thisInode.backend.gid)
 
 	default:
-		globals.logger.Fatalf("unrecognized inodeType (%v)", thisInode.inodeType)
+		globals.logger.Fatalf("[FATAL] unrecognized inodeType (%v)", thisInode.inodeType)
 	}
 
 	attrValidSec, attrValidNSec = timeDurationToAttrDuration(globals.config.entryAttrTTL)

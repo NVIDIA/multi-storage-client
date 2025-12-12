@@ -279,16 +279,16 @@ func initGlobals(osArgs []string) {
 		xdgConfigHomeEnv                = os.Getenv("XDG_CONFIG_HOME")
 	)
 
-	globals.logger = log.New(os.Stdout, "", log.Ldate|log.Ltime) // |log.Lmicroseconds|log.Lshortfile
+	globals.logger = log.New(os.Stdout, "", log.Ldate|log.Ltime|log.Lmsgprefix) // |log.Lmicroseconds|log.Lshortfile
 
-	globals.logger.Printf("Starting %s version %s", osArgs[0], GitTag)
+	globals.logger.Printf("[INFO] starting %s version %s", osArgs[0], GitTag)
 
 	globals.backendsSkipped = make(map[string]struct{})
 
 	for {
 		if len(osArgs) == 2 {
 			if !checkForFile(osArgs[1]) {
-				globals.logger.Fatalf("file not readable at \"%s\"", osArgs[1])
+				globals.logger.Fatalf("[FATAL] file not readable at \"%s\"", osArgs[1])
 			}
 			globals.configFilePath = osArgs[1]
 			break
@@ -296,7 +296,7 @@ func initGlobals(osArgs []string) {
 
 		if mscConfigEnv != "" {
 			if !checkForFile(mscConfigEnv) {
-				globals.logger.Fatalf("file not readable at non-empty ${MSC_CONFIG} [\"%s\"]", mscConfigEnv)
+				globals.logger.Fatalf("[FATAL] file not readable at non-empty ${MSC_CONFIG} [\"%s\"]", mscConfigEnv)
 			}
 			globals.configFilePath = mscConfigEnv
 			break
@@ -395,10 +395,10 @@ func initGlobals(osArgs []string) {
 			break
 		}
 
-		globals.logger.Fatalf("config-file not found along search path")
+		globals.logger.Fatalf("[FATAL] config-file not found along search path")
 	}
 
-	globals.logger.Printf("config-file path: \"%s\"", globals.configFilePath)
+	globals.logger.Printf("[INFO] config-file path: \"%s\"", globals.configFilePath)
 
 	globals.config = nil
 	globals.backendsToUnmount = make(map[string]*backendStruct)

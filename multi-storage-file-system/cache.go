@@ -89,7 +89,7 @@ func (cacheLine *cacheLineStruct) touch() {
 		globals.dirtyCacheLineLRU.Remove(cacheLine.listElement)
 		cacheLine.listElement = globals.dirtyCacheLineLRU.PushBack(cacheLine)
 	default:
-		globals.logger.Fatalf("cacheLine.state (%v) unexpected", cacheLine.state)
+		globals.logger.Fatalf("[FATAL] cacheLine.state (%v) unexpected", cacheLine.state)
 	}
 }
 
@@ -150,17 +150,17 @@ func cachePrune() {
 
 	cacheLineToEvict, ok = listElement.Value.(*cacheLineStruct)
 	if !ok {
-		globals.logger.Fatalf("listElement.Value.(*cacheLineStruct) returned !ok")
+		globals.logger.Fatalf("[FATAL] listElement.Value.(*cacheLineStruct) returned !ok")
 	}
 
 	inode, ok = globals.inodeMap[cacheLineToEvict.inodeNumber]
 	if !ok {
-		globals.logger.Fatalf("globals.inodeMap[cacheLineToEvict.inodeNumber] returned !ok")
+		globals.logger.Fatalf("[FATAL] globals.inodeMap[cacheLineToEvict.inodeNumber] returned !ok")
 	}
 
 	_, ok = inode.cache[cacheLineToEvict.lineNumber]
 	if !ok {
-		globals.logger.Fatalf("inode.cache[cacheLineToEvict.lineNumber] returned !ok")
+		globals.logger.Fatalf("[FATAL] inode.cache[cacheLineToEvict.lineNumber] returned !ok")
 	}
 
 	delete(inode.cache, cacheLineToEvict.lineNumber)

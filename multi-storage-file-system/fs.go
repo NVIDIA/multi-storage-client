@@ -102,7 +102,7 @@ func processToMountList() {
 
 		err = backend.setupContext()
 		if err != nil {
-			globals.logger.Printf("unable to setup backend context: %s (err: %v) [skipping]", dirName, err)
+			globals.logger.Printf("[WARN] unable to setup backend context: %s (err: %v) [skipping]", dirName, err)
 			continue
 		}
 
@@ -129,7 +129,7 @@ func processToMountList() {
 
 		ok = globals.inode.virtChildDirMap.Put(backend.dirName, backend.inode.inodeNumber)
 		if !ok {
-			globals.logger.Fatalf("put of \"%s\" into backend.inode.virtChildDirMap returned !ok", backend.dirName)
+			globals.logger.Fatalf("[FATAL] put of \"%s\" into backend.inode.virtChildDirMap returned !ok", backend.dirName)
 		}
 
 		_ = backend.inode.virtChildDirMap.Put(DotDirEntryBasename, backend.inode.inodeNumber)
@@ -174,7 +174,7 @@ func processToUnmountListAlreadyLocked() {
 
 		ok = globals.inode.virtChildDirMap.DeleteByKey(backend.dirName)
 		if !ok {
-			globals.logger.Fatalf("delete of \"%s\" from globals.inode.virtChildDirMap returned !ok", backend.dirName)
+			globals.logger.Fatalf("[FATAL] delete of \"%s\" from globals.inode.virtChildDirMap returned !ok", backend.dirName)
 		}
 
 		backend.mounted = false
@@ -238,7 +238,7 @@ func (parentInode *inodeStruct) createPseudoDirInode(isVirt bool, basename strin
 	if isVirt {
 		ok = parentInode.virtChildDirMap.Put(pseudoDirInode.basename, pseudoDirInode.inodeNumber)
 		if !ok {
-			globals.logger.Fatalf("parentInode.virtChildDirMap.Put(pseudoDirInode.basename, pseudoDirInode.inodeNumber) returned !ok")
+			globals.logger.Fatalf("[FATAL] parentInode.virtChildDirMap.Put(pseudoDirInode.basename, pseudoDirInode.inodeNumber) returned !ok")
 		}
 
 		pseudoDirInode.listElement = nil
@@ -293,7 +293,7 @@ func (parentInode *inodeStruct) createFileObjectInode(isVirt bool, basename stri
 	if isVirt {
 		ok = parentInode.virtChildFileMap.Put(fileObjectInode.basename, fileObjectInode.inodeNumber)
 		if !ok {
-			globals.logger.Fatalf("parentInode.virtChildFileMap.Put(fileObjectInode.basename, fileObjectInode.inodeNumber) returned !ok")
+			globals.logger.Fatalf("[FATAL] parentInode.virtChildFileMap.Put(fileObjectInode.basename, fileObjectInode.inodeNumber) returned !ok")
 		}
 
 		fileObjectInode.listElement = nil
@@ -323,7 +323,7 @@ func (inode *inodeStruct) isEvictable() (evictable bool) {
 	case PseudoDir:
 		evictable = !inode.isVirt && (len(inode.fhMap) == 0) && (inode.virtChildDirMap.Len() == 2) && (inode.virtChildFileMap.Len() == 0)
 	default:
-		globals.logger.Fatalf("unrecognized inodeType (%v)", inode.inodeType)
+		globals.logger.Fatalf("[FATAL] unrecognized inodeType (%v)", inode.inodeType)
 	}
 
 	return
@@ -340,7 +340,7 @@ func (inode *inodeStruct) touch(mTimeAsInterface, lTimeAsInterface interface{}) 
 	if mTimeAsInterface != nil {
 		inode.mTime, ok = mTimeAsInterface.(time.Time)
 		if !ok {
-			globals.logger.Fatalf("mTimeAsInterface.(time.Time) returned !ok")
+			globals.logger.Fatalf("[FATAL] mTimeAsInterface.(time.Time) returned !ok")
 		}
 	}
 
@@ -354,7 +354,7 @@ func (inode *inodeStruct) touch(mTimeAsInterface, lTimeAsInterface interface{}) 
 	} else {
 		inode.lTime, ok = lTimeAsInterface.(time.Time)
 		if !ok {
-			globals.logger.Fatalf("lTimeAsInterface.(time.Time) returned !ok")
+			globals.logger.Fatalf("[FATAL] lTimeAsInterface.(time.Time) returned !ok")
 		}
 	}
 
@@ -391,7 +391,7 @@ func inodeEvictor() {
 
 				oldInode, ok = listElement.Value.(*inodeStruct)
 				if !ok {
-					globals.logger.Fatalf("listElement.Value.(*inodeStruct) returned !ok")
+					globals.logger.Fatalf("[FATAL] listElement.Value.(*inodeStruct) returned !ok")
 				}
 
 				if oldInode.lTime.Add(globals.config.evictableInodeTTL).After(timeNow) {
@@ -411,7 +411,7 @@ func inodeEvictor() {
 					case PseudoDir:
 						_ = parentInode.virtChildDirMap.DeleteByKey(oldInode.basename)
 					default:
-						globals.logger.Fatalf("oldInode.inodeType(%v) must be either FileObject(%v) or PseudoDir(%v)", oldInode.inodeType, FileObject, PseudoDir)
+						globals.logger.Fatalf("[FATAL] oldInode.inodeType(%v) must be either FileObject(%v) or PseudoDir(%v)", oldInode.inodeType, FileObject, PseudoDir)
 					}
 				}
 			}
@@ -469,12 +469,12 @@ func (parentInode *inodeStruct) findChildInode(basename string) (childInode *ino
 				if childInode.inodeType == FileObject {
 					ok = parentInode.virtChildFileMap.DeleteByKey(basename)
 					if !ok {
-						globals.logger.Fatalf("parentInode.virtChildFileMap.DeleteByKey(basename) returned !ok")
+						globals.logger.Fatalf("[FATAL] parentInode.virtChildFileMap.DeleteByKey(basename) returned !ok")
 					}
 				} else {
 					ok = parentInode.virtChildDirMap.DeleteByKey(basename)
 					if !ok {
-						globals.logger.Fatalf("parentInode.virtChildDirMap.DeleteByKey(basename) returned !ok")
+						globals.logger.Fatalf("[FATAL] parentInode.virtChildDirMap.DeleteByKey(basename) returned !ok")
 					}
 				}
 			}
@@ -530,12 +530,12 @@ func (parentInode *inodeStruct) findChildInode(basename string) (childInode *ino
 				if childInode.inodeType == FileObject {
 					ok = parentInode.virtChildFileMap.DeleteByKey(basename)
 					if !ok {
-						globals.logger.Fatalf("parentInode.virtChildFileMap.DeleteByKey(basename) returned !ok")
+						globals.logger.Fatalf("[FATAL] parentInode.virtChildFileMap.DeleteByKey(basename) returned !ok")
 					}
 				} else {
 					ok = parentInode.virtChildDirMap.DeleteByKey(basename)
 					if !ok {
-						globals.logger.Fatalf("parentInode.virtChildDirMap.DeleteByKey(basename) returned !ok")
+						globals.logger.Fatalf("[FATAL] parentInode.virtChildDirMap.DeleteByKey(basename) returned !ok")
 					}
 				}
 			}
@@ -572,7 +572,7 @@ func (parentInode *inodeStruct) findChildInode(basename string) (childInode *ino
 
 		childInode, ok = globals.inodeMap[childInodeNumber] // or parentInode.backend.inodeMap[dirOrFilePath]
 		if !ok {
-			globals.logger.Fatalf("globals.inodeMap[childInodeNumber] returned !ok [case 1]")
+			globals.logger.Fatalf("[FATAL] globals.inodeMap[childInodeNumber] returned !ok [case 1]")
 		}
 
 		return
@@ -589,7 +589,7 @@ func (parentInode *inodeStruct) findChildInode(basename string) (childInode *ino
 
 	childInode, ok = globals.inodeMap[childInodeNumber] // or parentInode.backend.inodeMap[dirOrFilePath]
 	if !ok {
-		globals.logger.Fatalf("globals.inodeMap[childInodeNumber] returned !ok [case 2]")
+		globals.logger.Fatalf("[FATAL] globals.inodeMap[childInodeNumber] returned !ok [case 2]")
 	}
 
 	// We have a virtual file... return it
@@ -628,12 +628,12 @@ func (parentInode *inodeStruct) findChildDirInode(basename string) (childDirInod
 			if childDirInode.inodeType == FileObject {
 				ok = parentInode.virtChildFileMap.DeleteByKey(basename)
 				if !ok {
-					globals.logger.Fatalf("parentInode.virtChildFileMap.DeleteByKey(basename) returned !ok")
+					globals.logger.Fatalf("[FATAL] parentInode.virtChildFileMap.DeleteByKey(basename) returned !ok")
 				}
 			} else {
 				ok = parentInode.virtChildDirMap.DeleteByKey(basename)
 				if !ok {
-					globals.logger.Fatalf("parentInode.virtChildDirMap.DeleteByKey(basename) returned !ok")
+					globals.logger.Fatalf("[FATAL] parentInode.virtChildDirMap.DeleteByKey(basename) returned !ok")
 				}
 			}
 		}
@@ -689,12 +689,12 @@ func (parentInode *inodeStruct) findChildFileInode(basename, eTag string, mTime 
 			if childFileInode.inodeType == FileObject {
 				ok = parentInode.virtChildFileMap.DeleteByKey(basename)
 				if !ok {
-					globals.logger.Fatalf("parentInode.virtChildFileMap.DeleteByKey(basename) returned !ok")
+					globals.logger.Fatalf("[FATAL] parentInode.virtChildFileMap.DeleteByKey(basename) returned !ok")
 				}
 			} else {
 				ok = parentInode.virtChildDirMap.DeleteByKey(basename)
 				if !ok {
-					globals.logger.Fatalf("parentInode.virtChildDirMap.DeleteByKey(basename) returned !ok")
+					globals.logger.Fatalf("[FATAL] parentInode.virtChildDirMap.DeleteByKey(basename) returned !ok")
 				}
 			}
 		}

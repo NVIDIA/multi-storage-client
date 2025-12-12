@@ -25,13 +25,14 @@ import (
 // is adjusted based on any changes detected.
 func main() {
 	var (
-		displayHelp         bool
-		displayHelpMatchSet map[string]struct{}
-		err                 error
-		osArgs              []string // Copy of os.Args so that initGlobals() can be passed a modified set of arguments in testing/benchmarking
-		signalChan          chan os.Signal
-		signalReceived      os.Signal
-		ticker              *time.Ticker
+		displayHelp            bool
+		displayHelpMatchSet    map[string]struct{}
+		err                    error
+		errLastCheckConfigFile error
+		osArgs                 []string // Copy of os.Args so that initGlobals() can be passed a modified set of arguments in testing/benchmarking
+		signalChan             chan os.Signal
+		signalReceived         os.Signal
+		ticker                 *time.Ticker
 	)
 
 	osArgs = make([]string, len(os.Args))
@@ -74,7 +75,7 @@ func main() {
 
 	err = checkConfigFile()
 	if err != nil {
-		globals.logger.Fatalf("parsing config-file (\"%s\") failed: %v", globals.configFilePath, err)
+		globals.logger.Fatalf("[FATAL] parsing config-file (\"%s\") failed: %v", globals.configFilePath, err)
 	}
 
 	// Initialize observability (metrics, tracing, logging)
@@ -86,7 +87,7 @@ func main() {
 
 	err = performFissionMount()
 	if err != nil {
-		globals.logger.Fatalf("unable to perform FUSE mount [Err: %v]", err)
+		globals.logger.Fatalf("[FATAL] unable to perform FUSE mount [Err: %v]", err)
 	}
 
 	signalChan = make(chan os.Signal, 1)
@@ -99,6 +100,8 @@ func main() {
 		ticker = time.NewTicker(globals.config.autoSIGHUPInterval)
 	}
 
+	errLastCheckConfigFile = nil
+
 	for {
 		select {
 		case signalReceived = <-signalChan:
@@ -107,7 +110,7 @@ func main() {
 
 				err = performFissionUnmount()
 				if err != nil {
-					globals.logger.Fatalf("unexpected error during FUSE unmount: %v", err)
+					globals.logger.Fatalf("[FATAL] unexpected error during FUSE unmount: %v", err)
 				}
 
 				drainFS()
@@ -117,9 +120,9 @@ func main() {
 					shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					if mp, ok := globals.meterProvider.(interface{ Shutdown(context.Context) error }); ok {
 						if err := mp.Shutdown(shutdownCtx); err != nil {
-							globals.logger.Printf("Error shutting down meter provider: %v", err)
+							globals.logger.Printf("[WARN] error shutting down meter provider: %v", err)
 						} else {
-							globals.logger.Printf("Meter provider shut down successfully")
+							globals.logger.Printf("[INFO] meter provider shut down successfully")
 						}
 					}
 					cancel()
@@ -131,22 +134,38 @@ func main() {
 			// We received a syscall.SIGHUP... so re-parse (current) content of globals.condfigFilePath and resume
 
 			err = checkConfigFile()
-			if err != nil {
-				globals.logger.Printf("parsing config-file (\"%s\") failed: %v", globals.configFilePath, err)
+			if err == nil {
+				globals.logger.Printf("[INFO] parsing config-file (\"%s\") succeeded", globals.configFilePath)
+
+				processToUnmountList()
+
+				processToMountList()
+			} else {
+				globals.logger.Printf("[WARN] parsing config-file (\"%s\") failed: %v", globals.configFilePath, err)
 			}
 
-			processToUnmountList()
-
-			processToMountList()
+			errLastCheckConfigFile = err
 		case <-ticker.C:
+			// Act like we received a syscall.SIGHUP... so re-parse (current) content of globals.condfigFilePath and resume
+
 			err = checkConfigFile()
-			if err != nil {
-				globals.logger.Print(err)
+			if err == nil {
+				if errLastCheckConfigFile != nil {
+					globals.logger.Printf("[INFO] parsing config-file (\"%s\") succeeded", globals.configFilePath)
+				}
+
+				processToUnmountList()
+
+				processToMountList()
+			} else if (errLastCheckConfigFile == nil) || (errLastCheckConfigFile.Error() != err.Error()) {
+				globals.logger.Printf("[WARN] parsing config-file (\"%s\") failed: %v", globals.configFilePath, err)
 			}
+
+			errLastCheckConfigFile = err
 		case err = <-globals.errChan:
 			// We received an Unexpected exit of /dev/fuse read loop... to terminate abnormally
 
-			globals.logger.Fatalf("received unexpected FUSE error: %v", err)
+			globals.logger.Fatalf("[FATAL] received unexpected FUSE error: %v", err)
 		}
 	}
 }
@@ -157,13 +176,13 @@ func main() {
 func initObservability() {
 	// Check if observability is configured
 	if globals.config.observability == nil {
-		globals.logger.Printf("Observability not configured, skipping initialization")
+		globals.logger.Printf("[INFO] observability not configured, skipping initialization")
 		return
 	}
 
 	// Check if metrics exporter is configured (matches Python schema requirement)
 	if globals.config.observability.metricsExporter == nil {
-		globals.logger.Printf("Metrics exporter not configured, skipping metrics initialization")
+		globals.logger.Printf("[INFO] metrics exporter not configured, skipping metrics initialization")
 		return
 	}
 
@@ -203,7 +222,7 @@ func initObservability() {
 		// Standard OTLP exporter (no auth)
 		endpoint, ok := exporterOptions["endpoint"].(string)
 		if !ok {
-			globals.logger.Printf("Metrics exporter endpoint not configured, skipping metrics initialization")
+			globals.logger.Printf("[WARN] metrics exporter endpoint not configured, skipping metrics initialization")
 			return
 		}
 
@@ -221,32 +240,32 @@ func initObservability() {
 		// Config structure: auth{client_id, client_credential, authority, scopes} + exporter{endpoint}
 		authOptions, ok := exporterOptions["auth"].(map[string]interface{})
 		if !ok {
-			globals.logger.Printf("_otlp_msal exporter requires 'auth' configuration, skipping metrics initialization")
+			globals.logger.Printf("[WARN] _otlp_msal exporter requires 'auth' configuration, skipping metrics initialization")
 			return
 		}
 
 		exporterSubOptions, ok := exporterOptions["exporter"].(map[string]interface{})
 		if !ok {
-			globals.logger.Printf("_otlp_msal exporter requires 'exporter' configuration, skipping metrics initialization")
+			globals.logger.Printf("[WARN] _otlp_msal exporter requires 'exporter' configuration, skipping metrics initialization")
 			return
 		}
 
 		// Extract and validate auth config
 		clientID, ok := authOptions["client_id"].(string)
 		if !ok || clientID == "" {
-			globals.logger.Printf("_otlp_msal exporter requires 'auth.client_id', skipping metrics initialization")
+			globals.logger.Printf("[WARN] _otlp_msal exporter requires 'auth.client_id', skipping metrics initialization")
 			return
 		}
 
 		clientCredential, ok := authOptions["client_credential"].(string)
 		if !ok || clientCredential == "" {
-			globals.logger.Printf("_otlp_msal exporter requires 'auth.client_credential', skipping metrics initialization")
+			globals.logger.Printf("[WARN] _otlp_msal exporter requires 'auth.client_credential', skipping metrics initialization")
 			return
 		}
 
 		authority, ok := authOptions["authority"].(string)
 		if !ok || authority == "" {
-			globals.logger.Printf("_otlp_msal exporter requires 'auth.authority', skipping metrics initialization")
+			globals.logger.Printf("[WARN] _otlp_msal exporter requires 'auth.authority', skipping metrics initialization")
 			return
 		}
 
@@ -259,14 +278,14 @@ func initObservability() {
 			}
 		}
 		if len(scopes) == 0 {
-			globals.logger.Printf("_otlp_msal exporter requires at least one 'auth.scopes', skipping metrics initialization")
+			globals.logger.Printf("[WARN] _otlp_msal exporter requires at least one 'auth.scopes', skipping metrics initialization")
 			return
 		}
 
 		// Extract and validate endpoint from nested exporter config
 		endpoint, ok := exporterSubOptions["endpoint"].(string)
 		if !ok || endpoint == "" {
-			globals.logger.Printf("_otlp_msal exporter requires 'exporter.endpoint', skipping metrics initialization")
+			globals.logger.Printf("[WARN] _otlp_msal exporter requires 'exporter.endpoint', skipping metrics initialization")
 			return
 		}
 
@@ -280,31 +299,31 @@ func initObservability() {
 		}
 
 	default:
-		globals.logger.Printf("Unsupported metrics exporter type: %s (supported: 'otlp', '_otlp_msal')", exporterType)
+		globals.logger.Printf("[WARN] unsupported metrics exporter type: %s (supported: 'otlp', '_otlp_msal')", exporterType)
 		return
 	}
 
 	// Initialize metrics with diperiodic pattern
 	meterProvider, metricAttrs, err := telemetry.SetupMetricsDiperiodic(metricsConfig)
 	if err != nil {
-		globals.logger.Printf("Failed to initialize metrics: %v", err)
+		globals.logger.Printf("[WARN] failed to initialize metrics: %v", err)
 		return
 	}
 
-	globals.logger.Printf("Metrics initialized with diperiodic pattern (collect=%dms, export=%dms), sending to %s",
+	globals.logger.Printf("[INFO] metrics initialized with diperiodic pattern (collect=%dms, export=%dms), sending to %s",
 		collectIntervalMs, exportIntervalMs, metricsConfig.OTLPEndpoint)
 
 	// Create MSCP metrics instruments (matches MSC Python: gauges use LastValue, counters use Sum)
 	// Pass metricAttrs so they're added to every metric recording (matching Python behavior)
 	metrics, err := telemetry.NewMSCPMetricsDiperiodic("msc-posix", metricAttrs)
 	if err != nil {
-		globals.logger.Printf("Failed to create metrics instruments: %v", err)
+		globals.logger.Printf("[WARN] failed to create metrics instruments: %v", err)
 		return
 	}
 
 	globals.metrics = metrics
 	globals.meterProvider = meterProvider // Store for shutdown later
-	globals.logger.Printf("MSCP metrics instruments created successfully")
+	globals.logger.Printf("[INFO] metrics instruments created successfully")
 }
 
 // processAttributeProviders instantiates attribute providers from configuration.
@@ -343,7 +362,7 @@ func processAttributeProviders(configs []attributeProviderStruct) []attributes.A
 		// Look up provider constructor
 		constructor, ok := providerMapping[config.Type]
 		if !ok {
-			globals.logger.Printf("Unknown attribute provider type: %s, skipping", config.Type)
+			globals.logger.Printf("[WARN] unknown attribute provider type: %s, skipping", config.Type)
 			continue
 		}
 
@@ -351,7 +370,7 @@ func processAttributeProviders(configs []attributeProviderStruct) []attributes.A
 		provider := constructor(config.Options)
 		providers = append(providers, provider)
 
-		globals.logger.Printf("Initialized attribute provider: %s", config.Type)
+		globals.logger.Printf("[INFO] initialized attribute provider: %s", config.Type)
 	}
 
 	return providers

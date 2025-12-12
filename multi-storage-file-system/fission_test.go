@@ -142,19 +142,19 @@ func fissionTestUp(t *testing.T) {
 	backend.context.(*ramContextStruct).curTotalObjectSpace += 7 + testFissionFileBLen + 12 + 17 + 17
 
 	// We will comment the following out for now... but left here for documnetation and possibly later use
-	// globals.logger.Printf("[backend.dirName: \"%s\"] ramContext.rootDir populated with:", backend.dirName)
-	// globals.logger.Printf("       ├── dir1")
-	// globals.logger.Printf("       │   ├── dir3")
-	// globals.logger.Printf("       │   │   └── fileD (containing \"/dir1/dir3/fileD\\n\")")
-	// globals.logger.Printf("       │   └── fileC (containing \"/dir1/fileC\\n\")")
-	// globals.logger.Printf("       ├── dir2")
-	// globals.logger.Printf("       │   └── dir4")
-	// globals.logger.Printf("       │       └── fileE (containing \"/dir2/dir4/fileE\\n\")")
-	// globals.logger.Printf("       ├── fileA (containing \"/fileA\\n\")")
-	// globals.logger.Printf("       └── fileB (containing %v random bytes with md5sum %v)", testFissionFileBLen, testFissionFileBMD5)
+	// globals.logger.Printf("[INFO] [backend.dirName: \"%s\"] ramContext.rootDir populated with:", backend.dirName)
+	// globals.logger.Printf("[INFO]        ├── dir1")
+	// globals.logger.Printf("[INFO]        │   ├── dir3")
+	// globals.logger.Printf("[INFO]        │   │   └── fileD (containing \"/dir1/dir3/fileD\\n\")")
+	// globals.logger.Printf("[INFO]        │   └── fileC (containing \"/dir1/fileC\\n\")")
+	// globals.logger.Printf("[INFO]        ├── dir2")
+	// globals.logger.Printf("[INFO]        │   └── dir4")
+	// globals.logger.Printf("[INFO]        │       └── fileE (containing \"/dir2/dir4/fileE\\n\")")
+	// globals.logger.Printf("[INFO]        ├── fileA (containing \"/fileA\\n\")")
+	// globals.logger.Printf("[INFO]        └── fileB (containing %v random bytes with md5sum %v)", testFissionFileBLen, testFissionFileBMD5)
 }
 
-func fissionTestDown(t *testing.T) {
+func fissionTestDown(_ *testing.T) {
 	var (
 	// err error
 	)
