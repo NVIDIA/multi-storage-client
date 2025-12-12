@@ -761,7 +761,22 @@ def _sync_worker_process(
                             raise RuntimeError("Invalid state, no storage provider configured.")
 
                         try:
-                            target_metadata = target_client._storage_provider.get_object_metadata(target_file_path)
+                            # This enables "resume" semantics even when the object exists physically but is not yet
+                            # present in the metadata provider (e.g., partial sync, interrupted run).
+                            if target_client._metadata_provider:
+                                resolved = target_client._metadata_provider.realpath(target_file_path)
+                                if resolved.exists:
+                                    # This should not happen but the check is to keep the code
+                                    # consistent with write/upload behavior
+                                    physical_path = resolved.physical_path
+                                else:
+                                    physical_path = target_client._metadata_provider.generate_physical_path(
+                                        target_file_path, for_overwrite=False
+                                    ).physical_path
+                            else:
+                                physical_path = target_file_path
+
+                            target_metadata = target_client._storage_provider.get_object_metadata(physical_path)
                         except FileNotFoundError:
                             pass
 
