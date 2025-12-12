@@ -10,7 +10,11 @@ providers like S3, Azure Blob Storage, Google Cloud Storage, and others.
 Top-Level
 *********
 
-The top-level configuration schema consists of five main sections:
+The top-level configuration schema consists of six main sections:
+
+* ``include``
+
+  * Optional list of configuration file paths to include and merge. This enables modular configuration management by splitting settings across multiple files.
 
 * ``experimental_features``
 
@@ -35,6 +39,9 @@ The top-level configuration schema consists of five main sections:
 .. code-block:: yaml
    :caption: Top-level schema.
 
+   # Optional. List of config files to include
+   include: <list_of_config_paths>
+
    # Optional. Experimental features flags
    experimental_features: <experimental_features_config>
 
@@ -49,6 +56,81 @@ The top-level configuration schema consists of five main sections:
 
    # Optional. Path mapping configuration
    path_mapping: <path_mapping_config>
+
+*******************
+Multi-Configuration
+*******************
+
+MSC supports splitting configuration across multiple files using the ``include`` keyword. This enables modular configuration management by sharing common settings (e.g., opentelemetry, cache) across multiple configurations.
+
+The ``include`` field accepts a list of configuration file paths. Paths can be absolute (``/etc/msc/shared.yaml``) or relative to the main configuration file (``./shared/profiles.yaml``, ``../common/cache.yaml``).
+
+.. note::
+
+  * **Include order matters** for fields that concatenate lists (e.g., ``opentelemetry.metrics.attributes``). Files are processed in the order listed, and later entries can override or extend earlier ones.
+  * **No nested includes**: included files cannot contain ``include`` section.
+  * All included files must exist and be valid MSC configurations.
+
+.. code-block:: yaml
+   :caption: Example: Main configuration including shared settings
+
+   include:
+     - ./team-profiles.yaml
+     - /etc/msc/shared-cache.yaml
+     - /etc/msc/shared-opentelemetry.yaml
+
+   profiles:
+     my-profile:
+       storage_provider:
+         type: file
+         options:
+           base_path: /tmp
+
+.. code-block:: yaml
+   :caption: Example: ``team-profiles.yaml``
+
+   profiles:
+     team-s3:
+       storage_provider:
+         type: s3
+         options:
+           base_path: team-bucket
+
+.. code-block:: yaml
+   :caption: Example: ``shared-cache.yaml``
+
+   cache:
+     size: 500G
+     location: /scratch/msc_cache
+
+.. code-block:: yaml
+   :caption: Example: ``shared-opentelemetry.yaml``
+
+   opentelemetry:
+     metrics:
+       attributes:
+         - type: environment_variables
+           options:
+             attributes:
+               msc.cluster: CLUSTER
+       reader:
+         options:
+           collect_interval_millis: 10
+           export_interval_millis: 1000
+       exporter:
+         type: otlp
+         options:
+           endpoint: http://localhost:4318/v1/metrics
+
+When merged, the main configuration will contain all profiles from both the main file and ``team-profiles.yaml``, plus the cache configuration from ``shared-cache.yaml``.
+
+Merge Rules
+===========
+
+* **Profiles**: Combined from all files. Identical profile definitions are allowed (idempotent). Different definitions for the same profile name raise an error.
+* **OpenTelemetry**: Metrics attributes are concatenated. Reader and exporter must be identical across all files or defined in only one file.
+* **Path Mapping / Experimental Features**: Entries are merged. Identical entries are allowed. Conflicting entries raise an error.
+* **Cache / POSIX**: Must be identical across all files or defined in only one file.
 
 *********************
 Experimental Features
