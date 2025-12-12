@@ -39,6 +39,7 @@ from ..types import (
     PatternList,
     Range,
     Replica,
+    ResolvedPathState,
     SourceVersionCheckMode,
     StorageProvider,
 )
@@ -388,8 +389,8 @@ class SingleStorageClient(AbstractStorageClient):
         virtual_path = remote_path
         if self._metadata_provider:
             resolved = self._metadata_provider.realpath(remote_path)
-            if resolved.exists:
-                # File exists
+            if resolved.state in (ResolvedPathState.EXISTS, ResolvedPathState.DELETED):
+                # File exists or has been deleted
                 if not self._metadata_provider.allow_overwrites():
                     raise FileExistsError(
                         f"The file at path '{virtual_path}' already exists; "
@@ -428,8 +429,8 @@ class SingleStorageClient(AbstractStorageClient):
         virtual_path = path
         if self._metadata_provider:
             resolved = self._metadata_provider.realpath(path)
-            if resolved.exists:
-                # File exists
+            if resolved.state in (ResolvedPathState.EXISTS, ResolvedPathState.DELETED):
+                # File exists or has been deleted
                 if not self._metadata_provider.allow_overwrites():
                     raise FileExistsError(
                         f"The file at path '{virtual_path}' already exists; "
@@ -470,8 +471,8 @@ class SingleStorageClient(AbstractStorageClient):
 
             # Destination: check for overwrites
             dest_resolved = self._metadata_provider.realpath(dest_path)
-            if dest_resolved.exists:
-                # Destination exists
+            if dest_resolved.state in (ResolvedPathState.EXISTS, ResolvedPathState.DELETED):
+                # Destination exists or has been deleted
                 if not self._metadata_provider.allow_overwrites():
                     raise FileExistsError(
                         f"The file at path '{virtual_dest_path}' already exists; "

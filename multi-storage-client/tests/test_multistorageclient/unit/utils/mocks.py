@@ -26,6 +26,7 @@ from multistorageclient.types import (
     ProviderBundleV2,
     Replica,
     ResolvedPath,
+    ResolvedPathState,
     StorageBackend,
     StorageProviderConfig,
 )
@@ -92,12 +93,12 @@ class TestMetadataProvider(MetadataProvider):
     def realpath(self, logical_path: str) -> ResolvedPath:
         """Mock implementation - returns the logical path if it exists."""
         if logical_path in self._files:
-            return ResolvedPath(physical_path=logical_path, exists=True, profile=None)
-        return ResolvedPath(physical_path=logical_path, exists=False, profile=None)
+            return ResolvedPath(physical_path=logical_path, state=ResolvedPathState.EXISTS, profile=None)
+        return ResolvedPath(physical_path=logical_path, state=ResolvedPathState.UNTRACKED, profile=None)
 
     def generate_physical_path(self, logical_path: str, for_overwrite: bool = False) -> ResolvedPath:
         """Mock implementation - always returns the logical path."""
-        return ResolvedPath(physical_path=logical_path, exists=False, profile=None)
+        return ResolvedPath(physical_path=logical_path, state=ResolvedPathState.UNTRACKED, profile=None)
 
     def add_file(self, path: str, metadata: ObjectMetadata) -> None:
         assert path not in self._files

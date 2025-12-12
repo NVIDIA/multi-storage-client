@@ -23,7 +23,7 @@ import pytest
 
 import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
 from multistorageclient import StorageClient, StorageClientConfig
-from multistorageclient.types import MetadataProvider, ObjectMetadata, ResolvedPath
+from multistorageclient.types import MetadataProvider, ObjectMetadata, ResolvedPath, ResolvedPathState
 
 
 class UuidMetadataProvider(MetadataProvider):
@@ -33,6 +33,8 @@ class UuidMetadataProvider(MetadataProvider):
         self._uuid_to_info: dict[str, ObjectMetadata] = {}
         self._pending_adds: dict[str, ObjectMetadata] = {}
         self._pending_deletes: set[str] = set()
+        self._deleted_files: set[str] = set()  # Track soft-deleted files
+        self._allow_overwrites: bool = False  # Control overwrite behavior
 
     def list_objects(
         self,
@@ -46,6 +48,10 @@ class UuidMetadataProvider(MetadataProvider):
         assert not include_directories
         sorted_paths = sorted(self._path_to_uuid.keys())
         for path_key in sorted_paths:
+            # Skip deleted files
+            if path_key in self._deleted_files:
+                continue
+
             if start_after is not None and path_key < start_after:
                 continue
             if end_at is not None and path_key > end_at:
@@ -58,23 +64,33 @@ class UuidMetadataProvider(MetadataProvider):
     def get_object_metadata(self, path: str, include_pending: bool = False) -> ObjectMetadata:
         assert not include_pending, "Not supported in tests"
         u = self._path_to_uuid.get(path)
-        if u is None:
+        if u is None or path in self._deleted_files:
             raise FileNotFoundError(f"Object {path} does not exist.")
         return self._uuid_to_info[u]
 
     def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
-        return [path for path in self._path_to_uuid.keys() if fnmatch.fnmatch(path, pattern)]
+        return [
+            path
+            for path in self._path_to_uuid.keys()
+            if fnmatch.fnmatch(path, pattern) and path not in self._deleted_files
+        ]
 
     def realpath(self, logical_path: str) -> ResolvedPath:
         """Resolves a logical path to its UUID-based physical path."""
         u = self._path_to_uuid.get(logical_path)
         if u:
-            return ResolvedPath(physical_path=u, exists=True, profile=None)
-        return ResolvedPath(physical_path=logical_path, exists=False, profile=None)
+            if logical_path in self._deleted_files:
+                # File exists in metadata but is soft-deleted
+                return ResolvedPath(physical_path=u, state=ResolvedPathState.DELETED, profile=None)
+            else:
+                # File exists and is not deleted
+                return ResolvedPath(physical_path=u, state=ResolvedPathState.EXISTS, profile=None)
+        # File never existed
+        return ResolvedPath(physical_path=logical_path, state=ResolvedPathState.UNTRACKED, profile=None)
 
     def generate_physical_path(self, logical_path: str, for_overwrite: bool = False) -> ResolvedPath:
         """Generates a new UUID-based physical path."""
-        return ResolvedPath(physical_path=str(uuid.uuid4()), exists=False, profile=None)
+        return ResolvedPath(physical_path=str(uuid.uuid4()), state=ResolvedPathState.UNTRACKED, profile=None)
 
     def add_file(self, path: str, metadata: ObjectMetadata) -> None:
         # Keep a dictionary of pending adds
@@ -88,15 +104,20 @@ class UuidMetadataProvider(MetadataProvider):
         self._pending_deletes.add(path)
 
     def commit_updates(self) -> None:
-        # Move entries in pending_adds to path_to_uuid and remove entries in pending_deletes from path_to_uuid
+        # Handle pending deletes: mark as soft-deleted instead of removing
         for path in self._pending_deletes:
-            u = self._path_to_uuid.pop(path)
-            del self._uuid_to_info[u]
+            if path in self._path_to_uuid:
+                self._deleted_files.add(path)
+
+        # Handle pending adds: add new files or restore deleted files
         for vpath, metadata in self._pending_adds.items():
             u = metadata.key
             metadata.key = vpath
             self._path_to_uuid[vpath] = u
             self._uuid_to_info[u] = metadata
+            # If this was a deleted file, remove it from deleted set (restore)
+            self._deleted_files.discard(vpath)
+
         self._pending_adds.clear()
         self._pending_deletes.clear()
 
@@ -104,7 +125,7 @@ class UuidMetadataProvider(MetadataProvider):
         return True
 
     def allow_overwrites(self) -> bool:
-        return False
+        return self._allow_overwrites
 
 
 @pytest.mark.parametrize(
@@ -235,3 +256,88 @@ def test_uuid_metadata_provider(temp_data_store_type: type[tempdatastore.Tempora
         storage_client.delete(path="", recursive=True)
         # Assert that all files are deleted
         assert len(list(storage_client.list(prefix=""))) == 0
+
+        # Test ResolvedPath enum functionality
+        # Test EXISTS state
+        resolved = ResolvedPath(physical_path="/test/path", state=ResolvedPathState.EXISTS)
+        assert resolved.state == ResolvedPathState.EXISTS
+
+        # Test DELETED state
+        resolved = ResolvedPath(physical_path="/test/path", state=ResolvedPathState.DELETED)
+        assert resolved.state == ResolvedPathState.DELETED
+
+        # Test UNTRACKED state
+        resolved = ResolvedPath(physical_path="/test/path", state=ResolvedPathState.UNTRACKED)
+        assert resolved.state == ResolvedPathState.UNTRACKED
+
+        # Test with profile parameter
+        resolved = ResolvedPath(physical_path="/test/path", state=ResolvedPathState.DELETED, profile="test")
+        assert resolved.state == ResolvedPathState.DELETED
+        assert resolved.profile == "test"
+
+        # Test delete-then-overwrite scenario
+        # Create a test file for delete-overwrite testing
+        test_file_path = "delete_overwrite_test.txt"
+        test_content_original = b"original content"
+        test_content_new = b"new content after delete"
+
+        # Write the original file
+        storage_client.write(test_file_path, test_content_original)
+        storage_client.commit_metadata()
+
+        # Verify file exists
+        assert storage_client.is_file(test_file_path)
+        assert storage_client.read(test_file_path) == test_content_original
+
+        # Delete the file
+        storage_client.delete(test_file_path)
+        storage_client.commit_metadata()
+
+        # Verify file is deleted
+        assert not storage_client.is_file(test_file_path)
+        with pytest.raises(FileNotFoundError):
+            storage_client.read(test_file_path)
+
+        # At this point, the metadata provider should return DELETED state for this path
+        # Test the soft delete behavior
+        resolved = storage_client._metadata_provider.realpath(test_file_path)
+        assert resolved.state == ResolvedPathState.DELETED
+
+        # Test that overwrite protection works with deleted files
+        # The UuidMetadataProvider doesn't allow overwrites by default
+        assert not storage_client._metadata_provider.allow_overwrites()
+
+        # Attempt to write to the deleted file - this should raise FileExistsError
+        # because the file was previously deleted and overwrites are not allowed
+        with pytest.raises(FileExistsError, match="already exists"):
+            storage_client.write(test_file_path, b"attempt to overwrite deleted file")
+
+        # Now test that we can overwrite if we enable overwrites
+        # Create a new provider that allows overwrites
+        overwrite_provider = UuidMetadataProvider()
+        overwrite_provider._allow_overwrites = True  # Enable overwrites
+
+        # Copy the state from the original provider
+        overwrite_provider._path_to_uuid = storage_client._metadata_provider._path_to_uuid.copy()
+        overwrite_provider._uuid_to_info = storage_client._metadata_provider._uuid_to_info.copy()
+        overwrite_provider._deleted_files = storage_client._metadata_provider._deleted_files.copy()
+
+        # Replace the provider temporarily
+        original_provider = storage_client._metadata_provider
+        storage_client._metadata_provider = overwrite_provider
+
+        try:
+            # Now overwrite the deleted file with new content (should succeed)
+            storage_client.write(test_file_path, test_content_new)
+            storage_client.commit_metadata()
+
+            # Verify the file exists again with new content
+            assert storage_client.is_file(test_file_path)
+            assert storage_client.read(test_file_path) == test_content_new
+
+            # Verify the file is no longer marked as deleted
+            resolved = storage_client._metadata_provider.realpath(test_file_path)
+            assert resolved.state == ResolvedPathState.EXISTS
+        finally:
+            # Restore original provider
+            storage_client._metadata_provider = original_provider

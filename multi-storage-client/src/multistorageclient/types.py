@@ -305,20 +305,40 @@ class StorageProvider(ABC):
         pass
 
 
+class ResolvedPathState(str, Enum):
+    """
+    Enum representing the state of a resolved path.
+    """
+
+    EXISTS = "exists"  # File currently exists
+    DELETED = "deleted"  # File existed before but has been deleted
+    UNTRACKED = "untracked"  # File never existed or was never tracked
+
+
 class ResolvedPath(NamedTuple):
     """
     Result of resolving a virtual path to a physical path.
 
     :param physical_path: The physical path in storage backend
-    :param exists: Whether the path exists in metadata
+    :param state: The state of the path (EXISTS, DELETED, or UNTRACKED)
     :param profile: Optional profile name for routing in CompositeStorageClient.
         None means use current client's storage provider.
         String means route to named child StorageClient.
+
+    State meanings:
+    - EXISTS: File currently exists in metadata
+    - DELETED: File existed before but has been deleted (soft delete)
+    - UNTRACKED: File never existed or was never tracked
     """
 
     physical_path: str
-    exists: bool
+    state: ResolvedPathState
     profile: Optional[str] = None
+
+    @property
+    def exists(self) -> bool:
+        """Backward compatibility property: True if state is EXISTS."""
+        return self.state == ResolvedPathState.EXISTS
 
 
 class MetadataProvider(ABC):
@@ -380,14 +400,16 @@ class MetadataProvider(ABC):
         Resolves a logical path to its physical storage path.
 
         This method checks if the object exists in the committed state and returns
-        the appropriate physical path. The exists flag indicates whether the path
-        was found.
+        the appropriate physical path with the current state of the path.
 
         :param logical_path: The user-facing logical path
 
-        :return: ResolvedPath with physical_path and exists flag indicating if path was found.
-            If exists=True, physical_path is the committed storage path.
-            If exists=False, physical_path is typically the logical_path as fallback.
+        :return: ResolvedPath with physical_path and state:
+            - ResolvedPathState.EXISTS: File currently exists
+            - ResolvedPathState.UNTRACKED: File never existed
+            - ResolvedPathState.DELETED: File was deleted
+            If state is EXISTS, physical_path is the committed storage path.
+            Otherwise, physical_path is typically the logical_path as fallback.
         """
         pass
 

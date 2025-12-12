@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional, Union
 
-from ..types import MetadataProvider, ObjectMetadata, ResolvedPath, StorageProvider
+from ..types import MetadataProvider, ObjectMetadata, ResolvedPath, ResolvedPathState, StorageProvider
 from ..utils import create_attribute_filter_evaluator, glob, matches_attribute_filter_expression
 from .manifest_formats import ManifestFormat, get_format_handler
 from .manifest_object_metadata import ManifestObjectMetadata
@@ -408,8 +408,8 @@ class ManifestMetadataProvider(MetadataProvider):
         manifest_obj = self._files.get(logical_path)
         if manifest_obj:
             assert manifest_obj.physical_path is not None
-            return ResolvedPath(physical_path=manifest_obj.physical_path, exists=True, profile=None)
-        return ResolvedPath(physical_path=logical_path, exists=False, profile=None)
+            return ResolvedPath(physical_path=manifest_obj.physical_path, state=ResolvedPathState.EXISTS, profile=None)
+        return ResolvedPath(physical_path=logical_path, state=ResolvedPathState.UNTRACKED, profile=None)
 
     def generate_physical_path(self, logical_path: str, for_overwrite: bool = False) -> ResolvedPath:
         """
@@ -427,7 +427,7 @@ class ManifestMetadataProvider(MetadataProvider):
         # Future enhancement: generate unique paths for overwrites
         # if for_overwrite and self._allow_overwrites:
         #     return f"{logical_path}-{uuid.uuid4().hex}"
-        return ResolvedPath(physical_path=logical_path, exists=False, profile=None)
+        return ResolvedPath(physical_path=logical_path, state=ResolvedPathState.UNTRACKED, profile=None)
 
     def add_file(self, path: str, metadata: ObjectMetadata) -> None:
         if not self.is_writable():
