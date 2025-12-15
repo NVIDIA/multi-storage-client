@@ -77,15 +77,21 @@ class CompositeStorageClient(AbstractStorageClient):
         self._child_clients: dict[str, SingleStorageClient] = {}
         self._child_profile_names = config.storage_provider_profiles
 
-        if not config._config_dict:
-            raise ValueError("CompositeStorageClient requires _config_dict to build child clients")
+        if config.child_configs:
+            # ProviderBundleV2 path: child configs are pre-built
+            for child_name, child_config in config.child_configs.items():
+                self._child_clients[child_name] = SingleStorageClient(child_config)
+        else:
+            # Config-dict path: child profiles have their own credentials defined
+            if not config._config_dict:
+                raise ValueError("CompositeStorageClient requires _config_dict to build child clients")
 
-        for child_profile in self._child_profile_names:
-            child_config = StorageClientConfig.from_dict(
-                config_dict=config._config_dict,
-                profile=child_profile,
-            )
-            self._child_clients[child_profile] = SingleStorageClient(child_config)
+            for child_profile in self._child_profile_names:
+                child_config = StorageClientConfig.from_dict(
+                    config_dict=config._config_dict,
+                    profile=child_profile,
+                )
+                self._child_clients[child_profile] = SingleStorageClient(child_config)
 
     @property
     def profile(self) -> str:

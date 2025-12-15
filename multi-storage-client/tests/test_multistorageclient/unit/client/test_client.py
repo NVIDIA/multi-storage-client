@@ -99,6 +99,22 @@ def test_multi_backend_facade(multi_backend_config):
     assert client._storage_provider is None
     assert client.profile.startswith("test-multi")  # Profile name has UUID suffix
 
+    # Verify child_configs is set on config
+    assert multi_backend_config.child_configs is not None
+    assert len(multi_backend_config.child_configs) == 3  # loc1, loc2, loc2-backup
+
+    # Verify child clients are created with credentials from child_configs
+    composite = client._delegate
+    assert "loc1" in composite._child_clients
+    assert "loc2" in composite._child_clients
+    assert "loc2-backup" in composite._child_clients
+    assert composite._child_clients["loc1"]._credentials_provider is not None
+
+    # Verify child clients receive replicas from child_configs
+    loc2_client = composite._child_clients["loc2"]
+    assert len(loc2_client.replicas) == 1
+    assert loc2_client.replicas[0].profile == "loc2-backup"
+
 
 @pytest.mark.parametrize(
     "operation,args",

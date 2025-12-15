@@ -181,7 +181,13 @@ class TestProviderBundleV2MultiBackend(ProviderBundleV2):
             "loc2": StorageBackend(
                 storage_provider_config=StorageProviderConfig(type="file", options={"base_path": "/tmp/loc2"}),
                 credentials_provider=None,
-                replicas=[Replica("loc2-backup", 1)],  # Example: loc2 has a replica
+                replicas=[Replica("loc2-backup", 1)],
+            ),
+            # Replica backend for loc2
+            "loc2-backup": StorageBackend(
+                storage_provider_config=StorageProviderConfig(type="file", options={"base_path": "/tmp/loc2-backup"}),
+                credentials_provider=TestCredentialsProvider(),
+                replicas=[],
             ),
         }
 

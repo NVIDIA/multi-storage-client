@@ -831,34 +831,75 @@ class StorageClientConfigLoader:
         return bundle
 
     def _inject_profiles_from_bundle(self) -> None:
-        if len(self._provider_bundle.storage_backends) > 1:
-            profiles = copy.deepcopy(self._profiles)
+        """
+        Inject child profiles and build child configs for multi-backend configurations.
 
-            for child_name, backend in self._provider_bundle.storage_backends.items():
-                child_config = {
+        For ProviderBundleV2 with multiple backends, this method:
+        1. Injects child profiles into config dict (needed for replica initialization)
+        2. Pre-builds child configs so CompositeStorageClient can use them directly
+
+        Profile injection is required because SingleStorageClient._initialize_replicas()
+        uses StorageClientConfig.from_dict() to create replica clients, which looks up
+        profiles in the config dict.
+        """
+        self._child_configs: Optional[dict[str, StorageClientConfig]] = None
+
+        backends = self._provider_bundle.storage_backends
+        if len(backends) > 1:
+            # First, inject all child profiles into config dict (needed for replica lookup)
+            profiles = copy.deepcopy(self._profiles)
+            for child_name, backend in backends.items():
+                child_profile_dict = {
                     "storage_provider": {
                         "type": backend.storage_provider_config.type,
                         "options": backend.storage_provider_config.options,
                     }
                 }
 
-                if child_name in self._profiles:
+                if child_name in profiles:
                     # Profile already exists - check if it matches what we would inject
-                    existing = self._profiles[child_name]
-                    if existing.get("storage_provider") == child_config["storage_provider"]:
-                        continue
-                    else:
+                    existing = profiles[child_name]
+                    if existing.get("storage_provider") != child_profile_dict["storage_provider"]:
                         raise ValueError(
                             f"Profile '{child_name}' already exists in configuration with different settings."
                         )
+                else:
+                    profiles[child_name] = child_profile_dict
 
-                profiles[child_name] = child_config
-
+            # Update config dict BEFORE building child configs
             resolved_config_dict = copy.deepcopy(self._resolved_config_dict)
             resolved_config_dict["profiles"] = profiles
-
             self._profiles = ImmutableDict(profiles)
             self._resolved_config_dict = ImmutableDict(resolved_config_dict)
+
+            # Now build child configs (they will get the updated config dict)
+            retry_config = self._build_retry_config()
+            child_configs: dict[str, StorageClientConfig] = {}
+            for child_name, backend in backends.items():
+                storage_provider = self._build_storage_provider(
+                    backend.storage_provider_config.type,
+                    backend.storage_provider_config.options,
+                    backend.credentials_provider,
+                )
+
+                child_config = StorageClientConfig(
+                    profile=child_name,
+                    storage_provider=storage_provider,
+                    credentials_provider=backend.credentials_provider,
+                    storage_provider_profiles=None,
+                    child_configs=None,
+                    metadata_provider=None,
+                    cache_config=None,
+                    cache_manager=None,
+                    retry_config=retry_config,
+                    telemetry_provider=self._telemetry_provider,
+                    replicas=backend.replicas,
+                    autocommit_config=None,
+                )
+                child_config._config_dict = self._resolved_config_dict
+                child_configs[child_name] = child_config
+
+            self._child_configs = child_configs
 
     def _build_retry_config(self) -> RetryConfig:
         """Build retry config from profile dict."""
@@ -984,6 +1025,7 @@ class StorageClientConfigLoader:
                 storage_provider=None,
                 credentials_provider=None,
                 storage_provider_profiles=child_profile_names,
+                child_configs=self._child_configs,
                 metadata_provider=bundle.metadata_provider,
                 cache_config=None,
                 cache_manager=None,
@@ -1099,6 +1141,7 @@ class StorageClientConfigLoader:
             storage_provider=storage_provider,
             credentials_provider=credentials_provider,
             storage_provider_profiles=None,
+            child_configs=None,
             metadata_provider=metadata_provider,
             cache_config=cache_config,
             cache_manager=cache_manager,
@@ -1257,6 +1300,7 @@ class StorageClientConfig:
     storage_provider: Optional[StorageProvider]
     credentials_provider: Optional[CredentialsProvider]
     storage_provider_profiles: Optional[list[str]]
+    child_configs: Optional[dict[str, "StorageClientConfig"]]
     metadata_provider: Optional[MetadataProvider]
     cache_config: Optional[CacheConfig]
     cache_manager: Optional[CacheManager]
@@ -1273,6 +1317,7 @@ class StorageClientConfig:
         storage_provider: Optional[StorageProvider] = None,
         credentials_provider: Optional[CredentialsProvider] = None,
         storage_provider_profiles: Optional[list[str]] = None,
+        child_configs: Optional[dict[str, "StorageClientConfig"]] = None,
         metadata_provider: Optional[MetadataProvider] = None,
         cache_config: Optional[CacheConfig] = None,
         cache_manager: Optional[CacheManager] = None,
@@ -1296,6 +1341,7 @@ class StorageClientConfig:
         self.storage_provider = storage_provider
         self.credentials_provider = credentials_provider
         self.storage_provider_profiles = storage_provider_profiles
+        self.child_configs = child_configs
         self.metadata_provider = metadata_provider
         self.cache_config = cache_config
         self.cache_manager = cache_manager
@@ -1536,6 +1582,7 @@ class StorageClientConfig:
         del state["metadata_provider"]
         del state["cache_manager"]
         del state["replicas"]
+        del state["child_configs"]
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
@@ -1551,6 +1598,7 @@ class StorageClientConfig:
         self.storage_provider = new_config.storage_provider
         self.credentials_provider = new_config.credentials_provider
         self.storage_provider_profiles = new_config.storage_provider_profiles
+        self.child_configs = new_config.child_configs
         self.metadata_provider = new_config.metadata_provider
         self.cache_config = new_config.cache_config
         self.cache_manager = new_config.cache_manager

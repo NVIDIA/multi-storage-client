@@ -1942,9 +1942,10 @@ def test_load_provider_bundle_v2_multi_backend():
     # Multiple backends should create a config with storage_provider_profiles (not storage_provider)
     assert config.storage_provider is None
     assert config.storage_provider_profiles is not None
-    assert len(config.storage_provider_profiles) == 2
+    assert len(config.storage_provider_profiles) == 3
     assert "loc1" in config.storage_provider_profiles
     assert "loc2" in config.storage_provider_profiles
+    assert "loc2-backup" in config.storage_provider_profiles
     assert isinstance(config.metadata_provider, type(config.metadata_provider))
 
     # Verify child profiles were injected into _config_dict
@@ -1987,9 +1988,10 @@ def test_load_direct_provider_bundle_v2_multi_backend():
     # Multiple backends should result in storage_provider_profiles being set
     assert config.storage_provider is None
     assert config.storage_provider_profiles is not None
-    assert len(config.storage_provider_profiles) == 2
+    assert len(config.storage_provider_profiles) == 3
     assert "loc1" in config.storage_provider_profiles
     assert "loc2" in config.storage_provider_profiles
+    assert "loc2-backup" in config.storage_provider_profiles
 
 
 def test_resolve_include_path():
