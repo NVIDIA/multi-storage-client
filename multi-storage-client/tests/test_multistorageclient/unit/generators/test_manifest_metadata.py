@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import copy
 import json
 import os
 import random
@@ -60,7 +59,7 @@ def test_manifest_metadata(temp_data_store_type: type[tempdatastore.TemporaryDat
         data_with_manifest_profile = "data_with_manifest"
 
         data_profile_config_dict = temp_data_store.profile_config_dict()
-        data_with_manifest_profile_config_dict = copy.deepcopy(data_profile_config_dict) | {
+        data_with_manifest_profile_config_dict = temp_data_store.profile_config_dict() | {
             "metadata_provider": {
                 "type": "manifest",
                 "options": {
@@ -209,7 +208,7 @@ def test_manifest_metadata_parquet_format(temp_data_store_type: type[tempdatasto
         data_with_manifest_profile = "data_with_manifest"
 
         data_profile_config_dict = temp_data_store.profile_config_dict()
-        data_with_manifest_profile_config_dict = copy.deepcopy(data_profile_config_dict) | {
+        data_with_manifest_profile_config_dict = temp_data_store.profile_config_dict() | {
             "metadata_provider": {
                 "type": "manifest",
                 "options": {

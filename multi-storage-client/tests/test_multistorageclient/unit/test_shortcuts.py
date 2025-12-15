@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import copy
 import mmap
 import os
 import tempfile
@@ -330,7 +329,7 @@ def test_msc_shortcuts_with_s3_manifest(temp_data_store_type: type[tempdatastore
     msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
 
     with temp_data_store_type() as temp_data_store:
-        data_with_manifest_profile_config_dict = copy.deepcopy(temp_data_store.profile_config_dict()) | {
+        data_with_manifest_profile_config_dict = temp_data_store.profile_config_dict() | {
             "metadata_provider": {
                 "type": "manifest",
                 "options": {

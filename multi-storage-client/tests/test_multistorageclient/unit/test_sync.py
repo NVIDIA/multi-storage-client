@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import copy
 import json
 import os
 import queue
@@ -113,7 +112,7 @@ def test_sync_function(
         tempdatastore.TemporaryPOSIXDirectory() as second_local_data_store,
         temp_data_store_type() as temp_data_store,
     ):
-        with_manifest_profile_config_dict = copy.deepcopy(second_local_data_store.profile_config_dict()) | {
+        with_manifest_profile_config_dict = second_local_data_store.profile_config_dict() | {
             "metadata_provider": {
                 "type": "manifest",
                 "options": {
@@ -1138,7 +1137,7 @@ def test_sync_with_manifest_overwrite_behavior():
         config_dict = {
             "profiles": {
                 source_profile: source_store.profile_config_dict(),
-                no_overwrite_profile: copy.deepcopy(no_overwrite_store.profile_config_dict())
+                no_overwrite_profile: no_overwrite_store.profile_config_dict()
                 | {
                     "metadata_provider": {
                         "type": "manifest",
@@ -1149,7 +1148,7 @@ def test_sync_with_manifest_overwrite_behavior():
                         },
                     }
                 },
-                with_overwrite_profile: copy.deepcopy(with_overwrite_store.profile_config_dict())
+                with_overwrite_profile: with_overwrite_store.profile_config_dict()
                 | {
                     "metadata_provider": {
                         "type": "manifest",
@@ -1308,7 +1307,7 @@ def test_sync_resume_with_metadata_provider():
         config_dict = {
             "profiles": {
                 source_profile: source_store.profile_config_dict(),
-                target_profile: copy.deepcopy(target_store.profile_config_dict())
+                target_profile: target_store.profile_config_dict()
                 | {
                     "metadata_provider": {
                         "type": "manifest",
