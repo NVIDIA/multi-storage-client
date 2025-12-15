@@ -312,11 +312,23 @@ class BenchmarkRunner:
                 for processes in self.processes:
                     for threads in self.threads:
                         self.run_test("upload", self.prefix, size_str, objects, processes, threads)
+
+                        # Commit metadata after upload to ensure metadata provider has the file records
+                        # This is required when using metadata providers (e.g., ManifestMetadataProvider)
+                        self.storage_client.commit_metadata()
+
                         self.run_test("download", self.prefix, size_str, objects, processes, threads)
                         if self.include_file_tests:
                             self.run_test("upload_file", self.prefix, size_str, objects, processes, threads)
+
+                            # Commit metadata after upload_file to ensure metadata provider has the file records
+                            self.storage_client.commit_metadata()
+
                             self.run_test("download_file", self.prefix, size_str, objects, processes, threads)
                         self.run_test("delete", self.prefix, size_str, objects, processes, threads)
+
+                        # Commit metadata after delete to ensure metadata provider records the deletions
+                        self.storage_client.commit_metadata()
             finally:
                 if self.include_file_tests:
                     self.cleanup_test_dir()
