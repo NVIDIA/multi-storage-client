@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import concurrent.futures
 import json
 import os
 import queue
@@ -30,6 +31,7 @@ from filelock import FileLock
 
 import multistorageclient as msc
 from multistorageclient.client import StorageClient
+from multistorageclient.config import StorageClientConfig
 from multistorageclient.constants import MEMORY_LOAD_LIMIT
 from multistorageclient.progress_bar import ProgressBar
 from multistorageclient.providers.base import BaseStorageProvider
@@ -1620,3 +1622,101 @@ def test_create_exclusive_filelock():
         # Test 3: Large file on non-POSIX (S3) - should NOT create lock
         lock_s3 = _create_exclusive_filelock(s3_client, target_file_path, large_file_size)
         assert not isinstance(lock_s3, FileLock), "Non-POSIX storage should never create locks"
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[[tempdatastore.TemporaryAWSS3Bucket]],
+)
+def test_rustclient_credentials_refresh_multiple_threads(
+    temp_data_store_type: type[tempdatastore.TemporaryAWSS3Bucket],
+):
+    """
+    Test that RustClient handles concurrent credential refresh without deadlock.
+    """
+    with temp_data_store_type(enable_rust_client=True) as temp_s3_bucket:
+        # Create StorageClient directly with configuration
+        profile = "data"
+        config_dict = {
+            "profiles": {
+                profile: temp_s3_bucket.profile_config_dict(),
+            }
+        }
+        config_dict["profiles"][profile]["credentials_provider"] = {
+            "type": "test_multistorageclient.unit.utils.mocks.SlowRefreshableCredentialsProvider",
+            "options": {
+                "access_key": temp_s3_bucket.profile_config_dict()["credentials_provider"]["options"]["access_key"],
+                "secret_key": temp_s3_bucket.profile_config_dict()["credentials_provider"]["options"]["secret_key"],
+            },
+        }
+        client_config = StorageClientConfig.from_dict(
+            config_dict,
+            profile=profile,
+        )
+
+        source_client = StorageClient(client_config)
+
+        source_path = "test-concurrent-creds"
+
+        # Create 20 random test files
+        test_files = {}
+        for i in range(20):
+            filename = f"file{i:02d}.txt"
+            content = f"{i}" * 500000  # ~5MB
+            test_files[filename] = content
+
+        # Upload files to S3
+        for filename, content in test_files.items():
+            file_path = os.path.join(source_path, filename)
+            source_client.write(file_path, content.encode("utf-8"))
+
+        # Use 4 threads to download files concurrently
+        def download_files_worker(
+            thread_id: int, file_subset: list[str], barrier: threading.Barrier
+        ) -> tuple[int, float]:
+            """Worker function to download a subset of files."""
+            barrier.wait()
+            start_time = time.time()
+
+            with tempfile.TemporaryDirectory() as local_dir:
+                for filename in file_subset:
+                    target_path = os.path.join(local_dir, filename)
+                    remote_path = os.path.join(source_path, filename)
+
+                    # Download file
+                    content = source_client.read(remote_path)
+                    with open(target_path, "wb") as f:
+                        f.write(content)
+
+                    print(f"[Thread {thread_id}] Downloaded {filename}")
+
+            elapsed = time.time() - start_time
+            return thread_id, elapsed
+
+        # Split files across 4 threads
+        files_per_thread = len(test_files) // 4
+        file_list = list(test_files.keys())
+        thread_tasks = [file_list[i * files_per_thread : (i + 1) * files_per_thread] for i in range(4)]
+
+        credentials_provider = source_client._credentials_provider
+
+        # Execute downloads concurrently
+        barrier = threading.Barrier(4)
+        start_time = time.time()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [
+                executor.submit(download_files_worker, i, tasks, barrier) for i, tasks in enumerate(thread_tasks)
+            ]
+            results = [f.result() for f in concurrent.futures.as_completed(futures)]
+
+        total_time = time.time() - start_time
+        final_refresh_count = credentials_provider.refresh_count  # type: ignore
+
+        print("\n[Test Results]")
+        print(f"  Total time: {total_time:.2f}s")
+        print(f"  Credential refreshes: {final_refresh_count}")
+        for thread_id, elapsed in sorted(results):
+            print(f"  Thread {thread_id}: {elapsed:.2f}s")
+
+        # Verify that credentials were refreshed, but not excessively
+        assert final_refresh_count == 1, "Credentials should have been refreshed exactly once"

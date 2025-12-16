@@ -18,9 +18,10 @@ use chrono::{DateTime, Duration, Utc};
 use object_store::aws::AwsCredential;
 use pyo3::prelude::*;
 use std::sync::{Arc, RwLock};
+use tokio::sync::Mutex;
 use aws_credential_types::provider::{ProvideCredentials, SharedCredentialsProvider};
 
-const DEFAULT_REFRESH_CREDENTIALS_THRESHOLD: i64 = 900; // 15 minutes
+const DEFAULT_REFRESH_CREDENTIALS_THRESHOLD: i64 = 600; // 10 minutes
 
 /// Internal cached credential representation storing AWS-compatible credentials.
 struct CachedAwsCredential {
@@ -36,6 +37,8 @@ pub struct PyCredentialsProvider {
     py_provider: PyObject,
     /// Thread-safe cache for the current credentials
     cached_credentials: Arc<RwLock<Option<CachedAwsCredential>>>,
+    /// Async mutex to coordinate credential refresh operations (prevents thundering herd)
+    refresh_lock: Arc<Mutex<()>>,
     /// Time in seconds before expiration to trigger credential refresh
     refresh_threshold: i64,
 }
@@ -45,6 +48,7 @@ impl Clone for PyCredentialsProvider {
         Self {
             py_provider: Python::with_gil(|py| self.py_provider.clone_ref(py)),
             cached_credentials: Arc::clone(&self.cached_credentials),
+            refresh_lock: Arc::clone(&self.refresh_lock),
             refresh_threshold: self.refresh_threshold,
         }
     }
@@ -63,6 +67,7 @@ impl PyCredentialsProvider {
         Self {
             py_provider,
             cached_credentials: Arc::new(RwLock::new(None)),
+            refresh_lock: Arc::new(Mutex::new(())),
             refresh_threshold: refresh_threshold.unwrap_or(DEFAULT_REFRESH_CREDENTIALS_THRESHOLD),
         }
     }
@@ -121,12 +126,25 @@ impl object_store::CredentialProvider for PyCredentialsProvider {
     
     /// Retrieves credentials from Python credentials provider, refreshing them if necessary.
     async fn get_credential(&self) -> object_store::Result<Arc<Self::Credential>> {
-        // Check the cache without blocking
+        // Fast path: Check the cache without blocking
         {
             let cached_guard = self.cached_credentials.read().unwrap();
             if let Some(cached_cred) = cached_guard.as_ref() {
                 if !self.should_refresh(cached_cred) {
                     // Clone the Arc for cheap reference counting
+                    return Ok(Arc::clone(&cached_cred.credential));
+                }
+            }
+        }
+        
+        // Acquire refresh lock to coordinate refresh (prevents thundering herd)
+        let _refresh_guard = self.refresh_lock.lock().await;
+        
+        // Check cache again - another thread might have refreshed while we waited
+        {
+            let cached_guard = self.cached_credentials.read().unwrap();
+            if let Some(cached_cred) = cached_guard.as_ref() {
+                if !self.should_refresh(cached_cred) {
                     return Ok(Arc::clone(&cached_cred.credential));
                 }
             }
@@ -138,19 +156,6 @@ impl object_store::CredentialProvider for PyCredentialsProvider {
 
         tokio::task::spawn_blocking(move || {
             Python::with_gil(|py| {
-                let mut cached_guard = cached_arc.write().unwrap();
-                
-                // Check the cached credentials again (double-checked locking)
-                if let Some(cached_cred) = cached_guard.as_ref() {
-                    if !this.should_refresh(cached_cred) {
-                        return Ok(AwsCredential {
-                            key_id: cached_cred.credential.key_id.clone(),
-                            secret_key: cached_cred.credential.secret_key.clone(),
-                            token: cached_cred.credential.token.clone(),
-                        });
-                    }
-                }
-                
                 // Get the credentials from the Python credentials provider
                 let mut refreshed_credential = this.get_credentials(py)?;
 
@@ -160,14 +165,18 @@ impl object_store::CredentialProvider for PyCredentialsProvider {
                     refreshed_credential = this.get_credentials(py)?;
                 }
                 
-                // Return the refreshed credentials and cache them
+                // Create credential to return
                 let credential = AwsCredential {
                     key_id: refreshed_credential.credential.key_id.clone(),
                     secret_key: refreshed_credential.credential.secret_key.clone(),
                     token: refreshed_credential.credential.token.clone(),
                 };
                 
-                *cached_guard = Some(refreshed_credential);
+                // Update cache with write lock
+                {
+                    let mut cached_guard = cached_arc.write().unwrap();
+                    *cached_guard = Some(refreshed_credential);
+                }
                 
                 Ok(credential)
             })
@@ -294,7 +303,7 @@ mod tests {
         access_key: String,
         secret_key: String,
         token: Option<String>,
-        expiration: Option<String>,
+        expiration: Arc<RwLock<Option<String>>>,
         call_count: Arc<AtomicUsize>,
         refresh_count: Arc<AtomicUsize>,
     }
@@ -312,7 +321,7 @@ mod tests {
                 access_key,
                 secret_key,
                 token,
-                expiration,
+                expiration: Arc::new(RwLock::new(expiration)),
                 call_count: Arc::new(AtomicUsize::new(0)),
                 refresh_count: Arc::new(AtomicUsize::new(0)),
             }
@@ -320,17 +329,21 @@ mod tests {
 
         fn get_credentials(&mut self, py: Python) -> PyResult<PyObject> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
+            let expiration = self.expiration.read().unwrap().clone();
             Ok(create_mock_credentials(
                 py,
                 &self.access_key,
                 &self.secret_key,
                 self.token.as_deref(),
-                self.expiration.as_deref(),
+                expiration.as_deref(),
             ))
         }
 
         fn refresh_credentials(&mut self) {
             self.refresh_count.fetch_add(1, Ordering::SeqCst);
+            let new_expiration = (Utc::now() + Duration::seconds(5)).to_rfc3339();
+            let mut expiration = self.expiration.write().unwrap();
+            *expiration = Some(new_expiration);
         }
 
         fn get_call_count(&self) -> usize {
@@ -445,6 +458,64 @@ mod tests {
             assert!(creds.is_ok());
             let cached = creds.unwrap();
             assert_eq!(cached.credential.key_id, "refreshed_access");
+        });
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_access_async() {
+        use object_store::CredentialProvider;
+        use tokio::sync::Barrier;
+        
+        initialize_python();
+        
+        let (mock_provider_obj, provider) = Python::with_gil(|py| {
+            let mock_provider_obj = Py::new(
+                py,
+                MockCredentialsProvider::new(
+                    "concurrent_access".to_string(),
+                    "concurrent_secret".to_string(),
+                    Some("concurrent_token".to_string()),
+                    Some((Utc::now() - Duration::seconds(1)).to_rfc3339()),
+                ),
+            )
+            .unwrap();
+            
+            let provider = Arc::new(PyCredentialsProvider::new(mock_provider_obj.clone_ref(py).into(), Some(0)));
+            
+            (mock_provider_obj, provider)
+        });
+        
+        let barrier = Arc::new(Barrier::new(4));
+        let mut handles = vec![];
+        
+        for thread_id in 0..4 {
+            let provider_clone = Arc::clone(&provider);
+            let barrier_clone = Arc::clone(&barrier);
+            
+            let handle = tokio::spawn(async move {
+                barrier_clone.wait().await;
+                
+                let result = provider_clone.get_credential().await;
+                assert!(result.is_ok(), "Thread {} failed to get credentials", thread_id);
+                
+                let cred = result.unwrap();
+                assert_eq!(cred.key_id, "concurrent_access");
+                assert_eq!(cred.secret_key, "concurrent_secret");
+                assert_eq!(cred.token, Some("concurrent_token".to_string()));
+            });
+            
+            handles.push(handle);
+        }
+        
+        for handle in handles {
+            handle.await.expect("Task panicked");
+        }
+        
+        Python::with_gil(|py| {
+            let call_count = mock_provider_obj.borrow(py).get_call_count();
+            let refresh_count = mock_provider_obj.borrow(py).get_refresh_count();
+            println!("Total credential calls: {}, refresh calls: {}", call_count, refresh_count);
+            assert!(refresh_count == 1, "Credentials should have been refreshed exactly once");
         });
     }
 

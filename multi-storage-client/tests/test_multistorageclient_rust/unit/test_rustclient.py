@@ -174,12 +174,12 @@ async def test_rustclient_basic_operations(temp_data_store_type: Type[tempdatast
 async def test_rustclient_with_refreshable_credentials(temp_data_store_type: Type[tempdatastore.TemporaryDataStore]):
     with temp_data_store_type() as temp_data_store:
         config_dict = temp_data_store.profile_config_dict()
-        # The credentials are valid for 905 seconds before the refresh, refresh threshold is 15 minutes for Rust Client.
+        # The credentials are valid for 605 seconds before the refresh, refresh threshold is 10 minutes for Rust Client.
         # After refresh, the credentials are invalid.
         credentials_provider = RefreshableTestCredentialsProvider(
             access_key=config_dict["credentials_provider"]["options"]["access_key"],
             secret_key=config_dict["credentials_provider"]["options"]["secret_key"],
-            expiration=(datetime.now(timezone.utc) + timedelta(seconds=905)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            expiration=(datetime.now(timezone.utc) + timedelta(seconds=605)).strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
 
         rust_client = RustClient(
@@ -213,7 +213,7 @@ async def test_rustclient_with_refreshable_credentials(temp_data_store_type: Typ
         assert result == file_body_bytes
         assert credentials_provider.refresh_count == 0
 
-        # Test Rust client proactively refreshes credentials 15 minutes before expiration, should call refresh_credentials and fail
+        # Test Rust client proactively refreshes credentials 10 minutes before expiration, should call refresh_credentials and fail
         time.sleep(6)
         with pytest.raises(RustClientError) as exc_info:
             await rust_client.get(file_path)
@@ -242,11 +242,11 @@ async def test_rustclient_with_refreshable_credentials_expect_error(
     with temp_data_store_type() as temp_data_store:
         config_dict = temp_data_store.profile_config_dict()
 
-        # The credentials are valid for 899 seconds before the refresh, refresh threshold is 15 minutes for Rust Client.
+        # The credentials are valid for 599 seconds before the refresh, refresh threshold is 10 minutes for Rust Client.
         credentials_provider = RefreshableTestCredentialsProvider(
             access_key=config_dict["credentials_provider"]["options"]["access_key"],
             secret_key=config_dict["credentials_provider"]["options"]["secret_key"],
-            expiration=(datetime.now(timezone.utc) + timedelta(seconds=899)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            expiration=(datetime.now(timezone.utc) + timedelta(seconds=599)).strftime("%Y-%m-%dT%H:%M:%SZ"),
             refresh_error=True,
         )
 
@@ -266,7 +266,7 @@ async def test_rustclient_with_refreshable_credentials_expect_error(
         file_path = os.path.join(*file_path_fragments)
         file_body_bytes = b"\x00\x01\x02" * 3
 
-        # Test Rust client proactively refreshes credentials 15 minutes before expiration, should call refresh_credentials and fail
+        # Test Rust client proactively refreshes credentials 10 minutes before expiration, should call refresh_credentials and fail
         with pytest.raises(RustRetryableError) as exc_info:
             await rust_client.put(file_path, file_body_bytes)
         assert credentials_provider.refresh_count == 1

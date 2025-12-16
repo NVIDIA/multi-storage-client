@@ -13,8 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import threading
+import time
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from multistorageclient.types import (
@@ -194,3 +196,40 @@ class TestProviderBundleV2MultiBackend(ProviderBundleV2):
     @property
     def metadata_provider(self) -> Optional[MetadataProvider]:
         return TestMetadataProvider()
+
+
+class SlowRefreshableCredentialsProvider(CredentialsProvider):
+    """A credentials provider that simulates slow credential refresh (1 second)."""
+
+    def __init__(self, access_key: str, secret_key: str):
+        self._access_key = access_key
+        self._secret_key = secret_key
+        self._refresh_count = 0
+        self._lock = threading.Lock()
+        # Set expiration to near future to trigger refresh
+        self._expiration = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+
+    def get_credentials(self) -> Credentials:
+        print(f"[Test] Getting credentials (count: {self._refresh_count})")
+        # Simulate slow credential fetch (e.g., HTTP call to credential service)
+        time.sleep(1)
+        return Credentials(
+            access_key=self._access_key,
+            secret_key=self._secret_key,
+            token=None,
+            expiration=self._expiration,
+        )
+
+    def refresh_credentials(self) -> None:
+        print(f"[Test] Refreshing credentials (count: {self._refresh_count})")
+        # Simulate slow credential refresh
+        with self._lock:
+            self._refresh_count += 1
+        time.sleep(1)
+        # Update expiration to far future after refresh
+        self._expiration = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+
+    @property
+    def refresh_count(self) -> int:
+        with self._lock:
+            return self._refresh_count
