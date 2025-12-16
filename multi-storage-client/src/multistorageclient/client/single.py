@@ -270,6 +270,9 @@ class SingleStorageClient(AbstractStorageClient):
             if byte_range:
                 # Range request with cache
                 try:
+                    # Fetch metadata for source version checking (if needed)
+                    metadata = None
+                    source_version = None
                     if check_source_version == SourceVersionCheckMode.ENABLE:
                         metadata = self._storage_provider.get_object_metadata(path)
                         source_version = metadata.etag
@@ -277,13 +280,17 @@ class SingleStorageClient(AbstractStorageClient):
                         if self._cache_manager.check_source_version():
                             metadata = self._storage_provider.get_object_metadata(path)
                             source_version = metadata.etag
-                        else:
-                            metadata = None
-                            source_version = None
-                    else:
-                        metadata = None
-                        source_version = None
 
+                    # Optimization: For full-file reads (offset=0, size >= file_size), cache whole file instead of chunking
+                    # This avoids creating many small chunks when the user requests the entire file.
+                    # Only apply this optimization when metadata is already available (i.e., when version checking is enabled),
+                    # to respect the user's choice to disable version checking and avoid extra HEAD requests.
+                    if byte_range.offset == 0 and metadata and byte_range.size >= metadata.content_length:
+                        full_file_data = self._storage_provider.get_object(path)
+                        self._cache_manager.set(path, full_file_data, source_version)
+                        return full_file_data[: metadata.content_length]
+
+                    # Use chunk-based caching for partial reads or when optimization doesn't apply
                     data = self._cache_manager.read(
                         key=path,
                         source_version=source_version,

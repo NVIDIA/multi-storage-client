@@ -605,6 +605,106 @@ def test_partial_file_caching_full_file_optimization() -> None:
         assert not os.path.exists(chunk2_path), "Chunk 2 should still NOT exist after multiple range reads"
 
 
+def test_partial_file_caching_full_file_read_optimization() -> None:
+    """Test that byte_range with offset=0 and size>=file_size caches whole file instead of chunking."""
+    with tempdatastore.TemporaryAWSS3Bucket() as origin_store:
+        # Create configuration with partial file caching enabled
+        config = create_partial_caching_config(origin_store)
+        client = StorageClient(config=StorageClientConfig.from_dict(config, profile="origin"))
+
+        # Create a 3MB test file (larger than 1MB chunk size)
+        file_path = f"test-data-{uuid.uuid4()}/full_file_read_test.bin"
+        test_content = create_test_data(3)  # 3MB file
+        client.write(file_path, test_content)
+
+        # Get cache paths
+        cache_dir = config["cache"]["location"]
+        cache_profile_dir = os.path.join(cache_dir, "origin")
+        file_dir = os.path.join(cache_profile_dir, os.path.dirname(file_path))
+        base_name = os.path.basename(file_path)
+        full_cache_path = os.path.join(file_dir, base_name)
+
+        # Verify file is NOT cached initially
+        assert not os.path.exists(full_cache_path), "Full file should not be cached initially"
+
+        # Perform a range read with offset=0 and size >= file_size (full file read)
+        # This should cache the whole file instead of chunking
+        file_size = len(test_content)
+        range_read = Range(offset=0, size=file_size)  # Full file read
+        full_content = client.read(file_path, byte_range=range_read)
+
+        # Verify the full file read returned correct data
+        assert full_content == test_content, "Full file read content mismatch"
+
+        # Verify that the whole file is cached (not chunks)
+        assert os.path.exists(full_cache_path), "Full file should be cached after full file range read"
+        cached_file_size = os.path.getsize(full_cache_path)
+        assert cached_file_size == file_size, f"Expected cached file size {file_size}, got {cached_file_size}"
+
+        # Verify that NO chunks were created (since we cached the whole file)
+        chunk0_path = os.path.join(file_dir, f".{base_name}#chunk0")
+        chunk1_path = os.path.join(file_dir, f".{base_name}#chunk1")
+        chunk2_path = os.path.join(file_dir, f".{base_name}#chunk2")
+
+        assert not os.path.exists(chunk0_path), "Chunk 0 should NOT exist (whole file cached instead)"
+        assert not os.path.exists(chunk1_path), "Chunk 1 should NOT exist (whole file cached instead)"
+        assert not os.path.exists(chunk2_path), "Chunk 2 should NOT exist (whole file cached instead)"
+
+        # Test with size > file_size (should still cache whole file)
+        range_read_larger = Range(offset=0, size=file_size + 1024)  # Size larger than file
+        full_content_larger = client.read(file_path, byte_range=range_read_larger)
+
+        # Should return the whole file (truncated to file_size)
+        assert len(full_content_larger) == file_size, "Should return file_size bytes even if requested size is larger"
+        assert full_content_larger == test_content, "Content should match full file"
+
+        # Verify still no chunks were created
+        assert not os.path.exists(chunk0_path), "Chunk 0 should still NOT exist"
+        assert not os.path.exists(chunk1_path), "Chunk 1 should still NOT exist"
+        assert not os.path.exists(chunk2_path), "Chunk 2 should still NOT exist"
+
+
+def test_partial_file_caching_full_file_read_optimization_with_source_version_disabled() -> None:
+    """Test that when check_source_version is DISABLED, optimization doesn't apply and chunking is used."""
+    with tempdatastore.TemporaryAWSS3Bucket() as origin_store:
+        # Create configuration with partial file caching enabled
+        config = create_partial_caching_config(origin_store)
+        client = StorageClient(config=StorageClientConfig.from_dict(config, profile="origin"))
+
+        # Create a 3MB test file (larger than 1MB chunk size)
+        file_path = f"test-data-{uuid.uuid4()}/test.bin"
+        test_content = create_test_data(3)  # 3MB file
+        client.write(file_path, test_content)
+
+        # Get cache paths
+        cache_dir = config["cache"]["location"]
+        cache_profile_dir = os.path.join(cache_dir, "origin")
+        file_dir = os.path.join(cache_profile_dir, os.path.dirname(file_path))
+        base_name = os.path.basename(file_path)
+        full_cache_path = os.path.join(file_dir, base_name)
+
+        # Perform a range read with offset=0 and size >= file_size (full file read)
+        # with check_source_version DISABLED - optimization should NOT apply (no metadata fetch)
+        # so it should use chunk-based caching instead
+        range_read = Range(offset=0, size=len(test_content))
+        full_content = client.read(
+            file_path, byte_range=range_read, check_source_version=SourceVersionCheckMode.DISABLE
+        )
+
+        # Verify the full file read returned correct data
+        assert full_content == test_content, "Full file read content mismatch"
+
+        # Verify that chunks are used (optimization doesn't apply when version checking is disabled)
+        chunk0_path = os.path.join(file_dir, f".{base_name}#chunk0")
+        chunk1_path = os.path.join(file_dir, f".{base_name}#chunk1")
+        chunk2_path = os.path.join(file_dir, f".{base_name}#chunk2")
+        assert os.path.exists(chunk0_path), "Chunk 0 should exist (chunking used when version checking disabled)"
+        assert os.path.exists(chunk1_path), "Chunk 1 should exist"
+        assert os.path.exists(chunk2_path), "Chunk 2 should exist"
+        # Full file should NOT be cached (chunks are used instead)
+        assert not os.path.exists(full_cache_path), "Full file should NOT be cached (chunking used instead)"
+
+
 def test_partial_file_caching_chunk_to_full_file_merge() -> None:
     """Test that small files are renamed from chunk 0 to original file name for efficiency."""
     with tempdatastore.TemporaryAWSS3Bucket() as origin_store:
