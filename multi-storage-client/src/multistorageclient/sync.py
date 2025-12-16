@@ -1004,12 +1004,21 @@ def _update_posix_metadata(
         )
         with target_client._metadata_provider_lock or contextlib.nullcontext():
             target_client._metadata_provider.add_file(target_file_path, physical_metadata)
-    elif file_metadata.metadata:
+    else:
+        if file_metadata.metadata:
+            # Update metadata for POSIX target (xattr).
+            try:
+                xattr.setxattr(
+                    target_physical_path,
+                    "user.json",
+                    json.dumps(file_metadata.metadata).encode("utf-8"),
+                )
+            except OSError as e:
+                logger.debug(f"Failed to set extended attributes on {target_physical_path}: {e}")
+
+        # Update (atime, mtime) for POSIX target.
         try:
-            xattr.setxattr(
-                target_physical_path,
-                "user.json",
-                json.dumps(file_metadata.metadata).encode("utf-8"),
-            )
+            last_modified = file_metadata.last_modified.timestamp()
+            os.utime(target_physical_path, (last_modified, last_modified))
         except OSError as e:
-            logger.debug(f"Failed to set extended attributes on {target_physical_path}: {e}")
+            logger.debug(f"Failed to update (atime, mtime) on {target_physical_path}: {e}")

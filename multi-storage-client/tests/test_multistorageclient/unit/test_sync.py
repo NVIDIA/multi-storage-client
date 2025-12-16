@@ -1099,10 +1099,12 @@ def test_update_posix_metadata(use_metadata_provider: bool):
         assert target_physical_path is not None
 
         custom_metadata = {"custom_key": "custom_value", "author": "test"}
+        # Use a specific timestamp to verify mtime is set correctly
+        expected_mtime = datetime(2025, 6, 15, 10, 30, 45)
         file_metadata = ObjectMetadata(
             key=test_file,
             content_length=len(content),
-            last_modified=datetime.now(),
+            last_modified=expected_mtime,
             metadata=custom_metadata,
         )
 
@@ -1114,12 +1116,20 @@ def test_update_posix_metadata(use_metadata_provider: bool):
             info = client.info(test_file)
             assert info.metadata == custom_metadata
         else:
+            # Verify xattr is set with custom metadata
             try:
                 xattr_value = xattr.getxattr(target_physical_path, "user.json")
                 stored_metadata = json.loads(xattr_value.decode("utf-8"))
                 assert stored_metadata == custom_metadata
             except OSError:
                 pytest.skip("xattr not supported on this filesystem")
+
+            # Verify mtime was updated to match file_metadata.last_modified
+            actual_mtime = os.path.getmtime(target_physical_path)
+            expected_mtime_timestamp = expected_mtime.timestamp()
+            assert abs(actual_mtime - expected_mtime_timestamp) < 0.001, (
+                f"mtime not updated correctly: {actual_mtime} != {expected_mtime_timestamp}"
+            )
 
 
 def test_sync_with_manifest_overwrite_behavior():
@@ -1720,3 +1730,59 @@ def test_rustclient_credentials_refresh_multiple_threads(
 
         # Verify that credentials were refreshed, but not excessively
         assert final_refresh_count == 1, "Credentials should have been refreshed exactly once"
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[[tempdatastore.TemporaryAWSS3Bucket]],
+)
+def test_sync_between_object_and_posix(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    obj_profile = "s3-sync"
+    local_profile = "local"
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as temp_source_data_store,
+        temp_data_store_type() as temp_data_store,
+    ):
+        config.setup_msc_config(
+            config_dict={
+                "profiles": {
+                    obj_profile: temp_data_store.profile_config_dict(),
+                    local_profile: temp_source_data_store.profile_config_dict(),
+                }
+            }
+        )
+
+        posix_msc_url = f"msc://{local_profile}/"
+        object_msc_url = f"msc://{obj_profile}/"
+
+        # Create local dataset
+        objects = {
+            "dir1/file0.txt": "a" * 150,
+            "dir1/file1.txt": "b" * 200,
+            "dir1/file2.txt": "c" * 1000,
+        }
+        create_local_test_dataset(object_msc_url, objects)
+
+        # Insert a delay before sync'ing so that timestamps will be clearer.
+        time.sleep(1)
+
+        # Sync from the object to the posix shouldn't do any changes to the object.
+        msc.sync(source_url=object_msc_url, target_url=posix_msc_url)
+        expected_object_list = list(msc.list(object_msc_url))
+        actual_object_list = list(msc.list(posix_msc_url))
+
+        assert len(expected_object_list) == len(actual_object_list)
+        for expected_object, actual_object in zip(expected_object_list, actual_object_list):
+            assert expected_object.content_length == actual_object.content_length
+            assert expected_object.last_modified == actual_object.last_modified
+
+        # Sync from the posix to the object should not update the object.
+        msc.sync(source_url=posix_msc_url, target_url=object_msc_url)
+        actual_object_list = list(msc.list(object_msc_url))
+
+        assert len(expected_object_list) == len(actual_object_list)
+        for expected_object, actual_object in zip(expected_object_list, actual_object_list):
+            assert expected_object.content_length == actual_object.content_length
+            assert expected_object.last_modified == actual_object.last_modified
