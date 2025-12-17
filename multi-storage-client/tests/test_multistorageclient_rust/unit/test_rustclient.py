@@ -125,6 +125,18 @@ async def run_rust_client_operations(rust_client: RustClient, storage_client: St
         await rust_client.get(file_path)
     assert exc_info.value.args[1] == 404
 
+    # Test with special characters in file path (URL encoded)
+    prefix = f"{uuid.uuid4().hex}"
+    special_chars_path = f"{prefix}/%28sici%291096-8628%2819960122%29test{file_extension}"
+    special_chars_body = b"test content with special chars in path"
+
+    result = await rust_client.put(special_chars_path, special_chars_body)
+    assert result == len(special_chars_body)
+    result = await rust_client.get(special_chars_path)
+    assert result == special_chars_body
+
+    storage_client.delete(path=special_chars_path)
+
 
 @pytest.mark.parametrize(
     argnames=["temp_data_store_type"],

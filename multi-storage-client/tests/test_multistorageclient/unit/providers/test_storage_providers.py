@@ -280,6 +280,17 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
         for i in file_numbers:
             assert not storage_client.is_file(path=f"{i}{file_extension}")
 
+        # Test with special characters in file path (URL encoded)
+        prefix = f"{uuid.uuid4().hex}"
+        special_chars_path = f"{prefix}/%28sici%291096-8628%2819960122%29test{file_extension}"
+        special_chars_body = b"test content with special chars in path"
+
+        storage_client.write(special_chars_path, special_chars_body)
+        assert storage_client.read(path=special_chars_path) == special_chars_body
+
+        # Delete the file
+        storage_client.delete(path=special_chars_path)
+
 
 @pytest.mark.parametrize(
     argnames=["temp_data_store_type"],
@@ -697,6 +708,17 @@ def test_storage_providers_with_rust_client(
 
         # Delete the file
         storage_client.delete(path=large_bytesio_path)
+
+        # Test with special characters in file path (URL encoded)
+        prefix = f"{uuid.uuid4().hex}"
+        special_chars_path = f"{prefix}/%28sici%291096-8628%2819960122%29test{file_extension}"
+        special_chars_body = b"test content with special chars in path"
+
+        storage_client.write(special_chars_path, special_chars_body)
+        assert storage_client.read(path=special_chars_path) == special_chars_body
+
+        # Delete the file
+        storage_client.delete(path=special_chars_path)
 
 
 @pytest.mark.parametrize(

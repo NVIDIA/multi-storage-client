@@ -56,6 +56,8 @@ pub enum StorageError {
     IoError(#[from] std::io::Error),
     #[error("Configuration error: {0}")]
     ConfigError(String),
+    #[error("Invalid path: {0}")]
+    InvalidPathError(String),
     #[error("Temp file error: {0}")]
     TempFileError(#[from] tempfile::PersistError),
     #[error("Connection error: {0}")]
@@ -148,6 +150,9 @@ impl From<StorageError> for PyErr {
             StorageError::HttpError(msg, status) => {
                 RustClientError::new_err((msg, status))
             }
+            StorageError::InvalidPathError(msg) => {
+                pyo3::exceptions::PyValueError::new_err(msg)
+            }
             _ => {
                 pyo3::exceptions::PyRuntimeError::new_err(err.to_string())
             }
@@ -225,6 +230,11 @@ fn load_aws_credentials_provider() -> Result<AwsSdkCredentialsProvider, StorageE
         ))?;
 
     Ok(AwsSdkCredentialsProvider::new(credentials_provider))
+}
+
+fn parse_path(path: &str) -> Result<Path, StorageError> {
+    // Use Path::parse instead of Path::from to avoid double encoding
+    Path::parse(path).map_err(|e| StorageError::InvalidPathError(format!("Failed to parse path '{}': {}", path, e)))
 }
 
 fn build_s3_store<'a>(
@@ -488,7 +498,7 @@ impl RustClient {
     #[pyo3(signature = (path, data))]
     fn put<'p>(&self, py: Python<'p>, path: &str, data: PyBytes) -> PyResult<Bound<'p, PyAny>> {
         let store = Arc::clone(&self.store);
-        let path = Path::from(path);
+        let path = parse_path(path)?;
         let data_bytes = data.into_inner();
         let bytes_written = data_bytes.len() as u64;
         let payload = PutPayload::from_bytes(data_bytes);
@@ -510,7 +520,7 @@ impl RustClient {
         range: Option<ByteRangeLike>,
     ) -> PyResult<Bound<'p, PyAny>> {
         let store = Arc::clone(&self.store);
-        let path = Path::from(path);
+        let path = parse_path(path)?;
 
         if let Some(byte_range) = range {
             future_into_py(py, async move {
@@ -540,7 +550,7 @@ impl RustClient {
     ) -> PyResult<Bound<'p, PyAny>> {
         let store = Arc::clone(&self.store);
         let local_path = local_path.to_string();
-        let remote_path = Path::from(remote_path);
+        let remote_path = parse_path(remote_path)?;
 
         future_into_py(py, async move {
             let data = fs::read(local_path).await.map_err(StorageError::from)?;
@@ -561,7 +571,7 @@ impl RustClient {
         local_path: &str,
     ) -> PyResult<Bound<'p, PyAny>> {
         let store = Arc::clone(&self.store);
-        let remote_path = Path::from(remote_path);
+        let remote_path = parse_path(remote_path)?;
         let local_path = local_path.to_string();
 
         future_into_py(py, async move {
@@ -586,7 +596,7 @@ impl RustClient {
     ) -> PyResult<Bound<'p, PyAny>> {
         let store = Arc::clone(&self.store);
         let local_path = local_path.to_string();
-        let remote_path = Path::from(remote_path);
+        let remote_path = parse_path(remote_path)?;
         let chunksize = multipart_chunksize.unwrap_or(self.multipart_chunksize);
         let concurrency = max_concurrency.unwrap_or(self.max_concurrency);
 
@@ -623,7 +633,7 @@ impl RustClient {
         max_concurrency: Option<usize>,
     ) -> PyResult<Bound<'p, PyAny>> {
         let store = Arc::clone(&self.store);
-        let remote_path: Path = Path::from(remote_path);
+        let remote_path = parse_path(remote_path)?;
         let data_bytes = data.into_inner();
         let bytes_uploaded = data_bytes.len() as u64;
         let chunksize = multipart_chunksize.unwrap_or(self.multipart_chunksize);
@@ -669,7 +679,7 @@ impl RustClient {
         max_concurrency: Option<usize>,
     ) -> PyResult<Bound<'p, PyAny>> {
         let store = Arc::clone(&self.store);
-        let remote_path = Path::from(remote_path);
+        let remote_path = parse_path(remote_path)?;
         let local_path = local_path.to_string();
         let chunksize = multipart_chunksize.unwrap_or(self.multipart_chunksize);
         let concurrency = max_concurrency.unwrap_or(self.max_concurrency);
@@ -759,7 +769,7 @@ impl RustClient {
         max_concurrency: Option<usize>,
     ) -> PyResult<Bound<'p, PyAny>> {
         let store = Arc::clone(&self.store);
-        let remote_path = Path::from(remote_path);
+        let remote_path = parse_path(remote_path)?;
         let chunksize = multipart_chunksize.unwrap_or(self.multipart_chunksize);
         let concurrency = max_concurrency.unwrap_or(self.max_concurrency);
 
@@ -871,7 +881,8 @@ impl RustClient {
 
             let mut dirs_to_visit = VecDeque::new();
             for prefix in prefixes {
-                dirs_to_visit.push_back((Path::from(prefix), 0));
+                let path = parse_path(&prefix)?;
+                dirs_to_visit.push_back((path, 0));
             }
 
             let mut total_found: usize = 0;
@@ -1029,5 +1040,25 @@ mod tests {
         configs.clear();
         assert_eq!(get_timeout_secs(&configs, "read_timeout", DEFAULT_READ_TIMEOUT), DEFAULT_READ_TIMEOUT);
         assert_eq!(get_timeout_secs(&configs, "connect_timeout", DEFAULT_CONNECT_TIMEOUT), DEFAULT_CONNECT_TIMEOUT);
+    }
+
+    #[test]
+    fn test_parse_path() {
+        // Test URL-encoded path (from actual bucket)
+        // Path::parse will keep the encoded format without double-encoding
+        let encoded = "00000000/%28sici%291096-8628%2819960122%2961%3A3%3C293%3A%3Aaid-ajmg17%3E3.0.co%3B2-o.pdf";
+        let path = parse_path(encoded).unwrap();
+        // Path::parse keeps the encoded format as-is
+        assert_eq!(path.to_string(), encoded);
+
+        // Test path without encoding - also works fine
+        let plain = "00000000/simple-file.pdf";
+        let path = parse_path(plain).unwrap();
+        assert_eq!(path.to_string(), "00000000/simple-file.pdf");
+
+        // Test path with special characters (unencoded) - Path::parse handles this
+        let with_spaces = "folder/file (with spaces).txt";
+        let path = parse_path(with_spaces).unwrap();
+        assert_eq!(path.to_string(), "folder/file (with spaces).txt");
     }
 }
