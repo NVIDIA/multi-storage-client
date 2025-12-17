@@ -776,7 +776,10 @@ def _sync_worker_process(
                             else:
                                 physical_path = target_file_path
 
-                            target_metadata = target_client._storage_provider.get_object_metadata(physical_path)
+                            # The physical path cannot be a directory, so we can use strict=False to avoid the check.
+                            target_metadata = target_client._storage_provider.get_object_metadata(
+                                physical_path, strict=False
+                            )
                         except FileNotFoundError:
                             pass
 

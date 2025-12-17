@@ -1786,3 +1786,51 @@ def test_sync_between_object_and_posix(temp_data_store_type: type[tempdatastore.
         for expected_object, actual_object in zip(expected_object_list, actual_object_list):
             assert expected_object.content_length == actual_object.content_length
             assert expected_object.last_modified == actual_object.last_modified
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[[tempdatastore.TemporaryAWSS3Bucket]],
+)
+def test_sync_uses_strict_false_for_get_object_metadata(
+    temp_data_store_type: type[tempdatastore.TemporaryDataStore],
+):
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    source_profile = "s3-source"
+    target_profile = "s3-target"
+
+    with (
+        temp_data_store_type() as temp_source_data_store,
+        temp_data_store_type() as temp_target_data_store,
+    ):
+        config.setup_msc_config(
+            config_dict={
+                "profiles": {
+                    source_profile: temp_source_data_store.profile_config_dict(),
+                    target_profile: temp_target_data_store.profile_config_dict(),
+                }
+            }
+        )
+
+        source_url = f"msc://{source_profile}/"
+        target_url = f"msc://{target_profile}/"
+
+        test_files = {
+            "file1.txt": "test content 1",
+            "dir/file2.txt": "test content 2",
+        }
+        create_local_test_dataset(source_url, test_files)
+
+        target_client, _ = msc.resolve_storage_client(target_url)
+
+        def mock_get_object_metadata(path: str, strict: bool = True) -> ObjectMetadata:
+            assert strict is False, f"get_object_metadata should be called with strict=False, but got strict={strict}"
+            raise FileNotFoundError(f"Object {path} not found")
+
+        with mock.patch.object(
+            target_client._storage_provider, "get_object_metadata", side_effect=mock_get_object_metadata
+        ):
+            msc.sync(source_url=source_url, target_url=target_url)
+
+        verify_sync_and_contents(target_url, test_files)
