@@ -59,7 +59,7 @@ func main() {
 
 	if displayHelp {
 		fmt.Printf("usage: %s [{-?|-h|help|-help|--help|-v|-version|--version} | <config-file>]\n", osArgs[0])
-		fmt.Printf("  where a <config-file>, ending in suffix .yaml, .yml, or .json is to be found while searching:\n")
+		fmt.Printf("  where a <config-file>, ending in suffix .yaml, .yml, or .json, is to be found while searching:\n")
 		fmt.Printf("    ${MSC_CONFIG}\n")
 		fmt.Printf("    ${XDG_CONFIG_HOME}/msc/config.{yaml|yml|json}\n")
 		fmt.Printf("    ${HOME}/.msc_config.{yaml|yml|json}\n")
@@ -78,7 +78,6 @@ func main() {
 		globals.logger.Fatalf("[FATAL] parsing config-file (\"%s\") failed: %v", globals.configFilePath, err)
 	}
 
-	// Initialize observability (metrics, tracing, logging)
 	initObservability()
 
 	initFS()
@@ -89,6 +88,8 @@ func main() {
 	if err != nil {
 		globals.logger.Fatalf("[FATAL] unable to perform FUSE mount [Err: %v]", err)
 	}
+
+	startHTTPHandler()
 
 	signalChan = make(chan os.Signal, 1)
 	signal.Notify(signalChan, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)

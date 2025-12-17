@@ -63,6 +63,7 @@ linters:
         - style
     gosec:
       excludes:
+        - G114
         - G115
         - G401
         - G402

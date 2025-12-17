@@ -35,6 +35,12 @@ type ramContextStruct struct {
 	curTotalObjectSpace uint64
 }
 
+// `backendCommon` is called to return a pointer to the context's common `backendStruct`.
+func (backend *ramContextStruct) backendCommon() (backendCommon *backendStruct) {
+	backendCommon = backend.backend
+	return
+}
+
 // `setupRAMContext` establishes the RAM client context. Once set up, each
 // method defined in the `backendConfigIf` interface may be invoked.
 // Note that there is no `destroyContext` counterpart.
@@ -61,23 +67,6 @@ func (ramContext *ramContextStruct) deleteFile(deleteFileInput *deleteFileInputS
 		ramDir      []*ramDirStruct
 		ramDirIndex int
 	)
-
-	defer func() {
-		switch ramContext.backend.traceLevel {
-		case 0:
-			// Trace nothing
-		case 1:
-			if err != nil {
-				globals.logger.Printf("[WARN] %s.deleteFile(%#v) returning err: %v", ramContext.backend.dirName, deleteFileInput, err)
-			}
-		default:
-			if err == nil {
-				globals.logger.Printf("[INFO] %s.deleteFile(%#v) succeeded", ramContext.backend.dirName, deleteFileInput)
-			} else {
-				globals.logger.Printf("[WARN] %s.deleteFile(%#v) returning err: %v", ramContext.backend.dirName, deleteFileInput, err)
-			}
-		}
-	}()
 
 	dirName, fileName, ramDir = ramContext.findFullPathElements(ramContext.canonicalFilePath(deleteFileInput.filePath))
 	if (len(dirName) + 1) > len(ramDir) {
@@ -150,29 +139,6 @@ func (ramContext *ramContextStruct) listDirectory(listDirectoryInput *listDirect
 		ramDirLeafFileMapLen      uint64
 		subdirectoryName          string
 	)
-
-	defer func() {
-		switch ramContext.backend.traceLevel {
-		case 0:
-			// Trace nothing
-		case 1:
-			if err != nil {
-				globals.logger.Printf("[WARN] %s.listDirectory(%#v) returning err: %v", ramContext.backend.dirName, listDirectoryInput, err)
-			}
-		case 2:
-			if err == nil {
-				globals.logger.Printf("[INFO] %s.listDirectory(%#v) succeeded", ramContext.backend.dirName, listDirectoryInput)
-			} else {
-				globals.logger.Printf("[WARN] %s.listDirectory(%#v) returning err: %v", ramContext.backend.dirName, listDirectoryInput, err)
-			}
-		default:
-			if err == nil {
-				globals.logger.Printf("[INFO] %s.listDirectory(%#v) returning listDirectoryOutput: %#v", ramContext.backend.dirName, listDirectoryInput, listDirectoryOutput)
-			} else {
-				globals.logger.Printf("[WARN] %s.listDirectory(%#v) returning err: %v", ramContext.backend.dirName, listDirectoryInput, err)
-			}
-		}
-	}()
 
 	dirName, fileName, ramDir = ramContext.findFullPathElements(ramContext.canonicalDirPath(listDirectoryInput.dirPath))
 	if (len(dirName)+1 > len(ramDir)) || (fileName != "") {
@@ -282,29 +248,6 @@ func (ramContext *ramContextStruct) readFile(readFileInput *readFileInputStruct)
 		ramDirIndex int
 	)
 
-	defer func() {
-		switch ramContext.backend.traceLevel {
-		case 0:
-			// Trace nothing
-		case 1:
-			if err != nil {
-				globals.logger.Printf("[WARN] %s.readFile(%#v) returning err: %v", ramContext.backend.dirName, readFileInput, err)
-			}
-		case 2:
-			if err == nil {
-				globals.logger.Printf("[INFO] %s.readFile(%#v) succeeded", ramContext.backend.dirName, readFileInput)
-			} else {
-				globals.logger.Printf("[WARN] %s.readFile(%#v) returning err: %v", ramContext.backend.dirName, readFileInput, err)
-			}
-		default:
-			if err == nil {
-				globals.logger.Printf("[INFO] %s.readFile(%#v) returning readFileOutput: {\"eTag\":\"%s\",len(\"buf\":%v)}", ramContext.backend.dirName, readFileInput, readFileOutput.eTag, len(readFileOutput.buf))
-			} else {
-				globals.logger.Printf("[WARN] %s.readFile(%#v) returning err: %v", ramContext.backend.dirName, readFileInput, err)
-			}
-		}
-	}()
-
 	dirName, fileName, ramDir = ramContext.findFullPathElements(ramContext.canonicalFilePath(readFileInput.filePath))
 	if (len(dirName) + 1) > len(ramDir) {
 		// Not all directories in the path exist... so we know fileName does not exist
@@ -359,29 +302,6 @@ func (ramContext *ramContextStruct) statDirectory(statDirectoryInput *statDirect
 		ramDir   []*ramDirStruct
 	)
 
-	defer func() {
-		switch ramContext.backend.traceLevel {
-		case 0:
-			// Trace nothing
-		case 1:
-			if err != nil {
-				globals.logger.Printf("[WARN] %s.statDirectory(%#v) returning err: %v", ramContext.backend.dirName, statDirectoryInput, err)
-			}
-		case 2:
-			if err == nil {
-				globals.logger.Printf("[INFO] %s.statDirectory(%#v) succeeded", ramContext.backend.dirName, statDirectoryInput)
-			} else {
-				globals.logger.Printf("[WARN] %s.statDirectory(%#v) returning err: %v", ramContext.backend.dirName, statDirectoryInput, err)
-			}
-		default:
-			if err == nil {
-				globals.logger.Printf("[INFO] %s.statDirectory(%#v) returning statDirectoryOutput: %#v", ramContext.backend.dirName, statDirectoryInput, statDirectoryOutput)
-			} else {
-				globals.logger.Printf("[WARN] %s.statDirectory(%#v) returning err: %v", ramContext.backend.dirName, statDirectoryInput, err)
-			}
-		}
-	}()
-
 	dirName, fileName, ramDir = ramContext.findFullPathElements(ramContext.canonicalDirPath(statDirectoryInput.dirPath))
 	if (len(dirName)+1 > len(ramDir)) || (fileName != "") {
 		// Either not all directories in the path exist... or this is actually a reference to a file... so we know directory does not exist
@@ -405,29 +325,6 @@ func (ramContext *ramContextStruct) statFile(statFileInput *statFileInputStruct)
 		ok          bool
 		ramDir      []*ramDirStruct
 	)
-
-	defer func() {
-		switch ramContext.backend.traceLevel {
-		case 0:
-			// Trace nothing
-		case 1:
-			if err != nil {
-				globals.logger.Printf("[WARN] %s.statFile(%#v) returning err: %v", ramContext.backend.dirName, statFileInput, err)
-			}
-		case 2:
-			if err == nil {
-				globals.logger.Printf("[INFO] %s.statFile(%#v) succeeded", ramContext.backend.dirName, statFileInput)
-			} else {
-				globals.logger.Printf("[WARN] %s.statFile(%#v) returning err: %v", ramContext.backend.dirName, statFileInput, err)
-			}
-		default:
-			if err == nil {
-				globals.logger.Printf("[INFO] %s.statFile(%#v) returning statFileOutput: %#v", ramContext.backend.dirName, statFileInput, statFileOutput)
-			} else {
-				globals.logger.Printf("[WARN] %s.statFile(%#v) returning err: %v", ramContext.backend.dirName, statFileInput, err)
-			}
-		}
-	}()
 
 	dirName, fileName, ramDir = ramContext.findFullPathElements(ramContext.canonicalFilePath(statFileInput.filePath))
 	if (len(dirName)+1 > len(ramDir)) || (fileName == "") {

@@ -49,7 +49,7 @@ func (cacheLine *cacheLineStruct) fetch() {
 
 	globals.Unlock()
 
-	readFileOutput, err = backend.context.readFile(readFileInput)
+	readFileOutput, err = readFileWrapper(backend.context, readFileInput)
 	if err != nil {
 		globals.Lock()
 		globals.logger.Printf("[WARN] [TODO] (*cacheLineStruct) fetch() needs to handle error reading cache line")

@@ -82,11 +82,13 @@ type backendStruct struct {
 	backendType                 string      // JSON/YAML "backend_type"                   required(one of "AIStore", "RAM", "S3")
 	backendTypeSpecifics        interface{} //                                            required(one of *backendConfig{AIStore|S3|RAM}Struct)
 	// Runtime state
-	backendPath string                  //     URL incorporating each of the above path-related values
-	context     backendContextIf        //
-	inode       *inodeStruct            //     Link to this backendStruct's inodeStruct with .inodeType == BackendRootDir
-	inodeMap    map[string]*inodeStruct //     Key: inodeStruct.objectPath
-	mounted     bool                    //     If false, backendStruct.dirName not in fuseRootDirInodeMAP
+	backendPath    string                  //  URL incorporating each of the above path-related values
+	context        backendContextIf        //
+	inode          *inodeStruct            //  Link to this backendStruct's inodeStruct with .inodeType == BackendRootDir
+	inodeMap       map[string]*inodeStruct //  Key: inodeStruct.objectPath
+	fissionMetrics *fissionMetricsStruct   //
+	backendMetrics *backendMetricsStruct   //
+	mounted        bool                    //  If false, backendStruct.dirName not in fuseRootDirInodeMAP
 }
 
 // `configStruct` describes the global configuration settings as well as the array of backendStruct's configured.
@@ -108,6 +110,7 @@ type configStruct struct {
 	dirtyCacheLinesMax          uint64                     // JSON/YAML "dirty_cache_lines_max"           default:90(as a percentage)
 	autoSIGHUPInterval          time.Duration              // JSON/YAML "auto_sighup_interval"            default:0(none)
 	observability               *observabilityConfigStruct // JSON/YAML "observability"                   default:nil (disabled)
+	endpoint                    string                     // JSON/YAML "endpoint"                        default:""
 	backends                    map[string]*backendStruct  // JSON/YAML "backends"                        Key == backendStruct.mountPointSubdirectoryName
 }
 
@@ -228,14 +231,14 @@ type inodeStruct struct {
 	basename          string                      // If inodeType == FUSERootDir, == ""; otherwise == path/filepath.Base(.objectPath) [excluding trailing slash if directory]
 	sizeInBackend     uint64                      // If inodeType == FileObject, contains the size returned by the most recent backend call for it; otherwise == 0
 	sizeInMemory      uint64                      // If inodeType == FileObject, contains the size currently maintained in-memory only until the file is written to the backend; otherwise == 0
-	eTag              string                      // If inodeType == FileObject, contains the eTag returned by the most recent call to backend.context.readFile() for the object; otherwise == ""
+	eTag              string                      // If inodeType == FileObject, contains the eTag returned by the most recent call to readFileWrapper() for the object; otherwise == ""
 	mode              uint32                      // If inodeType == FileObject, == (syscall.S_IFREG | file_perm); otherwise, == (syscall.S_IFDIR | dir_perm)
 	mTime             time.Time                   // Time when this inodeStruct was last modified - note this is reported for aTime, bTime, and cTime as well
 	lTime             time.Time                   // Time when this inodeStruct was last looked up - used, along with .listElement, to cache evict from globals.inodeMap
 	listElement       *list.Element               // If .isEvictable() == true, link into globals.inodeLRU ordered by .lTime; otherwise == nil
 	fhMap             map[uint64]*fhStruct        // Key == fhStruct.nonce; Value == *fhStruct
 	virtChildDirMap   *stringToUint64MapStruct    // [inodeType != FileObject] maps ".", "..", backendStruct.dirName (== backendStruct.inode.basename), or (currently empty) PsuedoDir's inodeStruct.basename to its inodeStruct.inodeNumebr
-	virtChildFileMap  *stringToUint64MapStruct    // [inodeType != FileObject] maps (not yet instantiated in backend) FileObject's inodeStruct.basename to its inodeStruct; will be empty if .inodeType == FUSERootDir
+	virtChildFileMap  *stringToUint64MapStruct    // [inodeType != FileObject] maps (including those not yet instantiated in backend) FileObject's inodeStruct.basename to its inodeStruct; will be empty if .inodeType == FUSERootDir
 	cache             map[uint64]*cacheLineStruct // [inodeType == FileObject] Key == file offset / globals.config.cacheLineSize
 }
 
@@ -264,6 +267,8 @@ type globalsStruct struct {
 	cleanCacheLineLRU      *list.List                // Contains cacheLineStruct.listElement's for state == CacheLineClean
 	outboundCacheLineCount uint64                    // Count of cacheLineStruct's where state == CacheLineOutbound
 	dirtyCacheLineLRU      *list.List                // Contains cacheLineStruct.listElement's for state == CacheLineDirty
+	fissionMetrics         *fissionMetricsStruct     //
+	backendMetrics         *backendMetricsStruct     //
 }
 
 var globals globalsStruct

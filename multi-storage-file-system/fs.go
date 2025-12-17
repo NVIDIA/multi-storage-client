@@ -57,6 +57,9 @@ func initFS() {
 	globals.outboundCacheLineCount = 0
 	globals.dirtyCacheLineLRU = list.New()
 
+	globals.fissionMetrics = newFissionMetrics()
+	globals.backendMetrics = newBackendMetrics()
+
 	globals.Unlock()
 }
 
@@ -138,6 +141,9 @@ func processToMountList() {
 		globals.inodeMap[backend.inode.inodeNumber] = backend.inode
 
 		backend.inodeMap = make(map[string]*inodeStruct)
+
+		backend.fissionMetrics = newFissionMetrics()
+		backend.backendMetrics = newBackendMetrics()
 
 		backend.mounted = true
 
@@ -329,10 +335,10 @@ func (inode *inodeStruct) isEvictable() (evictable bool) {
 	return
 }
 
-// `touch` is called to conditionially update an inode's mTime and/or
-// lTime and, if the inode is on globals.inodeLRU, move it to the
-// `MRU` end.
-func (inode *inodeStruct) touch(mTimeAsInterface, lTimeAsInterface interface{}) {
+// `touch` is called to conditionially update an inode's mTime as well
+// as always its lTime. If the inode is on globals.inodeLRU, it will be
+// moved to the `MRU` end.
+func (inode *inodeStruct) touch(mTimeAsInterface interface{}) {
 	var (
 		ok bool
 	)
@@ -349,14 +355,7 @@ func (inode *inodeStruct) touch(mTimeAsInterface, lTimeAsInterface interface{}) 
 		inode.listElement = nil
 	}
 
-	if lTimeAsInterface == nil {
-		inode.lTime = time.Now()
-	} else {
-		inode.lTime, ok = lTimeAsInterface.(time.Time)
-		if !ok {
-			globals.logger.Fatalf("[FATAL] lTimeAsInterface.(time.Time) returned !ok")
-		}
-	}
+	inode.lTime = time.Now()
 
 	if inode.isEvictable() {
 		inode.listElement = globals.inodeLRU.PushBack(inode)
@@ -435,10 +434,10 @@ func (parentInode *inodeStruct) findChildInode(basename string) (childInode *ino
 	)
 
 	defer func() {
-		parentInode.touch(nil, nil)
+		parentInode.touch(nil)
 
 		if ok {
-			childInode.touch(nil, nil)
+			childInode.touch(nil)
 		}
 	}()
 
@@ -455,7 +454,7 @@ func (parentInode *inodeStruct) findChildInode(basename string) (childInode *ino
 		ifMatch:  "",
 	}
 
-	statFileOutput, err = parentInode.backend.context.statFile(statFileInput)
+	statFileOutput, err = statFileWrapper(parentInode.backend.context, statFileInput)
 	if err == nil {
 		// We found an existing object in the backend
 
@@ -513,7 +512,7 @@ func (parentInode *inodeStruct) findChildInode(basename string) (childInode *ino
 		dirPath: dirOrFilePath,
 	}
 
-	_, err = parentInode.backend.context.statDirectory(statDirectoryInput)
+	_, err = statDirectoryWrapper(parentInode.backend.context, statDirectoryInput)
 	if err == nil {
 		// We found an existing object prefix in the backend
 		// By convention, we modify dirOrFilePath to end in "/"
@@ -605,10 +604,10 @@ func (parentInode *inodeStruct) findChildDirInode(basename string) (childDirInod
 	)
 
 	defer func() {
-		parentInode.touch(nil, nil)
+		parentInode.touch(nil)
 
 		if ok {
-			childDirInode.touch(nil, nil)
+			childDirInode.touch(nil)
 		}
 	}()
 
@@ -666,10 +665,10 @@ func (parentInode *inodeStruct) findChildFileInode(basename, eTag string, mTime 
 	)
 
 	defer func() {
-		parentInode.touch(nil, nil)
+		parentInode.touch(nil)
 
 		if ok {
-			childFileInode.touch(nil, nil)
+			childFileInode.touch(nil)
 		}
 	}()
 

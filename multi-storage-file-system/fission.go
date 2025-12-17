@@ -6,6 +6,7 @@ import (
 	"math"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/NVIDIA/fission/v3"
 )
@@ -122,17 +123,41 @@ func (*globalsStruct) DoLookup(inHeader *fission.InHeader, lookupIn *fission.Loo
 		childInodeNumber   uint64
 		entryAttrValidNSec uint32
 		entryAttrValidSec  uint64
+		latency            float64
 		mTimeNSec          uint32
 		mTimeSec           uint64
 		ok                 bool
 		parentInode        *inodeStruct
+		startTime          = time.Now()
 	)
+
+	defer func() {
+		latency = time.Since(startTime).Seconds()
+		globals.Lock()
+		if errno == 0 {
+			globals.fissionMetrics.LookupSuccesses.Inc()
+			globals.fissionMetrics.LookupSuccessLatencies.Observe(latency)
+			if parentInode.backend != nil {
+				parentInode.backend.fissionMetrics.LookupSuccesses.Inc()
+				parentInode.backend.fissionMetrics.LookupSuccessLatencies.Observe(latency)
+			}
+		} else {
+			globals.fissionMetrics.LookupFailures.Inc()
+			globals.fissionMetrics.LookupFailureLatencies.Observe(latency)
+			if (parentInode != nil) && (parentInode.backend != nil) {
+				parentInode.backend.fissionMetrics.LookupFailures.Inc()
+				parentInode.backend.fissionMetrics.LookupFailureLatencies.Observe(latency)
+			}
+		}
+		globals.Unlock()
+	}()
 
 	globals.Lock()
 
 	parentInode, ok = globals.inodeMap[inHeader.NodeID]
 	if !ok {
 		// We no longer know how to map inHeader.NodeID (an inodeNumber) to the parentInode
+		parentInode = nil
 		globals.Unlock()
 		errno = syscall.ENOENT
 		return
@@ -216,17 +241,41 @@ func (*globalsStruct) DoGetAttr(inHeader *fission.InHeader, getAttrIn *fission.G
 		attrValidNSec uint32
 		attrValidSec  uint64
 		gid           uint32
+		latency       float64
 		mTimeNSec     uint32
 		mTimeSec      uint64
 		ok            bool
 		thisInode     *inodeStruct
+		startTime     = time.Now()
 		uid           uint32
 	)
+
+	defer func() {
+		latency = time.Since(startTime).Seconds()
+		globals.Lock()
+		if errno == 0 {
+			globals.fissionMetrics.GetAttrSuccesses.Inc()
+			globals.fissionMetrics.GetAttrSuccessLatencies.Observe(latency)
+			if thisInode.backend != nil {
+				thisInode.backend.fissionMetrics.GetAttrSuccesses.Inc()
+				thisInode.backend.fissionMetrics.GetAttrSuccessLatencies.Observe(latency)
+			}
+		} else {
+			globals.fissionMetrics.GetAttrFailures.Inc()
+			globals.fissionMetrics.GetAttrFailureLatencies.Observe(latency)
+			if (thisInode != nil) && (thisInode.backend != nil) {
+				thisInode.backend.fissionMetrics.GetAttrFailures.Inc()
+				thisInode.backend.fissionMetrics.GetAttrFailureLatencies.Observe(latency)
+			}
+		}
+		globals.Unlock()
+	}()
 
 	globals.Lock()
 
 	thisInode, ok = globals.inodeMap[inHeader.NodeID]
 	if !ok {
+		thisInode = nil
 		globals.Unlock()
 		errno = syscall.ENOENT
 		return
@@ -349,13 +398,37 @@ func (*globalsStruct) DoOpen(inHeader *fission.InHeader, openIn *fission.OpenIn)
 		fh           *fhStruct
 		inode        *inodeStruct
 		isExclusive  bool
+		latency      float64
 		ok           bool
+		startTime    = time.Now()
 	)
+
+	defer func() {
+		latency = time.Since(startTime).Seconds()
+		globals.Lock()
+		if errno == 0 {
+			globals.fissionMetrics.OpenSuccesses.Inc()
+			globals.fissionMetrics.OpenSuccessLatencies.Observe(latency)
+			if inode.backend != nil {
+				inode.backend.fissionMetrics.OpenSuccesses.Inc()
+				inode.backend.fissionMetrics.OpenSuccessLatencies.Observe(latency)
+			}
+		} else {
+			globals.fissionMetrics.OpenFailures.Inc()
+			globals.fissionMetrics.OpenFailureLatencies.Observe(latency)
+			if (inode != nil) && (inode.backend != nil) {
+				inode.backend.fissionMetrics.OpenFailures.Inc()
+				inode.backend.fissionMetrics.OpenFailureLatencies.Observe(latency)
+			}
+		}
+		globals.Unlock()
+	}()
 
 	globals.Lock()
 
 	inode, ok = globals.inodeMap[inHeader.NodeID]
 	if !ok {
+		inode = nil
 		globals.Unlock()
 		errno = syscall.ENOENT
 		return
@@ -416,15 +489,53 @@ func (*globalsStruct) DoOpen(inHeader *fission.InHeader, openIn *fission.OpenIn)
 func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn) (readOut *fission.ReadOut, errno syscall.Errno) {
 	var (
 		cacheLine            *cacheLineStruct
+		cacheLineHits        uint64 // As this is the fall-thru condition, includes +cacheMisses+cacheWaits
 		cacheLineNumber      uint64
+		cacheLineMisses      uint64
 		cacheLineOffsetLimit uint64 // One greater than offset to last byte to return
 		cacheLineOffsetStart uint64
 		cacheLineWaiter      sync.WaitGroup
+		cacheLineWaits       uint64
 		curOffset            = readIn.Offset
 		fh                   *fhStruct
 		inode                *inodeStruct
+		latency              float64
 		ok                   bool
+		startTime            = time.Now()
 	)
+
+	defer func() {
+		latency = time.Since(startTime).Seconds()
+		globals.Lock()
+		if errno == 0 {
+			globals.fissionMetrics.ReadSuccesses.Inc()
+			globals.fissionMetrics.ReadSuccessLatencies.Observe(latency)
+			globals.fissionMetrics.ReadSuccessSizes.Observe(float64(len(readOut.Data)))
+			if inode.backend != nil {
+				inode.backend.fissionMetrics.ReadSuccesses.Inc()
+				inode.backend.fissionMetrics.ReadSuccessLatencies.Observe(latency)
+				inode.backend.fissionMetrics.ReadSuccessSizes.Observe(float64(len(readOut.Data)))
+			}
+		} else {
+			globals.fissionMetrics.ReadFailures.Inc()
+			globals.fissionMetrics.ReadFailureLatencies.Observe(latency)
+			globals.fissionMetrics.ReadFailureSizes.Observe(float64(readIn.Size))
+			if (inode != nil) && (inode.backend != nil) {
+				inode.backend.fissionMetrics.ReadFailures.Inc()
+				inode.backend.fissionMetrics.ReadFailureLatencies.Observe(latency)
+				inode.backend.fissionMetrics.ReadFailureSizes.Observe(float64(readIn.Size))
+			}
+		}
+		globals.fissionMetrics.ReadCacheHits.Add(float64(cacheLineHits - cacheLineMisses - cacheLineWaits))
+		globals.fissionMetrics.ReadCacheMisses.Add(float64(cacheLineMisses))
+		globals.fissionMetrics.ReadCacheWaits.Add(float64(cacheLineWaits))
+		if (inode != nil) && (inode.backend != nil) {
+			inode.backend.fissionMetrics.ReadCacheHits.Add(float64(cacheLineHits - cacheLineMisses - cacheLineWaits))
+			inode.backend.fissionMetrics.ReadCacheMisses.Add(float64(cacheLineMisses))
+			inode.backend.fissionMetrics.ReadCacheWaits.Add(float64(cacheLineWaits))
+		}
+		globals.Unlock()
+	}()
 
 	readOut = &fission.ReadOut{
 		Data: make([]byte, 0, readIn.Size),
@@ -435,6 +546,7 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 
 		inode, ok = globals.inodeMap[inHeader.NodeID]
 		if !ok {
+			inode = nil
 			globals.Unlock()
 			errno = syscall.ENOENT
 			return
@@ -467,6 +579,8 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 				continue
 			}
 
+			cacheLineMisses++
+
 			cacheLine = &cacheLineStruct{
 				state:       CacheLineInbound,
 				waiters:     make([]*sync.WaitGroup, 1, 1),
@@ -491,6 +605,8 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 		}
 
 		if cacheLine.state == CacheLineInbound {
+			cacheLineWaits++
+
 			cacheLineWaiter.Add(1)
 			cacheLine.waiters = append(cacheLine.waiters, &cacheLineWaiter)
 
@@ -500,6 +616,8 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 
 			continue
 		}
+
+		cacheLineHits++ // Note that this is the fall-thru condition that counts resolved (cacheLine)Misses & (cacheLine)Wais as (subsequent) Hits
 
 		cacheLine.touch()
 
@@ -557,6 +675,8 @@ func (*globalsStruct) DoStatFS(inHeader *fission.InHeader) (statFSOut *fission.S
 		},
 	}
 
+	globals.fissionMetrics.StatFSCalls.Inc()
+
 	globals.Unlock()
 
 	errno = 0
@@ -566,15 +686,39 @@ func (*globalsStruct) DoStatFS(inHeader *fission.InHeader) (statFSOut *fission.S
 // `DoRelease` implements the package fission callback to close a file inode's file handle.
 func (*globalsStruct) DoRelease(inHeader *fission.InHeader, releaseIn *fission.ReleaseIn) (errno syscall.Errno) {
 	var (
-		fh    *fhStruct
-		inode *inodeStruct
-		ok    bool
+		fh        *fhStruct
+		inode     *inodeStruct
+		latency   float64
+		ok        bool
+		startTime = time.Now()
 	)
+
+	defer func() {
+		latency = time.Since(startTime).Seconds()
+		globals.Lock()
+		if errno == 0 {
+			globals.fissionMetrics.ReleaseSuccesses.Inc()
+			globals.fissionMetrics.ReleaseSuccessLatencies.Observe(latency)
+			if inode.backend != nil {
+				inode.backend.fissionMetrics.ReleaseSuccesses.Inc()
+				inode.backend.fissionMetrics.ReleaseSuccessLatencies.Observe(latency)
+			}
+		} else {
+			globals.fissionMetrics.ReleaseFailures.Inc()
+			globals.fissionMetrics.ReleaseFailureLatencies.Observe(latency)
+			if (inode != nil) && (inode.backend != nil) {
+				inode.backend.fissionMetrics.ReleaseFailures.Inc()
+				inode.backend.fissionMetrics.ReleaseFailureLatencies.Observe(latency)
+			}
+		}
+		globals.Unlock()
+	}()
 
 	globals.Lock()
 
 	inode, ok = globals.inodeMap[inHeader.NodeID]
 	if !ok {
+		inode = nil
 		globals.Unlock()
 		errno = syscall.ENOENT
 		return
@@ -670,15 +814,39 @@ func (*globalsStruct) DoInit(inHeader *fission.InHeader, initIn *fission.InitIn)
 // `DoOpenDir` implements the package fission callback to open a directory inode.
 func (*globalsStruct) DoOpenDir(inHeader *fission.InHeader, openDirIn *fission.OpenDirIn) (openDirOut *fission.OpenDirOut, errno syscall.Errno) {
 	var (
-		fh    *fhStruct
-		inode *inodeStruct
-		ok    bool
+		fh        *fhStruct
+		inode     *inodeStruct
+		latency   float64
+		ok        bool
+		startTime = time.Now()
 	)
+
+	defer func() {
+		latency = time.Since(startTime).Seconds()
+		globals.Lock()
+		if errno == 0 {
+			globals.fissionMetrics.OpenDirSuccesses.Inc()
+			globals.fissionMetrics.OpenDirSuccessLatencies.Observe(latency)
+			if inode.backend != nil {
+				inode.backend.fissionMetrics.OpenDirSuccesses.Inc()
+				inode.backend.fissionMetrics.OpenDirSuccessLatencies.Observe(latency)
+			}
+		} else {
+			globals.fissionMetrics.OpenDirFailures.Inc()
+			globals.fissionMetrics.OpenDirFailureLatencies.Observe(latency)
+			if (inode != nil) && (inode.backend != nil) {
+				inode.backend.fissionMetrics.OpenDirFailures.Inc()
+				inode.backend.fissionMetrics.OpenDirFailureLatencies.Observe(latency)
+			}
+		}
+		globals.Unlock()
+	}()
 
 	globals.Lock()
 
 	inode, ok = globals.inodeMap[inHeader.NodeID]
 	if !ok {
+		inode = nil
 		globals.Unlock()
 		errno = syscall.ENOENT
 		return
@@ -772,16 +940,39 @@ func (*globalsStruct) DoReadDir(inHeader *fission.InHeader, readDirIn *fission.R
 		dirEntMinSize                               uint64
 		err                                         error
 		fh                                          *fhStruct
+		latency                                     float64
 		listDirectoryOutputFile                     *listDirectoryOutputFileStruct
 		listDirectoryInput                          *listDirectoryInputStruct
 		listDirectoryOutput                         *listDirectoryOutputStruct
 		ok                                          bool
 		parentInode                                 *inodeStruct
+		startTime                                   = time.Now()
 		subdirectory                                string
 		virtChildDirMapIndex                        int
 		virtChildDirMapLen                          uint64
 		virtChildFileMapIndex                       int
 	)
+
+	defer func() {
+		latency = time.Since(startTime).Seconds()
+		globals.Lock()
+		if errno == 0 {
+			globals.fissionMetrics.ReadDirSuccesses.Inc()
+			globals.fissionMetrics.ReadDirSuccessLatencies.Observe(latency)
+			if parentInode.backend != nil {
+				parentInode.backend.fissionMetrics.ReadDirSuccesses.Inc()
+				parentInode.backend.fissionMetrics.ReadDirSuccessLatencies.Observe(latency)
+			}
+		} else {
+			globals.fissionMetrics.ReadDirFailures.Inc()
+			globals.fissionMetrics.ReadDirFailureLatencies.Observe(latency)
+			if (parentInode != nil) && (parentInode.backend != nil) {
+				parentInode.backend.fissionMetrics.ReadDirFailures.Inc()
+				parentInode.backend.fissionMetrics.ReadDirFailureLatencies.Observe(latency)
+			}
+		}
+		globals.Unlock()
+	}()
 
 	dirEntMinSize = fission.DirEntFixedPortionSize + 1 + fission.DirEntAlignment - 1
 	dirEntMinSize /= fission.DirEntAlignment
@@ -801,6 +992,7 @@ Restart:
 
 	parentInode, ok = globals.inodeMap[inHeader.NodeID]
 	if !ok {
+		parentInode = nil
 		globals.Unlock()
 		errno = syscall.ENOENT
 		return
@@ -895,7 +1087,7 @@ Restart:
 
 			globals.Unlock()
 
-			listDirectoryOutput, err = parentInode.backend.context.listDirectory(listDirectoryInput)
+			listDirectoryOutput, err = listDirectoryWrapper(parentInode.backend.context, listDirectoryInput)
 
 			globals.Lock()
 
@@ -935,7 +1127,7 @@ Restart:
 				}
 			}
 
-			// Since we had to release globals.Lock during listDirectory() call, we must restart from where we first grabbed it
+			// Since we had to release globals.Lock during listDirectoryWrapper() call, we must restart from where we first grabbed it
 
 			goto Restart
 		}
@@ -1002,15 +1194,39 @@ Restart:
 // `DoReleaseDir` implements the package fission callback to close a directory inode's file handle.
 func (*globalsStruct) DoReleaseDir(inHeader *fission.InHeader, releaseDirIn *fission.ReleaseDirIn) (errno syscall.Errno) {
 	var (
-		fh    *fhStruct
-		inode *inodeStruct
-		ok    bool
+		fh        *fhStruct
+		inode     *inodeStruct
+		latency   float64
+		ok        bool
+		startTime = time.Now()
 	)
+
+	defer func() {
+		latency = time.Since(startTime).Seconds()
+		globals.Lock()
+		if errno == 0 {
+			globals.fissionMetrics.ReleaseDirSuccesses.Inc()
+			globals.fissionMetrics.ReleaseDirSuccessLatencies.Observe(latency)
+			if inode.backend != nil {
+				inode.backend.fissionMetrics.ReleaseDirSuccesses.Inc()
+				inode.backend.fissionMetrics.ReleaseDirSuccessLatencies.Observe(latency)
+			}
+		} else {
+			globals.fissionMetrics.ReleaseDirFailures.Inc()
+			globals.fissionMetrics.ReleaseDirFailureLatencies.Observe(latency)
+			if (inode != nil) && (inode.backend != nil) {
+				inode.backend.fissionMetrics.ReleaseDirFailures.Inc()
+				inode.backend.fissionMetrics.ReleaseDirFailureLatencies.Observe(latency)
+			}
+		}
+		globals.Unlock()
+	}()
 
 	globals.Lock()
 
 	inode, ok = globals.inodeMap[inHeader.NodeID]
 	if !ok {
+		inode = nil
 		globals.Unlock()
 		errno = syscall.ENOENT
 		return
@@ -1213,16 +1429,39 @@ func (*globalsStruct) DoReadDirPlus(inHeader *fission.InHeader, readDirPlusIn *f
 		entryAttrValidSec                           uint64
 		err                                         error
 		fh                                          *fhStruct
+		latency                                     float64
 		listDirectoryOutputFile                     *listDirectoryOutputFileStruct
 		listDirectoryInput                          *listDirectoryInputStruct
 		listDirectoryOutput                         *listDirectoryOutputStruct
 		ok                                          bool
 		parentInode                                 *inodeStruct
+		startTime                                   = time.Now()
 		subdirectory                                string
 		virtChildDirMapIndex                        int
 		virtChildDirMapLen                          uint64
 		virtChildFileMapIndex                       int
 	)
+
+	defer func() {
+		latency = time.Since(startTime).Seconds()
+		globals.Lock()
+		if errno == 0 {
+			globals.fissionMetrics.ReadDirPlusSuccesses.Inc()
+			globals.fissionMetrics.ReadDirPlusSuccessLatencies.Observe(latency)
+			if parentInode.backend != nil {
+				parentInode.backend.fissionMetrics.ReadDirPlusSuccesses.Inc()
+				parentInode.backend.fissionMetrics.ReadDirPlusSuccessLatencies.Observe(latency)
+			}
+		} else {
+			globals.fissionMetrics.ReadDirPlusFailures.Inc()
+			globals.fissionMetrics.ReadDirPlusFailureLatencies.Observe(latency)
+			if (parentInode != nil) && (parentInode.backend != nil) {
+				parentInode.backend.fissionMetrics.ReadDirPlusFailures.Inc()
+				parentInode.backend.fissionMetrics.ReadDirPlusFailureLatencies.Observe(latency)
+			}
+		}
+		globals.Unlock()
+	}()
 
 	dirEntPlusMinSize = fission.DirEntFixedPortionSize + 1 + fission.DirEntAlignment - 1
 	dirEntPlusMinSize /= fission.DirEntAlignment
@@ -1244,6 +1483,7 @@ Restart:
 
 	parentInode, ok = globals.inodeMap[inHeader.NodeID]
 	if !ok {
+		parentInode = nil
 		globals.Unlock()
 		errno = syscall.ENOENT
 		return
@@ -1338,7 +1578,7 @@ Restart:
 
 			globals.Unlock()
 
-			listDirectoryOutput, err = parentInode.backend.context.listDirectory(listDirectoryInput)
+			listDirectoryOutput, err = listDirectoryWrapper(parentInode.backend.context, listDirectoryInput)
 
 			globals.Lock()
 
@@ -1378,7 +1618,7 @@ Restart:
 				}
 			}
 
-			// Since we had to release globals.Lock during listDirectory() call, we must restart from where we first grabbed it
+			// Since we had to release globals.Lock during listDirectoryWrapper() call, we must restart from where we first grabbed it
 
 			goto Restart
 		}
@@ -1464,17 +1704,41 @@ func (*globalsStruct) DoStatX(inHeader *fission.InHeader, statXIn *fission.StatX
 		attrValidNSec uint32
 		attrValidSec  uint64
 		gid           uint32
+		latency       float64
 		mTimeNSec     uint32
 		mTimeSec      uint64
 		ok            bool
+		startTime     = time.Now()
 		thisInode     *inodeStruct
 		uid           uint32
 	)
+
+	defer func() {
+		latency = time.Since(startTime).Seconds()
+		globals.Lock()
+		if errno == 0 {
+			globals.fissionMetrics.StatXSuccesses.Inc()
+			globals.fissionMetrics.StatXSuccessLatencies.Observe(latency)
+			if thisInode.backend != nil {
+				thisInode.backend.fissionMetrics.StatXSuccesses.Inc()
+				thisInode.backend.fissionMetrics.StatXSuccessLatencies.Observe(latency)
+			}
+		} else {
+			globals.fissionMetrics.StatXFailures.Inc()
+			globals.fissionMetrics.StatXFailureLatencies.Observe(latency)
+			if (thisInode != nil) && (thisInode.backend != nil) {
+				thisInode.backend.fissionMetrics.StatXFailures.Inc()
+				thisInode.backend.fissionMetrics.StatXFailureLatencies.Observe(latency)
+			}
+		}
+		globals.Unlock()
+	}()
 
 	globals.Lock()
 
 	thisInode, ok = globals.inodeMap[inHeader.NodeID]
 	if !ok {
+		thisInode = nil
 		globals.Unlock()
 		errno = syscall.ENOENT
 		return

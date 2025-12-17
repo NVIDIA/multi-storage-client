@@ -1,4 +1,5 @@
 msfs_version: 1
+endpoint: "http://:9088"
 backends: [
   {
     dir_name: ram,

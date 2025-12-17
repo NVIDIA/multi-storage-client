@@ -63,6 +63,7 @@ The MSFS-specific global (i.e. "top-level") settings are described in the follow
 | dirty_cache_lines_flush_trigger | decimal              |       80% of cache_lines | If readonly false, background flushes triggered at this threshold                                                                                                                                                   |
 | dirty_cache_lines_max           | decimal              |       90% of cache_lines | If readonly false, flushes will block writes until below this threshold                                                                                                                                             |
 | auto_sighup_interval            | decimal seconds      |                        0 | If != 0, schedules SIGHUP processing                                                                                                                                                                                |
+| endpoint                        | string               |                       "" | If != "", enables a RESTful service endpoint (including the "http:// or "https://" scheme though "https://" is not currently supported)                                                                             |
 | backends                        | array                |                          | An array of each object store backend to be presented as a pseudo-directory underneath the `mountpoint1                                                                                                             |
 
 As noted in the above table, the `backends` setting defines an array of object
@@ -105,7 +106,7 @@ the following table:
 
 | Setting                     | Units                | Default                                                 | Description                                                            |
 | :-------------------------- | :------------------- | ------------------------------------------------------: | :--------------------------------------------------------------------- |
-| endpoint                    | string               |                                       "${AIS_ENDPOINT}" | AIStore Endpoint (including the "http:// or "https://" schemd)         |
+| endpoint                    | string               |                                       "${AIS_ENDPOINT}" | AIStore Endpoint (including the "http:// or "https://" scheme)         |
 | skip_tls_certificate_verify | boolean              |                                                    true | If true & using HTTPS (TLS), TLS Certificate Verification skipped      |
 | authnToken                  | string               |                                    "${AIS_AUTHN_TOKEN}" | If != "", specifies AUTHN Token                                        |
 | authnTokenFile              | string               | "${AIS_AUTHN_TOKEN_FILE:=~/.config/ais/cli/auth.token}" | If != "", specifies location of AUTHN Token file                       |

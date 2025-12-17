@@ -1,0 +1,29 @@
+global:
+  scrape_interval: 1s
+
+scrape_configs:
+  - job_name: 'msfs'
+    static_configs:
+      - targets: ['dev:9088']
+        labels:
+          __metrics_path__: /metrics
+  - job_name: 'ram'
+    static_configs:
+      - targets: ['dev:9088']
+        labels:
+          __metrics_path__: /metrics/ram
+  - job_name: 'minio'
+    static_configs:
+      - targets: ['dev:9088']
+        labels:
+          __metrics_path__: /metrics/minio
+  - job_name: 'ais'
+    static_configs:
+      - targets: ['dev:9088']
+        labels:
+          __metrics_path__: /metrics/ais
+  - job_name: 'aisS3'
+    static_configs:
+      - targets: ['dev:9088']
+        labels:
+          __metrics_path__: /metrics/aisS3

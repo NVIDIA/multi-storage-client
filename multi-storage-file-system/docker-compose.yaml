@@ -1,4 +1,27 @@
+version: '3.8'
+
 services:
+  # Prometheus instance set up to scrape the various metrics endpoings of msfs
+  prometheus:
+    image: prom/prometheus:v3.8.1
+    container_name: msfs_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+
+# Grafana instance to graphically present the metrics scraped by Prometheus
+  grafana:
+    image: grafana/grafana:12.1
+    container_name: msfs_grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    volumes:
+      - ./grafana.ini:/etc/grafana/grafana.ini
+      - ./grafana-provisioning:/etc/grafana/provisioning
+
   # Observability: OTLP Collector (receives metrics from MSFS)
   # Note: This just logs the metrics to console. For production, configure exporters  
   # to send to your observability backend (Prometheus, Grafana Cloud, Datadog, etc.)
@@ -82,7 +105,13 @@ services:
       dockerfile: multi-storage-file-system/Dockerfile
       target: dev
     container_name: msfs_dev
+    expose:
+      - 9088
+    ports:
+      - "9088:9088"
     depends_on:
+      - prometheus
+      - grafana
       - otel-collector
       - minio
       - ais

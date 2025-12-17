@@ -776,6 +776,12 @@ func checkConfigFile() (err error) {
 		config.observability = obs
 	}
 
+	config.endpoint, ok = parseString(configFileMap, "endpoint", "")
+	if !ok {
+		err = errors.New("bad endpoint value")
+		return
+	}
+
 	backendsAsInterface, ok = configFileMap["backends"]
 	if ok {
 		backendsAsInterfaceSlice, ok = backendsAsInterface.([]interface{})
@@ -1246,6 +1252,11 @@ func checkConfigFile() (err error) {
 
 		if globals.config.autoSIGHUPInterval != config.autoSIGHUPInterval {
 			err = errors.New("cannot change auto_sighup_interval via SIGHUP")
+			return
+		}
+
+		if globals.config.endpoint != config.endpoint {
+			err = errors.New("cannot change endpoint via SIGHUP")
 			return
 		}
 

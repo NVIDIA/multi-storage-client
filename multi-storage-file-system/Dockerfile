@@ -129,3 +129,5 @@ COPY --from=ais /aistore/cmd/cli/autocomplete/bash /root/cmd_cli_autocomplete_ba
 COPY --from=ais /root/go/bin/ais                   /root/go/bin/ais
 
 RUN echo "source /root/cmd_cli_autocomplete_bash"  >> /root/.bashrc_additions
+
+EXPOSE 9088
