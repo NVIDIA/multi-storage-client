@@ -359,38 +359,63 @@ def test_calculate_worker_processes_and_threads_both_custom(mock_get_cpu_count):
 @patch("multistorageclient.StorageClient")
 @patch("multistorageclient.StorageClient")
 def test_calculate_worker_processes_and_threads_use_single_process(target_client, source_client, mock_get_cpu_count):
-    mock_get_cpu_count.return_value = 8
+    with patch.dict(os.environ, {}, clear=True):
+        # Both clients are using the Rust client.
+        source_client._is_rust_client_enabled.return_value = True
+        target_client._is_rust_client_enabled.return_value = True
 
-    # Both clients are using the Rust client.
-    source_client._is_rust_client_enabled.return_value = True
-    target_client._is_rust_client_enabled.return_value = True
+        mock_get_cpu_count.return_value = 96
+        processes, threads = calculate_worker_processes_and_threads(
+            execution_mode=ExecutionMode.LOCAL, source_client=source_client, target_client=target_client
+        )
+        assert processes == 1
+        assert threads == 96
 
-    processes, threads = calculate_worker_processes_and_threads(
-        execution_mode=ExecutionMode.LOCAL, source_client=source_client, target_client=target_client
-    )
-    assert processes == 1
-    assert threads == 8
+        # Less than 64 CPUs, should use 64 threads and 1 process.
+        mock_get_cpu_count.return_value = 8
+        processes, threads = calculate_worker_processes_and_threads(
+            execution_mode=ExecutionMode.LOCAL, source_client=source_client, target_client=target_client
+        )
+        assert processes == 1
+        assert threads == 64
 
-    # One client is using the Rust client and the other is using the POSIX file storage provider.
-    source_client._is_rust_client_enabled.return_value = True
-    source_client._is_posix_file_storage_provider.return_value = False
-    target_client._is_rust_client_enabled.return_value = False
-    target_client._is_posix_file_storage_provider.return_value = True
-    processes, threads = calculate_worker_processes_and_threads(
-        execution_mode=ExecutionMode.LOCAL, source_client=source_client, target_client=target_client
-    )
-    assert processes == 1
-    assert threads == 8
+        # One client is using the Rust client and the other is using the POSIX file storage provider.
+        source_client._is_rust_client_enabled.return_value = True
+        source_client._is_posix_file_storage_provider.return_value = False
+        target_client._is_rust_client_enabled.return_value = False
+        target_client._is_posix_file_storage_provider.return_value = True
+        mock_get_cpu_count.return_value = 96
+        processes, threads = calculate_worker_processes_and_threads(
+            execution_mode=ExecutionMode.LOCAL, source_client=source_client, target_client=target_client
+        )
+        assert processes == 1
+        assert threads == 96
+        # Less than 64 CPUs, should use 64 threads and 1 process.
+        mock_get_cpu_count.return_value = 8
+        processes, threads = calculate_worker_processes_and_threads(
+            execution_mode=ExecutionMode.LOCAL, source_client=source_client, target_client=target_client
+        )
+        assert processes == 1
+        assert threads == 64
 
-    source_client._is_rust_client_enabled.return_value = False
-    source_client._is_posix_file_storage_provider.return_value = True
-    target_client._is_rust_client_enabled.return_value = False
-    target_client._is_posix_file_storage_provider.return_value = True
-    processes, threads = calculate_worker_processes_and_threads(
-        execution_mode=ExecutionMode.LOCAL, source_client=source_client, target_client=target_client
-    )
-    assert processes == 1
-    assert threads == 8
+        # Both clients are using the POSIX file storage provider.
+        source_client._is_rust_client_enabled.return_value = False
+        source_client._is_posix_file_storage_provider.return_value = True
+        target_client._is_rust_client_enabled.return_value = False
+        target_client._is_posix_file_storage_provider.return_value = True
+        mock_get_cpu_count.return_value = 96
+        processes, threads = calculate_worker_processes_and_threads(
+            execution_mode=ExecutionMode.LOCAL, source_client=source_client, target_client=target_client
+        )
+        assert processes == 1
+        assert threads == 96
+        # Less than 64 CPUs, should use 64 threads and 1 process.
+        mock_get_cpu_count.return_value = 8
+        processes, threads = calculate_worker_processes_and_threads(
+            execution_mode=ExecutionMode.LOCAL, source_client=source_client, target_client=target_client
+        )
+        assert processes == 1
+        assert threads == 64
 
 
 def test_attribute_filter_evaluator_comparison():

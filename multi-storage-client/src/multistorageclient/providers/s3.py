@@ -49,8 +49,12 @@ from .base import BaseStorageProvider
 
 _T = TypeVar("_T")
 
-# Default connection pool size scales with CPU count (minimum 32 for backward compatibility)
-MAX_POOL_CONNECTIONS = max(32, get_available_cpu_count())
+# Default connection pool size scales with CPU count or MSC Sync Threads count (minimum 64)
+MAX_POOL_CONNECTIONS = max(
+    64,
+    get_available_cpu_count(),
+    int(os.getenv("MSC_NUM_THREADS_PER_PROCESS", "0")),
+)
 
 MiB = 1024 * 1024
 

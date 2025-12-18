@@ -168,7 +168,7 @@ const DEFAULT_MAX_CONCURRENCY: usize = 8;
 const DEFAULT_CONNECT_TIMEOUT: u64 = 60;
 const DEFAULT_READ_TIMEOUT: u64 = 120;
 const DEFAULT_POOL_IDLE_TIMEOUT: u64 = 30;
-const DEFAULT_POOL_CONNECTIONS: usize = 32;
+const DEFAULT_POOL_CONNECTIONS: usize = 64;
 
 fn get_timeout_secs(configs: &HashMap<String, ConfigValue>, key: &str, default: u64) -> u64 {
     configs.get(key)

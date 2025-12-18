@@ -361,7 +361,8 @@ def calculate_worker_processes_and_threads(
                 for client in (source_client, target_client)
             ):
                 num_worker_processes = 1
-                num_worker_threads = cpu_count
+                # Ensure at least 64 threads for optimal performance on machines with fewer CPU cores
+                num_worker_threads = max(cpu_count, int(os.getenv("MSC_NUM_THREADS_PER_PROCESS", "64")))
 
     return num_worker_processes, num_worker_threads
 
