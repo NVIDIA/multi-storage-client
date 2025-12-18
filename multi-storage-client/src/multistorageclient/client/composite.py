@@ -112,11 +112,15 @@ class CompositeStorageClient(AbstractStorageClient):
 
     def _is_rust_client_enabled(self) -> bool:
         """
-        Check if Rust client is enabled.
+        Check if Rust client is enabled for all child storage clients.
 
-        :return: False - composite client doesn't use Rust client directly.
+        When all child backends are Rust-enabled, MSC can use single-process
+        multi-threaded mode instead of multi-process mode, as Rust handles
+        parallelism internally via async I/O without Python GIL contention.
+
+        :return: True if all child clients are Rust-enabled, False otherwise.
         """
-        return False
+        return all(client._is_rust_client_enabled() for client in self._child_clients.values())
 
     def _is_posix_file_storage_provider(self) -> bool:
         """

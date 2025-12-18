@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import pickle
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -184,3 +185,21 @@ def test_serialization_multi_backend(multi_backend_config):
     assert isinstance(restored._delegate, CompositeStorageClient)
     assert restored.profile == expected_profile
     assert restored._storage_provider is None  # Composite doesn't have single provider
+
+
+def test_composite_client_is_rust_client_enabled(multi_backend_config):
+    """Test CompositeStorageClient._is_rust_client_enabled() aggregates child client results."""
+    client = StorageClient(multi_backend_config)
+    composite = client._delegate
+    assert isinstance(composite, CompositeStorageClient)
+
+    child_clients = list(composite._child_clients.values())
+
+    # should returns True if all child clients are Rust-enabled
+    for child in child_clients:
+        child._is_rust_client_enabled = MagicMock(return_value=True)
+    assert composite._is_rust_client_enabled() is True
+
+    # should returns False if any child client is not Rust-enabled
+    child_clients[1]._is_rust_client_enabled = MagicMock(return_value=False)
+    assert composite._is_rust_client_enabled() is False
