@@ -544,7 +544,7 @@ class AttributeFilterEvaluator(Transformer):
         key, op_token, val = items
         key = str(key)
         op = str(op_token)
-        return lambda metadata: (key in metadata and self._compare_values(str(metadata[key]), op, val))
+        return lambda metadata: key in metadata and self._compare_values(str(metadata[key]), op, val)
 
     def and_expr(self, items):
         """Handle AND expressions."""

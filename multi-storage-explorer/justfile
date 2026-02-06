@@ -1,5 +1,5 @@
 #
-# Just configuration for multi-storage-explorer frontend.
+# Just configuration.
 #
 # https://just.systems/man/en
 #
@@ -11,13 +11,13 @@ output-dir := "../multi-storage-client/src/multistorageclient/explorer/static"
 help:
     just --list
 
-# Install npm dependencies.
+# Install Node.js dependencies.
 install:
-    npm ci
+    if [[ -z "${CI:-}" ]]; then bun install; else bun install --frozen-lockfile; fi
 
 # Start development server (port 5175, proxies API to localhost:8888).
 start-frontend: install
-    npm run dev
+    bun run dev
 
 # Start the backend server for development
 start-backend:
@@ -25,23 +25,23 @@ start-backend:
 
 # Run ESLint.
 lint: install
-    npm run lint
+    bun run lint
 
 # Fix ESLint issues.
 lint-fix: install
-    npm run lint:fix
+    bun run lint:fix
 
 # Run frontend unit tests.
 test: install
-    npm run test
+    bun run test
 
 # Run tests with coverage report.
 test-coverage: install
-    npm run test:coverage
+    bun run test:coverage
 
 # Build production assets to backend static directory.
 build: install lint test
-    npm run build
+    bun run build
     @echo "Frontend assets built to {{output-dir}}"
 
 # Clean all build artifacts.

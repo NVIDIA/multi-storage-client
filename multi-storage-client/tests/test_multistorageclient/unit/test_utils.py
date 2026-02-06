@@ -542,10 +542,13 @@ def test_get_available_cpu_count_in_slurm_job():
 @patch("builtins.open")
 def test_get_available_cpu_count_in_k8s_job_with_cgroup_v1(mock_open, mock_exists):
     # Mock file existence
-    mock_exists.side_effect = lambda path: path in [
-        "/sys/fs/cgroup/cpu/cpu.cfs_quota_us",
-        "/sys/fs/cgroup/cpu/cpu.cfs_period_us",
-    ]
+    mock_exists.side_effect = lambda path: (
+        path
+        in [
+            "/sys/fs/cgroup/cpu/cpu.cfs_quota_us",
+            "/sys/fs/cgroup/cpu/cpu.cfs_period_us",
+        ]
+    )
 
     # Mock file contents
     mock_file_quota = mock_open.return_value.__enter__.return_value

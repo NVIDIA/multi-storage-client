@@ -27,7 +27,8 @@ classifiers = [
     "Programming Language :: Python :: 3.13"
 ]
 dependencies = [
-    "filelock>=3.14,<4",
+    "filelock>=3.19.1,<4; python_version=='3.9'",
+    "filelock>=3.20.3,<4; python_version>='3.10'",
     "jmespath>=1.0.1,<2",
     "jsonschema>=4,<5",
     "python-dateutil>=2.8,<3",
@@ -62,14 +63,14 @@ vault = [
 
 # MCP.
 mcp = [
-    "fastmcp>=2.11.2; python_version>='3.10'"
+    "fastmcp>=2.14; python_version>='3.10'"
 ]
 
 # Explorer web UI.
 explorer = [
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.24.0",
-    "python-multipart>=0.0.6",
+    "fastapi>=0.128.3,<1",
+    "uvicorn[standard]>=0.39,<1",
+    "python-multipart>=0.0.20,<1",
     "aiofiles>=23.2.1",
 ]
 
@@ -105,11 +106,12 @@ hydra-core = [
     "hydra-core>=1.3,<2"
 ]
 numpy = [
-    "numpy>=2,<2.1; python_version == '3.9'",
-    "numpy>=2.1,<3; python_version >= '3.10'"
+    "numpy>=2,<2.1; python_version=='3.9'",
+    "numpy>=2.1,<3; python_version>='3.10'"
 ]
 ray = [
-    "ray>=2.48,<3"
+    "ray>=2.51.2,<3; python_version=='3.9'",
+    "ray>=2.52,<3; python_version>='3.10'"
 ]
 torch = [
     "torch>=2.8,<3"
@@ -118,9 +120,9 @@ xarray = [
     "xarray>=2024.07.0"
 ]
 zarr = [
-    "zarr>=2.18.2,<3; python_version == '3.9'",
-    "zarr>=2.18.3,<3; python_version == '3.10'",
-    "zarr>=2.18.7,<3; python_version >= '3.11'"
+    "zarr>=2.18.2,<3; python_version=='3.9'",
+    "zarr>=2.18.3,<3; python_version=='3.10'",
+    "zarr>=2.18.7,<3; python_version>='3.11'"
 ]
 
 [dependency-groups]

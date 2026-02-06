@@ -160,10 +160,10 @@
                 git-lfs
                 # Just.
                 just
+                # Bun.
+                bun
                 # Python.
                 pythonPackage
-                # Node.js for MSC Explorer frontend development.
-                nodejs
                 # Rust.
                 rustup
                 # uv.
