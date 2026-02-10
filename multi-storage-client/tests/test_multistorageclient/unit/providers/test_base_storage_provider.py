@@ -16,7 +16,7 @@
 import time
 from collections.abc import Iterator
 from datetime import datetime
-from typing import IO, Optional, Union
+from typing import IO, Any, Optional, Union
 from unittest.mock import MagicMock, Mock
 
 import pytest
@@ -51,6 +51,7 @@ class MockBaseStorageProvider(BaseStorageProvider):
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
+        follow_symlinks: bool = True,
     ) -> Iterator[ObjectMetadata]:
         return iter([])
 
@@ -59,6 +60,30 @@ class MockBaseStorageProvider(BaseStorageProvider):
 
     def _download_file(self, remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> None:
         pass
+
+
+class FailFastStorageProvider(MockBaseStorageProvider):
+    @property
+    def supports_parallel_listing(self) -> bool:
+        return True
+
+    def _list_objects(
+        self,
+        path: str,
+        start_after: Optional[str] = None,
+        end_at: Optional[str] = None,
+        include_directories: bool = False,
+        follow_symlinks: bool = True,
+    ) -> Iterator[ObjectMetadata]:
+        if path.endswith("bad/"):
+            raise RuntimeError("should fail fast")
+        if include_directories and path.rstrip("/") == "bucket":
+            yield ObjectMetadata(
+                key="bucket/bad",
+                content_length=0,
+                type="directory",
+                last_modified=datetime.now(),
+            )
 
 
 def test_list_objects_with_base_path():
@@ -351,3 +376,101 @@ def test_async_metrics_handles_errors_in_worker():
 
     # Cleanup
     provider._shutdown_async_telemetry()
+
+
+def test_parallel_listing_error_propagation():
+    """Errors from background prefix expansion must propagate to the caller."""
+    provider = FailFastStorageProvider(base_path="bucket", provider_name="fail-fast")
+    with pytest.raises(RuntimeError, match="should fail fast"):
+        list(provider.list_objects_recursive(path=""))
+
+
+class MockParallelListingProvider(MockBaseStorageProvider):
+    """Mock provider with a configurable prefix tree for testing the heap algorithm."""
+
+    def __init__(self, tree: dict[str, list[ObjectMetadata]], **kwargs: Any):
+        super().__init__(**kwargs)
+        self._tree = tree
+
+    @property
+    def supports_parallel_listing(self) -> bool:
+        return True
+
+    def _list_objects(
+        self,
+        path: str,
+        start_after: Optional[str] = None,
+        end_at: Optional[str] = None,
+        include_directories: bool = False,
+        follow_symlinks: bool = True,
+    ) -> Iterator[ObjectMetadata]:
+        for obj in self._tree.get(path, []):
+            yield obj
+
+
+def _obj(key: str, obj_type: str = "file") -> ObjectMetadata:
+    return ObjectMetadata(key=key, content_length=0, type=obj_type, last_modified=datetime.now())
+
+
+class TestParallelListingHeap:
+    """Unit tests for the heap-based parallel listing algorithm."""
+
+    def test_flat_prefix_no_heap(self):
+        tree = {"bucket/": [_obj("bucket/a.txt"), _obj("bucket/b.txt")]}
+        provider = MockParallelListingProvider(tree=tree, base_path="bucket", provider_name="mock")
+        keys = [o.key for o in provider.list_objects_recursive()]
+        assert keys == ["a.txt", "b.txt"]
+
+    def test_mixed_objects_and_prefixes(self):
+        tree = {
+            "bucket/": [
+                _obj("bucket/00-readme.txt"),
+                _obj("bucket/a", "directory"),
+                _obj("bucket/z-final.txt"),
+            ],
+            "bucket/a/": [_obj("bucket/a/file.txt")],
+        }
+        provider = MockParallelListingProvider(tree=tree, base_path="bucket", provider_name="mock")
+        keys = [o.key for o in provider.list_objects_recursive()]
+        assert keys == ["00-readme.txt", "a/file.txt", "z-final.txt"]
+
+    def test_deep_nesting(self):
+        tree = {
+            "bucket/": [_obj("bucket/a", "directory")],
+            "bucket/a/": [_obj("bucket/a/b", "directory")],
+            "bucket/a/b/": [_obj("bucket/a/b/c", "directory")],
+            "bucket/a/b/c/": [_obj("bucket/a/b/c/file.txt")],
+        }
+        provider = MockParallelListingProvider(tree=tree, base_path="bucket", provider_name="mock")
+        keys = [o.key for o in provider.list_objects_recursive()]
+        assert keys == ["a/b/c/file.txt"]
+
+    def test_start_after_end_at_filtering(self):
+        tree = {
+            "bucket/": [
+                _obj("bucket/a", "directory"),
+                _obj("bucket/b", "directory"),
+                _obj("bucket/c", "directory"),
+            ],
+            "bucket/a/": [_obj("bucket/a/f.txt")],
+            "bucket/b/": [_obj("bucket/b/f.txt")],
+            "bucket/c/": [_obj("bucket/c/f.txt")],
+        }
+        provider = MockParallelListingProvider(tree=tree, base_path="bucket", provider_name="mock")
+        keys = [o.key for o in provider.list_objects_recursive(start_after="a/f.txt", end_at="b/f.txt")]
+        assert keys == ["b/f.txt"]
+
+    def test_non_leaf_objects_interleave_correctly(self):
+        tree = {
+            "bucket/": [
+                _obj("bucket/a", "directory"),
+            ],
+            "bucket/a/": [
+                _obj("bucket/a/file.txt"),
+                _obj("bucket/a/sub", "directory"),
+            ],
+            "bucket/a/sub/": [_obj("bucket/a/sub/deep.txt")],
+        }
+        provider = MockParallelListingProvider(tree=tree, base_path="bucket", provider_name="mock")
+        keys = [o.key for o in provider.list_objects_recursive()]
+        assert keys == ["a/file.txt", "a/sub/deep.txt"]

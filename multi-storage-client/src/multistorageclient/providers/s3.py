@@ -26,6 +26,7 @@ from boto3.s3.transfer import TransferConfig
 from botocore.credentials import RefreshableCredentials
 from botocore.exceptions import ClientError, IncompleteReadError, ReadTimeoutError, ResponseStreamingError
 from botocore.session import get_session
+from dateutil.parser import parse as dateutil_parse
 
 from multistorageclient_rust import RustClient, RustClientError, RustRetryableError
 
@@ -626,6 +627,104 @@ class S3StorageProvider(BaseStorageProvider):
                         return
 
         return self._translate_errors(_invoke_api, operation="LIST", bucket=bucket, key=prefix)
+
+    @property
+    def supports_parallel_listing(self) -> bool:
+        """
+        S3 supports parallel listing via delimiter-based prefix discovery.
+
+        Note: Directory bucket handling is done in list_objects_recursive().
+        """
+        return True
+
+    def list_objects_recursive(
+        self,
+        path: str = "",
+        start_after: Optional[str] = None,
+        end_at: Optional[str] = None,
+        max_workers: int = 32,
+        look_ahead: int = 2,
+        follow_symlinks: bool = True,
+    ) -> Iterator[ObjectMetadata]:
+        """
+        List all objects recursively using parallel prefix discovery for improved performance.
+
+        For S3, uses the Rust client's list_recursive when available for maximum performance.
+        Falls back to Python implementation otherwise.
+
+        Returns files only (no directories), in lexicographic order.
+
+        :param follow_symlinks: Whether to follow symbolic links (POSIX providers only).
+        """
+        if (start_after is not None) and (end_at is not None) and not (start_after < end_at):
+            raise ValueError(f"start_after ({start_after}) must be before end_at ({end_at})!")
+
+        full_path = self._prepend_base_path(path)
+        bucket, prefix = split_path(full_path)
+
+        if self._is_directory_bucket(bucket):
+            yield from self.list_objects(
+                path, start_after, end_at, include_directories=False, follow_symlinks=follow_symlinks
+            )
+            return
+
+        if self._rust_client:
+            yield from self._emit_metrics(
+                operation=BaseStorageProvider._Operation.LIST,
+                f=lambda: self._list_objects_recursive_rust(path, full_path, bucket, start_after, end_at, max_workers),
+            )
+        else:
+            yield from super().list_objects_recursive(
+                path, start_after, end_at, max_workers, look_ahead, follow_symlinks
+            )
+
+    def _list_objects_recursive_rust(
+        self,
+        path: str,
+        full_path: str,
+        bucket: str,
+        start_after: Optional[str],
+        end_at: Optional[str],
+        max_workers: int,
+    ) -> Iterator[ObjectMetadata]:
+        """
+        Use Rust client's list_recursive for parallel listing.
+
+        The Rust client already handles parallel listing internally.
+        Returns files only in lexicographic order.
+        """
+        _, prefix = split_path(full_path)
+
+        def _invoke_api() -> Iterator[ObjectMetadata]:
+            result = run_async_rust_client_method(
+                self._rust_client,
+                "list_recursive",
+                [prefix] if prefix else [""],
+                max_concurrency=max_workers,
+            )
+
+            start_after_full = self._prepend_base_path(start_after) if start_after else None
+            end_at_full = self._prepend_base_path(end_at) if end_at else None
+
+            for obj in result.objects:
+                full_key = os.path.join(bucket, obj.key)
+
+                if start_after_full and full_key <= start_after_full:
+                    continue
+                if end_at_full and full_key > end_at_full:
+                    break
+
+                relative_key = full_key.removeprefix(self._base_path).lstrip("/")
+
+                yield ObjectMetadata(
+                    key=relative_key,
+                    content_length=obj.content_length,
+                    last_modified=dateutil_parse(obj.last_modified),
+                    type="file" if obj.object_type == "object" else obj.object_type,
+                    etag=obj.etag,
+                )
+
+        yield from self._translate_errors(_invoke_api, operation="LIST", bucket=bucket, key=prefix)
 
     def _upload_file(
         self,

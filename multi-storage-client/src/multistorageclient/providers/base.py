@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import heapq
 import importlib.metadata as importlib_metadata
 import logging
 import os
@@ -21,6 +22,7 @@ import threading
 import time
 from abc import abstractmethod
 from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from enum import Enum
 from typing import IO, Any, Optional, TypeVar, Union, cast
 
@@ -42,6 +44,91 @@ from ..utils import (
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
+
+
+_ShallowListResult = tuple[list[str], list[ObjectMetadata]]
+
+
+class _ListingHeapItem:
+    """Heap item for parallel listing: either a prefix to expand or an object to yield."""
+
+    __slots__ = ("key", "is_prefix", "data")
+
+    def __init__(self, key: str, is_prefix: bool, data: Union[str, ObjectMetadata]):
+        self.key = key
+        self.is_prefix = is_prefix
+        self.data = data
+
+    def __lt__(self, other: "_ListingHeapItem") -> bool:
+        return self.key < other.key
+
+
+class _PrefixExpander:
+    """
+    Expands storage prefixes into children via a bounded thread pool.
+
+    Prefixes are scheduled in sorted order to maximize prefetch hits
+    for the heap-based consumer. Only two methods matter to callers:
+
+        enqueue()  — register prefixes for background expansion
+        get()      — retrieve a result, blocking if still in-flight
+    """
+
+    __slots__ = ("_fn", "_max_inflight", "_executor", "_pending", "_inflight", "_ready")
+
+    def __init__(
+        self,
+        shallow_list_fn: Callable[[str], _ShallowListResult],
+        max_workers: int,
+        look_ahead: int,
+    ):
+        self._fn = shallow_list_fn
+        self._max_inflight = max_workers * look_ahead
+        self._executor = ThreadPoolExecutor(max_workers=max_workers)
+        self._pending: list[str] = []
+        self._inflight: dict[str, Future[_ShallowListResult]] = {}
+        self._ready: dict[str, _ShallowListResult] = {}
+
+    def enqueue(self, prefixes: list[str]) -> None:
+        """Register prefixes for background expansion."""
+        if not self._pending:
+            # O(N) batch insert via heapify.
+            self._pending = list(prefixes)
+            heapq.heapify(self._pending)
+        else:
+            for p in prefixes:
+                heapq.heappush(self._pending, p)
+        self._fill()
+
+    def get(self, prefix: str) -> _ShallowListResult:
+        """Retrieve expansion result, blocking if still in-flight."""
+        self._collect()
+        if prefix in self._ready:
+            return self._ready.pop(prefix)
+        if prefix not in self._inflight:
+            self._inflight[prefix] = self._executor.submit(self._fn, prefix)
+        return self._inflight.pop(prefix).result()
+
+    def _fill(self) -> None:
+        """Submit pending prefixes up to the inflight capacity."""
+        while self._pending and len(self._inflight) < self._max_inflight:
+            p = heapq.heappop(self._pending)
+            if p not in self._inflight and p not in self._ready:
+                self._inflight[p] = self._executor.submit(self._fn, p)
+
+    def _collect(self) -> None:
+        """Move completed futures to the ready dict and refill freed slots."""
+        for p in list(self._inflight):
+            if self._inflight[p].done():
+                self._ready[p] = self._inflight.pop(p).result()
+        self._fill()
+
+    def __enter__(self) -> "_PrefixExpander":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._executor.shutdown(wait=False, cancel_futures=True)
+
 
 _TELEMETRY_ATTRIBUTES_PROVIDER_MAPPING = {
     "environment_variables": "multistorageclient.telemetry.attributes.environment_variables.EnvironmentVariablesAttributesProvider",
@@ -595,6 +682,170 @@ class BaseStorageProvider(StorageProvider):
                     continue
             else:
                 yield obj
+
+    def list_objects_recursive(
+        self,
+        path: str = "",
+        start_after: Optional[str] = None,
+        end_at: Optional[str] = None,
+        max_workers: int = 32,
+        look_ahead: int = 2,
+        follow_symlinks: bool = True,
+    ) -> Iterator[ObjectMetadata]:
+        """
+        List all objects recursively with parallel prefix discovery.
+
+        Returns files only (no directories) in lexicographic order.
+        Falls back to sequential listing if provider does not support parallel listing.
+
+        :param path: The path to list objects under.
+        :param start_after: Start listing after this key (exclusive).
+        :param end_at: Stop listing at this key (inclusive).
+        :param max_workers: Maximum concurrent listing threads.
+        :param look_ahead: Prefixes to buffer ahead per worker (bounds memory, heap algorithm only).
+        :param follow_symlinks: Whether to follow symbolic links (POSIX providers only).
+        :return: Iterator of ObjectMetadata for files under the path.
+        """
+        if (start_after is not None) and (end_at is not None) and not (start_after < end_at):
+            raise ValueError(f"start_after ({start_after}) must be before end_at ({end_at})!")
+
+        path = self._prepend_base_path(path)
+
+        if path.strip() == "":
+            raise ValueError(
+                "The base_path cannot be empty when calling list_objects_recursive. "
+                "Please provide a valid base_path in your configuration file."
+            )
+
+        start_after = self._prepend_base_path(start_after) if start_after else None
+        end_at = self._prepend_base_path(end_at) if end_at else None
+
+        objects = self._emit_metrics(
+            operation=BaseStorageProvider._Operation.LIST,
+            f=lambda: self._list_objects_recursive_impl(
+                path, max_workers, look_ahead, start_after, end_at, follow_symlinks
+            ),
+        )
+
+        for obj in objects:
+            if self._base_path:
+                obj.key = obj.key.removeprefix(self._base_path).lstrip("/")
+            yield obj
+
+    @property
+    def supports_parallel_listing(self) -> bool:
+        """
+        Whether this provider supports parallel recursive listing.
+
+        Providers with delimiter-based shallow listing (S3, GCS) should override
+        this to return True. Objects returned by _list_objects within a single
+        shallow listing (one prefix level) must be in lexicographic order by key.
+        The heap algorithm handles global ordering across prefixes.
+        When False, list_objects_recursive falls back to sequential listing.
+
+        :return: True if parallel listing is supported.
+        """
+        return False
+
+    def _shallow_list(self, path: str, follow_symlinks: bool) -> tuple[list[str], list[ObjectMetadata]]:
+        """
+        Perform shallow listing and separate into prefixes and objects.
+
+        :param path: Full path (including base_path) to list.
+        :return: Tuple of (child_prefixes, objects_at_this_level).
+        """
+        prefixes: list[str] = []
+        objects: list[ObjectMetadata] = []
+
+        for item in self._list_objects(path, include_directories=True, follow_symlinks=follow_symlinks):
+            if item.type == "directory":
+                prefixes.append(item.key + "/")
+            else:
+                objects.append(item)
+
+        return prefixes, objects
+
+    def _list_objects_recursive_impl(
+        self,
+        path: str,
+        max_workers: int,
+        look_ahead: int,
+        start_after: Optional[str],
+        end_at: Optional[str],
+        follow_symlinks: bool,
+    ) -> Iterator[ObjectMetadata]:
+        """
+        Internal implementation of recursive listing with bounded parallelism.
+
+        Uses a min-heap to yield objects in lexicographic order while a
+        _PrefixExpander discovers child prefixes in background threads.
+        """
+        if not self.supports_parallel_listing:
+            yield from self._list_objects(
+                path, start_after, end_at, include_directories=False, follow_symlinks=follow_symlinks
+            )
+            return
+
+        prefixes, objects = self._shallow_list(path, follow_symlinks)
+
+        # Prune prefixes entirely beyond end_at to avoid wasted API calls.
+        if end_at:
+            prefixes = [p for p in prefixes if p <= end_at]
+
+        if not prefixes:
+            for obj in objects:
+                if start_after and obj.key <= start_after:
+                    continue
+                if end_at and obj.key > end_at:
+                    break
+                yield obj
+            return
+
+        # Seed the merge heap with initial prefixes and objects. O(N) via heapify.
+        heap: list[_ListingHeapItem] = [_ListingHeapItem(p, True, p) for p in prefixes]
+        heap.extend(_ListingHeapItem(o.key, False, o) for o in objects)
+        heapq.heapify(heap)
+
+        with _PrefixExpander(lambda p: self._shallow_list(p, follow_symlinks), max_workers, look_ahead) as expander:
+            expander.enqueue(prefixes)
+
+            while heap:
+                entry = heap[0]
+
+                # Heap is sorted: if the smallest key exceeds end_at, we're done.
+                if end_at and entry.key > end_at:
+                    break
+
+                if not entry.is_prefix:
+                    heapq.heappop(heap)
+                    obj = cast(ObjectMetadata, entry.data)
+                    if start_after and obj.key <= start_after:
+                        continue
+                    yield obj
+                else:
+                    child_prefixes, child_objects = expander.get(entry.key)
+                    heapq.heappop(heap)
+
+                    # Prune child prefixes beyond end_at.
+                    if end_at:
+                        child_prefixes = [cp for cp in child_prefixes if cp <= end_at]
+
+                    for cp in child_prefixes:
+                        heapq.heappush(heap, _ListingHeapItem(cp, True, cp))
+
+                    if child_prefixes:
+                        # Non-leaf: push objects to heap to interleave with sub-prefixes.
+                        for co in child_objects:
+                            heapq.heappush(heap, _ListingHeapItem(co.key, False, co))
+                        expander.enqueue(child_prefixes)
+                    else:
+                        # Leaf prefix: yield sorted objects directly, skip heap overhead.
+                        for obj in child_objects:
+                            if start_after and obj.key <= start_after:
+                                continue
+                            if end_at and obj.key > end_at:
+                                break
+                            yield obj
 
     def upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, str]] = None) -> None:
         remote_path = self._prepend_base_path(remote_path)
