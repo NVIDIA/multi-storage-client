@@ -759,7 +759,9 @@ class BaseStorageProvider(StorageProvider):
 
         for item in self._list_objects(path, include_directories=True, follow_symlinks=follow_symlinks):
             if item.type == "directory":
-                prefixes.append(item.key + "/")
+                child_prefix = item.key + "/"
+                if child_prefix != path:
+                    prefixes.append(child_prefix)
             else:
                 objects.append(item)
 

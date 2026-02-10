@@ -474,3 +474,16 @@ class TestParallelListingHeap:
         provider = MockParallelListingProvider(tree=tree, base_path="bucket", provider_name="mock")
         keys = [o.key for o in provider.list_objects_recursive()]
         assert keys == ["a/file.txt", "a/sub/deep.txt"]
+
+    def test_self_marker_directory_does_not_hang(self):
+        """A directory marker pointing back to its own prefix must be skipped, not re-expanded."""
+        tree = {
+            "bucket/": [_obj("bucket/a", "directory")],
+            "bucket/a/": [
+                _obj("bucket/a", "directory"),
+                _obj("bucket/a/file.txt"),
+            ],
+        }
+        provider = MockParallelListingProvider(tree=tree, base_path="bucket", provider_name="mock")
+        keys = [o.key for o in provider.list_objects_recursive()]
+        assert keys == ["a/file.txt"]

@@ -401,6 +401,10 @@ class AzureBlobStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="LIST", container=container_name, blob=prefix)
 
+    @property
+    def supports_parallel_listing(self) -> bool:
+        return True
+
     def _upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, str]] = None) -> int:
         container_name, blob_name = split_path(remote_path)
         file_size: int = 0

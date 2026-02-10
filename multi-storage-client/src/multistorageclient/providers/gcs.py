@@ -628,6 +628,10 @@ class GoogleStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="LIST", bucket=bucket, key=prefix)
 
+    @property
+    def supports_parallel_listing(self) -> bool:
+        return True
+
     def _upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, str]] = None) -> int:
         bucket, key = split_path(remote_path)
         file_size: int = 0
