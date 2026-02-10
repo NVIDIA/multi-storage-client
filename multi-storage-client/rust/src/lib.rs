@@ -166,6 +166,26 @@ impl From<StorageError> for PyErr {
 const DEFAULT_MULTIPART_CHUNKSIZE: usize = 32 * 1024 * 1024;
 const DEFAULT_MAX_CONCURRENCY: usize = 8;
 
+const S3_MAX_MULTIPART_PARTS: u64 = 10_000;
+const S3_MIN_PART_SIZE_BYTES: usize = 5 * 1024 * 1024;
+const S3_MAX_PART_SIZE_BYTES: u64 = 5 * 1024 * 1024 * 1024;
+
+fn multipart_safe_chunk_size(object_size: u64, requested_chunk_size: usize) -> Result<usize, StorageError> {
+    let max_object_multipart: u64 = S3_MAX_MULTIPART_PARTS * S3_MAX_PART_SIZE_BYTES;
+    if object_size > max_object_multipart {
+        return Err(StorageError::ConfigError(format!(
+            "Object size {} exceeds maximum multipart size ({} parts × 5GB); cannot satisfy multipart constraints",
+            object_size, S3_MAX_MULTIPART_PARTS
+        )));
+    }
+    let required_part_size = ((object_size + S3_MAX_MULTIPART_PARTS - 1) / S3_MAX_MULTIPART_PARTS) as usize;
+    let part_size = requested_chunk_size
+        .max(required_part_size)
+        .max(S3_MIN_PART_SIZE_BYTES)
+        .min(S3_MAX_PART_SIZE_BYTES as usize);
+    Ok(part_size)
+}
+
 // Connection timeout settings
 const DEFAULT_CONNECT_TIMEOUT: u64 = 60;
 const DEFAULT_READ_TIMEOUT: u64 = 120;
@@ -651,7 +671,7 @@ impl RustClient {
         future_into_py(py, async move {
             let mut file = tokio::fs::File::open(local_path).await.map_err(StorageError::from)?;
             let file_size = file.metadata().await.map_err(StorageError::from)?.len();
-
+            let chunksize = multipart_safe_chunk_size(file_size, chunksize)?;
             let upload = store.put_multipart(&remote_path).await.map_err(StorageError::from)?;
             let mut writer = WriteMultipart::new_with_chunk_size(upload, chunksize);
 
@@ -697,6 +717,7 @@ impl RustClient {
                 return Ok(bytes_uploaded);
             }
 
+            let chunksize = multipart_safe_chunk_size(data_bytes.len() as u64, chunksize)?;
             let upload = store.put_multipart(&remote_path).await.map_err(StorageError::from)?;
             let mut writer = WriteMultipart::new_with_chunk_size(upload, chunksize);
 
@@ -1089,6 +1110,37 @@ mod tests {
         configs.clear();
         assert_eq!(get_timeout_secs(&configs, "read_timeout", DEFAULT_READ_TIMEOUT), DEFAULT_READ_TIMEOUT);
         assert_eq!(get_timeout_secs(&configs, "connect_timeout", DEFAULT_CONNECT_TIMEOUT), DEFAULT_CONNECT_TIMEOUT);
+    }
+
+    #[test]
+    fn test_multipart_safe_chunk_size() {
+        let min_part = 5 * 1024 * 1024;
+        let chunk_32_mb = 32 * 1024 * 1024;
+
+        // Enforces minimum part size (5 MB) when object or requested chunk is small.
+        assert_eq!(multipart_safe_chunk_size(100, 1024).unwrap(), min_part);
+        assert_eq!(multipart_safe_chunk_size(10 * 1024 * 1024, 1024).unwrap(), min_part);
+
+        // Uses required part size for large objects when requested would exceed 10k parts; yields exactly 10k parts.
+        for (object_gb, requested) in [(50u64, 1024usize), (527, chunk_32_mb)] {
+            let size = object_gb * 1024 * 1024 * 1024;
+            let safe = multipart_safe_chunk_size(size, requested).unwrap();
+            let required = ((size + 9999) / 10_000) as usize;
+            assert!(required >= min_part);
+            assert_eq!(safe, required);
+            assert_eq!((size + safe as u64 - 1) / safe as u64, 10_000);
+        }
+
+        // Keeps requested chunk size when it already keeps parts <= 10k.
+        assert_eq!(
+            multipart_safe_chunk_size(100 * 1024 * 1024 * 1024, chunk_32_mb).unwrap(),
+            chunk_32_mb
+        );
+        assert!(multipart_safe_chunk_size(60 * 1024 * 1024 * 1024, chunk_32_mb).is_ok());
+
+        // Fails when object exceeds max multipart size (10k parts × 5 GB = 50 TB).
+        let over_max = 10_001 * (5 * 1024 * 1024 * 1024u64);
+        assert!(multipart_safe_chunk_size(over_max, 5 * 1024 * 1024 * 1024).is_err());
     }
 
     #[test]
