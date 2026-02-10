@@ -36,7 +36,7 @@ multi-storage-client/src/multistorageclient/explorer/static/
 **/.aistore/sandbox
 **/.azurite/sandbox
 **/.fake-gcs-server/sandbox
-**/.minio/sandbox
+**/.versitygw/sandbox
 
 # Telemetry systems.
 **/.grafana/sandbox

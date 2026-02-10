@@ -46,6 +46,11 @@ def create_local_test_dataset(target_profile: str, expected_files: dict) -> None
     for rel_path, content in expected_files.items():
         path = os.path.join(target_path, rel_path)
         target_client.write(path, content.encode("utf-8"))
+    # S3 only has second-level precision while the local file system has millisecond-level precision.
+    #
+    # We must wait 1 second to make the target last modified time (S3, may truncate milliseconds instead of round up)
+    # later than the source last modified time (file system).
+    time.sleep(1)
 
 
 def verify_sync_and_contents(target_url: str, expected_files: dict):
@@ -129,8 +134,6 @@ def test_sync_function(
             "dir3/file2.txt": "i" * 100,
         }
         create_local_test_dataset(source_msc_url, expected_files)
-        # Insert a delay before sync'ing so that timestamps will be clearer.
-        time.sleep(1)
 
         print(f"First sync from {source_msc_url} to {target_msc_url}")
         result = msc.sync(source_url=source_msc_url, target_url=target_msc_url)
@@ -375,8 +378,6 @@ def test_sync_from(temp_data_store_type: type[tempdatastore.TemporaryDataStore])
             "dir3/file2.txt": "i" * 512,
         }
         create_local_test_dataset(source_msc_url, source_files)
-        # Insert a delay before sync'ing so that timestamps will be clearer.
-        time.sleep(1)
 
         print(f"First sync from {source_msc_url} to {target_msc_url}")
         source_client, source_path = msc.resolve_storage_client(source_msc_url)
@@ -439,8 +440,6 @@ def test_sync_replicas(temp_data_store_type: type[tempdatastore.TemporaryDataSto
             "dir3/file2.txt": "i" * 512,
         }
         create_local_test_dataset(source_msc_url, expected_files)
-        # Insert a delay before sync'ing so that timestamps will be clearer.
-        time.sleep(1)
 
         source_client, _ = msc.resolve_storage_client(source_msc_url)
 
@@ -714,7 +713,6 @@ def test_sync_from_with_source_files(temp_data_store_type: type[tempdatastore.Te
             "dir3/file1.txt": "h" * 800,
         }
         create_local_test_dataset(source_msc_url, all_files)
-        time.sleep(1)
 
         source_client, source_path = msc.resolve_storage_client(source_msc_url)
         target_client, target_path = msc.resolve_storage_client(target_msc_url)
@@ -798,7 +796,7 @@ def test_sync_posix_large_files_no_temp_optimization(
         cloud_url = f"msc://{cloud_profile}/large-file.dat"
 
         msc.write(source_url, large_file_content.encode())
-        time.sleep(0.5)
+        time.sleep(1)
 
         sync_module = sys.modules["multistorageclient.sync"]
 
@@ -1008,7 +1006,7 @@ def test_sync_resume_with_metadata_provider():
             print(f"File {file_path} timestamp before sync: {info.last_modified}")
 
         # Wait to ensure timestamp differences would be detectable
-        time.sleep(1.0)
+        time.sleep(1)
 
         # Now run sync - this should copy the missing files but not overwrite existing ones
         print("Running sync operation...")

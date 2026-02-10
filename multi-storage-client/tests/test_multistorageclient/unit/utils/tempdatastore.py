@@ -107,10 +107,10 @@ class TemporaryAWSS3Bucket(TemporaryDataStore):
 
         self._bucket_name = str(uuid.uuid4())
 
-        # Backed by MinIO.
+        # Backed by versitygw.
         #
-        # https://min.io/docs/minio/linux/index.html
-        endpoint_url = "http://localhost:9000"
+        # https://github.com/versity/versitygw/wiki/Quickstart
+        endpoint_url = "http://localhost:7070"
         access_key = "access-key"
         secret_key = "secret-key"
 

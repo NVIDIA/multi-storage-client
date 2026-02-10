@@ -52,14 +52,14 @@ stop-storage-systems:
     # Stop storage systems.
     #
     # Azurite's process commands are `node` instead of `azurite`. Find by port instead.
-    for PID in $(lsof -i :10000-10002 -c aisnode -c fake-gcs-server -c minio -t); do kill -s KILL $PID; done
+    for PID in $(lsof -i :10000-10002 -c aisnode -c fake-gcs-server -c versitygw -t); do kill -s KILL $PID; done
     # Remove sandbox directories.
-    -rm -rf .{aistore,azurite,fake-gcs-server,minio}/sandbox
+    -rm -rf .{aistore,azurite,fake-gcs-server,versitygw}/sandbox
 
 # Start storage systems.
 start-storage-systems: stop-storage-systems
     # Create sandbox directories.
-    mkdir --parents .{aistore,azurite,fake-gcs-server,minio}/sandbox
+    mkdir --parents .{aistore,azurite,fake-gcs-server,versitygw}/sandbox
     # Set up AIStore cluster (config generation).
     .aistore/prepare_sandbox.sh
 
@@ -67,37 +67,40 @@ start-storage-systems: stop-storage-systems
     # - AIStore         -> 51080 (proxy), 51081 (target)
     # - Azurite         -> 10000-10002
     # - fake-gcs-server -> 4443
-    # - MinIO           -> 9000
+    # - versitygw       -> 7070
 
     # Start an AIStore proxy.
     cd .aistore/sandbox/0 && aisnode -config="config/ais.json" -local_config="config/ais_local.json" -role=proxy -ntargets=1 > log/stdout.log 2>&1 &
-
     # Wait for the proxy to be ready before starting the target.
     timeout 30s bash -c 'until curl -sf "http://localhost:51080/v1/daemon?what=snode" >/dev/null 2>&1; do sleep 0.5; done' || { echo "ERROR: AIStore proxy failed to start"; exit 1; }
-
     # Start an AIStore target.
     cd .aistore/sandbox/1 && aisnode -config="config/ais.json" -local_config="config/ais_local.json" -role=target > log/stdout.log 2>&1 &
-
     # Wait for the target to join the cluster.
     timeout 30s bash -c 'until [ $(curl -s "http://localhost:51080/v1/cluster?what=smap" 2>/dev/null | grep -o "\"daemon_type\":\"target\"" | wc -l) -ge 1 ]; do sleep 0.5; done' || { echo "ERROR: AIStore target failed to join"; exit 1; }
+
+    # Start Azurite.
+    cd .azurite/sandbox && azurite --disableTelemetry --inMemoryPersistence --silent --skipApiVersionCheck &
+
+    # Start fake-gcs-server.
+    cd .fake-gcs-server/sandbox && TZ="UTC" fake-gcs-server -backend memory -log-level error -scheme http &
+
+    # Start versitygw.
+    cd .versitygw/sandbox && versitygw --access root-access-key --health /health --iam-dir . --quiet --secret root-secret-key posix . &
 
     # Wait for the AIStore cluster to be operational by creating a bucket and deleting it.
     timeout 60s bash -c 'until curl -sf -X POST "http://localhost:51080/v1/buckets/msc-readiness-check?provider=ais" -H "Content-Type: application/json" -d "{\"action\":\"create-bck\"}" >/dev/null 2>&1; do sleep 1; done' || { echo "ERROR: AIStore cluster not operational"; exit 1; }
     curl -sf -X DELETE "http://localhost:51080/v1/buckets/msc-readiness-check?provider=ais" -H "Content-Type: application/json" -d '{"action":"destroy-bck"}' >/dev/null 2>&1 || true
 
-    # Start Azurite.
-    cd .azurite/sandbox && azurite --disableTelemetry --inMemoryPersistence --silent --skipApiVersionCheck &
-    # Start fake-gcs-server.
-    cd .fake-gcs-server/sandbox && TZ="UTC" fake-gcs-server -backend memory -log-level error -scheme http &
-    # Start MinIO.
-    cd .minio/sandbox && minio server --config ../minio.yaml --quiet &
-
     # Wait for Azurite.
     timeout 30s bash -c "until netcat --zero localhost 10000; do sleep 1; done"
+
     # Wait for fake-gcs-server.
     timeout 30s bash -c "until curl --fail --output /dev/null --silent http://localhost:4443/_internal/healthcheck; do sleep 1; done"
-    # Wait for MinIO.
-    timeout 30s bash -c "until curl --fail --output /dev/null --silent http://localhost:9000/minio/health/live; do sleep 1; done"
+
+    # Wait for versitygw.
+    timeout 30s bash -c "until curl --fail --output /dev/null --silent http://localhost:7070/health; do sleep 1; done"
+    # Create a user (for credentials refresh tests. Root user is hidden from credentials APIs).
+    versitygw admin --access root-access-key --endpoint-url http://localhost:7070 --secret root-secret-key create-user --access access-key --role admin --secret secret-key
 
 # Stop telemetry systems.
 stop-telemetry-systems:
