@@ -269,6 +269,7 @@ def _create_exclusive_filelock(
             os.path.dirname(target_file_path), f".{os.path.basename(target_file_path)}.lock"
         )
         lock_path = cast(BaseStorageProvider, target_client._storage_provider)._prepend_base_path(target_lock_file_path)
+        safe_makedirs(os.path.dirname(lock_path))
         return FileLock(lock_path, timeout=DEFAULT_LOCK_TIMEOUT)
     else:
         return contextlib.nullcontext()
