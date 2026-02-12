@@ -153,10 +153,10 @@ class ProducerThread(threading.Thread):
 
     def _match_file_metadata(self, source_info: ObjectMetadata, target_info: ObjectMetadata) -> bool:
         # Check file size is the same and the target's last_modified is newer than the source.
-        return (
-            source_info.content_length == target_info.content_length
-            and source_info.last_modified <= target_info.last_modified
-        )
+        # Compare timestamps at seconds resolution to avoid spurious mismatches from sub-second differences.
+        source_sec = source_info.last_modified.replace(microsecond=0)
+        target_sec = target_info.last_modified.replace(microsecond=0)
+        return source_info.content_length == target_info.content_length and source_sec <= target_sec
 
     def _is_hidden(self, path: str) -> bool:
         """Check if a path contains any hidden components (starting with dot)."""

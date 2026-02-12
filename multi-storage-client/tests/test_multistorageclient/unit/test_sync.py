@@ -46,11 +46,6 @@ def create_local_test_dataset(target_profile: str, expected_files: dict) -> None
     for rel_path, content in expected_files.items():
         path = os.path.join(target_path, rel_path)
         target_client.write(path, content.encode("utf-8"))
-    # S3 only has second-level precision while the local file system has millisecond-level precision.
-    #
-    # We must wait 1 second to make the target last modified time (S3, may truncate milliseconds instead of round up)
-    # later than the source last modified time (file system).
-    time.sleep(1)
 
 
 def verify_sync_and_contents(target_url: str, expected_files: dict):

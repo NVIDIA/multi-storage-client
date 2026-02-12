@@ -71,6 +71,44 @@ class MockStorageClient:
         return False
 
 
+def test_match_file_metadata_seconds_resolution():
+    """_match_file_metadata compares last_modified at seconds resolution."""
+    source_client = MockStorageClient()
+    target_client = MockStorageClient()
+    producer = ProducerThread(
+        source_client=cast(StorageClient, source_client),
+        source_path="",
+        target_client=cast(StorageClient, target_client),
+        target_path="",
+        progress=ProgressBar(desc="", show_progress=False),
+        file_queue=queue.Queue(),
+        num_workers=1,
+        shutdown_event=threading.Event(),
+    )
+    base = datetime(2025, 1, 1, 12, 0, 0)
+    same_size = 100
+
+    # Same second, different microseconds: should match (treated as equal at second resolution)
+    source_info = ObjectMetadata(key="a", content_length=same_size, last_modified=base.replace(microsecond=500000))
+    target_info = ObjectMetadata(key="a", content_length=same_size, last_modified=base.replace(microsecond=100000))
+    assert producer._match_file_metadata(source_info, target_info) is True
+
+    # Target one second newer: should match
+    source_info = ObjectMetadata(key="a", content_length=same_size, last_modified=base)
+    target_info = ObjectMetadata(key="a", content_length=same_size, last_modified=datetime(2025, 1, 1, 12, 0, 1))
+    assert producer._match_file_metadata(source_info, target_info) is True
+
+    # Target one second older: should not match
+    source_info = ObjectMetadata(key="a", content_length=same_size, last_modified=datetime(2025, 1, 1, 12, 0, 1))
+    target_info = ObjectMetadata(key="a", content_length=same_size, last_modified=base)
+    assert producer._match_file_metadata(source_info, target_info) is False
+
+    # Different size: should not match regardless of timestamp
+    source_info = ObjectMetadata(key="a", content_length=100, last_modified=base)
+    target_info = ObjectMetadata(key="a", content_length=200, last_modified=base)
+    assert producer._match_file_metadata(source_info, target_info) is False
+
+
 def test_batch_size_validation():
     """Test that batch_size must be between MIN_BATCH_SIZE and MAX_BATCH_SIZE."""
     source_client = MockStorageClient()
