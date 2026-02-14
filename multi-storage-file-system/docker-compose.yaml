@@ -36,6 +36,29 @@ services:
       - "8888:8888"   # Collector's own metrics
 
   # Storage Backends
+  ais:
+    build:
+      context: ..
+      dockerfile: multi-storage-file-system/Dockerfile
+      target: ais
+    container_name: msfs_ais
+    expose:
+      - 8080
+      - 8081
+    depends_on:
+      - minio
+    environment:
+      - S3_ENDPOINT=http://minio:9000
+    command: [ "/root/deploy_1_1.sh" ]
+  fake-gcs:
+    build:
+      context: ..
+      dockerfile: multi-storage-file-system/Dockerfile
+      target: fake-gcs
+    container_name: msfs_fake-gcs
+    expose:
+      - 4443
+    command: ["-scheme", "http", "-data", "/data"]
   garage:
     build:
       context: ..
@@ -61,29 +84,18 @@ services:
       - MINIO_ROOT_USER=minioadmin
       - MINIO_ROOT_PASSWORD=minioadmin
     command: /minio/minio server /data
-  fake-gcs:
+  versity:
     build:
       context: ..
       dockerfile: multi-storage-file-system/Dockerfile
-      target: fake-gcs
-    container_name: msfs_fake-gcs
-    expose:
-      - 4443
-    command: ["-scheme", "http", "-data", "/data"]
-  ais:
-    build:
-      context: ..
-      dockerfile: multi-storage-file-system/Dockerfile
-      target: ais
-    container_name: msfs_ais
-    expose:
-      - 8080
-      - 8081
-    depends_on:
-      - minio
+      target: versity
+    container_name: msfs_versity
+    ports:
+      - "7070:7070"
     environment:
-      - S3_ENDPOINT=http://minio:9000
-    command: [ "/root/deploy_1_1.sh" ]
+      - ROOT_ACCESS_KEY=dev_access_key
+      - ROOT_SECRET_KEY=dev_secret_key
+    command: /versitygw/versitygw --port :7070 posix /tmp/vgw
   # Test clean Ubuntu Linux Container
   #
   # Note:
@@ -135,10 +147,11 @@ services:
       - prometheus
       - grafana
       - otel-collector
+      - ais
+      - fake-gcs
       - garage
       - minio
-      - fake-gcs
-      - ais
+      - versity
       - ubuntu
       - rocky
     cap_add:

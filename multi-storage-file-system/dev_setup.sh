@@ -5,7 +5,7 @@ SCRIPT_NAME="$(basename "$0")"
 
 usage() {
     cat <<EOF
-Usage: ${SCRIPT_NAME} [{ais|aisMinio|garage|gcs|minio}]
+Usage: ${SCRIPT_NAME} [{ais|aisMinio|garage|gcs|minio|versity}]
 
 Populate the "dev" bucket in the specified object store (defaults to minio) with contents of the current directory tree.
 
@@ -16,6 +16,7 @@ Examples:
     ${SCRIPT_NAME} garage      # Populates the Garage object store "dev" bucket
     ${SCRIPT_NAME} gcs         # Populates the fake-gcs-server object store "dev" bucket
     ${SCRIPT_NAME} minio       # Populates the MinIO object store "dev" bucket
+    ${SCRIPT_NAME} versity     # Populates the Versity object store "dev" bucket
     ${SCRIPT_NAME}             # Populates the (default) MinIO object store "dev" bucket
 EOF
 }
@@ -56,6 +57,12 @@ waitForMinIO() {
 
         (curl -s -I http://minio:9000/minio/health/live > /tmp/curl_minio_health_live.out) || true
         minioCount=$(grep -c "200 OK" /tmp/curl_minio_health_live.out)
+    done
+}
+
+waitForVersity() {
+    until s3cmd --config=${SCRIPT_DIR}/versity.s3cfg ls -r s3:// > /dev/null 2>&1; do
+        sleep 1
     done
 }
 
@@ -107,6 +114,12 @@ case "$target_bucket" in
         s3cmd --config=${SCRIPT_DIR}/minio.s3cfg mb s3://dev
         find . -type f | sed 's/^..//' | xargs -I {} s3cmd --config=${SCRIPT_DIR}/minio.s3cfg put {} s3://dev/{}
         s3cmd --config=${SCRIPT_DIR}/minio.s3cfg ls -r s3://dev
+        ;;
+    versity)
+        waitForVersity
+        s3cmd --config=${SCRIPT_DIR}/versity.s3cfg mb s3://dev
+        find . -type f | sed 's/^..//' | xargs -I {} s3cmd --config=${SCRIPT_DIR}/versity.s3cfg put {} s3://dev/{}
+        s3cmd --config=${SCRIPT_DIR}/versity.s3cfg ls -r s3://dev
         ;;
     *)
         usage

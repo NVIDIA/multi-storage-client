@@ -3,9 +3,18 @@
     "endpoint": "http://:9088",
     "backends": [
         {
-            "dir_name": "ram",
+            "dir_name": "ais",
             "bucket_container_name": "dev",
-            "backend_type": "RAM"
+            "backend_type": "AIStore"
+        },
+        {
+            "dir_name": "aisS3",
+            "bucket_container_name": "dev",
+            "backend_type": "S3",
+            "S3": {
+                "use_config_env": true,
+                "use_credentials_env": true
+            }
         },
         {
             "dir_name": "garage",
@@ -30,17 +39,19 @@
             }
         },
         {
-            "dir_name": "ais",
+            "dir_name": "ram",
             "bucket_container_name": "dev",
-            "backend_type": "AIStore"
+            "backend_type": "RAM"
         },
         {
-            "dir_name": "aisS3",
+            "dir_name": "versity",
             "bucket_container_name": "dev",
             "backend_type": "S3",
             "S3": {
-                "use_config_env": true,
-                "use_credentials_env": true
+                "region": "us-east-1",
+                "endpoint": "http://versity:7070",
+                "access_key_id": "dev_access_key",
+                "secret_access_key": "dev_secret_key"
             }
         }
     ]

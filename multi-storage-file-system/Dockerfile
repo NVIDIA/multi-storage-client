@@ -48,7 +48,7 @@ RUN    apt-get update \
 RUN echo "user_allow_other" >> /etc/fuse.conf
 
 ARG TARGETARCH
-ARG GolangVersion=1.25.6
+ARG GolangVersion=1.26.0
 WORKDIR /tmp
 RUN GolangBasename="go${GolangVersion}.linux-${TARGETARCH}.tar.gz"; \
     GolangURL="https://golang.org/dl/${GolangBasename}"; \
@@ -110,6 +110,39 @@ WORKDIR /
 
 RUN rm -rf /multi-storage-client
 
+FROM buildable AS ais
+
+WORKDIR /
+
+RUN git clone --depth 1 --branch v1.4.2 https://github.com/NVIDIA/aistore.git
+
+WORKDIR /aistore
+
+RUN (. /root/.bashrc_additions && make cli)
+
+RUN echo '#!/bin/bash'                                                                                                   >  /root/deploy_1_1.sh
+RUN echo                     'AIS_ENDPOINT="http://ais:8080" scripts/clean_deploy.sh --target-cnt 1 --proxy-cnt 1 --aws' >> /root/deploy_1_1.sh
+RUN echo 'HOSTNAME_LIST="ais" AIS_ENDPOINT="http://ais:8080" scripts/clean_deploy.sh --target-cnt 1 --proxy-cnt 1 --aws' >> /root/deploy_1_1.sh
+RUN echo 'sleep infinity'                                                                                                >> /root/deploy_1_1.sh
+RUN chmod +x                                                                                                                /root/deploy_1_1.sh
+
+FROM buildable AS fake-gcs
+
+WORKDIR /
+
+RUN git clone --depth 1 --branch v1.52.3 https://github.com/fsouza/fake-gcs-server.git
+
+WORKDIR /fake-gcs-server
+
+RUN go mod download
+RUN CGO_ENABLED=0 go build -o /bin/fake-gcs-server .
+
+RUN mkdir /data
+
+EXPOSE 4443
+
+ENTRYPOINT ["/bin/fake-gcs-server", "-data", "/data", "-scheme", "http"]
+
 FROM buildable AS garage
 
 WORKDIR /
@@ -143,38 +176,17 @@ RUN go build
 
 RUN mkdir /data
 
-FROM buildable AS fake-gcs
+FROM buildable AS versity
 
 WORKDIR /
 
-RUN git clone --depth 1 --branch v1.52.3 https://github.com/fsouza/fake-gcs-server.git
+RUN git clone --depth 1 --branch v1.2.0 https://github.com/versity/versitygw.git
 
-WORKDIR /fake-gcs-server
+WORKDIR /versitygw
 
-RUN go mod download
-RUN CGO_ENABLED=0 go build -o /bin/fake-gcs-server .
+RUN make
 
-RUN mkdir /data
-
-EXPOSE 4443
-
-ENTRYPOINT ["/bin/fake-gcs-server", "-data", "/data", "-scheme", "http"]
-
-FROM buildable AS ais
-
-WORKDIR /
-
-RUN git clone --depth 1 --branch v1.4.2 https://github.com/NVIDIA/aistore.git
-
-WORKDIR /aistore
-
-RUN (. /root/.bashrc_additions && make cli)
-
-RUN echo '#!/bin/bash'                                                                                                   >  /root/deploy_1_1.sh
-RUN echo                     'AIS_ENDPOINT="http://ais:8080" scripts/clean_deploy.sh --target-cnt 1 --proxy-cnt 1 --aws' >> /root/deploy_1_1.sh
-RUN echo 'HOSTNAME_LIST="ais" AIS_ENDPOINT="http://ais:8080" scripts/clean_deploy.sh --target-cnt 1 --proxy-cnt 1 --aws' >> /root/deploy_1_1.sh
-RUN echo 'sleep infinity'                                                                                                >> /root/deploy_1_1.sh
-RUN chmod +x                                                                                                                /root/deploy_1_1.sh
+RUN mkdir /tmp/vgw
 
 FROM buildable AS dev
 

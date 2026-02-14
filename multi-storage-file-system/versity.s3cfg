@@ -1,0 +1,7 @@
+[default]
+use_https       = False
+host_base       = versity:7070
+host_bucket     = placeholder
+bucket_location = us-east-1
+access_key      = dev_access_key
+secret_key      = dev_secret_key
