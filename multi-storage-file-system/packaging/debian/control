@@ -1,0 +1,26 @@
+#
+# Debian control.
+#
+# https://www.debian.org/doc/debian-policy/ch-controlfields.html#debian-source-package-template-control-files-debian-control
+#
+
+# Source package stanza.
+#
+# Omit fields with `dpkg-gencontrol -U{field}`:
+# - Source
+Source: msfs
+Maintainer: NVIDIA Multi-Storage Client Team <multi-storage-client@nvidia.com>
+Section: utils
+Homepage: https://github.com/NVIDIA/multi-storage-client
+
+# Binary package stanza.
+#
+# Replace fields with `dpkg-gencontrol -D{field}={value}`:
+# - Architecture
+Package: msfs
+Architecture: all
+Description: Multi-Storage File System
+ MSFS provides a FUSE-based filesystem that enables POSIX file operations
+ across multiple cloud storage providers including AWS S3 and others
+ supporting the S3 API.
+Depends: fuse3

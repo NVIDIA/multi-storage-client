@@ -36,6 +36,7 @@ RUN    apt-get update \
                         librpm-dev \
                         lsof \
                         make \
+                        just \
                         rpm \
                         s3cmd \
                         tini \
@@ -43,7 +44,8 @@ RUN    apt-get update \
                         unzip \
                         vim \
                         wget \
-                        zip
+                        zip \
+    && curl -LsSf https://astral.sh/uv/install.sh | sh
 
 RUN echo "user_allow_other" >> /etc/fuse.conf
 

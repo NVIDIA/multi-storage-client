@@ -1,0 +1,102 @@
+#
+# Just configuration.
+#
+# https://just.systems/man/en
+#
+
+# MSFS matches the MSC version.
+version := `cd ../multi-storage-client && uv version --short`
+tag := `git describe --dirty`
+
+# List recipes.
+help:
+    just --list
+
+# Remove build artifacts.
+clean:
+    # Remove build artifacts.
+    rm -rf build
+
+# Run static analysis (formatters, linters).
+analyze:
+    # Format Go files.
+    if [[ -z "${CI:-}" ]]; then go mod tidy; else go mod tidy --diff; fi
+    if [[ -z "${CI:-}" ]]; then go fmt ./...; else go fmt ./... && git diff --exit-code; fi
+    # Lint Go files.
+    if [[ -z "${CI:-}" ]]; then golangci-lint run --fix; else golangci-lint run; fi
+
+# Compile binaries.
+compile:
+    # Remove build artifacts.
+    rm -rf build/generic
+    # Build Linux artifacts.
+    #
+    # Linux artifacts are a `/usr` directory overlay (e.g. `/usr/bin`, `/usr/share/man`, `/usr/lib/systemd`).
+    set -e; \
+    for ARCH in amd64 arm64; do \
+        CGO_ENABLED=0 GOARCH=${ARCH} GOOS=linux go build -ldflags "-X main.GitTag={{tag}}" -o build/generic/${ARCH}-linux/bin/msfs . && \
+        cp --target-directory build/generic/${ARCH}-linux/bin mount.msfs; \
+    done
+
+# Create package archives (Debian).
+package-debian: compile
+    # Remove build artifacts.
+    rm -rf build/debian
+    # Treat `build/debian` as the working directory and `packaging/debian` as the initial contents.
+    mkdir --parents build/debian
+    cp --recursive --target-directory build/debian packaging/debian/*
+    # Build Debian archives.
+    set -e; \
+    for ARCH in amd64 arm64; do \
+        mkdir --parents build/debian/sources/${ARCH}/{DEBIAN,usr} && \
+        cp --recursive --target-directory build/debian/sources/${ARCH}/usr build/generic/${ARCH}-linux/* && \
+        DEB_HOST_ARCH=${ARCH} dpkg-gencontrol -cbuild/debian/control -DArchitecture=${ARCH} -fbuild/debian/files -lbuild/debian/changelog -Pbuild/debian/sources/${ARCH} -USource -v{{version}} && \
+        cp --target-directory build/debian/sources/${ARCH}/DEBIAN build/debian/{preinst,prerm} && \
+        mkdir --parents build/debian/archives && \
+        dpkg-deb --root-owner-group --build build/debian/sources/${ARCH} build/debian/archives; \
+    done
+
+# Create package archives (RPM).
+package-rpm: compile
+    # Remove build artifacts.
+    rm -rf build/rpm
+    # Treat `build/rpm` as the working directory and `packaging/rpm` as the initial contents.
+    mkdir --parents build/rpm
+    cp --recursive --target-directory build/rpm packaging/rpm/*
+    # Build RPM archives.
+    set -e; \
+    for ARCH in amd64 arm64; do \
+        mkdir --parents build/rpm/SOURCES/${ARCH}/usr && \
+        cp --recursive --target-directory build/rpm/SOURCES/${ARCH}/usr build/generic/${ARCH}-linux/* && \
+        ARCH=${ARCH} VERSION={{version}} rpmbuild -bb --define "_buildhost nix-shell" --define "_topdir $(realpath build/rpm)" --quiet --target ${ARCH} build/rpm/SPECS/msfs.spec; \
+    done
+
+# Create package archives (tar).
+package-tar: compile
+    # Remove build artifacts.
+    rm -rf build/tar
+    # Create build artifacts directory.
+    mkdir --parents build/tar
+    # Build Linux archives.
+    set -e; \
+    for ARCH in amd64 arm64; do \
+        tar --auto-compress --create --directory build/generic/${ARCH}-linux --file build/tar/msfs-{{version}}-${ARCH}-linux.tar.gz .; \
+    done
+
+# Create package archives (zip).
+package-zip: compile
+    # Remove build artifacts.
+    rm -rf build/zip
+    # Create build artifacts directory.
+    mkdir --parents build/zip
+    # Build Linux archives.
+    set -e; \
+    for ARCH in amd64 arm64; do \
+        (cd build/generic/${ARCH}-linux && zip --quiet --recurse-paths - .) > build/zip/msfs-{{version}}-${ARCH}-linux.zip; \
+    done
+
+# Create package archives.
+package: package-debian package-rpm package-tar package-zip
+
+# Release build.
+build: clean compile package

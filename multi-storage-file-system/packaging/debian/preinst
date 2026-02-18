@@ -1,0 +1,15 @@
+#!/bin/bash
+
+#
+# Package maintainer script.
+#
+# https://www.debian.org/doc/debian-policy/ch-maintainerscripts.html
+#
+
+set -e
+
+# Create log directory.
+mkdir --parents /var/log/msfs
+chmod 755 /var/log/msfs
+
+exit 0

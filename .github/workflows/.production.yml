@@ -70,6 +70,9 @@ jobs:
     steps:
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: actions/checkout@v6
+      - working-directory: ./multi-storage-file-system
+        run: |
+          just package
       # Skip creation if a release for the tag already exists.
       - run: |
-          gh release --repo ${{ github.repository }} view ${{ github.ref_name }} || gh release --repo ${{ github.repository }} create ${{ github.ref_name }} --latest=$([[ '${{ needs.get-tag-message.outputs.tag-message }}' == 'latest' ]] && echo true || echo false) --notes-file .release_notes/${{ github.ref_name }}.md --title ${{ github.ref_name }} --verify-tag
+          gh release --repo ${{ github.repository }} view ${{ github.ref_name }} || gh release --repo ${{ github.repository }} create ${{ github.ref_name }} --latest=$([[ '${{ needs.get-tag-message.outputs.tag-message }}' == 'latest' ]] && echo true || echo false) --notes-file .release_notes/${{ github.ref_name }}.md --title ${{ github.ref_name }} --verify-tag multi-storage-file-system/build/debian/archives/*.deb multi-storage-file-system/build/rpm/RPMS/*/*.rpm multi-storage-file-system/build/tar/*.tar.* multi-storage-file-system/build/zip/*.zip

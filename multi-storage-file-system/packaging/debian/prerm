@@ -1,0 +1,14 @@
+#!/bin/bash
+
+#
+# Package maintainer script.
+#
+# https://www.debian.org/doc/debian-policy/ch-maintainerscripts.html
+#
+
+set -e
+
+# Stop any running msfs processes before removal.
+pkill -f "/usr/bin/msfs" || true
+
+exit 0

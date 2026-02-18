@@ -50,3 +50,12 @@ jobs:
       - working-directory: ./multi-storage-explorer
         run: |
           just build
+  multi-storage-file-system:
+    name: multi-storage-file-system
+    runs-on: ubuntu-latest
+    steps:
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: actions/checkout@v6
+      - working-directory: ./multi-storage-file-system
+        run: |
+          just build

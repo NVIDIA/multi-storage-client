@@ -212,6 +212,10 @@
                 ruff
                 # Pyright.
                 pyright
+                # Go.
+                go_1_26
+                # golangci-lint.
+                golangci-lint
                 # Storage systems.
                 inputs.self.packages.${system}.aistore
                 azurite
@@ -221,6 +225,11 @@
                 grafana
                 mimir
                 tempo
+                # Packaging.
+                dpkg
+                gnutar
+                rpm
+                zip
                 # JFrog CLI.
                 jfrog-cli
                 # OpenSSH.

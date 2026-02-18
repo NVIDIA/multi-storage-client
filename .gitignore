@@ -22,6 +22,7 @@
 **/.ruff_cache
 **/.venv
 **/__pycache__
+**/build
 **/dist
 **/node_modules
 **/result

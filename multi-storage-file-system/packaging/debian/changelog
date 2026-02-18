@@ -1,0 +1,9 @@
+msfs (0.0.0) unstable; urgency=low
+  *
+  * Debian changelog.
+  *
+  * https://www.debian.org/doc/debian-policy/ch-source.html#debian-changelog-debian-changelog
+  *
+  * This is a placeholder to make `dpkg-gencontrol` happy.
+  *
+ -- author <email@example.com>  Thu, 01 Jan 1970 00:00:00 +0000

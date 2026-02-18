@@ -131,3 +131,27 @@ multi-storage-client-docs:
       - multi-storage-client-docs/dist/
     reports:
       codequality: multi-storage-client-docs/.reports/ruff.json
+
+multi-storage-file-system:
+  extends:
+    - .default
+  rules:
+    - changes:
+        - flake.lock
+        - flake.nix
+        - multi-storage-client/pyproject.toml
+        - multi-storage-file-system/**/*
+    - when: manual
+      allow_failure: true
+  script:
+    - |
+      nix develop --command bash -c "
+        cd multi-storage-file-system &&
+        just build
+      "
+  artifacts:
+    paths:
+      - multi-storage-file-system/build/debian/archives/*.deb
+      - multi-storage-file-system/build/rpm/RPMS/*/*.rpm
+      - multi-storage-file-system/build/tar/*.tar.*
+      - multi-storage-file-system/build/zip/*.zip
