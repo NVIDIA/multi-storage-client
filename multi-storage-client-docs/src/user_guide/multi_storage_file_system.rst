@@ -18,7 +18,7 @@ While the Python Multi-Storage Client is designed for easy adoption of object st
 
    **Current Release Focus: Read Operations**
    
-   This release of MSFS focuses on read-only access to object storage. Write support (create, modify, delete operations) is currently under development and planned for a future release. The configuration schema includes write-related settings for forward compatibility, but write operations are not yet functional.
+   This release of MSFS fully supports the default read-only mode. If a backend has writes enabled, only a few modifying operations are currently supported (mkdir, rmdir, and unlink). The bulk of write support (i.e. file creation and file modification) is planned for a future release.
 
 Key Features
 ============

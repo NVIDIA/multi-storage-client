@@ -69,6 +69,8 @@ linters:
         - G402
         - G404
         - G501
+        - G703
+        - G705
     govet:
       disable:
         - fieldalignment

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -44,6 +45,7 @@ func initFS() {
 		inboundCacheLineCount:  0,
 		outboundCacheLineCount: 0,
 		dirtyCacheLineCount:    0,
+		pendingDelete:          false,
 	}
 
 	globals.inodeMap = make(map[uint64]*inodeStruct)
@@ -138,6 +140,7 @@ func processToMountList() {
 			inboundCacheLineCount:  0,
 			outboundCacheLineCount: 0,
 			dirtyCacheLineCount:    0,
+			pendingDelete:          false,
 		}
 
 		ok = globals.inode.virtChildInodeMap.Put(backend.dirName, backend.inode.inodeNumber)
@@ -342,6 +345,7 @@ func (parentInode *inodeStruct) createPseudoDirInode(isVirt bool, basename strin
 		inboundCacheLineCount:  0,
 		outboundCacheLineCount: 0,
 		dirtyCacheLineCount:    0,
+		pendingDelete:          false,
 	}
 
 	if parentInode.objectPath == "" {
@@ -404,6 +408,7 @@ func (parentInode *inodeStruct) createFileObjectInode(isVirt bool, basename stri
 		inboundCacheLineCount:  0,
 		outboundCacheLineCount: 0,
 		dirtyCacheLineCount:    0,
+		pendingDelete:          false,
 	}
 
 	if parentInode.objectPath == "" {
@@ -434,6 +439,124 @@ func (parentInode *inodeStruct) createFileObjectInode(isVirt bool, basename stri
 	return
 }
 
+// clearFileCacheLinesLocked removes all cache lines from a file inode and updates LRU tracking.
+//
+// Preconditions (caller must ensure):
+// - globals.Lock() is held
+// - Inode must be eviction-ready:
+//   - No inbound cache lines (inode.inboundCacheLineCount == 0)
+//   - No outbound cache lines (inode.outboundCacheLineCount == 0)
+//   - No dirty cache lines (inode.dirtyCacheLineCount == 0)
+//   - No open file handles (len(inode.fhMap) == 0)
+//
+// - Only clean cache lines should remain
+func clearFileCacheLinesLocked(inode *inodeStruct) {
+	var (
+		cacheLine       *cacheLineStruct
+		cacheLineNumber uint64
+	)
+
+	if inode == nil || inode.inodeType != FileObject {
+		return
+	}
+
+	for cacheLineNumber, cacheLine = range inode.cache {
+		if cacheLine.state != CacheLineClean {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] cacheLine.state(%v) != CacheLineClean(%v)", cacheLine.state, CacheLineClean)
+		}
+
+		_ = globals.cleanCacheLineLRU.Remove(cacheLine.listElement)
+		cacheLine.listElement = nil
+
+		delete(inode.cache, cacheLineNumber)
+	}
+}
+
+// convertDirectoryToVirtual converts a physical directory to virtual when it becomes empty.
+// This maintains POSIX semantics where directories persist after their last file is deleted.
+//
+// Preconditions (caller must ensure):
+// - globals.Lock() is held
+// - dirInode is a PseudoDir
+// - dirInode has no physical children (physChildInodeMap is empty)
+// - dirInode is currently physical (isVirt == false)
+//
+// The function:
+// 1. Moves directory from parent's physChildInodeMap to virtChildInodeMap
+// 2. Marks directory as virtual (isVirt = true)
+// 3. Recursively converts ancestor directories if they also become empty
+func convertDirectoryToVirtual(dirInode *inodeStruct) {
+	var (
+		ok          bool
+		parentInode *inodeStruct
+	)
+
+	if dirInode == nil {
+		return
+	}
+
+	if dirInode.inodeType != PseudoDir {
+		return
+	}
+
+	if dirInode.isVirt {
+		return
+	}
+
+	if dirInode.physChildInodeMap.Len() > 0 {
+		return
+	}
+
+	parentInode, ok = globals.inodeMap[dirInode.parentInodeNumber]
+	if ok {
+		ok = parentInode.physChildInodeMap.DeleteByKey(dirInode.basename)
+		if ok {
+			parentInode.virtChildInodeMap.Put(dirInode.basename, dirInode.inodeNumber)
+		}
+	}
+
+	dirInode.isVirt = true
+	dirInode.touch(nil)
+
+	if parentInode != nil && parentInode.inodeType == PseudoDir {
+		convertAncestorDirectoriesToVirtual(parentInode)
+	}
+}
+
+// convertAncestorDirectoriesToVirtual recursively converts ancestor directories to virtual
+// when they have no remaining physical children.
+//
+// Preconditions:
+// - globals.Lock() is held
+// - Called after a directory is converted to virtual
+//
+// This maintains the invariant that if a directory has no physical descendants,
+// it should also be virtual (unless it's a BackendRootDir).
+func convertAncestorDirectoriesToVirtual(dirInode *inodeStruct) {
+	if dirInode == nil {
+		return
+	}
+
+	if dirInode.inodeType == BackendRootDir || dirInode.inodeType == FUSERootDir {
+		return
+	}
+
+	if dirInode.inodeType != PseudoDir {
+		return
+	}
+
+	if dirInode.isVirt {
+		return
+	}
+
+	if dirInode.physChildInodeMap.Len() > 0 {
+		return
+	}
+
+	convertDirectoryToVirtual(dirInode)
+}
+
 // `touch` is called to ensure an inode that should be on globals.inodeEvictionLRU has the
 // appropriate .xTime. `touch` will optionally update .mTime as well. If the inode should
 // not be on globals.inodeEvictionLRU, its .listElement will be nil.
@@ -458,7 +581,7 @@ func (inode *inodeStruct) touch(mTimeAsInterface interface{}) {
 
 	switch inode.inodeType {
 	case FileObject:
-		if (len(inode.fhMap) == 0) && ((inode.inboundCacheLineCount + inode.outboundCacheLineCount + inode.dirtyCacheLineCount) == 0) {
+		if !inode.pendingDelete && (len(inode.fhMap) == 0) && ((inode.inboundCacheLineCount + inode.outboundCacheLineCount + inode.dirtyCacheLineCount) == 0) {
 			if inode.isVirt {
 				inode.xTime = time.Now().Add(globals.config.virtualFileTTL)
 			} else {
@@ -489,8 +612,6 @@ func (inode *inodeStruct) touch(mTimeAsInterface interface{}) {
 // to see if cache limits need to be enforced or any "phys"/"virt" inodes should be evicted/expired.
 func inodeEvictor() {
 	var (
-		cacheLine        *cacheLineStruct
-		cacheLineNumber  uint64
 		childInode       *inodeStruct
 		childInodeNumber uint64
 		listElement      *list.Element
@@ -530,19 +651,7 @@ func inodeEvictor() {
 					globals.logger.Fatalf("[FATAL] globals.inodeMap[childInodeNumber] returned !ok")
 				}
 
-				if childInode.inodeType == FileObject {
-					for cacheLineNumber, cacheLine = range childInode.cache {
-						if cacheLine.state != CacheLineClean {
-							dumpStack()
-							globals.logger.Fatalf("[FATAL] cacheLine.state(%v) != CacheLineClean(%v)", cacheLine.state, CacheLineClean)
-						}
-
-						_ = globals.cleanCacheLineLRU.Remove(cacheLine.listElement)
-						cacheLine.listElement = nil
-
-						delete(childInode.cache, cacheLineNumber)
-					}
-				}
+				clearFileCacheLinesLocked(childInode)
 
 				parentInode, ok = globals.inodeMap[childInode.parentInodeNumber]
 				if !ok {
@@ -583,8 +692,6 @@ func inodeEvictor() {
 // Note 2: Calls should not be made until after globals.config.entryAttrTTL idle time
 func inodeEvictorForceDrain() (numDrained uint64) {
 	var (
-		cacheLine        *cacheLineStruct
-		cacheLineNumber  uint64
 		childInode       *inodeStruct
 		childInodeNumber uint64
 		listElement      *list.Element
@@ -611,19 +718,7 @@ func inodeEvictorForceDrain() (numDrained uint64) {
 			globals.logger.Fatalf("[FATAL] globals.inodeMap[childInodeNumber] returned !ok")
 		}
 
-		if childInode.inodeType == FileObject {
-			for cacheLineNumber, cacheLine = range childInode.cache {
-				if cacheLine.state != CacheLineClean {
-					dumpStack()
-					globals.logger.Fatalf("[FATAL] cacheLine.state(%v) != CacheLineClean(%v)", cacheLine.state, CacheLineClean)
-				}
-
-				_ = globals.cleanCacheLineLRU.Remove(cacheLine.listElement)
-				cacheLine.listElement = nil
-
-				delete(childInode.cache, cacheLineNumber)
-			}
-		}
+		clearFileCacheLinesLocked(childInode)
 
 		parentInode, ok = globals.inodeMap[childInode.parentInodeNumber]
 		if !ok {
@@ -1088,4 +1183,95 @@ func (thisInode *inodeStruct) dumpFS(w io.Writer, indent string, expectedInodeNu
 
 		childInode.dumpFS(w, nextIndent, childInodeNumber, childInodeBasename)
 	}
+}
+
+// `finishPendingDelete` is called to finish the deletion of a
+// FileInode that includes removing the corresponding backend
+// object (if any). As this may involve blocking (e.g. to await
+// various cache line operations), this function must be called
+// while unlocked.
+func (thisInode *inodeStruct) finishPendingDelete() {
+	var (
+		cacheLine       *cacheLineStruct
+		cacheLineNumber uint64
+		cacheLineWaiter sync.WaitGroup
+		deleteFileInput *deleteFileInputStruct
+		err             error
+		ok              bool
+		parentInode     *inodeStruct
+	)
+
+Restart:
+
+	globals.Lock()
+
+	// Let's just drop cache lines that are either "clean" io "dirty"
+
+	for cacheLineNumber, cacheLine = range thisInode.cache {
+		switch cacheLine.state {
+		case CacheLineClean:
+			delete(thisInode.cache, cacheLineNumber)
+			_ = globals.cleanCacheLineLRU.Remove(cacheLine.listElement)
+			cacheLine.listElement = nil
+		case CacheLineDirty:
+			delete(thisInode.cache, cacheLineNumber)
+			_ = globals.dirtyCacheLineLRU.Remove(cacheLine.listElement)
+			cacheLine.listElement = nil
+		default:
+			// Nothing for now
+		}
+	}
+
+	// Now we need to await any pending "inbound" or "outbound" cache lines (though this shouldn't happen)
+
+	for _, cacheLine = range thisInode.cache {
+		cacheLineWaiter.Add(1)
+		cacheLine.waiters = append(cacheLine.waiters, &cacheLineWaiter)
+		globals.Unlock()
+		cacheLineWaiter.Wait()
+		goto Restart
+	}
+
+	// Once we make it here, we need to atomically delete the object (if any)
+
+	if !thisInode.isVirt {
+		deleteFileInput = &deleteFileInputStruct{
+			filePath: thisInode.objectPath,
+			ifMatch:  "",
+		}
+
+		// It's actually ok if the object is already gone
+		_, err = deleteFileWrapper(thisInode.backend.context, deleteFileInput)
+		if err != nil {
+			globals.logger.Printf("[WARN] deleteBackendObjectWhenAndIfNecessary() got deleteFileWrapper(thisInode.backend.context, deleteFileInput) err: %v", err)
+		}
+	}
+
+	// Finally remove thisInode from its parent and globals.inodeMap
+
+	parentInode, ok = globals.inodeMap[thisInode.parentInodeNumber]
+	if !ok {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] globals.inodeMap[thisInode.parentInodeNumber] returned !ok")
+	}
+
+	if thisInode.isVirt {
+		ok = parentInode.virtChildInodeMap.DeleteByKey(thisInode.basename)
+		if !ok {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] parentInode.virtChildInodeMap.DeleteByKey(thisInode.basename) returned !ok")
+		}
+	} else {
+		ok = parentInode.physChildInodeMap.DeleteByKey(thisInode.basename)
+		if !ok {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] parentInode.physChildInodeMap.DeleteByKey(thisInode.basename) returned !ok")
+		}
+	}
+
+	delete(globals.inodeMap, thisInode.inodeNumber)
+
+	parentInode.touch(nil)
+
+	globals.Unlock()
 }

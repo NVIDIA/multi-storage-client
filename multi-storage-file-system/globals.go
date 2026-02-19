@@ -251,6 +251,7 @@ type inodeStruct struct {
 	inboundCacheLineCount  uint64                      // [inodeType == FileObject] cound of .cache[] elements in state CacheLineInbound
 	outboundCacheLineCount uint64                      // [inodeType == FileObject] cound of .cache[] elements in state CacheLineOutbound
 	dirtyCacheLineCount    uint64                      // [inodeType == FileObject] cound of .cache[] elements in state CacheLineDirty
+	pendingDelete          bool                        // [inodeType == FileObject] marked for deletion (prevents being reported in DoReadDir{|Plus}() output but also reuse until last file close enables removal)
 }
 
 // `globalsStruct` is the sync.Mutex protected global data structure under which all details about daemon state are tracked.
