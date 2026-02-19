@@ -181,6 +181,24 @@ def test_list(file_storage_config):
     assert len(results) == 0
 
 
+def test_list_follow_symlinks(file_storage_config):
+    tempdir = tempfile.mkdtemp()
+    real_path = os.path.join(tempdir, "real.txt")
+    symlink_path = os.path.join(tempdir, "link.txt")
+    with open(real_path, "w") as f:
+        f.write("content")
+    os.symlink(real_path, symlink_path)
+    url = f"{MSC_PROTOCOL}__filesystem__{tempdir}"
+    with_follow = list(msc.list(url, follow_symlinks=True))
+    without_follow = list(msc.list(url, follow_symlinks=False))
+    keys_with = {os.path.basename(k.key) for k in with_follow}
+    keys_without = {os.path.basename(k.key) for k in without_follow}
+    assert "real.txt" in keys_with
+    assert "link.txt" in keys_with
+    assert "real.txt" in keys_without
+    assert "link.txt" not in keys_without
+
+
 def test_write(file_storage_config):
     tempdir = tempfile.mkdtemp()
     filepath = os.path.join(tempdir, "testfile.bin")
