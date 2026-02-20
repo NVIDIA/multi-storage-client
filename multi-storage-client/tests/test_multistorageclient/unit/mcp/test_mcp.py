@@ -43,8 +43,8 @@ class TestMCP:
         from multistorageclient.mcp.server import mcp  # pyright: ignore[reportAttributeAccessIssue]
 
         async def check_tools():
-            tools = await mcp.get_tools()
-            tool_names = list(tools.keys())
+            tools = await mcp.list_tools()
+            tool_names = [t.name for t in tools]
 
             expected_tools = [
                 "msc_list",
@@ -72,8 +72,8 @@ class TestMCP:
         from multistorageclient.mcp.server import mcp  # pyright: ignore[reportAttributeAccessIssue]
 
         async def check_prompts():
-            prompts = await mcp.get_prompts()
-            prompt_names = list(prompts.keys())
+            prompts = await mcp.list_prompts()
+            prompt_names = [p.name for p in prompts]
 
             assert "msc_help" in prompt_names
             return prompt_names

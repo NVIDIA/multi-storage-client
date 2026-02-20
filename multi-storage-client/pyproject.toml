@@ -63,7 +63,7 @@ vault = [
 
 # MCP.
 mcp = [
-    "fastmcp>=2.14; python_version>='3.10'"
+    "fastmcp>=3.0,<4; python_version>='3.10'"
 ]
 
 # Explorer web UI.
