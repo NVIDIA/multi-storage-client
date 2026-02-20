@@ -178,7 +178,7 @@ func (p *AzureAccessTokenProvider) GetToken(ctx context.Context) (string, error)
 				return result.AccessToken, nil
 			}
 			// No error but no token - return immediately (matches Python line 83-88)
-			return "", fmt.Errorf("MSAL returned empty access token")
+			return "", errors.New("MSAL returned empty access token")
 		}
 
 		// Error occurred (matches Python line 89-99)

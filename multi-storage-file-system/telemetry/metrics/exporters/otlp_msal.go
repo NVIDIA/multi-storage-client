@@ -158,7 +158,7 @@ func (t *retryableTransport) prepareRequest(req *http.Request, token string) *ht
 	reqClone := req.Clone(ctx)
 	reqClone.Header.Set("Connection", "close")
 	if token != "" {
-		reqClone.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+		reqClone.Header.Set("Authorization", "Bearer "+token)
 	}
 	return reqClone
 }

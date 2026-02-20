@@ -57,6 +57,7 @@ linters:
       check-blank: true
     gocritic:
       disabled-checks:
+        - singleCaseSwitch
         - unnamedResult
       enabled-tags:
         - performance

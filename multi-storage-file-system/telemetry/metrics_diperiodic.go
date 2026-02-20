@@ -158,7 +158,7 @@ func NewMSCPMetricsDiperiodic(serviceName string, baseAttributes []attribute.Key
 // RecordBackendRequest records the request counter at the START of a backend operation.
 // Matches Python's behavior: request.sum is recorded BEFORE the operation (line 209).
 // This should be called immediately at function start, NOT in defer.
-func (m *MSCPMetricsDiperiodic) RecordBackendRequest(ctx context.Context, operation string, version string, backend string) {
+func (m *MSCPMetricsDiperiodic) RecordBackendRequest(ctx context.Context, operation, version, backend string) {
 	// Build attribute slice - merging base attributes with operation-specific ones
 	// Python base.py lines 201-206: collect_attributes() + VERSION, PROVIDER, OPERATION
 	allAttrs := make([]attribute.KeyValue, 0, len(m.baseAttributes)+3)
@@ -176,7 +176,7 @@ func (m *MSCPMetricsDiperiodic) RecordBackendRequest(ctx context.Context, operat
 // RecordBackendOperation records metrics for a backend operation using diperiodic pattern.
 // Matches Python's BaseStorageProvider._emit_metrics()
 // Note: Does not accept additional attributes to avoid high cardinality issues in metric backends.
-func (m *MSCPMetricsDiperiodic) RecordBackendOperation(ctx context.Context, operation string, version string, backend string, duration time.Duration, success bool, bytesTransferred int64) {
+func (m *MSCPMetricsDiperiodic) RecordBackendOperation(ctx context.Context, operation, version, backend string, duration time.Duration, success bool, bytesTransferred int64) {
 	status := "success"
 	if !success {
 		// Go errors don't have nice class names like Python (e.g. TimeoutError)

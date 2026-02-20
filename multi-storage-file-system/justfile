@@ -99,4 +99,4 @@ package-zip: compile
 package: package-debian package-rpm package-tar package-zip
 
 # Release build.
-build: clean compile package
+build: clean analyze compile package

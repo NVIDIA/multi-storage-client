@@ -17,7 +17,6 @@ package attributes
 
 import (
 	"crypto/md5"
-	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/hex"
@@ -194,8 +193,6 @@ func newHash(algo string) (hash.Hash, error) {
 	switch algo {
 	case "md5":
 		return md5.New(), nil
-	case "sha1":
-		return sha1.New(), nil
 	case "sha224":
 		return sha256.New224(), nil
 	case "sha256":
@@ -213,7 +210,7 @@ func newHash(algo string) (hash.Hash, error) {
 	case "sha3-512":
 		return sha3.New512(), nil
 	default:
-		return nil, fmt.Errorf("unsupported hash algorithm: %s (supported: md5, sha1, sha224, sha256, sha384, sha512, sha3-224, sha3-256, sha3-384, sha3-512)", algo)
+		return nil, fmt.Errorf("unsupported hash algorithm: %s (supported: md5, sha224, sha256, sha384, sha512, sha3-224, sha3-256, sha3-384, sha3-512)", algo)
 	}
 }
 

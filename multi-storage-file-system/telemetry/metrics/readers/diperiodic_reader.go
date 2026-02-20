@@ -227,7 +227,7 @@ func (r *DiperiodicReader) collectDaemon() {
 			cancel()
 
 		case <-r.ctx.Done():
-			// Context cancelled - stop the ticker and return (matches inode evictor pattern)
+			// Context canceled - stop the ticker and return (matches inode evictor pattern)
 			return
 		}
 	}
@@ -253,7 +253,7 @@ func (r *DiperiodicReader) exportDaemon() {
 			errCh <- err
 
 		case <-r.ctx.Done():
-			// Context cancelled - stop the ticker and return (matches inode evictor pattern)
+			// Context canceled - stop the ticker and return (matches inode evictor pattern)
 			return
 		}
 	}

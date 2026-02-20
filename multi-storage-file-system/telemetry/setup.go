@@ -57,7 +57,7 @@ type MetricsConfig struct {
 // The attributes should be added to each metric recording (matching Python behavior).
 //
 // Matches Python: telemetry/__init__.py:meter_provider()
-func SetupMetricsDiperiodic(config MetricsConfig) (*sdkmetric.MeterProvider, []attribute.KeyValue, error) {
+func SetupMetricsDiperiodic(config *MetricsConfig) (*sdkmetric.MeterProvider, []attribute.KeyValue, error) {
 	ctx := context.Background()
 
 	// Create exporter based on auth configuration

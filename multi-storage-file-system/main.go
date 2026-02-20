@@ -309,7 +309,7 @@ func initObservability() {
 	}
 
 	// Initialize metrics with diperiodic pattern
-	meterProvider, metricAttrs, err := telemetry.SetupMetricsDiperiodic(metricsConfig)
+	meterProvider, metricAttrs, err := telemetry.SetupMetricsDiperiodic(&metricsConfig)
 	if err != nil {
 		globals.logger.Printf("[WARN] failed to initialize metrics: %v", err)
 		return
