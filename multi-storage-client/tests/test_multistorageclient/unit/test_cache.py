@@ -689,16 +689,6 @@ def test_storage_provider_partial_cache_config(storage_provider_partial_cache_co
         assert isinstance(cache_manager, CacheManager)
 
 
-@pytest.mark.parametrize(
-    argnames=["temp_data_store_type", "expected_error"],
-    argvalues=[
-        [tempdatastore.TemporaryAWSS3Bucket, None],  # S3 should work
-        [tempdatastore.TemporarySwiftStackBucket, None],  # SwiftStack (S8K) should work
-        [tempdatastore.TemporaryAzureBlobStorageContainer, ValueError],  # Azure should fail
-        [tempdatastore.TemporaryGoogleCloudStorageBucket, ValueError],  # GCS should fail
-    ],
-    ids=["s3", "swiftstack", "azure", "gcs"],
-)
 @pytest.fixture
 def no_eviction_cache_config(tmpdir):
     cache_dir = os.path.join(str(tmpdir), "no_eviction_cache")

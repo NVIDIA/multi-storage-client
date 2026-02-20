@@ -7,9 +7,9 @@ classifiers = [
 ]
 dependencies = [
     "multi-storage-client[observability-otel,aistore,azure-storage-blob,boto3,google-cloud-storage,huggingface,oci,parquet,fsspec,hydra-core,numpy,ray,torch,xarray,zarr]",
-    "sphinx>=7.4.7,<8",
+    "sphinx>=8.1.3,<9",
     "sphinx-copybutton>=0.5.2,<0.6",
-    "furo>=2024.8.6"
+    "furo>=2025.12.19"
 ]
 
 [tool.ruff]
