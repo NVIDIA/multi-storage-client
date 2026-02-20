@@ -492,6 +492,31 @@ class GoogleStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="DELETE", bucket=bucket, key=key)
 
+    def _delete_objects(self, paths: list[str]) -> None:
+        if not paths:
+            return
+
+        by_bucket: dict[str, list[str]] = {}
+        for p in paths:
+            bucket, key = split_path(p)
+            by_bucket.setdefault(bucket, []).append(key)
+        self._refresh_gcs_client_if_needed()
+
+        GCS_BATCH_LIMIT = 100
+
+        def _invoke_api() -> None:
+            for bucket, keys in by_bucket.items():
+                bucket_obj = self._gcs_client.bucket(bucket)
+                for i in range(0, len(keys), GCS_BATCH_LIMIT):
+                    chunk = keys[i : i + GCS_BATCH_LIMIT]
+                    with self._gcs_client.batch():
+                        for k in chunk:
+                            bucket_obj.blob(k).delete()
+
+        bucket_desc = "(" + "|".join(by_bucket) + ")"
+        key_desc = "(" + "|".join(str(len(keys)) for keys in by_bucket.values()) + " keys)"
+        self._translate_errors(_invoke_api, operation="DELETE_MANY", bucket=bucket_desc, key=key_desc)
+
     def _is_dir(self, path: str) -> bool:
         # Ensure the path ends with '/' to mimic a directory
         path = self._append_delimiter(path)

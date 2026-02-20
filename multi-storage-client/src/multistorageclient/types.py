@@ -221,6 +221,15 @@ class StorageProvider(ABC):
         pass
 
     @abstractmethod
+    def delete_objects(self, paths: list[str]) -> None:
+        """
+        Deletes multiple objects from the storage provider.
+
+        :param paths: A list of paths of objects to delete.
+        """
+        pass
+
+    @abstractmethod
     def get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         """
         Retrieves metadata or information about an object stored in the provider.

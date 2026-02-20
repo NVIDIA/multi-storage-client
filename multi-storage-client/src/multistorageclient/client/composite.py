@@ -15,7 +15,7 @@
 
 import logging
 from collections.abc import Iterator
-from typing import IO, Any, List, Optional, Union
+from typing import IO, Any, Optional, Union
 
 from ..config import StorageClientConfig
 from ..constants import MEMORY_LOAD_LIMIT
@@ -102,7 +102,7 @@ class CompositeStorageClient(AbstractStorageClient):
         return self._profile
 
     @property
-    def replicas(self) -> List[AbstractStorageClient]:
+    def replicas(self) -> list[AbstractStorageClient]:
         """
         :return: List of replica storage clients (empty list for CompositeStorageClient).
         """
@@ -247,7 +247,7 @@ class CompositeStorageClient(AbstractStorageClient):
         pattern: str,
         include_url_prefix: bool = False,
         attribute_filter_expression: Optional[str] = None,
-    ) -> List[str]:
+    ) -> list[str]:
         results = self._metadata_provider.glob(
             pattern,
             attribute_filter_expression=attribute_filter_expression,
@@ -257,51 +257,6 @@ class CompositeStorageClient(AbstractStorageClient):
             results = [join_paths(f"{MSC_PROTOCOL}{self._config.profile}", path) for path in results]
 
         return results
-
-    def list(
-        self,
-        prefix: str = "",
-        path: str = "",
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
-        include_directories: bool = False,
-        include_url_prefix: bool = False,
-        attribute_filter_expression: Optional[str] = None,
-        show_attributes: bool = False,
-        follow_symlinks: bool = True,
-        patterns: Optional[PatternList] = None,
-    ) -> Iterator[ObjectMetadata]:
-        # Parameter validation - either path or prefix, not both
-        if path and prefix:
-            raise ValueError(
-                f"Cannot specify both 'path' ({path!r}) and 'prefix' ({prefix!r}). "
-                f"Please use only the 'path' parameter for new code. "
-                f"Migration guide: Replace list(prefix={prefix!r}) with list(path={prefix!r})"
-            )
-
-        # Use path if provided, otherwise fall back to prefix
-        effective_path = path if path else prefix
-
-        # Apply patterns to the objects
-        pattern_matcher = PatternMatcher(patterns) if patterns else None
-
-        # Delegate to metadata provider (always present for CompositeStorageClient)
-        for obj in self._metadata_provider.list_objects(
-            effective_path,
-            start_after=start_after,
-            end_at=end_at,
-            include_directories=include_directories,
-            attribute_filter_expression=attribute_filter_expression,
-            show_attributes=show_attributes,
-        ):
-            # Skip objects that do not match the patterns
-            if pattern_matcher and not pattern_matcher.should_include_file(obj.key):
-                continue
-
-            if include_url_prefix:
-                obj.key = join_paths(f"{MSC_PROTOCOL}{self._config.profile}", obj.key)
-
-            yield obj
 
     def list_recursive(
         self,
@@ -361,6 +316,12 @@ class CompositeStorageClient(AbstractStorageClient):
             "CompositeStorageClient is read-only. Delete operations are not implemented for multi-location datasets."
         )
 
+    def delete_many(self, paths: list[str]) -> None:
+        """Delete operations not supported in read-only mode."""
+        raise NotImplementedError(
+            "CompositeStorageClient is read-only. Delete operations are not implemented for multi-location datasets."
+        )
+
     def copy(self, src_path: str, dest_path: str) -> None:
         """Copy operations not supported in read-only mode."""
         raise NotImplementedError(
@@ -394,7 +355,7 @@ class CompositeStorageClient(AbstractStorageClient):
         patterns: Optional[PatternList] = None,
         preserve_source_attributes: bool = False,
         follow_symlinks: bool = True,
-        source_files: Optional[List[str]] = None,
+        source_files: Optional[list[str]] = None,
         ignore_hidden: bool = True,
         commit_metadata: bool = True,
     ) -> SyncResult:
@@ -406,7 +367,7 @@ class CompositeStorageClient(AbstractStorageClient):
     def sync_replicas(
         self,
         source_path: str,
-        replica_indices: Optional[List[int]] = None,
+        replica_indices: Optional[list[int]] = None,
         delete_unmatched_files: bool = False,
         description: str = "Syncing replica",
         num_worker_processes: Optional[int] = None,
@@ -416,6 +377,51 @@ class CompositeStorageClient(AbstractStorageClient):
     ) -> None:
         """No-op for read-only client."""
         pass
+
+    def list(
+        self,
+        prefix: str = "",
+        path: str = "",
+        start_after: Optional[str] = None,
+        end_at: Optional[str] = None,
+        include_directories: bool = False,
+        include_url_prefix: bool = False,
+        attribute_filter_expression: Optional[str] = None,
+        show_attributes: bool = False,
+        follow_symlinks: bool = True,
+        patterns: Optional[PatternList] = None,
+    ) -> Iterator[ObjectMetadata]:
+        # Parameter validation - either path or prefix, not both
+        if path and prefix:
+            raise ValueError(
+                f"Cannot specify both 'path' ({path!r}) and 'prefix' ({prefix!r}). "
+                f"Please use only the 'path' parameter for new code. "
+                f"Migration guide: Replace list(prefix={prefix!r}) with list(path={prefix!r})"
+            )
+
+        # Use path if provided, otherwise fall back to prefix
+        effective_path = path if path else prefix
+
+        # Apply patterns to the objects
+        pattern_matcher = PatternMatcher(patterns) if patterns else None
+
+        # Delegate to metadata provider (always present for CompositeStorageClient)
+        for obj in self._metadata_provider.list_objects(
+            effective_path,
+            start_after=start_after,
+            end_at=end_at,
+            include_directories=include_directories,
+            attribute_filter_expression=attribute_filter_expression,
+            show_attributes=show_attributes,
+        ):
+            # Skip objects that do not match the patterns
+            if pattern_matcher and not pattern_matcher.should_include_file(obj.key):
+                continue
+
+            if include_url_prefix:
+                obj.key = join_paths(f"{MSC_PROTOCOL}{self._config.profile}", obj.key)
+
+            yield obj
 
     def __getstate__(self) -> dict[str, Any]:
         """Support for pickling."""

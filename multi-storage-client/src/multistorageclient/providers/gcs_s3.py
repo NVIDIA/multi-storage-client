@@ -31,3 +31,10 @@ class GoogleS3StorageProvider(S3StorageProvider):
 
         # override the provider name from "s3"
         self._provider_name = PROVIDER
+
+    def _delete_objects(self, paths: list[str]) -> None:
+        """
+        GCS S3 does not support bulk deletion, so we delete one object at a time.
+        """
+        for path in paths:
+            self._delete_object(path)

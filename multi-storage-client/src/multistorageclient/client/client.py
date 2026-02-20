@@ -15,7 +15,7 @@
 
 import logging
 from collections.abc import Iterator
-from typing import IO, Any, List, Optional, Union
+from typing import IO, Any, Optional, Union
 
 from ..config import StorageClientConfig
 from ..constants import MEMORY_LOAD_LIMIT
@@ -159,7 +159,7 @@ class StorageClient(AbstractStorageClient):
         return self._delegate.profile
 
     @property
-    def replicas(self) -> List[AbstractStorageClient]:
+    def replicas(self) -> list[AbstractStorageClient]:
         """
         :return: List of replica storage clients, sorted by read priority.
         """
@@ -272,7 +272,7 @@ class StorageClient(AbstractStorageClient):
         pattern: str,
         include_url_prefix: bool = False,
         attribute_filter_expression: Optional[str] = None,
-    ) -> List[str]:
+    ) -> list[str]:
         """
         Matches and retrieves a list of object keys in the storage provider that match the specified pattern.
 
@@ -282,53 +282,6 @@ class StorageClient(AbstractStorageClient):
         :return: A list of object paths that match the specified pattern.
         """
         return self._delegate.glob(pattern, include_url_prefix, attribute_filter_expression)
-
-    def list(
-        self,
-        prefix: str = "",
-        path: str = "",
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
-        include_directories: bool = False,
-        include_url_prefix: bool = False,
-        attribute_filter_expression: Optional[str] = None,
-        show_attributes: bool = False,
-        follow_symlinks: bool = True,
-        patterns: Optional[PatternList] = None,
-    ) -> Iterator[ObjectMetadata]:
-        """
-        List objects in the storage provider under the specified path.
-
-        **IMPORTANT**: Use the ``path`` parameter for new code. The ``prefix`` parameter is
-        deprecated and will be removed in a future version.
-
-        :param prefix: [DEPRECATED] Use ``path`` instead. The prefix to list objects under.
-        :param path: The directory or file path to list objects under. This should be a
-                    complete filesystem path (e.g., "my-bucket/documents/" or "data/2024/").
-                    Cannot be used together with ``prefix``.
-        :param start_after: The key to start after (i.e. exclusive). An object with this key doesn't have to exist.
-        :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
-        :param include_directories: Whether to include directories in the result. When ``True``, directories are returned alongside objects.
-        :param include_url_prefix: Whether to include the URL prefix ``msc://profile`` in the result.
-        :param attribute_filter_expression: The attribute filter expression to apply to the result.
-        :param show_attributes: Whether to return attributes in the result. WARNING: Depending on implementation, there may be a performance impact if this is set to ``True``.
-        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers. When ``False``, symlinks are skipped during listing.
-        :param patterns: PatternList for include/exclude filtering. If None, all files are included.
-        :return: An iterator over ObjectMetadata for matching objects.
-        :raises ValueError: If both ``path`` and ``prefix`` parameters are provided (both non-empty).
-        """
-        return self._delegate.list(
-            prefix,
-            path,
-            start_after,
-            end_at,
-            include_directories,
-            include_url_prefix,
-            attribute_filter_expression,
-            show_attributes,
-            follow_symlinks,
-            patterns,
-        )
 
     def list_recursive(
         self,
@@ -423,6 +376,15 @@ class StorageClient(AbstractStorageClient):
         """
         return self._delegate.delete(path, recursive)
 
+    def delete_many(self, paths: list[str]) -> None:
+        """
+        Delete multiple files at the specified paths. Only files are supported; directories are not deleted.
+
+        :param paths: List of logical paths of the files to delete.
+        :raises NotImplementedError: If delete operations are not supported (e.g., CompositeStorageClient).
+        """
+        return self._delegate.delete_many(paths)
+
     def copy(self, src_path: str, dest_path: str) -> None:
         """
         Copy a file from source path to destination path.
@@ -471,7 +433,7 @@ class StorageClient(AbstractStorageClient):
         patterns: Optional[PatternList] = None,
         preserve_source_attributes: bool = False,
         follow_symlinks: bool = True,
-        source_files: Optional[List[str]] = None,
+        source_files: Optional[list[str]] = None,
         ignore_hidden: bool = True,
         commit_metadata: bool = True,
     ) -> SyncResult:
@@ -523,7 +485,7 @@ class StorageClient(AbstractStorageClient):
     def sync_replicas(
         self,
         source_path: str,
-        replica_indices: Optional[List[int]] = None,
+        replica_indices: Optional[list[int]] = None,
         delete_unmatched_files: bool = False,
         description: str = "Syncing replica",
         num_worker_processes: Optional[int] = None,
@@ -552,6 +514,53 @@ class StorageClient(AbstractStorageClient):
             execution_mode,
             patterns,
             ignore_hidden,
+        )
+
+    def list(
+        self,
+        prefix: str = "",
+        path: str = "",
+        start_after: Optional[str] = None,
+        end_at: Optional[str] = None,
+        include_directories: bool = False,
+        include_url_prefix: bool = False,
+        attribute_filter_expression: Optional[str] = None,
+        show_attributes: bool = False,
+        follow_symlinks: bool = True,
+        patterns: Optional[PatternList] = None,
+    ) -> Iterator[ObjectMetadata]:
+        """
+        List objects in the storage provider under the specified path.
+
+        **IMPORTANT**: Use the ``path`` parameter for new code. The ``prefix`` parameter is
+        deprecated and will be removed in a future version.
+
+        :param prefix: [DEPRECATED] Use ``path`` instead. The prefix to list objects under.
+        :param path: The directory or file path to list objects under. This should be a
+                    complete filesystem path (e.g., "my-bucket/documents/" or "data/2024/").
+                    Cannot be used together with ``prefix``.
+        :param start_after: The key to start after (i.e. exclusive). An object with this key doesn't have to exist.
+        :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
+        :param include_directories: Whether to include directories in the result. When ``True``, directories are returned alongside objects.
+        :param include_url_prefix: Whether to include the URL prefix ``msc://profile`` in the result.
+        :param attribute_filter_expression: The attribute filter expression to apply to the result.
+        :param show_attributes: Whether to return attributes in the result. WARNING: Depending on implementation, there may be a performance impact if this is set to ``True``.
+        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers. When ``False``, symlinks are skipped during listing.
+        :param patterns: PatternList for include/exclude filtering. If None, all files are included.
+        :return: An iterator over ObjectMetadata for matching objects.
+        :raises ValueError: If both ``path`` and ``prefix`` parameters are provided (both non-empty).
+        """
+        return self._delegate.list(
+            prefix,
+            path,
+            start_after,
+            end_at,
+            include_directories,
+            include_url_prefix,
+            attribute_filter_expression,
+            show_attributes,
+            follow_symlinks,
+            patterns,
         )
 
     def __getstate__(self) -> dict[str, Any]:

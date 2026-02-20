@@ -500,6 +500,35 @@ class S3StorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="DELETE", bucket=bucket, key=key)
 
+    def _delete_objects(self, paths: list[str]) -> None:
+        if not paths:
+            return
+
+        by_bucket: dict[str, list[str]] = {}
+        for p in paths:
+            bucket, key = split_path(p)
+            by_bucket.setdefault(bucket, []).append(key)
+
+        S3_BATCH_LIMIT = 1000
+
+        def _invoke_api() -> None:
+            all_errors: list[str] = []
+            for bucket, keys in by_bucket.items():
+                for i in range(0, len(keys), S3_BATCH_LIMIT):
+                    chunk = keys[i : i + S3_BATCH_LIMIT]
+                    response = self._s3_client.delete_objects(
+                        Bucket=bucket, Delete={"Objects": [{"Key": k} for k in chunk]}
+                    )
+                    errors = response.get("Errors") or []
+                    for e in errors:
+                        all_errors.append(f"{bucket}/{e.get('Key', '?')}: {e.get('Code', '')} {e.get('Message', '')}")
+            if all_errors:
+                raise RuntimeError(f"DeleteObjects reported errors: {'; '.join(all_errors)}")
+
+        bucket_desc = "(" + "|".join(by_bucket) + ")"
+        key_desc = "(" + "|".join(str(len(keys)) for keys in by_bucket.values()) + " keys)"
+        self._translate_errors(_invoke_api, operation="DELETE_MANY", bucket=bucket_desc, key=key_desc)
+
     def _is_dir(self, path: str) -> bool:
         # Ensure the path ends with '/' to mimic a directory
         path = self._append_delimiter(path)

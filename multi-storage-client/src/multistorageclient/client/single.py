@@ -22,7 +22,7 @@ from collections.abc import Iterator
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import PurePosixPath
-from typing import IO, Any, List, Optional, Union, cast
+from typing import IO, Any, Optional, Union, cast
 
 from ..config import StorageClientConfig
 from ..constants import MEMORY_LOAD_LIMIT
@@ -238,7 +238,7 @@ class SingleStorageClient(AbstractStorageClient):
         return self._config.profile == "__filesystem__"
 
     @property
-    def replicas(self) -> List[AbstractStorageClient]:
+    def replicas(self) -> list[AbstractStorageClient]:
         """
         :return: List of replica storage clients, sorted by read priority.
         """
@@ -567,6 +567,38 @@ class SingleStorageClient(AbstractStorageClient):
             else:
                 raise FileNotFoundError(f"The file at '{path}' was not found.")
 
+    def delete_many(self, paths: list[str]) -> None:
+        """
+        Delete multiple files at the specified paths. Only files are supported; directories are not deleted.
+
+        :param paths: List of logical paths of the files to delete.
+        """
+        physical_paths_to_delete: list[str] = []
+        for path in paths:
+            if self._metadata_provider:
+                resolved = self._metadata_provider.realpath(path)
+                if not resolved.exists:
+                    raise FileNotFoundError(f"The file at path '{path}' was not found.")
+                if not self._metadata_provider.should_use_soft_delete():
+                    physical_paths_to_delete.append(resolved.physical_path)
+            else:
+                physical_paths_to_delete.append(path)
+
+        if physical_paths_to_delete:
+            self._storage_provider.delete_objects(physical_paths_to_delete)
+
+        for path in paths:
+            virtual_path = path
+            if self._metadata_provider:
+                with self._metadata_provider_lock or contextlib.nullcontext():
+                    self._metadata_provider.remove_file(virtual_path)
+            if self._is_cache_enabled():
+                if self._cache_manager is None:
+                    raise RuntimeError("Cache manager is not initialized")
+                self._cache_manager.delete(virtual_path)
+            if self._replica_manager:
+                self._replica_manager.delete_from_replicas(virtual_path)
+
     def glob(
         self,
         pattern: str,
@@ -652,88 +684,6 @@ class SingleStorageClient(AbstractStorageClient):
             if include_url_prefix:
                 self._prepend_url_prefix(obj)
             yield obj
-
-    def list(
-        self,
-        prefix: str = "",
-        path: str = "",
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
-        include_directories: bool = False,
-        include_url_prefix: bool = False,
-        attribute_filter_expression: Optional[str] = None,
-        show_attributes: bool = False,
-        follow_symlinks: bool = True,
-        patterns: Optional[PatternList] = None,
-    ) -> Iterator[ObjectMetadata]:
-        """
-        List objects in the storage provider under the specified path.
-
-        **IMPORTANT**: Use the ``path`` parameter for new code. The ``prefix`` parameter is
-        deprecated and will be removed in a future version.
-
-        :param prefix: [DEPRECATED] Use ``path`` instead. The prefix to list objects under.
-        :param path: The directory or file path to list objects under. This should be a
-                    complete filesystem path (e.g., "my-bucket/documents/" or "data/2024/").
-                    Cannot be used together with ``prefix``.
-        :param start_after: The key to start after (i.e. exclusive). An object with this key doesn't have to exist.
-        :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
-        :param include_directories: Whether to include directories in the result. When ``True``, directories are returned alongside objects.
-        :param include_url_prefix: Whether to include the URL prefix ``msc://profile`` in the result.
-        :param attribute_filter_expression: The attribute filter expression to apply to the result.
-        :param show_attributes: Whether to return attributes in the result. WARNING: Depending on implementation, there may be a performance impact if this is set to ``True``.
-        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers. When ``False``, symlinks are skipped during listing.
-        :param patterns: PatternList for include/exclude filtering. If None, all files are included.
-        :return: An iterator over ObjectMetadata for matching objects.
-        :raises ValueError: If both ``path`` and ``prefix`` parameters are provided (both non-empty).
-        """
-        # Parameter validation - either path or prefix, not both
-        if path and prefix:
-            raise ValueError(
-                f"Cannot specify both 'path' ({path!r}) and 'prefix' ({prefix!r}). "
-                f"Please use only the 'path' parameter for new code. "
-                f"Migration guide: Replace list(prefix={prefix!r}) with list(path={prefix!r})"
-            )
-        elif prefix:
-            logger.debug(
-                f"The 'prefix' parameter is deprecated and will be removed in a future version. "
-                f"Please use the 'path' parameter instead. "
-                f"Migration guide: Replace list(prefix={prefix!r}) with list(path={prefix!r})"
-            )
-
-        pattern_matcher = PatternMatcher(patterns) if patterns else None
-        effective_path = path if path else prefix
-
-        single_file, effective_path = self._resolve_single_file(
-            effective_path, start_after, end_at, include_url_prefix, pattern_matcher
-        )
-        if single_file is not None:
-            yield single_file
-            return
-        if effective_path is None:
-            return
-
-        if self._metadata_provider:
-            objects = self._metadata_provider.list_objects(
-                effective_path,
-                start_after=start_after,
-                end_at=end_at,
-                include_directories=include_directories,
-                attribute_filter_expression=attribute_filter_expression,
-                show_attributes=show_attributes,
-            )
-        else:
-            objects = self._storage_provider.list_objects(
-                effective_path,
-                start_after=start_after,
-                end_at=end_at,
-                include_directories=include_directories,
-                attribute_filter_expression=attribute_filter_expression,
-                show_attributes=show_attributes,
-                follow_symlinks=follow_symlinks,
-            )
-
-        yield from self._filter_and_decorate(objects, include_url_prefix, pattern_matcher)
 
     def list_recursive(
         self,
@@ -927,7 +877,7 @@ class SingleStorageClient(AbstractStorageClient):
         patterns: Optional[PatternList] = None,
         preserve_source_attributes: bool = False,
         follow_symlinks: bool = True,
-        source_files: Optional[List[str]] = None,
+        source_files: Optional[list[str]] = None,
         ignore_hidden: bool = True,
         commit_metadata: bool = True,
     ) -> SyncResult:
@@ -991,7 +941,7 @@ class SingleStorageClient(AbstractStorageClient):
     def sync_replicas(
         self,
         source_path: str,
-        replica_indices: Optional[List[int]] = None,
+        replica_indices: Optional[list[int]] = None,
         delete_unmatched_files: bool = False,
         description: str = "Syncing replica",
         num_worker_processes: Optional[int] = None,
@@ -1049,3 +999,85 @@ class SingleStorageClient(AbstractStorageClient):
                 patterns=patterns,
                 ignore_hidden=ignore_hidden,
             )
+
+    def list(
+        self,
+        prefix: str = "",
+        path: str = "",
+        start_after: Optional[str] = None,
+        end_at: Optional[str] = None,
+        include_directories: bool = False,
+        include_url_prefix: bool = False,
+        attribute_filter_expression: Optional[str] = None,
+        show_attributes: bool = False,
+        follow_symlinks: bool = True,
+        patterns: Optional[PatternList] = None,
+    ) -> Iterator[ObjectMetadata]:
+        """
+        List objects in the storage provider under the specified path.
+
+        **IMPORTANT**: Use the ``path`` parameter for new code. The ``prefix`` parameter is
+        deprecated and will be removed in a future version.
+
+        :param prefix: [DEPRECATED] Use ``path`` instead. The prefix to list objects under.
+        :param path: The directory or file path to list objects under. This should be a
+                    complete filesystem path (e.g., "my-bucket/documents/" or "data/2024/").
+                    Cannot be used together with ``prefix``.
+        :param start_after: The key to start after (i.e. exclusive). An object with this key doesn't have to exist.
+        :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
+        :param include_directories: Whether to include directories in the result. When ``True``, directories are returned alongside objects.
+        :param include_url_prefix: Whether to include the URL prefix ``msc://profile`` in the result.
+        :param attribute_filter_expression: The attribute filter expression to apply to the result.
+        :param show_attributes: Whether to return attributes in the result. WARNING: Depending on implementation, there may be a performance impact if this is set to ``True``.
+        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers. When ``False``, symlinks are skipped during listing.
+        :param patterns: PatternList for include/exclude filtering. If None, all files are included.
+        :return: An iterator over ObjectMetadata for matching objects.
+        :raises ValueError: If both ``path`` and ``prefix`` parameters are provided (both non-empty).
+        """
+        # Parameter validation - either path or prefix, not both
+        if path and prefix:
+            raise ValueError(
+                f"Cannot specify both 'path' ({path!r}) and 'prefix' ({prefix!r}). "
+                f"Please use only the 'path' parameter for new code. "
+                f"Migration guide: Replace list(prefix={prefix!r}) with list(path={prefix!r})"
+            )
+        elif prefix:
+            logger.debug(
+                f"The 'prefix' parameter is deprecated and will be removed in a future version. "
+                f"Please use the 'path' parameter instead. "
+                f"Migration guide: Replace list(prefix={prefix!r}) with list(path={prefix!r})"
+            )
+
+        pattern_matcher = PatternMatcher(patterns) if patterns else None
+        effective_path = path if path else prefix
+
+        single_file, effective_path = self._resolve_single_file(
+            effective_path, start_after, end_at, include_url_prefix, pattern_matcher
+        )
+        if single_file is not None:
+            yield single_file
+            return
+        if effective_path is None:
+            return
+
+        if self._metadata_provider:
+            objects = self._metadata_provider.list_objects(
+                effective_path,
+                start_after=start_after,
+                end_at=end_at,
+                include_directories=include_directories,
+                attribute_filter_expression=attribute_filter_expression,
+                show_attributes=show_attributes,
+            )
+        else:
+            objects = self._storage_provider.list_objects(
+                effective_path,
+                start_after=start_after,
+                end_at=end_at,
+                include_directories=include_directories,
+                attribute_filter_expression=attribute_filter_expression,
+                show_attributes=show_attributes,
+                follow_symlinks=follow_symlinks,
+            )
+
+        yield from self._filter_and_decorate(objects, include_url_prefix, pattern_matcher)

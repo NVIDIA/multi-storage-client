@@ -276,6 +276,29 @@ class AzureBlobStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="DELETE", container=container_name, blob=blob_name)
 
+    def _delete_objects(self, paths: list[str]) -> None:
+        if not paths:
+            return
+
+        by_container: dict[str, list[str]] = {}
+        for p in paths:
+            container_name, blob_name = split_path(p)
+            by_container.setdefault(container_name, []).append(blob_name)
+        self._refresh_blob_service_client_if_needed()
+
+        AZURE_BATCH_LIMIT = 256
+
+        def _invoke_api() -> None:
+            for container_name, blob_names in by_container.items():
+                container_client = self._blob_service_client.get_container_client(container=container_name)
+                for i in range(0, len(blob_names), AZURE_BATCH_LIMIT):
+                    chunk = blob_names[i : i + AZURE_BATCH_LIMIT]
+                    container_client.delete_blobs(*chunk)
+
+        container_desc = "(" + "|".join(by_container) + ")"
+        blob_desc = "(" + "|".join(str(len(blob_names)) for blob_names in by_container.values()) + " keys)"
+        self._translate_errors(_invoke_api, operation="DELETE_MANY", container=container_desc, blob=blob_desc)
+
     def _is_dir(self, path: str) -> bool:
         # Ensure the path ends with '/' to mimic a directory
         path = self._append_delimiter(path)

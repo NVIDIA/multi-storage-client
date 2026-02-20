@@ -165,6 +165,7 @@ class BaseStorageProvider(StorageProvider):
         DELETE = "delete"
         INFO = "info"
         LIST = "list"
+        DELETE_MANY = "delete_many"
 
     # Use as the namespace (i.e. prefix) for operation status types.
     class _Status(Enum):
@@ -221,7 +222,7 @@ class BaseStorageProvider(StorageProvider):
 
     def __del__(self) -> None:
         """Destructor to ensure async telemetry is shutdown."""
-        if self._async_metrics_enabled and self._metrics_worker is not None:
+        if getattr(self, "_async_metrics_enabled", False) and getattr(self, "_metrics_worker", None) is not None:
             try:
                 self._shutdown_async_telemetry()
             except Exception as e:
@@ -588,6 +589,30 @@ class BaseStorageProvider(StorageProvider):
             operation=BaseStorageProvider._Operation.DELETE,
             f=lambda: self._delete_object(path, if_match),
         )
+
+    def delete_objects(self, paths: list[str]) -> None:
+        """
+        Deletes multiple objects from the storage provider.
+
+        Default implementation iterates through paths and deletes each object individually.
+        Subclasses may override this to use bulk delete APIs for better performance.
+
+        :param paths: A list of paths of objects to delete.
+        """
+        paths = [self._prepend_base_path(path) for path in paths]
+        self._emit_metrics(
+            operation=BaseStorageProvider._Operation.DELETE_MANY,
+            f=lambda: self._delete_objects(paths),
+        )
+
+    def _delete_objects(self, paths: list[str]) -> None:
+        """
+        Deletes multiple objects from the storage provider.
+
+        :param paths: A list of paths of objects to delete.
+        """
+        for path in paths:
+            self._delete_object(path)
 
     def get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         path = self._prepend_base_path(path)

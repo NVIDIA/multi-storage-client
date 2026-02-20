@@ -334,6 +334,21 @@ def verify_storage_provider(storage_client: msc.StorageClient, prefix: str) -> N
         "is_empty() should return False for existing directory with files"
     )
 
+    # Test delete many
+    delete_many_prefix = f"{prefix}/delete_many_batch"
+    for i in range(100):
+        storage_client.write(f"{delete_many_prefix}/file_{i:04d}", b"x")
+    wait(
+        waitable=lambda: storage_client.list(delete_many_prefix),
+        should_wait=len_should_wait(expected_len=100),
+    )
+    paths_to_delete = [f"{delete_many_prefix}/file_{i:04d}" for i in range(100)]
+    storage_client.delete_many(paths_to_delete)
+    wait(
+        waitable=lambda: storage_client.list(delete_many_prefix),
+        should_wait=len_should_wait(expected_len=0),
+    )
+
 
 def verify_attributes(storage_client: msc.StorageClient, prefix: str) -> None:
     """Test attributes functionality - storing custom metadata with msc_ prefix."""

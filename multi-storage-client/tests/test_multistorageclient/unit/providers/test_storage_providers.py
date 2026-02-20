@@ -426,6 +426,38 @@ def test_delete_object_with_etag(temp_data_store_type: type[tempdatastore.Tempor
 @pytest.mark.parametrize(
     argnames=["temp_data_store_type"],
     argvalues=[
+        [tempdatastore.TemporaryAWSS3Bucket],
+        [tempdatastore.TemporaryPOSIXDirectory],
+    ],
+)
+def test_delete_objects(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    with temp_data_store_type() as temp_data_store:
+        profile = "data"
+        config_dict = {"profiles": {profile: temp_data_store.profile_config_dict()}}
+        storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
+        storage_provider = cast(BaseStorageProvider, storage_client._storage_provider)
+
+        bucket = config_dict["profiles"][profile]["storage_provider"]["options"]["base_path"]
+        keys = ["test_delete_objects_a.txt", "test_delete_objects_b.txt", "test_delete_objects_c.txt"]
+        paths = [f"{bucket}/{k}" for k in keys]
+        file_body = b"test content"
+
+        for path in paths:
+            storage_provider._put_object(path=path, body=file_body)
+
+        for path in paths:
+            assert storage_provider._get_object(path=path) == file_body
+
+        storage_provider._delete_objects(paths)
+
+        for path in paths:
+            with pytest.raises(FileNotFoundError):
+                storage_provider._get_object(path=path)
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
         [tempdatastore.TemporaryPOSIXDirectory],
     ],
 )

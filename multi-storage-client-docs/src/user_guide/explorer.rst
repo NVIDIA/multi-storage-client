@@ -27,7 +27,7 @@ The MSC Explorer is an optional component of the Multi-Storage Client. To use it
 
 .. code-block:: bash
 
-   pip install multistorageclient[explorer]
+   pip install multi-storage-client[explorer]
 
 *********************
 Starting the Explorer
