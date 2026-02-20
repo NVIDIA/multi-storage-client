@@ -492,7 +492,7 @@ class S3StorageProvider(BaseStorageProvider):
         bucket, key = split_path(path)
 
         def _invoke_api() -> None:
-            # conditionally delete the object if if_match(etag) is provided, if not, delete the object unconditionally
+            # Delete conditionally when if_match (etag) is provided; otherwise delete unconditionally
             if if_match:
                 self._s3_client.delete_object(Bucket=bucket, Key=key, IfMatch=if_match)
             else:
@@ -861,7 +861,7 @@ class S3StorageProvider(BaseStorageProvider):
             # Download small files
             if metadata.content_length <= self._transfer_config.multipart_threshold:
                 response = self._get_object(remote_path)
-                # Python client returns `bytes`, but Rust client returns a object implements buffer protocol,
+                # Python client returns `bytes`, but Rust client returns an object that implements the buffer protocol,
                 # so we need to check whether `.decode()` is available.
                 if isinstance(f, io.StringIO):
                     if hasattr(response, "decode"):

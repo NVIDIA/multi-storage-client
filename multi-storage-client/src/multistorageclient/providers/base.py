@@ -615,12 +615,12 @@ class BaseStorageProvider(StorageProvider):
         :param path: The path to list objects under. The path must be a valid file or subdirectory path, cannot be partial or just "prefix".
         :param start_after: The key to start after (i.e. exclusive). An object with this key doesn't have to exist.
         :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
-        :param include_directories: Whether to include directories in the result. When True, directories are returned alongside objects.
+        :param include_directories: Whether to include directories in the result. When ``True``, directories are returned alongside objects.
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
-        :param show_attributes: Whether to return attributes in the result.  There will be performance impact if this is True as now we need to get object metadata for each object.
-        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers. When False, symlinks are skipped during listing.
+        :param show_attributes: Whether to return attributes in the result. There will be a performance impact if this is set to ``True`` as object metadata is fetched for each object.
+        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers. When ``False``, symlinks are skipped during listing.
 
-        :return: An iterator over objects metadata under the specified path.
+        :return: An iterator over object metadata under the specified path.
         """
         if (start_after is not None) and (end_at is not None) and not (start_after < end_at):
             raise ValueError(f"start_after ({start_after}) must be before end_at ({end_at})!")
@@ -658,7 +658,7 @@ class BaseStorageProvider(StorageProvider):
             else:
                 raise
 
-        # Filter objects based on attribute filter expression
+        # When attribute_filter_expression or show_attributes is set, get full metadata per object and apply attribute filter
         evaluator = (
             create_attribute_filter_evaluator(attribute_filter_expression) if attribute_filter_expression else None
         )
@@ -741,9 +741,9 @@ class BaseStorageProvider(StorageProvider):
         this to return True. Objects returned by _list_objects within a single
         shallow listing (one prefix level) must be in lexicographic order by key.
         The heap algorithm handles global ordering across prefixes.
-        When False, list_objects_recursive falls back to sequential listing.
+        When ``False``, list_objects_recursive falls back to sequential listing.
 
-        :return: True if parallel listing is supported.
+        :return: ``True`` if parallel listing is supported.
         """
         return False
 

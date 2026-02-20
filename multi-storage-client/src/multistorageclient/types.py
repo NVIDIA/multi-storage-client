@@ -183,7 +183,9 @@ class StorageProvider(ABC):
 
         :param path: The path where the object will be stored.
         :param body: The content of the object to store.
-        :param attributes: The attributes to add to the file
+        :param if_match: Optional If-Match value for conditional upload.
+        :param if_none_match: Optional If-None-Match value for conditional upload.
+        :param attributes: The attributes to add to the file.
         """
         pass
 
@@ -193,7 +195,7 @@ class StorageProvider(ABC):
         Retrieves an object from the storage provider.
 
         :param path: The path where the object is stored.
-
+        :param byte_range: Optional byte range (offset, length) to read.
         :return: The content of the retrieved object.
         """
         pass
@@ -224,7 +226,7 @@ class StorageProvider(ABC):
         Retrieves metadata or information about an object stored in the provider.
 
         :param path: The path of the object.
-        :param strict: If True, performs additional validation to determine whether the path refers to a directory.
+        :param strict: When ``True``, performs additional validation to determine whether the path refers to a directory.
 
         :return: A metadata object containing the information about the object.
         """
@@ -247,7 +249,7 @@ class StorageProvider(ABC):
         :param path: The path to list objects under. The path must be a valid file or subdirectory path, cannot be partial or just "prefix".
         :param start_after: The key to start after (i.e. exclusive). An object with this key doesn't have to exist.
         :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
-        :param include_directories: Whether to include directories in the result. When True, directories are returned alongside objects.
+        :param include_directories: Whether to include directories in the result. When ``True``, directories are returned alongside objects.
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
         :param show_attributes: Whether to return attributes in the result.  There will be performance impact if this is True as now we need to get object metadata for each object.
         :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers.
@@ -362,11 +364,11 @@ class MetadataProvider(ABC):
         :param path: The path to list objects under. The path must be a valid file or subdirectory path, cannot be partial or just "prefix".
         :param start_after: The key to start after (i.e. exclusive). An object with this key doesn't have to exist.
         :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
-        :param include_directories: Whether to include directories in the result. When True, directories are returned alongside objects.
+        :param include_directories: Whether to include directories in the result. When ``True``, directories are returned alongside objects.
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
-        :param show_attributes: Whether to return attributes in the result.  Depend on implementation, there might be performance impact if this set to True.
+        :param show_attributes: Whether to return attributes in the result. Depending on implementation, there may be a performance impact if this is set to ``True``.
 
-        :return: A iterator over objects metadata under the specified path.
+        :return: An iterator over object metadata under the specified path.
         """
         pass
 
@@ -425,7 +427,7 @@ class MetadataProvider(ABC):
         - Implement path rewriting strategies
 
         :param logical_path: The user-facing logical path
-        :param for_overwrite: If True, indicates the path is for overwriting an existing object.
+        :param for_overwrite: When ``True``, indicates the path is for overwriting an existing object.
             Implementations may generate unique paths for overwrites to support versioning.
 
         :return: ResolvedPath with physical_path for writing. The exists flag indicates

@@ -419,7 +419,7 @@ class ManifestMetadataProvider(MetadataProvider):
         In the future, this could generate unique paths for overwrites.
 
         :param logical_path: The user-facing logical path
-        :param for_overwrite: If True, generate a path for overwriting an existing object
+        :param for_overwrite: When ``True``, generate a path for overwriting an existing object.
 
         :return: The physical storage path to use for writing
         """

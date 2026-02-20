@@ -762,7 +762,7 @@ class GoogleStorageProvider(BaseStorageProvider):
             # Download small files
             if metadata.content_length <= self._multipart_threshold:
                 response = self._get_object(remote_path)
-                # Python client returns `bytes`, but Rust client returns a object implements buffer protocol,
+                # Python client returns `bytes`, but Rust client returns an object that implements the buffer protocol,
                 # so we need to check whether `.decode()` is available.
                 if isinstance(f, io.StringIO):
                     if hasattr(response, "decode"):

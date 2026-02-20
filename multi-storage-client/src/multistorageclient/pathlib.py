@@ -646,14 +646,14 @@ class MultiStoragePath:
             Path(self._internal_path).touch(mode, exist_ok)
         else:
             if self.exists():
-                # object storage does not support updating the last modified time of a object without writing the object
+                # object storage does not support updating the last modified time of an object without writing the object
                 logger.warning("MultiStoragePath.touch() is not supported for remote storage paths")
             else:
                 self._storage_client.write(str(self._internal_path), b"")
 
     def mkdir(self, mode=0o777, parents=False, exist_ok=False) -> None:
         """
-        Create a new directory at this given path.
+        Create a new directory at the given path.
 
         For remote storage paths, this operation is a no-op.
         """

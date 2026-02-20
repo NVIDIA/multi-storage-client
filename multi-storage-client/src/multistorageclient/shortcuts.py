@@ -53,7 +53,7 @@ def _reinitialize_after_fork() -> None:
 
     _STORAGE_CLIENT_CACHE.clear()
     _STORAGE_CLIENT_CACHE_LOCK = threading.Lock()
-    # we don't need to reset telemetry provider as it supposed to be top level Python function
+    # we don't need to reset telemetry provider as it is supposed to be a top-level Python function
     _TELEMETRY_PROVIDER_LOCK = threading.Lock()
     _PROCESS_ID = os.getpid()
 

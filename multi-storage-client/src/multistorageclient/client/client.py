@@ -308,10 +308,10 @@ class StorageClient(AbstractStorageClient):
                     Cannot be used together with ``prefix``.
         :param start_after: The key to start after (i.e. exclusive). An object with this key doesn't have to exist.
         :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
-        :param include_directories: Whether to include directories in the result. when ``True``, directories are returned alongside objects.
+        :param include_directories: Whether to include directories in the result. When ``True``, directories are returned alongside objects.
         :param include_url_prefix: Whether to include the URL prefix ``msc://profile`` in the result.
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
-        :param show_attributes: Whether to return attributes in the result. WARNING: Depend on implementation, there might be performance impact if this set to ``True``.
+        :param show_attributes: Whether to return attributes in the result. WARNING: Depending on implementation, there may be a performance impact if this is set to ``True``.
         :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers. When ``False``, symlinks are skipped during listing.
         :param patterns: PatternList for include/exclude filtering. If None, all files are included.
         :return: An iterator over ObjectMetadata for matching objects.
