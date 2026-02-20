@@ -13,22 +13,20 @@ authors = [
 ]
 license = "Apache-2.0"
 readme = "README.md"
-requires-python = ">=3.9,<4"
+requires-python = ">=3.10,<4"
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: Implementation :: PyPy",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13"
 ]
 dependencies = [
-    "filelock>=3.19.1,<4; python_version=='3.9'",
-    "filelock>=3.20.3,<4; python_version>='3.10'",
+    "filelock>=3.20.3,<4",
     "jmespath>=1.0.1,<2",
     "jsonschema>=4,<5",
     "python-dateutil>=2.8,<3",
@@ -63,7 +61,7 @@ vault = [
 
 # MCP.
 mcp = [
-    "fastmcp>=3.0,<4; python_version>='3.10'"
+    "fastmcp>=3.0,<4"
 ]
 
 # Explorer web UI.
@@ -105,22 +103,18 @@ hydra-core = [
     "hydra-core>=1.3,<2"
 ]
 numpy = [
-    "numpy>=2,<2.1; python_version=='3.9'",
-    "numpy>=2.1,<3; python_version>='3.10'"
+    "numpy>=2.1,<3"
 ]
 ray = [
-    "ray>=2.51.2,<3; python_version=='3.9'",
-    "ray>=2.52,<3; python_version>='3.10'"
+    "ray>=2.52,<3"
 ]
 torch = [
-    "torch>=2.8,<2.10; python_version<'3.10'",
-    "torch>=2.10,<3; python_version>='3.10'"
+    "torch>=2.10,<3"
 ]
 xarray = [
     "xarray>=2024.07.0"
 ]
 zarr = [
-    "zarr>=2.18.2,<3; python_version=='3.9'",
     "zarr>=2.18.3,<3; python_version=='3.10'",
     "zarr>=2.18.7,<3; python_version>='3.11'"
 ]

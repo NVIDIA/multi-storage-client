@@ -17,7 +17,6 @@
 """Unit tests for MCP server using temporary fake data stores."""
 
 import json
-import sys
 import tempfile
 import uuid
 from datetime import datetime
@@ -31,10 +30,6 @@ import multistorageclient.telemetry as telemetry
 from test_multistorageclient.unit.utils import config, tempdatastore
 from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
 
-MCP_AVAILABLE = sys.version_info >= (3, 10)
-
-pytestmark = pytest.mark.skipif(not MCP_AVAILABLE, reason="MCP requires Python >= 3.10 and fastmcp")
-
 
 @pytest.fixture(
     params=[
@@ -44,9 +39,6 @@ pytestmark = pytest.mark.skipif(not MCP_AVAILABLE, reason="MCP requires Python >
 )
 def mcp_server_parametrized(request):
     """Fixture that creates MCP server with specified temp store."""
-
-    if not MCP_AVAILABLE:
-        pytest.skip("MCP requires Python >= 3.10 and fastmcp")
 
     temp_data_store_type, with_cache = request.param
 
@@ -94,9 +86,6 @@ def mcp_server_parametrized(request):
 )
 def mcp_server_with_replicas(request):
     """Fixture that creates MCP server with source profile and replica profiles."""
-
-    if not MCP_AVAILABLE:
-        pytest.skip("MCP requires Python >= 3.10 and fastmcp")
 
     temp_data_store_type, with_cache = request.param
 
@@ -160,7 +149,6 @@ def create_test_file(profile_name: str, file_path: str, content: bytes) -> str:
     return url
 
 
-@pytest.mark.skipif(not MCP_AVAILABLE, reason="MCP requires Python >= 3.10 and fastmcp")
 class TestMCPServerBasicOperations:
     """Test basic MCP server operations against different storage backends."""
 
@@ -672,7 +660,6 @@ class TestMCPServerBasicOperations:
             assert "No replicas configured" in sync_response["message"]
 
 
-@pytest.mark.skipif(not MCP_AVAILABLE, reason="MCP requires Python >= 3.10 and fastmcp")
 class TestMCPServerReplicaOperations:
     """Test MCP server replica operations with configured replicas."""
 

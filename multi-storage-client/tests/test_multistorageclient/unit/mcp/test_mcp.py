@@ -17,13 +17,8 @@
 """Most basic MCP server tests - just verify it can be imported and initialized."""
 
 import asyncio
-import sys
 
 import pytest
-
-MCP_AVAILABLE = sys.version_info >= (3, 10)
-
-pytestmark = pytest.mark.skipif(not MCP_AVAILABLE, reason="MCP requires Python >= 3.10 and fastmcp")
 
 
 class TestMCP:

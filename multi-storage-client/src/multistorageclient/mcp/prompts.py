@@ -13,26 +13,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
+"""MCP prompt definitions for Multi-Storage Client help and guidance."""
 
-if sys.version_info >= (3, 10):
-    """MCP prompt definitions for Multi-Storage Client help and guidance."""
+from .server import mcp
 
-    from .server import mcp
 
-    @mcp.prompt("msc_help")
-    def msc_help() -> str:
-        """
-        Provides general information and help on how to configure and use Multi-Storage Client.
+@mcp.prompt("msc_help")
+def msc_help() -> str:
+    """
+    Provides general information and help on how to configure and use Multi-Storage Client.
 
-        :return: Help text for MSC configuration and usage
-        """
-        return """
+    :return: Help text for MSC configuration and usage
+    """
+    return """
 # Multi-Storage Client (MSC) Help
 
 Multi-Storage Client is a unified Python client for multiple object storage backends including:
 - Amazon S3 and S3-compatible storage
-- Google Cloud Storage  
+- Google Cloud Storage
 - Microsoft Azure Blob Storage
 - Oracle Cloud Infrastructure Object Storage
 - AIStore distributed storage
@@ -51,7 +49,7 @@ Lists files and directories from storage locations.
 
 Example: "List all files in my S3 bucket under the data/ prefix"
 
-### msc_info  
+### msc_info
 Gets detailed metadata about a specific file or directory.
 - **url**: Full path to the object (e.g., 'msc://profile/path/file.txt')
 

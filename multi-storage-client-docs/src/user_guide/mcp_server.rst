@@ -26,7 +26,6 @@ The MCP Server leverages MSC's existing authentication and configuration system,
 Requirements
 ************
 
-* **Python 3.10 or higher** - MCP Server uses features only available in Python 3.10+
 * **Multi-Storage Client** with the ``mcp`` extra and storage provider extras for each backend you intend to use
 * **An MCP-compatible client** such as Cursor, Claude Desktop, or other MCP clients
 
@@ -35,7 +34,7 @@ See the :doc:`/user_guide/installation` guide for complete installation instruct
 .. important::
 
    The ``msc`` CLI must be accessible from your shell's PATH. If ``msc mcp-server --help`` doesn't work:
-   
+
    * **Verify msc is in PATH**: Run ``which msc`` (macOS/Linux) or ``where msc`` (Windows)
    * **macOS/Homebrew**: Ensure ``/opt/homebrew/bin`` or your virtualenv's ``bin`` directory is in PATH
    * **Windows**: Ensure your Python installation's ``Scripts`` directory is in PATH
@@ -296,8 +295,8 @@ Copies a file within the same storage profile.
 
 .. note::
 
-   ``msc_copy`` is designed for copying files **within the same storage profile** (e.g., copying ``msc://my-s3-bucket/file.txt`` to ``msc://my-s3-bucket/file_backup.txt``). 
-   
+   ``msc_copy`` is designed for copying files **within the same storage profile** (e.g., copying ``msc://my-s3-bucket/file.txt`` to ``msc://my-s3-bucket/file_backup.txt``).
+
    To copy files **between different profiles** (e.g., from ``local-storage`` to ``production-s3``), use ``msc_sync`` or download then upload.
 
 msc_sync
@@ -309,7 +308,7 @@ Synchronizes files between different storage locations or profiles.
 
 * ``source_url`` (required): Source storage URL
 
-* ``target_url`` (required): Target storage URL  
+* ``target_url`` (required): Target storage URL
 
 * ``delete_unmatched_files``: Delete files at target not present at source (default: false)
 
@@ -423,7 +422,7 @@ Conversational File Operations
 .. code-block:: python
 
    from multistorageclient import StorageClient, StorageClientConfig
-   
+
    client = StorageClient(StorageClientConfig.from_file(profile="my-s3"))
    for obj in client.list(path="datasets/images/", include_directories=False):
        print(obj.name, obj.size)
@@ -444,7 +443,7 @@ Pattern Matching and Filtering
 .. code-block:: python
 
    import multistorageclient as msc
-   
+
    for file in msc.glob("msc://my-profile/logs/*.log"):
        if file.last_modified > some_date:
            print(file)
@@ -465,10 +464,10 @@ Bulk Operations
 .. code-block:: python
 
    from multistorageclient import StorageClient, StorageClientConfig
-   
+
    source = StorageClient(StorageClientConfig.from_file(profile="local"))
    target = StorageClient(StorageClientConfig.from_file(profile="s3"))
-   
+
    target.sync_from(source, "checkpoints/", "checkpoints/")
 
 **You can simply ask:**

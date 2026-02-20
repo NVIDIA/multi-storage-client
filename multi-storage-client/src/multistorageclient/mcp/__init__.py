@@ -13,11 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
+from .server import mcp, mcp_wrapper
 
-if sys.version_info >= (3, 10):
-    from .server import mcp, mcp_wrapper
-
-    __all__ = ["mcp", "mcp_wrapper"]
-else:
-    __all__ = []
+__all__ = ["mcp", "mcp_wrapper"]

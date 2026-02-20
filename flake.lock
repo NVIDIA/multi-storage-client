@@ -16,26 +16,9 @@
         "type": "github"
       }
     },
-    "nixpkgs-python39": {
-      "locked": {
-        "lastModified": 1744500401,
-        "narHash": "sha256-hUbxeaKKHRfagNwtIfBI4XjqQPM497fJp2p2+UfNuVU=",
-        "owner": "NixOS",
-        "repo": "nixpkgs",
-        "rev": "1076d576f5e8916f240d094a3c381d3e121800ba",
-        "type": "github"
-      },
-      "original": {
-        "owner": "NixOS",
-        "repo": "nixpkgs",
-        "rev": "1076d576f5e8916f240d094a3c381d3e121800ba",
-        "type": "github"
-      }
-    },
     "root": {
       "inputs": {
-        "nixpkgs": "nixpkgs",
-        "nixpkgs-python39": "nixpkgs-python39"
+        "nixpkgs": "nixpkgs"
       }
     }
   },
