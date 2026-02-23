@@ -19,6 +19,7 @@ unfixable = []
 python-downloads = "never"
 python-preference = "only-system"
 resolution = "lowest-direct"
+override-dependencies = ["protobuf>=7.34.0rc2"]
 
 [tool.uv.sources]
 multi-storage-client = { workspace = true }
