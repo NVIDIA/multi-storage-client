@@ -16,8 +16,9 @@
 import contextlib
 import logging
 import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
+from ..types import MetadataProvider
 from .progress_bar import ProgressBar
 from .types import EventLike, OperationType, QueueLike
 
@@ -36,13 +37,20 @@ class ResultMonitorThread(threading.Thread):
     """
 
     def __init__(
-        self, target_client: "AbstractStorageClient", target_path: str, progress: ProgressBar, result_queue: QueueLike
+        self,
+        target_client: "AbstractStorageClient",
+        target_path: str,
+        progress: ProgressBar,
+        result_queue: QueueLike,
+        metadata_provider: Optional[MetadataProvider] = None,
     ):
         super().__init__(daemon=True)
         self.target_client = target_client
         self.target_path = target_path
         self.progress = progress
         self.result_queue = result_queue
+        self._metadata_provider = metadata_provider
+        self._metadata_provider_lock = getattr(target_client, "_metadata_provider_lock", None)
         self.error = None
         self.total_files_added = 0
         self.total_files_deleted = 0
@@ -51,7 +59,6 @@ class ResultMonitorThread(threading.Thread):
 
     def run(self):
         try:
-            # Pull from result_queue to collect pending updates from each multiprocessing worker.
             while True:
                 op, target_file_path, physical_metadata = self.result_queue.get()
 
@@ -63,21 +70,20 @@ class ResultMonitorThread(threading.Thread):
                     break
 
                 if op == OperationType.ADD:
-                    # Update metadata provider in the main process.
-                    # When using multiprocessing, workers have their own pickled copies of target_client,
-                    # so their add_file() calls update their own copy's _pending_adds (lost on process exit).
-                    # We must explicitly update the main process's metadata provider here.
-                    # In single-process mode this is redundant but harmless (dict overwrite is idempotent).
-                    if self.target_client._metadata_provider:
-                        with self.target_client._metadata_provider_lock or contextlib.nullcontext():
-                            self.target_client._metadata_provider.add_file(target_file_path, physical_metadata)
+                    # ADD messages arrive from QueueBackedMetadataProvider (when metadata
+                    # provider is configured) or from the worker directly.
+                    # Replay add_file on the REAL metadata provider via the saved direct reference,
+                    # bypassing any proxy to avoid feedback loops.
+                    if self._metadata_provider:
+                        with self._metadata_provider_lock or contextlib.nullcontext():
+                            self._metadata_provider.add_file(target_file_path, physical_metadata)
                     self.total_files_added += 1
                     self.total_bytes_added += physical_metadata.content_length
                     self.progress.update_progress()
                 elif op == OperationType.DELETE:
-                    if self.target_client._metadata_provider:
-                        with self.target_client._metadata_provider_lock or contextlib.nullcontext():
-                            self.target_client._metadata_provider.remove_file(target_file_path)
+                    if self._metadata_provider:
+                        with self._metadata_provider_lock or contextlib.nullcontext():
+                            self._metadata_provider.remove_file(target_file_path)
                     self.total_files_deleted += 1
                     self.total_bytes_deleted += physical_metadata.content_length
                     self.progress.update_progress()

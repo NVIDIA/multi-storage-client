@@ -31,6 +31,7 @@ from ..constants import MEMORY_LOAD_LIMIT
 from ..providers.base import BaseStorageProvider
 from ..types import ObjectMetadata
 from ..utils import safe_makedirs
+from .metadata_proxy import QueueBackedMetadataProvider
 from .types import ErrorInfo, EventLike, OperationType, QueueLike
 
 if TYPE_CHECKING:
@@ -137,18 +138,14 @@ def _process_single_sync_operation(
                 except OSError:
                     pass
 
-            if target_client._metadata_provider:
-                physical_metadata = target_client._metadata_provider.get_object_metadata(
-                    target_file_path, include_pending=True
-                )
-            else:
+            if not target_client._metadata_provider:
                 physical_metadata = ObjectMetadata(
                     key=target_file_path,
                     content_length=file_metadata.content_length,
                     last_modified=file_metadata.last_modified,
                     metadata=file_metadata.metadata,
                 )
-            result_queue.put((op, target_file_path, physical_metadata))
+                result_queue.put((op, target_file_path, physical_metadata))
         elif op == OperationType.DELETE:
             logger.debug(f"rm {file_metadata.key}")
             target_client.delete(file_metadata.key)
@@ -210,6 +207,42 @@ def _sync_worker_process(
     worker_id = f"process-{os.getpid()}"
     max_pending_futures = num_worker_threads * 2
 
+    original_metadata_provider = getattr(target_client, "_metadata_provider", None)
+    if original_metadata_provider:
+        target_client._metadata_provider = QueueBackedMetadataProvider(original_metadata_provider, result_queue)
+
+    try:
+        _sync_worker_loop(
+            worker_id,
+            max_pending_futures,
+            source_client,
+            source_path,
+            target_client,
+            target_path,
+            num_worker_threads,
+            file_queue,
+            result_queue,
+            error_queue,
+            shutdown_event,
+        )
+    finally:
+        if original_metadata_provider:
+            target_client._metadata_provider = original_metadata_provider
+
+
+def _sync_worker_loop(
+    worker_id: str,
+    max_pending_futures: int,
+    source_client: "AbstractStorageClient",
+    source_path: str,
+    target_client: "AbstractStorageClient",
+    target_path: str,
+    num_worker_threads: int,
+    file_queue: QueueLike,
+    result_queue: QueueLike,
+    error_queue: QueueLike,
+    shutdown_event: EventLike,
+):
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_worker_threads) as executor:
         futures: list[concurrent.futures.Future] = []
 

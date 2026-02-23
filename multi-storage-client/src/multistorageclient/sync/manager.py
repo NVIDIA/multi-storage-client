@@ -196,12 +196,18 @@ class SyncManager:
         )
         producer_thread.start()
 
-        # Start the result monitor thread to process the results of individual sync operations
+        # Save a direct reference to the target client's metadata provider BEFORE the worker
+        # installs the QueueBackedMetadataProvider proxy.  The monitor uses this
+        # direct reference to replay add_file/remove_file, bypassing the proxy
+        # and avoiding feedback loops.
+        target_metadata_provider = getattr(self.target_client, "_metadata_provider", None)
+
         result_monitor_thread = ResultMonitorThread(
             self.target_client,
             self.target_path,
             progress,
             result_queue,
+            metadata_provider=target_metadata_provider,
         )
         result_monitor_thread.start()
 
