@@ -243,6 +243,32 @@ def test_copy_remote_to_posix(temp_data_store_type: type[tempdatastore.Temporary
 
 
 @pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[[tempdatastore.TemporaryAWSS3Bucket]],
+)
+def test_sync_single_file_to_directory(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """Test syncing a single file (source path = object key) to a directory writes to <dir>/<basename>."""
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as temp_posix,
+        temp_data_store_type() as temp_remote,
+    ):
+        posix_client, remote_client = _setup_test_clients("posix-test", "remote-test", temp_posix, temp_remote)
+
+        single_file_key = "test/dir/file.txt"
+        content = b"test content"
+        remote_client.write(single_file_key, content)
+
+        source_url = f"msc://remote-test/{single_file_key}"
+        target_url = "msc://posix-test/"
+        msc.sync(source_url, target_url)
+
+        assert posix_client.is_file("file.txt")
+        assert posix_client.read("file.txt") == content
+
+
+@pytest.mark.parametrize(
     argnames=["temp_data_store_type", "file_size", "file_type"],
     argvalues=[
         [tempdatastore.TemporaryAWSS3Bucket, 100, "small"],  # Small file uses memory

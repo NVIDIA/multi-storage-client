@@ -56,7 +56,13 @@ def _process_single_sync_operation(
 ) -> None:
     """Process a single sync operation (ADD or DELETE) for one file."""
     source_key = file_metadata.key[len(source_path) :].lstrip("/")
-    target_file_path = os.path.join(target_path, source_key)
+
+    # Special case for single file sync: target file path is the target path + the source key.
+    target_file_path = (
+        os.path.join(target_path, source_key)
+        if source_key
+        else os.path.join(target_path, os.path.basename(file_metadata.key))
+    )
 
     try:
         if op == OperationType.ADD:
