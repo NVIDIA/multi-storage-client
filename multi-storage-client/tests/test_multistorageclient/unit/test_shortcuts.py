@@ -199,6 +199,57 @@ def test_list_follow_symlinks(file_storage_config):
     assert "link.txt" not in keys_without
 
 
+def test_list_recursive(file_storage_config):
+    with tempfile.TemporaryDirectory() as tempdir:
+        with msc.open(f"{MSC_PROTOCOL}__filesystem__{tempdir}/root.bin", "wb") as fp:
+            fp.write(b"root")
+        with msc.open(f"{MSC_PROTOCOL}__filesystem__{tempdir}/nested/child.bin", "wb") as fp:
+            fp.write(b"nested")
+
+        # Test recursive listing with MSC URL path
+        results = list(msc.list_recursive(f"{MSC_PROTOCOL}__filesystem__{tempdir}"))
+        assert len(results) == 2
+        keys = {os.path.basename(obj.key) for obj in results}
+        assert keys == {"root.bin", "child.bin"}
+
+        # Test recursive listing with POSIX path
+        posix_results = list(msc.list_recursive(tempdir))
+        assert len(posix_results) == 2
+        assert all(not obj.key.startswith(MSC_PROTOCOL) for obj in posix_results)
+        posix_keys = {os.path.basename(obj.key) for obj in posix_results}
+        assert posix_keys == {"root.bin", "child.bin"}
+
+
+def test_list_recursive_follow_symlinks_and_patterns(file_storage_config):
+    with tempfile.TemporaryDirectory() as tempdir:
+        real_path = os.path.join(tempdir, "real.bin")
+        symlink_path = os.path.join(tempdir, "link.bin")
+        txt_path = os.path.join(tempdir, "note.txt")
+
+        with open(real_path, "wb") as f:
+            f.write(b"real")
+        with open(txt_path, "wb") as f:
+            f.write(b"text")
+        os.symlink(real_path, symlink_path)
+
+        url = f"{MSC_PROTOCOL}__filesystem__{tempdir}"
+        include_bins = [(PatternType.INCLUDE, "*.bin")]
+
+        with_follow = list(msc.list_recursive(url, follow_symlinks=True, patterns=include_bins))
+        without_follow = list(msc.list_recursive(url, follow_symlinks=False, patterns=include_bins))
+
+        keys_with = {os.path.basename(k.key) for k in with_follow}
+        keys_without = {os.path.basename(k.key) for k in without_follow}
+
+        assert "real.bin" in keys_with
+        assert "link.bin" in keys_with
+        assert "note.txt" not in keys_with
+
+        assert "real.bin" in keys_without
+        assert "link.bin" not in keys_without
+        assert "note.txt" not in keys_without
+
+
 def test_write(file_storage_config):
     tempdir = tempfile.mkdtemp()
     filepath = os.path.join(tempdir, "testfile.bin")

@@ -259,6 +259,29 @@ class StorageProvider(ABC):
         pass
 
     @abstractmethod
+    def list_objects_recursive(
+        self,
+        path: str = "",
+        start_after: Optional[str] = None,
+        end_at: Optional[str] = None,
+        max_workers: int = 32,
+        look_ahead: int = 2,
+        follow_symlinks: bool = True,
+    ) -> Iterator[ObjectMetadata]:
+        """
+        Lists files recursively in the storage provider under the specified path.
+
+        :param path: The path to list objects under.
+        :param start_after: The key to start after (i.e. exclusive). An object with this key doesn't have to exist.
+        :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
+        :param max_workers: Maximum concurrent workers for provider-level recursive listing.
+        :param look_ahead: Prefixes to buffer per worker for provider-level recursive listing.
+        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers.
+        :return: An iterator over object metadata under the specified path.
+        """
+        pass
+
+    @abstractmethod
     def upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, str]] = None) -> None:
         """
         Uploads a file from the local file system to the storage provider.

@@ -247,6 +247,10 @@ instances directly.
    # Open a file
    file = client.open("animal-photos/red-panda.png")
 
+   # Recursively list files under a prefix.
+   for obj in client.list_recursive(path="animal-photos/"):
+       print(obj.key)
+
 Clients use file/object paths relative to the storage provider's base path.
 
 Syncing Files

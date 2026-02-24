@@ -225,6 +225,33 @@ class AbstractStorageClient(ABC):
         pass
 
     @abstractmethod
+    def list_recursive(
+        self,
+        path: str = "",
+        start_after: Optional[str] = None,
+        end_at: Optional[str] = None,
+        max_workers: int = 32,
+        look_ahead: int = 2,
+        include_url_prefix: bool = False,
+        follow_symlinks: bool = True,
+        patterns: Optional[PatternList] = None,
+    ) -> Iterator[ObjectMetadata]:
+        """
+        List files recursively under the specified path.
+
+        :param path: The directory or file path to list objects under.
+        :param start_after: The key to start after (i.e. exclusive). An object with this key doesn't have to exist.
+        :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
+        :param max_workers: Maximum concurrent workers for provider-level recursive listing.
+        :param look_ahead: Prefixes to buffer per worker for provider-level recursive listing.
+        :param include_url_prefix: Whether to include the URL prefix ``msc://profile`` in the result.
+        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers. When ``False``, symlinks are skipped during listing.
+        :param patterns: PatternList for include/exclude filtering. If None, all files are included.
+        :return: An iterator over ObjectMetadata for matching files.
+        """
+        pass
+
+    @abstractmethod
     def is_file(self, path: str) -> bool:
         """
         Checks whether the specified path points to a file (rather than a folder or directory).

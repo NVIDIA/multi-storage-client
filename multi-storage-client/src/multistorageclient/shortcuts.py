@@ -460,6 +460,44 @@ def list(
     )
 
 
+def list_recursive(
+    url: str,
+    start_after: Optional[str] = None,
+    end_at: Optional[str] = None,
+    max_workers: int = 32,
+    look_ahead: int = 2,
+    follow_symlinks: bool = True,
+    patterns: Optional[PatternList] = None,
+) -> Iterator[ObjectMetadata]:
+    """
+    Lists files recursively under the specified URL.
+
+    This function retrieves the corresponding :py:class:`multistorageclient.StorageClient`
+    for the given URL and returns an iterator of files under the provided path.
+
+    :param url: The path to list objects under.
+    :param start_after: The key to start after (i.e. exclusive). An object with this key doesn't have to exist.
+    :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
+    :param max_workers: Maximum concurrent workers for provider-level recursive listing.
+    :param look_ahead: Prefixes to buffer per worker for provider-level recursive listing.
+    :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage. When False, symlinks are skipped during listing.
+    :param patterns: PatternList for include/exclude filtering. If None, all files are included.
+    :return: An iterator of :py:class:`ObjectMetadata` objects representing files accessible under the specified URL path.
+             The returned keys use the same URL-prefix behavior as :py:meth:`multistorageclient.list`.
+    """
+    client, path = resolve_storage_client(url)
+    return client.list_recursive(
+        path=path,
+        start_after=start_after,
+        end_at=end_at,
+        max_workers=max_workers,
+        look_ahead=look_ahead,
+        include_url_prefix=True,
+        follow_symlinks=follow_symlinks,
+        patterns=patterns,
+    )
+
+
 def write(url: str, body: bytes, attributes: Optional[dict[str, str]] = None) -> None:
     """
     Writes an object to the storage provider at the specified path.

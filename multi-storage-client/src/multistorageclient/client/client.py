@@ -330,6 +330,42 @@ class StorageClient(AbstractStorageClient):
             patterns,
         )
 
+    def list_recursive(
+        self,
+        path: str = "",
+        start_after: Optional[str] = None,
+        end_at: Optional[str] = None,
+        max_workers: int = 32,
+        look_ahead: int = 2,
+        include_url_prefix: bool = False,
+        follow_symlinks: bool = True,
+        patterns: Optional[PatternList] = None,
+    ) -> Iterator[ObjectMetadata]:
+        """
+        List files recursively in the storage provider under the specified path.
+
+        :param path: The directory or file path to list objects under. This should be a
+                    complete filesystem path (e.g., "my-bucket/documents/" or "data/2024/").
+        :param start_after: The key to start after (i.e. exclusive). An object with this key doesn't have to exist.
+        :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
+        :param max_workers: Maximum concurrent workers for provider-level recursive listing.
+        :param look_ahead: Prefixes to buffer per worker for provider-level recursive listing.
+        :param include_url_prefix: Whether to include the URL prefix ``msc://profile`` in the result.
+        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers. When ``False``, symlinks are skipped during listing.
+        :param patterns: PatternList for include/exclude filtering. If None, all files are included.
+        :return: An iterator over ObjectMetadata for matching files.
+        """
+        return self._delegate.list_recursive(
+            path=path,
+            start_after=start_after,
+            end_at=end_at,
+            max_workers=max_workers,
+            look_ahead=look_ahead,
+            include_url_prefix=include_url_prefix,
+            follow_symlinks=follow_symlinks,
+            patterns=patterns,
+        )
+
     def is_file(self, path: str) -> bool:
         """
         Checks whether the specified path points to a file (rather than a folder or directory).

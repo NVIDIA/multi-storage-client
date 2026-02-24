@@ -591,6 +591,68 @@ class SingleStorageClient(AbstractStorageClient):
 
         return results
 
+    def _resolve_single_file(
+        self,
+        path: str,
+        start_after: Optional[str],
+        end_at: Optional[str],
+        include_url_prefix: bool,
+        pattern_matcher: Optional[PatternMatcher],
+    ) -> tuple[Optional[ObjectMetadata], Optional[str]]:
+        """
+        Resolve whether ``path`` should be handled as a single-file listing result.
+
+        :param path: Candidate file path or directory prefix to resolve.
+        :param start_after: Exclusive lower bound for file key filtering.
+        :param end_at: Inclusive upper bound for file key filtering.
+        :param include_url_prefix: Whether to prefix returned keys with ``msc://profile``.
+        :param pattern_matcher: Optional include/exclude matcher for file keys.
+        :return: A tuple of ``(single_file, normalized_path)``. Returns file metadata and
+                 the original path when ``path`` resolves to a file that passes filters;
+                 returns ``(None, normalized_directory_path)`` when the caller should
+                 continue with directory listing; returns ``(None, None)`` when filtering
+                 excludes the single-file candidate and listing should stop.
+        """
+        if not path:
+            return None, path
+
+        if self.is_file(path):
+            if pattern_matcher and not pattern_matcher.should_include_file(path):
+                return None, None
+
+            try:
+                object_metadata = self.info(path)
+                if start_after and object_metadata.key <= start_after:
+                    return None, None
+                if end_at and object_metadata.key > end_at:
+                    return None, None
+                if include_url_prefix:
+                    self._prepend_url_prefix(object_metadata)
+                return object_metadata, path
+            except FileNotFoundError:
+                return None, path.rstrip("/") + "/"
+        else:
+            return None, path.rstrip("/") + "/"
+
+    def _prepend_url_prefix(self, obj: ObjectMetadata) -> None:
+        if self.is_default_profile():
+            obj.key = str(PurePosixPath("/") / obj.key)
+        else:
+            obj.key = join_paths(f"{MSC_PROTOCOL}{self._config.profile}", obj.key)
+
+    def _filter_and_decorate(
+        self,
+        objects: Iterator[ObjectMetadata],
+        include_url_prefix: bool,
+        pattern_matcher: Optional[PatternMatcher],
+    ) -> Iterator[ObjectMetadata]:
+        for obj in objects:
+            if pattern_matcher and not pattern_matcher.should_include_file(obj.key):
+                continue
+            if include_url_prefix:
+                self._prepend_url_prefix(obj)
+            yield obj
+
     def list(
         self,
         prefix: str = "",
@@ -639,32 +701,17 @@ class SingleStorageClient(AbstractStorageClient):
                 f"Migration guide: Replace list(prefix={prefix!r}) with list(path={prefix!r})"
             )
 
-        # Apply patterns to the objects
         pattern_matcher = PatternMatcher(patterns) if patterns else None
-
-        # Use path if provided, otherwise fall back to prefix
         effective_path = path if path else prefix
 
-        if effective_path:
-            if self.is_file(effective_path):
-                if pattern_matcher and not pattern_matcher.should_include_file(effective_path):
-                    return iter([])
-
-                try:
-                    object_metadata = self.info(effective_path)
-                    if include_url_prefix:
-                        if self.is_default_profile():
-                            object_metadata.key = str(PurePosixPath("/") / object_metadata.key)
-                        else:
-                            object_metadata.key = join_paths(
-                                f"{MSC_PROTOCOL}{self._config.profile}", object_metadata.key
-                            )
-                    yield object_metadata  # short circuit if the path is a file
-                    return
-                except FileNotFoundError:
-                    pass
-            else:
-                effective_path = effective_path.rstrip("/") + "/"
+        single_file, effective_path = self._resolve_single_file(
+            effective_path, start_after, end_at, include_url_prefix, pattern_matcher
+        )
+        if single_file is not None:
+            yield single_file
+            return
+        if effective_path is None:
+            return
 
         if self._metadata_provider:
             objects = self._metadata_provider.list_objects(
@@ -686,18 +733,62 @@ class SingleStorageClient(AbstractStorageClient):
                 follow_symlinks=follow_symlinks,
             )
 
-        for object in objects:
-            # Skip objects that do not match the patterns
-            if pattern_matcher and not pattern_matcher.should_include_file(object.key):
-                continue
+        yield from self._filter_and_decorate(objects, include_url_prefix, pattern_matcher)
 
-            if include_url_prefix:
-                if self.is_default_profile():
-                    object.key = str(PurePosixPath("/") / object.key)
-                else:
-                    object.key = join_paths(f"{MSC_PROTOCOL}{self._config.profile}", object.key)
+    def list_recursive(
+        self,
+        path: str = "",
+        start_after: Optional[str] = None,
+        end_at: Optional[str] = None,
+        max_workers: int = 32,
+        look_ahead: int = 2,
+        include_url_prefix: bool = False,
+        follow_symlinks: bool = True,
+        patterns: Optional[PatternList] = None,
+    ) -> Iterator[ObjectMetadata]:
+        """
+        List files recursively in the storage provider under the specified path.
 
-            yield object
+        :param path: The directory or file path to list objects under. This should be a
+                    complete filesystem path (e.g., "my-bucket/documents/" or "data/2024/").
+        :param start_after: The key to start after (i.e. exclusive). An object with this key doesn't have to exist.
+        :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
+        :param max_workers: Maximum concurrent workers for provider-level recursive listing.
+        :param look_ahead: Prefixes to buffer per worker for provider-level recursive listing.
+        :param include_url_prefix: Whether to include the URL prefix ``msc://profile`` in the result.
+        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers. When ``False``, symlinks are skipped during listing.
+        :param patterns: PatternList for include/exclude filtering. If None, all files are included.
+        :return: An iterator over ObjectMetadata for matching files.
+        """
+        pattern_matcher = PatternMatcher(patterns) if patterns else None
+
+        single_file, effective_path = self._resolve_single_file(
+            path, start_after, end_at, include_url_prefix, pattern_matcher
+        )
+        if single_file is not None:
+            yield single_file
+            return
+        if effective_path is None:
+            return
+
+        if self._metadata_provider:
+            objects = self._metadata_provider.list_objects(
+                effective_path,
+                start_after=start_after,
+                end_at=end_at,
+                include_directories=False,
+            )
+        else:
+            objects = self._storage_provider.list_objects_recursive(
+                effective_path,
+                start_after=start_after,
+                end_at=end_at,
+                max_workers=max_workers,
+                look_ahead=look_ahead,
+                follow_symlinks=follow_symlinks,
+            )
+
+        yield from self._filter_and_decorate(objects, include_url_prefix, pattern_matcher)
 
     def open(
         self,

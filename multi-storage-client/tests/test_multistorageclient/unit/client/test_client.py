@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import pickle
+from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -21,6 +22,7 @@ import pytest
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.client.composite import CompositeStorageClient
 from multistorageclient.client.single import SingleStorageClient
+from multistorageclient.types import ObjectMetadata
 
 
 @pytest.fixture
@@ -221,3 +223,118 @@ def test_single_client_is_rust_client_enabled(single_backend_config):
     # Mock provider with _rust_client set to a value - should return True
     setattr(single._storage_provider, "_rust_client", MagicMock())
     assert single._is_rust_client_enabled() is True
+
+
+def test_list_recursive_delegates_to_single_client(single_backend_config):
+    client = StorageClient(single_backend_config)
+    expected = iter([])
+    client._delegate.list_recursive = MagicMock(return_value=expected)
+
+    result = client.list_recursive(
+        path="/tmp/data",
+        max_workers=8,
+        look_ahead=4,
+        include_url_prefix=True,
+        follow_symlinks=False,
+    )
+
+    assert result is expected
+    client._delegate.list_recursive.assert_called_once_with(
+        path="/tmp/data",
+        start_after=None,
+        end_at=None,
+        max_workers=8,
+        look_ahead=4,
+        include_url_prefix=True,
+        follow_symlinks=False,
+        patterns=None,
+    )
+
+
+def test_list_recursive_delegates_to_composite_client(multi_backend_config):
+    client = StorageClient(multi_backend_config)
+    expected = iter([])
+    client._delegate.list_recursive = MagicMock(return_value=expected)
+
+    result = client.list_recursive(path="datasets/")
+
+    assert result is expected
+    client._delegate.list_recursive.assert_called_once_with(
+        path="datasets/",
+        start_after=None,
+        end_at=None,
+        max_workers=32,
+        look_ahead=2,
+        include_url_prefix=False,
+        follow_symlinks=True,
+        patterns=None,
+    )
+
+
+def test_single_list_recursive_uses_provider_recursive_listing(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+
+    expected_obj = ObjectMetadata(key="data/file.bin", content_length=1, type="file", last_modified=datetime.now())
+    single._storage_provider.list_objects_recursive = MagicMock(return_value=iter([expected_obj]))
+
+    results = list(client.list_recursive(path="data/"))
+
+    assert [obj.key for obj in results] == ["data/file.bin"]
+    single._storage_provider.list_objects_recursive.assert_called_once_with(
+        "data/",
+        start_after=None,
+        end_at=None,
+        max_workers=32,
+        look_ahead=2,
+        follow_symlinks=True,
+    )
+
+
+def test_single_list_recursive_uses_metadata_provider_when_configured(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+
+    expected_obj = ObjectMetadata(key="data/file.bin", content_length=1, type="file", last_modified=datetime.now())
+    metadata_provider = MagicMock()
+    metadata_provider.realpath.return_value = MagicMock(exists=False)
+    metadata_provider.list_objects.return_value = iter([expected_obj])
+    client._metadata_provider = metadata_provider
+
+    single._storage_provider.list_objects_recursive = MagicMock(
+        side_effect=AssertionError("provider path should be skipped")
+    )
+
+    results = list(client.list_recursive(path="data/", max_workers=4, look_ahead=1))
+
+    assert [obj.key for obj in results] == ["data/file.bin"]
+    metadata_provider.list_objects.assert_called_once_with(
+        "data/",
+        start_after=None,
+        end_at=None,
+        include_directories=False,
+    )
+
+
+def test_single_list_recursive_file_short_circuit_applies_key_bounds(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+
+    single.is_file = MagicMock(return_value=True)  # type: ignore[method-assign]
+    single.info = MagicMock(
+        return_value=ObjectMetadata(key="data/file.bin", content_length=1, type="file", last_modified=datetime.now())
+    )  # type: ignore[method-assign]
+    single._storage_provider.list_objects_recursive = MagicMock(
+        side_effect=AssertionError("should short-circuit on file path")
+    )
+
+    filtered_by_start_after = list(client.list_recursive(path="data/file.bin", start_after="z"))
+    filtered_by_end_at = list(client.list_recursive(path="data/file.bin", end_at="a"))
+    included = list(client.list_recursive(path="data/file.bin", start_after="a", end_at="z"))
+
+    assert filtered_by_start_after == []
+    assert filtered_by_end_at == []
+    assert [obj.key for obj in included] == ["data/file.bin"]

@@ -303,6 +303,28 @@ class CompositeStorageClient(AbstractStorageClient):
 
             yield obj
 
+    def list_recursive(
+        self,
+        path: str = "",
+        start_after: Optional[str] = None,
+        end_at: Optional[str] = None,
+        max_workers: int = 32,
+        look_ahead: int = 2,
+        include_url_prefix: bool = False,
+        follow_symlinks: bool = True,
+        patterns: Optional[PatternList] = None,
+    ) -> Iterator[ObjectMetadata]:
+
+        yield from self.list(
+            path=path,
+            start_after=start_after,
+            end_at=end_at,
+            include_directories=False,
+            include_url_prefix=include_url_prefix,
+            follow_symlinks=follow_symlinks,
+            patterns=patterns,
+        )
+
     def is_file(self, path: str) -> bool:
         resolved = self._metadata_provider.realpath(path)
         return resolved.exists
