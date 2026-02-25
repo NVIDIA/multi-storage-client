@@ -25,7 +25,7 @@ from pathlib import PurePosixPath
 from typing import IO, Any, Optional, Union, cast
 
 from ..config import StorageClientConfig
-from ..constants import MEMORY_LOAD_LIMIT
+from ..constants import DEFAULT_SYNC_BATCH_SIZE, MEMORY_LOAD_LIMIT
 from ..file import ObjectFile, PosixFile
 from ..providers.posix_file import PosixFileStorageProvider
 from ..replica_manager import ReplicaManager
@@ -924,6 +924,7 @@ class SingleStorageClient(AbstractStorageClient):
             source_client._replica_manager = None
 
         m = SyncManager(source_client, source_path, self, target_path)
+        batch_size = int(os.environ.get("MSC_SYNC_BATCH_SIZE", DEFAULT_SYNC_BATCH_SIZE))
 
         return m.sync_objects(
             execution_mode=execution_mode,
@@ -936,6 +937,7 @@ class SingleStorageClient(AbstractStorageClient):
             source_files=source_files,
             ignore_hidden=ignore_hidden,
             commit_metadata=commit_metadata,
+            batch_size=batch_size,
         )
 
     def sync_replicas(

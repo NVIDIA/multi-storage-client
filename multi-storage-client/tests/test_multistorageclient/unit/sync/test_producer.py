@@ -142,7 +142,7 @@ def test_batch_size_validation():
             file_queue=queue.Queue(),
             num_workers=1,
             shutdown_event=threading.Event(),
-            batch_size=1000,
+            batch_size=2000,
         )
         assert False, "Expected ValueError for batch_size too large"
     except ValueError as e:

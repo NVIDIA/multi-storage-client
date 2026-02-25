@@ -43,6 +43,19 @@ DEFAULT_LOCK_TIMEOUT = 600  # 10 minutes
 FILE_LOCK_SIZE_THRESHOLD = 64 * 1024 * 1024  # 64 MB - only lock files larger than this
 
 
+def _build_target_file_path(source_path: str, target_path: str, file_metadata: ObjectMetadata) -> str:
+    source_key = file_metadata.key[len(source_path) :].lstrip("/")
+
+    # Special case for single file sync: target file path is the target path + the source key.
+    target_file_path = (
+        os.path.join(target_path, source_key)
+        if source_key
+        else os.path.join(target_path, os.path.basename(file_metadata.key))
+    )
+
+    return target_file_path
+
+
 def _process_single_sync_operation(
     worker_id: str,
     source_client: "AbstractStorageClient",
@@ -55,14 +68,7 @@ def _process_single_sync_operation(
     error_queue: QueueLike,
 ) -> None:
     """Process a single sync operation (ADD or DELETE) for one file."""
-    source_key = file_metadata.key[len(source_path) :].lstrip("/")
-
-    # Special case for single file sync: target file path is the target path + the source key.
-    target_file_path = (
-        os.path.join(target_path, source_key)
-        if source_key
-        else os.path.join(target_path, os.path.basename(file_metadata.key))
-    )
+    target_file_path = _build_target_file_path(source_path, target_path, file_metadata)
 
     try:
         if op == OperationType.ADD:
@@ -152,16 +158,6 @@ def _process_single_sync_operation(
                     metadata=file_metadata.metadata,
                 )
                 result_queue.put((op, target_file_path, physical_metadata))
-        elif op == OperationType.DELETE:
-            logger.debug(f"rm {file_metadata.key}")
-            target_client.delete(file_metadata.key)
-            physical_metadata = ObjectMetadata(
-                key=target_file_path,
-                content_length=file_metadata.content_length,
-                last_modified=file_metadata.last_modified,
-                metadata=file_metadata.metadata,
-            )
-            result_queue.put((op, target_file_path, physical_metadata))
         else:
             raise ValueError(f"Unknown operation: {op}")
     except Exception as e:
@@ -258,29 +254,36 @@ def _sync_worker_loop(
             if batch.operation == OperationType.STOP:
                 break
 
-            for file_metadata in batch.items:
-                if shutdown_event.is_set():
-                    logger.debug(f"Worker {worker_id}: Shutdown event detected during batch processing, exiting")
-                    break
+            if batch.operation == OperationType.DELETE:
+                target_client.delete_many([file_metadata.key for file_metadata in batch.items])
+                for file_metadata in batch.items:
+                    target_file_path = _build_target_file_path(source_path, target_path, file_metadata)
+                    result_queue.put((OperationType.DELETE, target_file_path, file_metadata))
 
-                # Backpressure: wait if at capacity before submitting new work
-                while len(futures) >= max_pending_futures:
-                    _, not_done = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED)
-                    futures = list(not_done)
+            if batch.operation == OperationType.ADD:
+                for file_metadata in batch.items:
+                    if shutdown_event.is_set():
+                        logger.debug(f"Worker {worker_id}: Shutdown event detected during batch processing, exiting")
+                        break
 
-                future = executor.submit(
-                    _process_single_sync_operation,
-                    worker_id,
-                    source_client,
-                    source_path,
-                    target_client,
-                    target_path,
-                    file_metadata,
-                    batch.operation,
-                    result_queue,
-                    error_queue,
-                )
-                futures.append(future)
+                    # Backpressure: wait if at capacity before submitting new work
+                    while len(futures) >= max_pending_futures:
+                        _, not_done = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED)
+                        futures = list(not_done)
+
+                    future = executor.submit(
+                        _process_single_sync_operation,
+                        worker_id,
+                        source_client,
+                        source_path,
+                        target_client,
+                        target_path,
+                        file_metadata,
+                        batch.operation,
+                        result_queue,
+                        error_queue,
+                    )
+                    futures.append(future)
         else:
             logger.debug(f"Worker {worker_id}: Shutdown event detected, exiting")
 

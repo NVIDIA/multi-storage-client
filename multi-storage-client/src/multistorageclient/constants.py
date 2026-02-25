@@ -23,3 +23,6 @@ DEFAULT_READ_TIMEOUT = 60
 # Default host and port for the MSC Explorer application
 DEFAULT_EXPLORER_HOST = "127.0.0.1"
 DEFAULT_EXPLORER_PORT = 8888
+
+# Default batch size for sync operations
+DEFAULT_SYNC_BATCH_SIZE = 20

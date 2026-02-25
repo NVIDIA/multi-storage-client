@@ -19,6 +19,7 @@ import threading
 from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
+from ..constants import DEFAULT_SYNC_BATCH_SIZE
 from ..types import ObjectMetadata
 from ..utils import PatternMatcher
 from .progress_bar import ProgressBar
@@ -29,9 +30,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_BATCH_SIZE = 20
 MIN_BATCH_SIZE = 10
-MAX_BATCH_SIZE = 100
+MAX_BATCH_SIZE = 1000
 
 # Size bucket thresholds for batching optimization
 SIZE_SMALL_THRESHOLD = 1 * 1024 * 1024  # 1 MB
@@ -84,7 +84,7 @@ class ProducerThread(threading.Thread):
         follow_symlinks: bool = True,
         source_files: Optional[list[str]] = None,
         ignore_hidden: bool = True,
-        batch_size: int = DEFAULT_BATCH_SIZE,
+        batch_size: int = DEFAULT_SYNC_BATCH_SIZE,
     ):
         super().__init__(daemon=True)
         if batch_size < MIN_BATCH_SIZE or batch_size > MAX_BATCH_SIZE:

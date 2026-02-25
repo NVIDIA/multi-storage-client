@@ -21,10 +21,11 @@ import threading
 import time
 from typing import TYPE_CHECKING, Optional
 
+from ..constants import DEFAULT_SYNC_BATCH_SIZE
 from ..types import ExecutionMode, SyncError, SyncResult
 from ..utils import PatternMatcher, calculate_worker_processes_and_threads
 from .monitors import ErrorMonitorThread, ResultMonitorThread
-from .producer import DEFAULT_BATCH_SIZE, ProducerThread
+from .producer import ProducerThread
 from .progress_bar import ProgressBar
 from .types import OperationType
 from .worker import _sync_worker_process
@@ -88,7 +89,7 @@ class SyncManager:
         source_files: Optional[list[str]] = None,
         ignore_hidden: bool = True,
         commit_metadata: bool = True,
-        batch_size: int = DEFAULT_BATCH_SIZE,
+        batch_size: int = DEFAULT_SYNC_BATCH_SIZE,
     ) -> SyncResult:
         """
         Synchronize objects from source to target storage location.
