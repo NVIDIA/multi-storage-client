@@ -43,8 +43,14 @@ type backendContextIf interface {
 
 	// `listDirectory` is called to fetch a `page` of the `directory` at the specified path.
 	// An empty continuationToken or empty list of directory elements (`subdirectories` and `files`)
-	// indicates the `directory` has been completely enumerated.
+	// indicates the `directory` has been completely enumerated. The `isTruncated` field will also
+	// align with this convention.
 	listDirectory(listDirectoryInput *listDirectoryInputStruct) (listDirectoryOutput *listDirectoryOutputStruct, err error)
+
+	// `listObjects` is called to fetch a `page` of the objects. An empty continuationToken or
+	// empty list of elements (`objects`) indicates the list of `objects` has been completely
+	// enumerated. The `isTruncated` field will also align with this convention.
+	listObjects(listObjectsInput *listObjectsInputStruct) (listObjectsOutput *listObjectsOutputStruct, err error)
 
 	// `readFile` is called to read a range of a `file` at the specified path.
 	// As error will result if either the specified path is not a `file` or non-existent.
@@ -75,7 +81,7 @@ type deleteFileOutputStruct struct{}
 // `listDirectoryInputStruct` lays out the fields provided as input
 // to listDirectory().
 type listDirectoryInputStruct struct {
-	continuationToken string // If != "", from prior listDirectoryOut.nextContinuationToken
+	continuationToken string // If != "", from prior listDirectoryOutput.nextContinuationToken
 	maxItems          uint64 // If == 0, limited instead by the object server
 	dirPath           string // Relative to backend.prefix; if != "", should end with a trailing "/"
 }
@@ -94,6 +100,31 @@ type listDirectoryOutputFileStruct struct {
 type listDirectoryOutputStruct struct {
 	subdirectory          []string // Relative to listDirectoryInputStruct.DirPath which is itself relative to backend.prefix; No trailing "/"
 	file                  []listDirectoryOutputFileStruct
+	nextContinuationToken string
+	isTruncated           bool
+}
+
+// `listObjectsInputStruct` lays out the fields provided as input
+// to listObjects(). Objects to be enumerated are all relative to
+// backend.prefix which, if != "", should end with a trailing "/".
+type listObjectsInputStruct struct {
+	continuationToken string // If != "", from prior listObjectsOutput.nextContinuationToken
+	maxItems          uint64 // If == 0, limited instead by the object server
+}
+
+// `listObjectsOutputObjectStruct` lays out the fields produced as output
+// by listObjects() for each object.
+type listObjectsOutputObjectStruct struct {
+	path  string // Relative to backend.prefix
+	eTag  string
+	mTime time.Time
+	size  uint64
+}
+
+// `listObjectsOutputStruct` lays out the fields produced as output
+// by listObjects().
+type listObjectsOutputStruct struct {
+	object                []listObjectsOutputObjectStruct
 	nextContinuationToken string
 	isTruncated           bool
 }

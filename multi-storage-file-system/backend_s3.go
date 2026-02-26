@@ -257,7 +257,8 @@ func (s3Context *s3ContextStruct) deleteFile(deleteFileInput *deleteFileInputStr
 
 // `listDirectory` is called to fetch a `page` of the `directory` at the specified path.
 // An empty continuationToken or empty list of directory elements (`subdirectories` and `files`)
-// indicates the `directory` has been completely enumerated.
+// indicates the `directory` has been completely enumerated. The `isTruncated` field will also
+// align with this convention.
 func (s3Context *s3ContextStruct) listDirectory(listDirectoryInput *listDirectoryInputStruct) (listDirectoryOutput *listDirectoryOutputStruct, err error) {
 	var (
 		backend               = s3Context.backend
@@ -313,6 +314,62 @@ func (s3Context *s3ContextStruct) listDirectory(listDirectoryInput *listDirector
 			eTag:     strings.TrimLeft(strings.TrimRight(*s3Object.ETag, "\""), "\""),
 			mTime:    *s3Object.LastModified,
 			size:     uint64(*s3Object.Size),
+		})
+	}
+
+	return
+}
+
+// `listObjects` is called to fetch a `page` of the objects. An empty continuationToken or
+// empty list of elements (`objects`) indicates the list of `objects` has been completely
+// enumerated. The `isTruncated` field will also align with this convention.
+func (s3Context *s3ContextStruct) listObjects(listObjectsInput *listObjectsInputStruct) (listObjectsOutput *listObjectsOutputStruct, err error) {
+	var (
+		backend               = s3Context.backend
+		s3ListObjectsV2Input  *s3.ListObjectsV2Input
+		s3ListObjectsV2Output *s3.ListObjectsV2Output
+		s3Object              types.Object
+	)
+
+	s3ListObjectsV2Input = &s3.ListObjectsV2Input{
+		Bucket: aws.String(backend.bucketContainerName),
+		Prefix: aws.String(backend.prefix),
+	}
+	if listObjectsInput.continuationToken != "" {
+		s3ListObjectsV2Input.ContinuationToken = aws.String(listObjectsInput.continuationToken)
+	}
+	if listObjectsInput.maxItems != 0 {
+		s3ListObjectsV2Input.MaxKeys = aws.Int32(int32(listObjectsInput.maxItems))
+	}
+
+	s3ListObjectsV2Output, err = s3Context.s3Client.ListObjectsV2(context.Background(), s3ListObjectsV2Input)
+	if err != nil {
+		err = fmt.Errorf("[S3] listDirectory failed: %v", err)
+		return
+	}
+
+	listObjectsOutput = &listObjectsOutputStruct{
+		object: make([]listObjectsOutputObjectStruct, 0, len(s3ListObjectsV2Output.Contents)),
+	}
+
+	if s3ListObjectsV2Output.NextContinuationToken == nil {
+		listObjectsOutput.nextContinuationToken = ""
+	} else {
+		listObjectsOutput.nextContinuationToken = *s3ListObjectsV2Output.NextContinuationToken
+	}
+
+	// AWS S3 neglects to set s3ListObjectsV2Output.IsTruncated properly, so we
+	// instead compute our listDirectoryOutput.isTruncated value on whether or now
+	// listDirectoryOutput.nextContinuationToken is above set to a non-empty string
+
+	listObjectsOutput.isTruncated = (listObjectsOutput.nextContinuationToken != "")
+
+	for _, s3Object = range s3ListObjectsV2Output.Contents {
+		listObjectsOutput.object = append(listObjectsOutput.object, listObjectsOutputObjectStruct{
+			path:  strings.TrimPrefix(*s3Object.Key, backend.prefix),
+			eTag:  strings.TrimLeft(strings.TrimRight(*s3Object.ETag, "\""), "\""),
+			mTime: *s3Object.LastModified,
+			size:  uint64(*s3Object.Size),
 		})
 	}
 

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -152,15 +151,18 @@ func (aisContext *aistoreContextStruct) deleteFile(deleteFileInput *deleteFileIn
 
 // `listDirectory` is called to fetch a `page` of the `directory` at the specified path.
 // An empty continuationToken or empty list of directory elements (`subdirectories` and `files`)
-// indicates the `directory` has been completely enumerated.
+// indicates the `directory` has been completely enumerated. The `isTruncated` field will also
+// align with this convention.
 func (aisContext *aistoreContextStruct) listDirectory(listDirectoryInput *listDirectoryInputStruct) (listDirectoryOutput *listDirectoryOutputStruct, err error) {
 	var (
 		backend     = aisContext.backend
 		fullDirPath = backend.prefix + listDirectoryInput.dirPath
 		lsmsg       = &apc.LsoMsg{
+			Props:  strings.Join([]string{apc.GetPropsName, apc.GetPropsETag, apc.GetPropsSize}, ","),
 			Prefix: fullDirPath,
-			Props:  strings.Join(apc.GetPropsAll, ","),
+			Flags:  apc.LsNoRecursion,
 		}
+		timeNow = time.Now()
 	)
 
 	// Set continuation token if provided
@@ -194,45 +196,76 @@ func (aisContext *aistoreContextStruct) listDirectory(listDirectoryInput *listDi
 		// Remove the fullDirPath prefix
 		relativeName := strings.TrimPrefix(entry.Name, fullDirPath)
 
-		// Skip if empty (shouldn't happen)
-		if relativeName == "" {
-			continue
-		}
+		if (entry.Flags & apc.EntryIsDir) == 0 {
+			// Append relativeName as a file
 
-		// Check if this is a subdirectory (contains a slash after the prefix)
-		slashIdx := strings.Index(relativeName, "/")
-		if slashIdx != -1 {
-			// This is a subdirectory or a file in a subdirectory
-			subdirName := relativeName[:slashIdx]
-
-			// Add subdirectory if not already present
-			found := false
-			for _, existing := range listDirectoryOutput.subdirectory {
-				if existing == subdirName {
-					found = true
-					break
-				}
-			}
-			if !found {
-				listDirectoryOutput.subdirectory = append(listDirectoryOutput.subdirectory, subdirName)
-			}
-		} else {
-			// This is a file in the current directory
-			// Note: entry.Atime is string, parse it or use current time as fallback
-			mtime := time.Now()
-			if entry.Atime != "" {
-				// Atime format is Unix timestamp string (microseconds)
-				if atimeInt, err := strconv.ParseInt(entry.Atime, 10, 64); err == nil {
-					mtime = time.UnixMicro(atimeInt)
-				}
-			}
 			listDirectoryOutput.file = append(listDirectoryOutput.file, listDirectoryOutputFileStruct{
 				basename: relativeName,
 				eTag:     entry.Checksum,
-				mTime:    mtime,
+				mTime:    timeNow,
 				size:     uint64(entry.Size),
 			})
+		} else {
+			// Append relativeName (minus the trailing "/") as a subdirectory
+
+			listDirectoryOutput.subdirectory = append(listDirectoryOutput.subdirectory, strings.TrimSuffix(relativeName, "/"))
 		}
+	}
+
+	return
+}
+
+// `listObjects` is called to fetch a `page` of the objects. An empty continuationToken or
+// empty list of elements (`objects`) indicates the list of `objects` has been completely
+// enumerated. The `isTruncated` field will also align with this convention.
+func (aisContext *aistoreContextStruct) listObjects(listObjectsInput *listObjectsInputStruct) (listObjectsOutput *listObjectsOutputStruct, err error) {
+	var (
+		backend = aisContext.backend
+		lsmsg   = &apc.LsoMsg{
+			Props:  strings.Join([]string{apc.GetPropsName, apc.GetPropsETag, apc.GetPropsSize}, ","),
+			Prefix: backend.prefix,
+		}
+		timeNow = time.Now()
+	)
+
+	// Set continuation token if provided
+	if listObjectsInput.continuationToken != "" {
+		lsmsg.ContinuationToken = listObjectsInput.continuationToken
+	}
+
+	// Set page size if specified
+	if listObjectsInput.maxItems != 0 {
+		lsmsg.PageSize = int64(listObjectsInput.maxItems)
+	}
+
+	// List objects (one page)
+	var lsoResult *cmn.LsoRes                                                                          // List Objects Result
+	lsoResult, err = api.ListObjectsPage(aisContext.baseParams, aisContext.bck, lsmsg, api.ListArgs{}) // List Objects Page
+	if err != nil {
+		err = fmt.Errorf("[AIStore] listDirectory failed: %v", err)
+		return
+	}
+
+	// Parse results
+	listObjectsOutput = &listObjectsOutputStruct{
+		object:                make([]listObjectsOutputObjectStruct, 0),
+		nextContinuationToken: lsoResult.ContinuationToken,
+		isTruncated:           lsoResult.ContinuationToken != "",
+	}
+
+	// Process entries
+	for _, entry := range lsoResult.Entries {
+		// Remove the fullDirPath prefix
+		relativeName := strings.TrimPrefix(entry.Name, backend.prefix)
+
+		// Append relativeName as a object
+
+		listObjectsOutput.object = append(listObjectsOutput.object, listObjectsOutputObjectStruct{
+			path:  relativeName,
+			eTag:  entry.Checksum,
+			mTime: timeNow,
+			size:  uint64(entry.Size),
+		})
 	}
 
 	return

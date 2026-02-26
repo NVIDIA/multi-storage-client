@@ -123,7 +123,8 @@ func (ramContext *ramContextStruct) deleteFile(deleteFileInput *deleteFileInputS
 
 // `listDirectory` is called to fetch a `page` of the `directory` at the specified path.
 // An empty continuationToken or empty list of directory elements (`subdirectories` and `files`)
-// indicates the `directory` has been completely enumerated.
+// indicates the `directory` has been completely enumerated. The `isTruncated` field will also
+// align with this convention.
 func (ramContext *ramContextStruct) listDirectory(listDirectoryInput *listDirectoryInputStruct) (listDirectoryOutput *listDirectoryOutputStruct, err error) {
 	var (
 		continuationTokenAsUint64 uint64
@@ -141,6 +142,7 @@ func (ramContext *ramContextStruct) listDirectory(listDirectoryInput *listDirect
 		ramDirLeafDirMapLen       uint64
 		ramDirLeafFileMapLen      uint64
 		subdirectoryName          string
+		timeNow                   = time.Now()
 	)
 
 	dirName, fileName, ramDir = ramContext.findFullPathElements(ramContext.canonicalDirPath(listDirectoryInput.dirPath))
@@ -212,7 +214,7 @@ func (ramContext *ramContextStruct) listDirectory(listDirectoryInput *listDirect
 		subdirectory:          make([]string, 0, numDirToReturn),
 		file:                  make([]listDirectoryOutputFileStruct, 0, numFileToReturn),
 		nextContinuationToken: strconv.FormatUint(itemLimit, 10),
-		isTruncated:           (itemLimit) < (ramDirLeafDirMapLen + ramDirLeafFileMapLen),
+		isTruncated:           (itemLimit < (ramDirLeafDirMapLen + ramDirLeafFileMapLen)),
 	}
 
 	for itemIndex = continuationTokenAsUint64; itemIndex < itemLimit; itemIndex++ {
@@ -237,13 +239,153 @@ func (ramContext *ramContextStruct) listDirectory(listDirectoryInput *listDirect
 			listDirectoryOutput.file = append(listDirectoryOutput.file, listDirectoryOutputFileStruct{
 				basename: fileName,
 				eTag:     "",
-				mTime:    time.Now(),
+				mTime:    timeNow,
 				size:     uint64(len(fileContent)),
 			})
 		}
 	}
 
 	err = nil
+	return
+}
+
+// `appendObjects` is a func to append objects listed in a ramDirStruct's .fileMap as well as
+// recursively invoke itself for any child ramDirStruct's listed in .dirMap (prefix'd with
+// that ramDirStruct's .dirName+"/").
+func (ramContext *ramContextStruct) appendObjects(thisDir *ramDirStruct, thisDirPrefix string, objectList *[]listObjectsOutputObjectStruct) {
+	var (
+		childDir          *ramDirStruct
+		childDirBasename  string
+		childFileContent  []byte
+		childDirPrefix    string
+		childFileBasename string
+		dirMapIndex       int
+		dirMapLen         int
+		fileMapIndex      int
+		fileMapLen        int
+		ok                bool
+		timeNow           = time.Now()
+	)
+
+	fileMapLen = thisDir.fileMap.Len()
+
+	for fileMapIndex = range fileMapLen {
+		childFileBasename, childFileContent, ok = thisDir.fileMap.GetByIndex(fileMapIndex)
+		if !ok {
+			globals.logger.Fatalf("[FATAL] thisDir.fileMap.GetByIndex(fileMapIndex) returned !ok")
+		}
+
+		*objectList = append(*objectList, listObjectsOutputObjectStruct{
+			path:  thisDirPrefix + childFileBasename,
+			eTag:  "",
+			mTime: timeNow,
+			size:  uint64(len(childFileContent)),
+		})
+	}
+
+	dirMapLen = thisDir.dirMap.Len()
+
+	for dirMapIndex = range dirMapLen {
+		childDirBasename, childDir, ok = thisDir.dirMap.GetByIndex(dirMapIndex)
+		if !ok {
+			globals.logger.Fatalf("[FATAL] thisDir.dirMap.GetByIndex(dirMapIndex) returned !ok")
+		}
+
+		childDirPrefix = thisDirPrefix + childDirBasename + "/"
+
+		ramContext.appendObjects(childDir, childDirPrefix, objectList)
+	}
+}
+
+// `listObjects` is called to fetch a `page` of the objects. An empty continuationToken or
+// empty list of elements (`objects`) indicates the list of `objects` has been completely
+// enumerated. The `isTruncated` field will also align with this convention.
+func (ramContext *ramContextStruct) listObjects(listObjectsInput *listObjectsInputStruct) (listObjectsOutput *listObjectsOutputStruct, err error) {
+	var (
+		continuationTokenAsUint64 uint64
+		dirName                   []string
+		fileName                  string
+		itemIndex                 uint64
+		itemLimit                 uint64
+		maxItems                  uint64
+		numObjectToReturn         uint64
+		objectList                []listObjectsOutputObjectStruct
+		ramDir                    []*ramDirStruct
+		ramDirLeaf                *ramDirStruct
+	)
+
+	dirName, fileName, ramDir = ramContext.findFullPathElements(ramContext.canonicalDirPath(""))
+	if (len(dirName)+1 > len(ramDir)) || (fileName != "") {
+		// To align with other "real" object store backends, we just return an empty response
+
+		listObjectsOutput = &listObjectsOutputStruct{
+			object:                make([]listObjectsOutputObjectStruct, 0),
+			nextContinuationToken: "",
+			isTruncated:           false,
+		}
+
+		err = nil
+		return
+	}
+
+	if listObjectsInput.continuationToken == "" {
+		continuationTokenAsUint64 = 0
+	} else {
+		continuationTokenAsUint64, err = strconv.ParseUint(listObjectsInput.continuationToken, 10, 64)
+		if err != nil {
+			err = fmt.Errorf("strconv.ParseUint(listObjectsInput.continuationToken, 10, 64) failed: %v", err)
+			return
+		}
+	}
+
+	// At this point, we know we will succeed
+
+	ramDirLeaf = ramDir[len(ramDir)-1]
+
+	objectList = make([]listObjectsOutputObjectStruct, 0)
+
+	ramContext.appendObjects(ramDirLeaf, "", &objectList)
+
+	if listObjectsInput.maxItems == 0 {
+		maxItems = ramContext.backend.directoryPageSize // Possibly also zero
+	} else { // listDirectoryInput.maxItems != 0
+		if ramContext.backend.directoryPageSize == 0 {
+			maxItems = listObjectsInput.maxItems
+		} else {
+			if listObjectsInput.maxItems < ramContext.backend.directoryPageSize {
+				maxItems = listObjectsInput.maxItems
+			} else {
+				maxItems = ramContext.backend.directoryPageSize
+			}
+		}
+	}
+
+	if continuationTokenAsUint64 < uint64(len(objectList)) {
+		numObjectToReturn = uint64(len(objectList)) - continuationTokenAsUint64
+	} else {
+		numObjectToReturn = 0
+	}
+
+	if maxItems == 0 {
+		itemLimit = uint64(len(objectList))
+	} else {
+		if (continuationTokenAsUint64 + maxItems) > uint64(len(objectList)) {
+			numObjectToReturn = uint64(len(objectList)) - continuationTokenAsUint64
+		}
+		itemLimit = continuationTokenAsUint64 + maxItems
+	}
+
+	listObjectsOutput = &listObjectsOutputStruct{
+		object:                make([]listObjectsOutputObjectStruct, 0, numObjectToReturn),
+		nextContinuationToken: strconv.FormatUint(itemLimit, 10),
+		isTruncated:           (itemLimit < uint64(len(objectList))),
+	}
+
+	for itemIndex = continuationTokenAsUint64; itemIndex < itemLimit; itemIndex++ {
+		listObjectsOutput.object = append(listObjectsOutput.object, objectList[itemIndex])
+	}
+
+	// err = nil
 	return
 }
 
