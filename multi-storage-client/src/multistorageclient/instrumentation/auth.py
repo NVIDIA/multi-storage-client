@@ -13,7 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import datetime
 import fcntl
+import hashlib
+import json
 import logging
 import os
 import tempfile
@@ -119,6 +122,96 @@ class VaultCertificateProvider(CertificateProvider):
     def _get_cert_cache_dir(self) -> str:
         """Get the directory path for caching certificates."""
         return os.path.join(tempfile.gettempdir(), "msc", "observability", "mtls")
+
+    def _compute_config_fingerprint(self) -> str:
+        """Compute a SHA-256 fingerprint of the auth config that determines which certs to fetch."""
+        config_data = {
+            "vault_endpoint": self._vault_endpoint,
+            "vault_namespace": self._vault_namespace,
+            "approle_id": self._approle_id,
+            "approle_secret": self._approle_secret,
+            "mount_point": self._mount_point,
+            "secret_path": self._secret_path,
+            "cert_key": self._cert_key,
+            "key_key": self._key_key,
+            "ca_key": self._ca_key,
+        }
+        config_json = json.dumps(config_data, sort_keys=True)
+        return hashlib.sha256(config_json.encode()).hexdigest()
+
+    def _get_cache_metadata_path(self) -> str:
+        """Get the path to the cache metadata file."""
+        return os.path.join(self._get_cert_cache_dir(), ".cache_metadata")
+
+    def _read_cache_metadata(self) -> Optional[dict[str, Any]]:
+        """Read and return cached metadata, or None if missing/corrupt."""
+        metadata_path = self._get_cache_metadata_path()
+        if not os.path.exists(metadata_path):
+            return None
+        try:
+            with open(metadata_path) as f:
+                return json.load(f)
+        except (IOError, OSError, json.JSONDecodeError):
+            return None
+
+    def _write_cache_metadata(self) -> None:
+        """Write cache metadata (config fingerprint) to disk."""
+        metadata = {
+            "config_fingerprint": self._compute_config_fingerprint(),
+        }
+        metadata_path = self._get_cache_metadata_path()
+        with open(metadata_path, "w") as f:
+            json.dump(metadata, f)
+        os.chmod(metadata_path, 0o600)
+
+    def _is_client_cert_expired(self) -> bool:
+        """
+        Check if the cached client certificate has expired by parsing its X.509 notAfter field.
+
+        Returns True if the cert is expired or unreadable, False if still valid.
+        """
+        cert_path = self._get_cert_paths().client_certificate_file
+        try:
+            from cryptography import x509
+
+            with open(cert_path, "rb") as f:
+                cert = x509.load_pem_x509_certificate(f.read())
+            now = datetime.datetime.now(datetime.timezone.utc)
+            return now >= cert.not_valid_after_utc
+        except Exception:
+            logger.debug("Failed to parse certificate expiry, treating as expired", exc_info=True)
+            return True
+
+    def _is_cache_valid(self) -> bool:
+        """
+        Check if the disk cache is valid: cert files exist, config fingerprint matches,
+        and the client certificate has not expired.
+        """
+        if not self._certificates_exist_on_disk():
+            return False
+
+        metadata = self._read_cache_metadata()
+        if metadata is None:
+            return False
+
+        if metadata.get("config_fingerprint") != self._compute_config_fingerprint():
+            return False
+
+        if self._is_client_cert_expired():
+            return False
+
+        return True
+
+    def _invalidate_disk_cache(self) -> None:
+        """Remove cached certificate files and metadata from disk."""
+        paths = self._get_cert_paths()
+        for path in [paths.client_certificate_file, paths.client_key_file, paths.certificate_file]:
+            if os.path.exists(path):
+                os.remove(path)
+        metadata_path = self._get_cache_metadata_path()
+        if os.path.exists(metadata_path):
+            os.remove(metadata_path)
+        logger.debug("Invalidated cached certificates from disk")
 
     def _authenticate_to_vault(self) -> str:
         """
@@ -250,7 +343,13 @@ class VaultCertificateProvider(CertificateProvider):
         Fetch and return paths to mTLS certificate files.
 
         Uses file locking to ensure only one process fetches from Vault while others wait.
-        Certificates are cached on disk and reused across processes.
+        Certificates are cached on disk and reused across processes when:
+
+        - The auth config fingerprint matches the current config.
+        - The cached client certificate has not expired (checked via X.509 ``notAfter``).
+
+        If either condition fails, the disk cache is invalidated and certificates
+        are re-fetched from Vault.
 
         :return: CertificatePaths containing paths to client cert, key, and CA cert.
         :raises RuntimeError: If certificate fetching or writing fails.
@@ -258,7 +357,7 @@ class VaultCertificateProvider(CertificateProvider):
         if self._cached_paths is not None:
             return self._cached_paths
 
-        if self._certificates_exist_on_disk():
+        if self._is_cache_valid():
             logger.debug("Using cached certificates from disk")
             self._cached_paths = self._get_cert_paths()
             return self._cached_paths
@@ -271,15 +370,20 @@ class VaultCertificateProvider(CertificateProvider):
             logger.debug("Acquiring lock for certificate fetching")
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             try:
-                if self._certificates_exist_on_disk():
+                if self._is_cache_valid():
                     logger.debug("Certificates already fetched by another process")
                     self._cached_paths = self._get_cert_paths()
                     return self._cached_paths
+
+                if self._certificates_exist_on_disk():
+                    logger.info("Cached certificates are stale (config changed or cert expired), invalidating")
+                    self._invalidate_disk_cache()
 
                 logger.info("Fetching certificates from Vault")
                 client_token = self._authenticate_to_vault()
                 cert_data = self._fetch_certificates_from_vault(client_token)
                 self._cached_paths = self._write_certificates_to_disk(cert_data)
+                self._write_cache_metadata()
                 return self._cached_paths
             finally:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
