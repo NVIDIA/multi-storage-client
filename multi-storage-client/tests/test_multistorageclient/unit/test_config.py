@@ -724,6 +724,9 @@ def test_s3_storage_provider_passthrough_options() -> None:
                                     "max_attempts": 1,
                                     "mode": "adaptive",
                                 },
+                                "s3": {
+                                    "addressing_style": "virtual",
+                                },
                             },
                         }
                     }
@@ -757,6 +760,9 @@ def test_gcs_s3_storage_provider_passthrough_options() -> None:
                                     "max_attempts": 1,
                                     "mode": "adaptive",
                                 },
+                                "s3": {
+                                    "addressing_style": "virtual",
+                                },
                             },
                         }
                     }
@@ -789,6 +795,9 @@ def test_s8k_storage_provider_passthrough_options() -> None:
                                     "total_max_attempts": 2,
                                     "max_attempts": 1,
                                     "mode": "adaptive",
+                                },
+                                "s3": {
+                                    "addressing_style": "path",
                                 },
                             },
                         }

@@ -131,8 +131,24 @@ class S3StorageProvider(BaseStorageProvider):
         :param credentials_provider: The provider to retrieve S3 credentials.
         :param config_dict: Resolved MSC config.
         :param telemetry_provider: A function that provides a telemetry instance.
-        :param verify: Controls SSL certificate verification. Can be ``True`` (verify using system CA bundle, default),
-            ``False`` (skip verification), or a string path to a custom CA certificate bundle.
+        :param verify: Controls SSL certificate verification.
+            Can be ``True`` (verify using system CA bundle, default), ``False`` (skip verification), or a string path to a custom CA certificate bundle.
+        :param request_checksum_calculation: For :py:class:`botocore.config.Config`.
+            When the underlying S3 client should calculate request checksums.
+            See the equivalent option in the `AWS configuration file <https://boto3.amazonaws.com/v1/documentation/api/latest/guide/configuration.html#using-a-configuration-file>`_.
+        :param response_checksum_validation: For :py:class:`botocore.config.Config`.
+            When the underlying S3 client should validate response checksums.
+            See the equivalent option in the `AWS configuration file <https://boto3.amazonaws.com/v1/documentation/api/latest/guide/configuration.html#using-a-configuration-file>`_.
+        :param max_pool_connections: For :py:class:`botocore.config.Config`.
+            The maximum number of connections to keep in a connection pool.
+        :param connect_timeout: For :py:class:`botocore.config.Config`.
+            The time in seconds till a timeout exception is thrown when attempting to make a connection.
+        :param read_timeout: For :py:class:`botocore.config.Config`.
+            The time in seconds till a timeout exception is thrown when attempting to read from a connection.
+        :param retries: For :py:class:`botocore.config.Config`.
+            A dictionary for configuration related to retry behavior.
+        :param s3: For :py:class:`botocore.config.Config`.
+            A dictionary of S3 specific configurations.
         """
         super().__init__(
             base_path=base_path,
@@ -154,6 +170,7 @@ class S3StorageProvider(BaseStorageProvider):
             connect_timeout=kwargs.get("connect_timeout", DEFAULT_CONNECT_TIMEOUT),
             read_timeout=kwargs.get("read_timeout", DEFAULT_READ_TIMEOUT),
             retries=kwargs.get("retries"),
+            s3=kwargs.get("s3"),
         )
         self._transfer_config = TransferConfig(
             multipart_threshold=int(kwargs.get("multipart_threshold", MULTIPART_THRESHOLD)),
@@ -196,16 +213,18 @@ class S3StorageProvider(BaseStorageProvider):
         connect_timeout: Union[float, int, None] = None,
         read_timeout: Union[float, int, None] = None,
         retries: Optional[dict[str, Any]] = None,
+        s3: Optional[dict[str, Any]] = None,
     ):
         """
         Creates and configures the boto3 S3 client, using refreshable credentials if possible.
 
-        :param request_checksum_calculation: When the underlying S3 client should calculate request checksums. See the equivalent option in the `AWS configuration file <https://boto3.amazonaws.com/v1/documentation/api/latest/guide/configuration.html#using-a-configuration-file>`_.
-        :param response_checksum_validation: When the underlying S3 client should validate response checksums. See the equivalent option in the `AWS configuration file <https://boto3.amazonaws.com/v1/documentation/api/latest/guide/configuration.html#using-a-configuration-file>`_.
-        :param max_pool_connections: The maximum number of connections to keep in a connection pool.
-        :param connect_timeout: The time in seconds till a timeout exception is thrown when attempting to make a connection.
-        :param read_timeout: The time in seconds till a timeout exception is thrown when attempting to read from a connection.
-        :param retries: A dictionary for configuration related to retry behavior.
+        :param request_checksum_calculation: For :py:class:`botocore.config.Config`. When the underlying S3 client should calculate request checksums. See the equivalent option in the `AWS configuration file <https://boto3.amazonaws.com/v1/documentation/api/latest/guide/configuration.html#using-a-configuration-file>`_.
+        :param response_checksum_validation: For :py:class:`botocore.config.Config`. When the underlying S3 client should validate response checksums. See the equivalent option in the `AWS configuration file <https://boto3.amazonaws.com/v1/documentation/api/latest/guide/configuration.html#using-a-configuration-file>`_.
+        :param max_pool_connections: For :py:class:`botocore.config.Config`. The maximum number of connections to keep in a connection pool.
+        :param connect_timeout: For :py:class:`botocore.config.Config`. The time in seconds till a timeout exception is thrown when attempting to make a connection.
+        :param read_timeout: For :py:class:`botocore.config.Config`. The time in seconds till a timeout exception is thrown when attempting to read from a connection.
+        :param retries: For :py:class:`botocore.config.Config`. A dictionary for configuration related to retry behavior.
+        :param s3: For :py:class:`botocore.config.Config`. A dictionary of S3 specific configurations.
 
         :return: The configured S3 client.
         """
@@ -218,6 +237,7 @@ class S3StorageProvider(BaseStorageProvider):
                 retries=retries or {"mode": "standard"},
                 request_checksum_calculation=request_checksum_calculation,
                 response_checksum_validation=response_checksum_validation,
+                s3=s3,
             ),
         }
 

@@ -41,6 +41,8 @@ toc_object_entries_show_parents = "hide"
 
 # Intersphinx.
 intersphinx_mapping = {
+    "boto3": ("https://docs.aws.amazon.com/boto3/latest", None),
+    "botocore": ("https://docs.aws.amazon.com/botocore/latest", None),
     "opentelemetry-python": ("https://opentelemetry-python.readthedocs.io/en/latest", None),
     "python": ("https://docs.python.org/3", None),
 }
