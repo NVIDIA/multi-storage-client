@@ -65,6 +65,23 @@ default:
   script:
     - exit 0
 
+nix:
+  extends:
+    - .default
+  rules:
+    - changes:
+        - flake.lock
+        - flake.nix
+        - nix/**/*
+    - when: manual
+      allow_failure: true
+  script:
+    - |
+      nix develop --command bash -c "
+        cd nix &&
+        just build
+      "
+
 multi-storage-client:
   extends:
     - .default
@@ -72,6 +89,7 @@ multi-storage-client:
     - changes:
         - flake.lock
         - flake.nix
+        - nix/**/*
         - pyproject.toml
         - uv.lock
         - multi-storage-client/**/*
@@ -113,6 +131,7 @@ multi-storage-client-docs:
     - changes:
         - flake.lock
         - flake.nix
+        - nix/**/*
         - pyproject.toml
         - uv.lock
         - multi-storage-client/**/*
@@ -138,6 +157,7 @@ multi-storage-file-system:
     - changes:
         - flake.lock
         - flake.nix
+        - nix/**/*
         - multi-storage-client/pyproject.toml
         - multi-storage-file-system/**/*
     - when: manual

@@ -75,8 +75,16 @@ Key:
 ├── multi-storage-client-docs
 │   └── ...
 │
+│   # Client web UI.
+├── multi-storage-explorer
+│   └── ...
+│
 │   # File system Go package.
 ├── multi-storage-file-system
+│   └── ...
+│
+│   # Nix flake outputs.
+├── nix
 │   └── ...
 │
 │   # GitLab pipeline entrypoint.

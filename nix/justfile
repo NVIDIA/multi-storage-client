@@ -1,0 +1,17 @@
+#
+# just configuration.
+#
+# https://just.systems/man/en
+#
+
+# List recipes.
+help:
+    just --list
+
+# Run static analysis (format, lint, type check).
+analyze:
+    # Format.
+    if [[ -z "${CI:-}" ]]; then treefmt; else treefmt --fail-on-change; fi
+
+# Release build.
+build: analyze

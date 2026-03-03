@@ -11,6 +11,10 @@ python-binary := "python"
 help:
     just --list
 
+# Build nix.
+nix:
+    just nix/build
+
 # Build multi-storage-explorer.
 multi-storage-explorer:
     just multi-storage-explorer/build
@@ -28,4 +32,4 @@ multi-storage-file-system:
     just multi-storage-file-system/build
 
 # Release build.
-build: multi-storage-explorer multi-storage-client multi-storage-client-docs multi-storage-file-system
+build: nix multi-storage-explorer multi-storage-client multi-storage-client-docs multi-storage-file-system

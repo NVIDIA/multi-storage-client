@@ -1,0 +1,11 @@
+#
+# Treefmt configuration.
+#
+# https://treefmt.com/latest/getting-started/configure
+#
+
+[formatter.nixfmt]
+command = "nixfmt"
+includes = [
+    "*.nix"
+]
