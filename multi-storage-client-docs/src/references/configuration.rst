@@ -663,7 +663,7 @@ Options: See parameters in :py:class:`multistorageclient.providers.s3,StaticS3Cr
            secret_key: ${AWS_SECRET_KEY}
 
 ``AzureCredentials``
----------------------
+--------------------
 Static credentials provider for Azure Blob Storage.
 
 Options: See parameters in :py:class:`multistorageclient.providers.azure.StaticAzureCredentialsProvider`.
@@ -677,6 +677,21 @@ Options: See parameters in :py:class:`multistorageclient.providers.azure.StaticA
          type: AzureCredentials
          options:
            connection: ${AZURE_CONNECTION_STRING}
+
+``DefaultAzureCredentials``
+---------------------------
+Default credentials provider for Azure Blob Storage using Azure Identity (e.g. managed identity, Azure CLI, environment variables).
+
+Options: See parameters in :py:class:`multistorageclient.providers.azure.DefaultAzureCredentialsProvider`.
+
+.. code-block:: yaml
+   :caption: Example configuration.
+
+   profiles:
+     my-profile:
+       credentials_provider:
+         type: DefaultAzureCredentials
+         options: {}
 
 ``AISCredentials``
 -------------------

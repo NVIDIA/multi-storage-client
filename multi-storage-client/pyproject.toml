@@ -76,7 +76,8 @@ aistore = [
     "aistore>=1.16,<2"
 ]
 azure-storage-blob = [
-    "azure-storage-blob>=12.29.0b1,<13"
+    "azure-storage-blob>=12.29.0b1,<13",
+    "azure-identity>=1.25,<2"
 ]
 boto3 = [
     "boto3>=1.36,<2"

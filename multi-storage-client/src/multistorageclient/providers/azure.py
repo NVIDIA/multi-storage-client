@@ -21,6 +21,7 @@ from typing import IO, Any, Optional, TypeVar, Union
 
 from azure.core import MatchConditions
 from azure.core.exceptions import AzureError, HttpResponseError
+from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobPrefix, BlobServiceClient
 
 from ..constants import DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT
@@ -39,6 +40,8 @@ from .base import BaseStorageProvider
 _T = TypeVar("_T")
 
 PROVIDER = "azure"
+AZURE_CONNECTION_STRING_KEY = "connection"
+AZURE_CREDENTIAL_KEY = "azure_credential"
 
 
 class StaticAzureCredentialsProvider(CredentialsProvider):
@@ -62,6 +65,30 @@ class StaticAzureCredentialsProvider(CredentialsProvider):
             secret_key="",
             token=None,
             expiration=None,
+            custom_fields={AZURE_CONNECTION_STRING_KEY: self._connection},
+        )
+
+    def refresh_credentials(self) -> None:
+        pass
+
+
+class DefaultAzureCredentialsProvider(CredentialsProvider):
+    """
+    A concrete implementation of the :py:class:`multistorageclient.types.CredentialsProvider` that uses Azure Identity's :py:class:`azure.identity.DefaultAzureCredential` to authenticate with Blob Storage.
+
+    See :py:class:`azure.identity.DefaultAzureCredential` for provider options.
+    """
+
+    def __init__(self, **kwargs: dict[str, Any]):
+        self._credential = DefaultAzureCredential(**kwargs)
+
+    def get_credentials(self) -> Credentials:
+        return Credentials(
+            access_key="",
+            secret_key="",
+            token=None,
+            expiration=None,
+            custom_fields={AZURE_CREDENTIAL_KEY: self._credential},
         )
 
     def refresh_credentials(self) -> None:
@@ -126,9 +153,22 @@ class AzureBlobStorageProvider(BaseStorageProvider):
         """
         if self._credentials_provider:
             credentials = self._credentials_provider.get_credentials()
-            return BlobServiceClient.from_connection_string(
-                credentials.access_key, **self._client_optional_configuration
-            )
+
+            if isinstance(self._credentials_provider, StaticAzureCredentialsProvider):
+                return BlobServiceClient.from_connection_string(
+                    credentials.get_custom_field(AZURE_CONNECTION_STRING_KEY), **self._client_optional_configuration
+                )
+            elif isinstance(self._credentials_provider, DefaultAzureCredentialsProvider):
+                return BlobServiceClient(
+                    account_url=self._account_url,
+                    credential=credentials.get_custom_field(AZURE_CREDENTIAL_KEY),
+                    **self._client_optional_configuration,
+                )
+            else:
+                # Fallback to connection string if no built-in credentials provider is provided
+                return BlobServiceClient.from_connection_string(
+                    credentials.access_key, **self._client_optional_configuration
+                )
         else:
             return BlobServiceClient(account_url=self._account_url, **self._client_optional_configuration)
 

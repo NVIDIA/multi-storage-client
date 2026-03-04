@@ -36,6 +36,7 @@ def __getattr__(name: str) -> Any:
         # Azure
         "AzureBlobStorageProvider": ".azure",
         "StaticAzureCredentialsProvider": ".azure",
+        "DefaultAzureCredentialsProvider": ".azure",
         # GCS
         "GoogleStorageProvider": ".gcs",
         "GoogleIdentityPoolCredentialsProvider": ".gcs",

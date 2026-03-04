@@ -98,6 +98,7 @@ STORAGE_PROVIDER_MAPPING = {
 CREDENTIALS_PROVIDER_MAPPING = {
     "S3Credentials": "StaticS3CredentialsProvider",
     "AzureCredentials": "StaticAzureCredentialsProvider",
+    "DefaultAzureCredentials": "DefaultAzureCredentialsProvider",
     "AISCredentials": "StaticAISCredentialProvider",
     "GoogleIdentityPoolCredentialsProvider": "GoogleIdentityPoolCredentialsProvider",
     "GoogleServiceAccountCredentialsProvider": "GoogleServiceAccountCredentialsProvider",
