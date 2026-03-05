@@ -19,6 +19,8 @@ import time
 from datetime import datetime
 from typing import Optional, cast
 
+import pytest
+
 import multistorageclient as msc
 from multistorageclient.client import StorageClient
 from multistorageclient.sync.producer import MAX_BATCH_SIZE, MIN_BATCH_SIZE, ProducerThread
@@ -44,20 +46,10 @@ def _setup_test_clients(posix_profile: str, remote_profile: str, temp_posix, tem
     return posix_client, remote_client
 
 
-def _get_all_operations_from_queue(file_queue):
-    """Helper to extract all operations from batches in the queue."""
-    operations = []
-    while not file_queue.empty():
-        batch = file_queue.get()
-        if batch.operation != OperationType.STOP:
-            for item in batch.items:
-                operations.append((batch.operation, item))
-        else:
-            operations.append((batch.operation, None))
-    return operations
-
-
 class MockStorageClient:
+    def __init__(self):
+        self._metadata_provider: Optional[object] = None
+
     def list(self, **kwargs):
         raise Exception("No Such Method")
 
@@ -107,6 +99,107 @@ def test_match_file_metadata_seconds_resolution():
     source_info = ObjectMetadata(key="a", content_length=100, last_modified=base)
     target_info = ObjectMetadata(key="a", content_length=200, last_modified=base)
     assert producer._match_file_metadata(source_info, target_info) is False
+
+
+@pytest.mark.parametrize(
+    argnames=["preserve_source_attributes", "has_metadata_provider", "expected_match"],
+    argvalues=[[True, True, False], [True, False, True], [False, True, True]],
+)
+def test_match_file_metadata_attribute_changes_depend_on_metadata_provider(
+    preserve_source_attributes: bool,
+    has_metadata_provider: bool,
+    expected_match: bool,
+):
+    """Attribute deltas only affect matching when preserve_source_attributes and metadata provider are enabled."""
+    source_client = MockStorageClient()
+    target_client = MockStorageClient()
+    if has_metadata_provider:
+        target_client._metadata_provider = object()
+
+    producer = ProducerThread(
+        source_client=cast(StorageClient, source_client),
+        source_path="",
+        target_client=cast(StorageClient, target_client),
+        target_path="",
+        progress=ProgressBar(desc="", show_progress=False),
+        file_queue=queue.Queue(),
+        num_workers=1,
+        shutdown_event=threading.Event(),
+        preserve_source_attributes=preserve_source_attributes,
+    )
+    base = datetime(2025, 1, 1, 12, 0, 0)
+
+    source_info = ObjectMetadata(
+        key="a",
+        content_length=100,
+        last_modified=base.replace(microsecond=600000),
+        metadata={"version": "2"},
+    )
+    target_info = ObjectMetadata(
+        key="a",
+        content_length=100,
+        last_modified=base.replace(microsecond=500000),
+        metadata={"version": "1"},
+    )
+    assert producer._match_file_metadata(source_info, target_info) is expected_match
+
+
+@pytest.mark.parametrize(
+    argnames=["preserve_source_attributes", "has_metadata_provider", "expected_show_attributes"],
+    argvalues=[[True, True, True], [True, False, False], [False, True, False]],
+)
+def test_target_listing_requests_attributes_only_when_needed(
+    preserve_source_attributes: bool,
+    has_metadata_provider: bool,
+    expected_show_attributes: bool,
+):
+    source_client = MockStorageClient()
+    target_client = MockStorageClient()
+    if has_metadata_provider:
+        target_client._metadata_provider = object()
+
+    source_files = [
+        ObjectMetadata(
+            key="file1.txt",
+            content_length=100,
+            last_modified=datetime(2025, 1, 1, 0, 0, 0),
+            metadata={"version": "1"},
+        )
+    ]
+    target_files = [
+        ObjectMetadata(
+            key="file1.txt",
+            content_length=100,
+            last_modified=datetime(2025, 1, 1, 0, 0, 1),
+            metadata={"version": "1"},
+        )
+    ]
+
+    source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
+    list_kwargs: dict = {}
+
+    def mock_target_list(**kwargs):
+        list_kwargs.update(kwargs)
+        return iter(target_files)
+
+    target_client.list = mock_target_list  # type: ignore
+
+    producer_thread = ProducerThread(
+        source_client=cast(StorageClient, source_client),
+        source_path="",
+        target_client=cast(StorageClient, target_client),
+        target_path="",
+        progress=ProgressBar(desc="", show_progress=False),
+        file_queue=queue.Queue(),
+        num_workers=1,
+        shutdown_event=threading.Event(),
+        preserve_source_attributes=preserve_source_attributes,
+    )
+    producer_thread.start()
+    producer_thread.join()
+
+    assert producer_thread.error is None
+    assert list_kwargs.get("show_attributes") is expected_show_attributes
 
 
 def test_batch_size_validation():

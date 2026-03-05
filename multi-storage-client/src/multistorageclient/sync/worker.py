@@ -22,7 +22,7 @@ import shutil
 import tempfile
 import traceback
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Optional, Union, cast
+from typing import TYPE_CHECKING, Any, Optional, Union, cast
 
 import xattr
 from filelock import FileLock
@@ -56,6 +56,22 @@ def _build_target_file_path(source_path: str, target_path: str, file_metadata: O
     return target_file_path
 
 
+def _replace_object_metadata_attributes(
+    target_metadata: ObjectMetadata,
+    source_metadata: Optional[dict[str, Any]],
+) -> ObjectMetadata:
+    return ObjectMetadata(
+        key=target_metadata.key,
+        content_length=target_metadata.content_length,
+        last_modified=target_metadata.last_modified,
+        type=target_metadata.type,
+        content_type=target_metadata.content_type,
+        etag=target_metadata.etag,
+        storage_class=target_metadata.storage_class,
+        metadata=source_metadata,
+    )
+
+
 def _process_single_sync_operation(
     worker_id: str,
     source_client: "AbstractStorageClient",
@@ -64,6 +80,7 @@ def _process_single_sync_operation(
     target_path: str,
     file_metadata: ObjectMetadata,
     op: OperationType,
+    preserve_source_attributes: bool,
     result_queue: QueueLike,
     error_queue: QueueLike,
 ) -> None:
@@ -102,9 +119,14 @@ def _process_single_sync_operation(
                         logger.debug(f"File {target_file_path} already exists and is up-to-date, skipping copy")
 
                         if target_client._metadata_provider:
+                            metadata_for_tracking = (
+                                _replace_object_metadata_attributes(target_metadata, file_metadata.metadata)
+                                if preserve_source_attributes
+                                else target_metadata
+                            )
                             logger.debug(f"Adding existing file {target_file_path} to metadata provider for tracking")
                             with target_client._metadata_provider_lock or contextlib.nullcontext():
-                                target_client._metadata_provider.add_file(target_file_path, target_metadata)
+                                target_client._metadata_provider.add_file(target_file_path, metadata_for_tracking)
 
                         return
 
@@ -184,6 +206,7 @@ def _sync_worker_process(
     target_client: "AbstractStorageClient",
     target_path: str,
     num_worker_threads: int,
+    preserve_source_attributes: bool,
     file_queue: QueueLike,
     result_queue: QueueLike,
     error_queue: QueueLike,
@@ -222,6 +245,7 @@ def _sync_worker_process(
             target_client,
             target_path,
             num_worker_threads,
+            preserve_source_attributes,
             file_queue,
             result_queue,
             error_queue,
@@ -240,6 +264,7 @@ def _sync_worker_loop(
     target_client: "AbstractStorageClient",
     target_path: str,
     num_worker_threads: int,
+    preserve_source_attributes: bool,
     file_queue: QueueLike,
     result_queue: QueueLike,
     error_queue: QueueLike,
@@ -280,6 +305,7 @@ def _sync_worker_loop(
                         target_path,
                         file_metadata,
                         batch.operation,
+                        preserve_source_attributes,
                         result_queue,
                         error_queue,
                     )

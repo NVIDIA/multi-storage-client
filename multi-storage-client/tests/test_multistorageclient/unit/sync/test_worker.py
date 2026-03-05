@@ -35,6 +35,7 @@ from multistorageclient.sync.worker import (
     _copy_remote_to_posix,
     _copy_remote_to_remote,
     _create_exclusive_filelock,
+    _replace_object_metadata_attributes,
     _update_posix_metadata,
 )
 from multistorageclient.types import ObjectMetadata, SyncError
@@ -68,6 +69,25 @@ class MockStorageClient:
 
     def _is_posix_file_storage_provider(self) -> bool:
         return False
+
+
+def test_replace_object_metadata_attributes():
+    """Test metadata replace helper preserves fields and replaces metadata payload."""
+    target_metadata = ObjectMetadata(
+        key="target/path/file.txt",
+        content_length=4,
+        last_modified=datetime(2025, 1, 1, 10, 0, 0),
+        etag="etag-1",
+        metadata={"existing": "value", "version": "1"},
+    )
+
+    replaced = _replace_object_metadata_attributes(target_metadata, {"version": "2", "owner": "ml-team"})
+
+    assert replaced.key == target_metadata.key
+    assert replaced.content_length == target_metadata.content_length
+    assert replaced.last_modified == target_metadata.last_modified
+    assert replaced.etag == target_metadata.etag
+    assert replaced.metadata == {"version": "2", "owner": "ml-team"}
 
 
 def test_sync_with_worker_error_fail_fast():

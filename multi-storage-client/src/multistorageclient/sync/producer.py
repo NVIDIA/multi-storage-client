@@ -156,7 +156,14 @@ class ProducerThread(threading.Thread):
         # Compare timestamps at seconds resolution to avoid spurious mismatches from sub-second differences.
         source_sec = source_info.last_modified.replace(microsecond=0)
         target_sec = target_info.last_modified.replace(microsecond=0)
-        return source_info.content_length == target_info.content_length and source_sec <= target_sec
+
+        if source_info.content_length != target_info.content_length or source_sec > target_sec:
+            return False
+
+        if self.preserve_source_attributes and getattr(self.target_client, "_metadata_provider", None):
+            return (source_info.metadata or {}) == (target_info.metadata or {})
+
+        return True
 
     def _is_hidden(self, path: str) -> bool:
         """Check if a path contains any hidden components (starting with dot)."""
@@ -165,8 +172,8 @@ class ProducerThread(threading.Thread):
         parts = path.split("/")
         return any(part.startswith(".") for part in parts)
 
-    def _create_source_files_iterator(self):
-        """Create an iterator from source_files that yields ObjectMetadata."""
+    def _create_source_iterator(self):
+        """Create source iterator and enforce preserve_source_attributes policy."""
         if self.source_files is not None:
             for rel_file_path in self.source_files:
                 rel_file_path = rel_file_path.lstrip("/")
@@ -181,21 +188,25 @@ class ProducerThread(threading.Thread):
                 except FileNotFoundError:
                     logger.warning(f"File in source_files not found at source: {source_file_path}")
                     continue
+            return
+
+        for source_metadata in self.source_client.list(
+            prefix=self.source_path,
+            show_attributes=self.preserve_source_attributes,
+            follow_symlinks=self.follow_symlinks,
+        ):
+            if not self.preserve_source_attributes:
+                source_metadata.metadata = None
+            yield source_metadata
 
     def run(self):
         try:
-            if self.source_files is not None:
-                source_iter = iter(self._create_source_files_iterator())
-            else:
-                source_iter = iter(
-                    self.source_client.list(
-                        prefix=self.source_path,
-                        show_attributes=self.preserve_source_attributes,
-                        follow_symlinks=self.follow_symlinks,
-                    )
-                )
+            source_iter = iter(self._create_source_iterator())
 
-            target_iter = iter(self.target_client.list(prefix=self.target_path))
+            target_show_attributes = bool(
+                self.preserve_source_attributes and getattr(self.target_client, "_metadata_provider", None)
+            )
+            target_iter = iter(self.target_client.list(prefix=self.target_path, show_attributes=target_show_attributes))
 
             source_file = next(source_iter, None)
             target_file = next(target_iter, None)

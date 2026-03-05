@@ -585,6 +585,97 @@ def test_sync_from_with_attributes(temp_data_store_type: type[tempdatastore.Temp
         print("All attributes verified successfully in sync_from!")
 
 
+def test_sync_from_metadata_only_update_with_metadata_provider():
+    """Metadata-only updates should be tracked without re-upload when metadata provider is configured."""
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    source_profile = "source-local"
+    target_profile = "target-local"
+
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as source_store,
+        tempdatastore.TemporaryPOSIXDirectory() as target_store,
+    ):
+        target_profile_config = target_store.profile_config_dict() | {
+            "metadata_provider": {
+                "type": "manifest",
+                "options": {
+                    "manifest_path": DEFAULT_MANIFEST_BASE_DIR,
+                    "writable": True,
+                    "allow_overwrites": True,
+                },
+            }
+        }
+        config.setup_msc_config(
+            config_dict={
+                "profiles": {
+                    source_profile: source_store.profile_config_dict(),
+                    target_profile: target_profile_config,
+                }
+            }
+        )
+
+        source_client, source_path = msc.resolve_storage_client(f"msc://{source_profile}/source")
+        target_client, target_path = msc.resolve_storage_client(f"msc://{target_profile}/target")
+
+        relative_file = "nested/file.txt"
+        source_file_path = os.path.join(source_path, relative_file)
+        target_file_path = os.path.join(target_path, relative_file)
+        file_content = b"same-content"
+
+        source_client.write(source_file_path, file_content, attributes={"version": "1"})
+
+        first_sync_result = target_client.sync_from(
+            source_client,
+            source_path,
+            target_path,
+            preserve_source_attributes=True,
+        )
+        assert first_sync_result.total_files_added == 1
+        assert target_client.info(target_file_path).metadata == {"version": "1"}
+
+        source_client.write(source_file_path, file_content, attributes={"version": "2", "owner": "ml-team"})
+        target_info_before_second_sync = target_client.info(target_file_path)
+        source_physical_path = source_client.get_posix_path(source_file_path)
+        assert source_physical_path is not None
+
+        target_timestamp_at_seconds = target_info_before_second_sync.last_modified.replace(microsecond=0).timestamp()
+        os.utime(source_physical_path, (target_timestamp_at_seconds, target_timestamp_at_seconds))
+
+        second_sync_result = target_client.sync_from(
+            source_client,
+            source_path,
+            target_path,
+            preserve_source_attributes=True,
+        )
+
+        assert second_sync_result.total_files_added == 1
+        assert target_client.read(target_file_path) == file_content
+        assert target_client.info(target_file_path).metadata == {"version": "2", "owner": "ml-team"}
+
+        source_client.write(source_file_path, file_content, attributes={"version": "3"})
+        target_info_before_third_sync = target_client.info(target_file_path)
+        target_timestamp_at_seconds = target_info_before_third_sync.last_modified.replace(microsecond=0).timestamp()
+        os.utime(source_physical_path, (target_timestamp_at_seconds, target_timestamp_at_seconds))
+
+        third_sync_result = target_client.sync_from(
+            source_client,
+            source_path,
+            target_path,
+            preserve_source_attributes=True,
+        )
+        assert third_sync_result.total_files_added == 1
+        assert target_client.info(target_file_path).metadata == {"version": "3"}
+
+        fourth_sync_result = target_client.sync_from(
+            source_client,
+            source_path,
+            target_path,
+            preserve_source_attributes=True,
+        )
+        assert fourth_sync_result.total_files_added == 0
+
+
 @pytest.mark.parametrize(
     argnames=["temp_data_store_type"],
     argvalues=[[tempdatastore.TemporaryAWSS3Bucket]],
