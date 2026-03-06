@@ -25,8 +25,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Optional
 
-import hvac
 import requests
+
+try:
+    import hvac
+except ImportError:
+    hvac = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +112,12 @@ class VaultCertificateProvider(CertificateProvider):
         :param key_key: Key name for the client key in the secret
         :param ca_key: Key name for the CA certificate in the secret
         """
+        if hvac is None:
+            raise ImportError(
+                "The 'hvac' package is required for Vault integration. "
+                "Install it with: pip install 'multi-storage-client[vault]'"
+            )
+
         self._vault_endpoint = vault_endpoint
         self._vault_namespace = vault_namespace
         self._approle_id = approle_id
@@ -220,6 +230,7 @@ class VaultCertificateProvider(CertificateProvider):
         :return: Vault client token
         :raises RuntimeError: If authentication fails
         """
+        assert hvac is not None
         client = hvac.Client(url=self._vault_endpoint, namespace=self._vault_namespace)
 
         retry_count = 0
@@ -255,6 +266,7 @@ class VaultCertificateProvider(CertificateProvider):
         :return: Dictionary containing certificate data
         :raises RuntimeError: If fetching certificates fails
         """
+        assert hvac is not None
         client = hvac.Client(url=self._vault_endpoint, namespace=self._vault_namespace, token=client_token)
 
         retry_count = 0

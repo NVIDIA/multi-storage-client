@@ -15,6 +15,7 @@
 
 import datetime
 import os
+import sys
 import tempfile
 from unittest.mock import MagicMock, patch
 
@@ -501,3 +502,22 @@ class TestCertificatePaths:
         assert paths.client_certificate_file == "/path/to/cert.crt"
         assert paths.client_key_file == "/path/to/key.key"
         assert paths.certificate_file == "/path/to/ca.crt"
+
+
+class TestOptionalDependencyImport:
+    def test_auth_module_importable_without_hvac(self):
+        """Test that the auth module can be imported without hvac installed."""
+        import importlib
+
+        from multistorageclient.instrumentation import auth as auth_module
+
+        with patch.dict(sys.modules, {"hvac": None}):
+            importlib.reload(auth_module)
+
+        importlib.reload(auth_module)
+
+    def test_constructor_raises_import_error_without_hvac(self, vault_config):
+        """Test that VaultCertificateProvider raises ImportError when hvac is not installed."""
+        with patch("multistorageclient.instrumentation.auth.hvac", None):
+            with pytest.raises(ImportError, match="pip install 'multi-storage-client\\[vault\\]'"):
+                VaultCertificateProvider(**vault_config)
