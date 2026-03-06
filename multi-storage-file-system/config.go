@@ -17,9 +17,14 @@ import (
 const (
 	defaultMountPoint = "/mnt"
 
-	defaultAIStoreSkipTLSCertificateVerify = true
+	defaultAIStoreSkipTLSCertificateVerify = false
 	defaultAIStoreProvider                 = "s3"
 	defaultAIStoreTimeout                  = 30000 * time.Millisecond
+
+	defaultGCSSkipTLSCertificateVerify = false
+	defaultGCSRetryBaseDelay           = 10 * time.Millisecond
+	defaultGCSRetryNextDelayMultiplier = float64(2.0)
+	defaultGCSRetryMaxDelay            = 2000 * time.Millisecond
 
 	defaultRAMMaxTotalObjects      = uint64(10000)
 	defaultRAMMaxTotalObjectSpace  = uint64(1073741824) // 2^30 == 1Gi
@@ -257,15 +262,18 @@ func checkConfigFile() (err error) {
 		backendAsMap                          map[string]interface{}
 		backendAsStructNew                    *backendStruct
 		backendAsStructOld                    *backendStruct
+		backendConfigAIStoreAsInterface       interface{}
+		backendConfigAIStoreAsMap             map[string]interface{}
+		backendConfigAIStoreAsStruct          *backendConfigAIStoreStruct
+		backendConfigGCSAsInterface           interface{}
+		backendConfigGCSAsMap                 map[string]interface{}
+		backendConfigGCSAsStruct              *backendConfigGCSStruct
 		backendConfigRAMAsInterface           interface{}
 		backendConfigRAMAsMap                 map[string]interface{}
 		backendConfigRAMAsStruct              *backendConfigRAMStruct
 		backendConfigS3AsInterface            interface{}
 		backendConfigS3AsMap                  map[string]interface{}
 		backendConfigS3AsStruct               *backendConfigS3Struct
-		backendConfigAIStoreAsInterface       interface{}
-		backendConfigAIStoreAsMap             map[string]interface{}
-		backendConfigAIStoreAsStruct          *backendConfigAIStoreStruct
 		config                                *configStruct
 		configFileContent                     []byte
 		configFileMap                         map[string]interface{}
@@ -1011,6 +1019,64 @@ func checkConfigFile() (err error) {
 				}
 
 				backendAsStructNew.backendTypeSpecifics = backendConfigAIStoreAsStruct
+			case "GCS":
+				backendConfigGCSAsInterface, ok = backendAsMap["GCS"]
+				if ok {
+					backendConfigGCSAsMap, ok = backendConfigGCSAsInterface.(map[string]interface{})
+					if !ok {
+						err = fmt.Errorf("bad GCS section at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigGCSAsStruct = &backendConfigGCSStruct{}
+
+					backendConfigGCSAsStruct.apiKey, ok = parseString(backendConfigGCSAsMap, "api_key", "")
+					if !ok {
+						err = fmt.Errorf("bad GCS.api_key at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigGCSAsStruct.endpoint, ok = parseString(backendConfigGCSAsMap, "endpoint", "")
+					if !ok {
+						err = fmt.Errorf("bad GCS.endpoint at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigGCSAsStruct.skipTLSCertificateVerify, ok = parseBool(backendConfigGCSAsMap, "skip_tls_certificate_verify", defaultGCSSkipTLSCertificateVerify)
+					if !ok {
+						err = fmt.Errorf("bad GCS.skip_tls_certificate_verify at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigGCSAsStruct.retryBaseDelay, ok = parseMilliseconds(backendConfigGCSAsMap, "retry_base_delay", defaultGCSRetryBaseDelay)
+					if !ok {
+						err = fmt.Errorf("bad GCS.retry_base_delay at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigGCSAsStruct.retryNextDelayMultiplier, ok = parseFloat64(backendConfigGCSAsMap, "retry_next_delay_multiplier", defaultGCSRetryNextDelayMultiplier)
+					if !ok || (backendConfigS3AsStruct.retryNextDelayMultiplier < float64(1.0)) {
+						err = fmt.Errorf("bad GCS.retry_next_delay_multiplier at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigGCSAsStruct.retryMaxDelay, ok = parseMilliseconds(backendConfigGCSAsMap, "retry_max_delay", defaultGCSRetryMaxDelay)
+					if !ok {
+						err = fmt.Errorf("bad GCS.retry_max_delay at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+				} else {
+					backendConfigGCSAsStruct = &backendConfigGCSStruct{
+						apiKey:                   "",
+						endpoint:                 "",
+						skipTLSCertificateVerify: defaultGCSSkipTLSCertificateVerify,
+						retryBaseDelay:           defaultGCSRetryBaseDelay,
+						retryNextDelayMultiplier: defaultGCSRetryNextDelayMultiplier,
+						retryMaxDelay:            defaultGCSRetryMaxDelay,
+					}
+				}
+
+				backendAsStructNew.backendTypeSpecifics = backendConfigGCSAsStruct
 			case "RAM":
 				backendConfigRAMAsInterface, ok = backendAsMap["RAM"]
 				if ok {
@@ -1139,7 +1205,7 @@ func checkConfigFile() (err error) {
 					}
 				}
 
-				backendConfigS3AsStruct.skipTLSCertificateVerify, ok = parseBool(backendConfigS3AsMap, "skip_tls_certificate_verify", true)
+				backendConfigS3AsStruct.skipTLSCertificateVerify, ok = parseBool(backendConfigS3AsMap, "skip_tls_certificate_verify", false)
 				if !ok {
 					err = fmt.Errorf("bad S3.skip_tls_certificate_verify at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
 					return
@@ -1421,6 +1487,36 @@ func checkConfigFile() (err error) {
 
 					if backendAsStructOld.backendTypeSpecifics.(*backendConfigAIStoreStruct).timeout != backendAsStructNew.backendTypeSpecifics.(*backendConfigAIStoreStruct).timeout {
 						err = fmt.Errorf("cannot change AIStore.timeout in backends[\"%s\"]", dirName)
+						return
+					}
+				case "GCS":
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigGCSStruct).apiKey != backendAsStructNew.backendTypeSpecifics.(*backendConfigGCSStruct).apiKey {
+						err = fmt.Errorf("cannot change GCS.api_key in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigGCSStruct).endpoint != backendAsStructNew.backendTypeSpecifics.(*backendConfigGCSStruct).endpoint {
+						err = fmt.Errorf("cannot change GCS.endpoint in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigGCSStruct).skipTLSCertificateVerify != backendAsStructNew.backendTypeSpecifics.(*backendConfigGCSStruct).skipTLSCertificateVerify {
+						err = fmt.Errorf("cannot change GCS.skip_tls_certificate_verify in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigGCSStruct).retryBaseDelay != backendAsStructNew.backendTypeSpecifics.(*backendConfigGCSStruct).retryBaseDelay {
+						err = fmt.Errorf("cannot change GCS.retry_base_delay in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigGCSStruct).retryNextDelayMultiplier != backendAsStructNew.backendTypeSpecifics.(*backendConfigGCSStruct).retryNextDelayMultiplier {
+						err = fmt.Errorf("cannot change GCS.retry_next_delay_multiplier in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigGCSStruct).retryMaxDelay != backendAsStructNew.backendTypeSpecifics.(*backendConfigGCSStruct).retryMaxDelay {
+						err = fmt.Errorf("cannot change GCS.retry_max_delay in backends[\"%s\"]", dirName)
 						return
 					}
 				case "RAM":

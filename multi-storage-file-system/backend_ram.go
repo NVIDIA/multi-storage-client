@@ -21,6 +21,7 @@ type ramDirEntryFileMapStruct struct {
 
 }
 
+// `ramDirStruct` represents a directory.
 type ramDirStruct struct {
 	dirName string // rootDir will be ""
 	dirMap  ramDirEntryDirMapStruct

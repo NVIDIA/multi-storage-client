@@ -94,7 +94,7 @@ the `backends` array as described by settings in the following table:
 | bucket_container_name           | string               |                     | Name of `bucket` (a.k.a. `container`) to present via POSIX                                                               |
 | prefix                          | string               |                  "" | Subdirectory inside `bucket_container_name` to narrow what to present via POSIX; if !="", should end with "/"            |
 | trace_level                     | decimal              |                   0 | If == 0, no tracing; if >= 1, errors traced; if >= 2, successes traced; if > 2, success details traced                   |
-| backend_type                    | string               |                     | One of the supported object store backends (i.e. `AIStore`, `RAM`, or `S3`)                                              |
+| backend_type                    | string               |                     | One of the supported object store backends (i.e. `AIStore`, `GCS`, `RAM`, or `S3`)                                       |
 | <backend_type_specific>         | (sub-field section)  |         (see below) | A section containing `backend-type`-specific settings                                                                    |
 
 Note that precisely one section (specific content appropriate for the
@@ -111,11 +111,27 @@ the following table:
 | Setting                     | Units                | Default                                                 | Description                                                            |
 | :-------------------------- | :------------------- | ------------------------------------------------------: | :--------------------------------------------------------------------- |
 | endpoint                    | string               |                                       "${AIS_ENDPOINT}" | AIStore Endpoint (including the "http:// or "https://" scheme)         |
-| skip_tls_certificate_verify | boolean              |                                                    true | If true & using HTTPS (TLS), TLS Certificate Verification skipped      |
+| skip_tls_certificate_verify | boolean              |                                                   false | If true & using HTTPS (TLS), TLS Certificate Verification skipped      |
 | authnToken                  | string               |                                    "${AIS_AUTHN_TOKEN}" | If != "", specifies AUTHN Token                                        |
 | authnTokenFile              | string               | "${AIS_AUTHN_TOKEN_FILE:=~/.config/ais/cli/auth.token}" | If != "", specifies location of AUTHN Token file                       |
 | provider                    | string               |                                                    "s3" | IF != "ais", specifies the backend of which bucket contents are cached |
 | timeout                     | decimal milliseconds |                                                   30000 | Limit on allowed duration of requests (including retries)              |
+
+### GCS Backend Configuration
+
+If `backend_type` is specified as "GCS", a sub-section of the `backend`
+configuration (whose name is `GCS`) must be provided. The GCS-specific
+settings must be provided (or the defaults accepted) as described in
+the following table:
+
+| Setting                      | Units                | Default | Description                                                                         |
+| :--------------------------- | :------------------- | ------: | :---------------------------------------------------------------------------------- |
+| api_key                      |                      |      "" | If empty, no authentication is performed                                            |
+| endpoint                     | string               |      "" | GCS Endpoint (including the "http://", "grpc://", "https://", or "grpcs://" scheme) |
+| skip_tls_certificate_verify  | boolean              |   false | If true & using HTTPS/GRPCS, TLS Certificate Verification skipped                   |
+| retry_base_delay             | decimal milliseconds |      10 | Delay between failure response and first retry                                      |
+| retry_next_delay_multiplier  | float                |     2.0 | Must be >= 1.0; used to compute delay between prior failure and next retry          |
+| retry_max_delay              | decimal milliseconds |    2000 | Stops retries if next delay would exceed this limit                                 |
 
 ### RAM Backend Configuration
 
@@ -148,7 +164,7 @@ the following table:
 | credentials_file_path        | string               | "${AWS_SHARED_CREDENTIALS_FILE:-\${HOME}/.aws/credentials}" | If use_credentials_env == true, optionally specifies location of credentials file                 |
 | access_key_id                | string               |                                      "${AWS_ACCESS_KEY_ID}" | If use_credentials_env == false, specifies S3 Access Key                                          |
 | secret_access_key            | string               |                                  "${AWS_SECRET_ACCESS_KEY}" | If use_credentials_env == false, specifies S3 Secret Key                                          |
-| skip_tls_certificate_verify  | boolean              |                                                        true | If true & using HTTPS (TLS), TLS Certificate Verification skipped                                 |
+| skip_tls_certificate_verify  | boolean              |                                                       false | If true & using HTTPS (TLS), TLS Certificate Verification skipped                                 |
 | virtual_hosted_style_request | boolean              |                                                       false | If false, uses "path style" URLs                                                                  |
 | unsigned_payload             | boolean              |                                                       false | If true, skips the "signing" of payloads                                                          |
 | retry_base_delay             | decimal milliseconds |                                                          10 | If == 0, retry is disabled ; delay between failure response and first retry                       |

@@ -58,7 +58,7 @@ services:
     container_name: msfs_fake-gcs
     expose:
       - 4443
-    command: ["-scheme", "http", "-data", "/data"]
+    command: ["-scheme", "http", "-external-url", "http://fake-gcs:4443", "-port", "4443", "-data", "/data"]
   garage:
     build:
       context: ..

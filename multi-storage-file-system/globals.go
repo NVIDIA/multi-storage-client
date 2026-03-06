@@ -24,11 +24,20 @@ const (
 type backendConfigAIStoreStruct struct {
 	// From <config-file>
 	endpoint                 string        //  JSON/YAML "endpoint"                     default:"${AIS_ENDPOINT}"
-	skipTLSCertificateVerify bool          //  JSON/YAML "skip_tls_certificate_verify"  default:true
+	skipTLSCertificateVerify bool          //  JSON/YAML "skip_tls_certificate_verify"  default:false
 	authnToken               string        //  JSON/YAML "authn_token"                  default:"${AIS_AUTHN_TOKEN}"
 	authnTokenFile           string        //  JSON/YAML "authn_token_file"             default:"${AIS_AUTHN_TOKEN_FILE:=~/.config/ais/cli/auth.token}"
 	provider                 string        //  JSON/YAML "provider"                     default:"s3"
 	timeout                  time.Duration //  JSON/YAML "timeout"                      default:30000
+}
+
+type backendConfigGCSStruct struct {
+	apiKey                   string        // JSON/YAML "api_key"                      default:""
+	endpoint                 string        // JSON/YAML "endpoint"                     default:""
+	skipTLSCertificateVerify bool          // JSON/YAML "skip_tls_certificate_verify"  default:false
+	retryBaseDelay           time.Duration // JSON/YAML "retry_base_delay"             default:10
+	retryNextDelayMultiplier float64       // JSON/YAML "retry_next_delay_multiplier"  default:2.0
+	retryMaxDelay            time.Duration // JSON/YAML "retry_max_delay"              default:2000
 }
 
 // `backendConfigRAMStruct` describes a backend's RAM-specific settings.
@@ -51,7 +60,7 @@ type backendConfigS3Struct struct {
 	credentialsFilePath       string        // JSON/YAML "credentials_file_path"        default:"${AWS_SHARED_CREDENTIALS_FILE:-~/.aws/credentials}"
 	accessKeyID               string        // JSON/YAML "access_key_id"                default:"${AWS_ACCESS_KEY_ID}"
 	secretAccessKey           string        // JSON/YAML "secret_access_key"            default:"${AWS_SECRET_ACCESS_KEY}"
-	skipTLSCertificateVerify  bool          // JSON/YAML "skip_tls_certificate_verify"  default:true
+	skipTLSCertificateVerify  bool          // JSON/YAML "skip_tls_certificate_verify"  default:false
 	virtualHostedStyleRequest bool          // JSON/YAML "virtual_hosted_style_request" default:false
 	unsignedPayload           bool          // JSON/YAML "unsigned_payload"             default:false
 	retryBaseDelay            time.Duration // JSON/YAML "retry_base_delay"             default:10

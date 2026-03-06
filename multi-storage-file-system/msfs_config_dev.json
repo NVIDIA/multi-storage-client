@@ -28,6 +28,14 @@
             }
         },
         {
+            "dir_name": "gcs",
+            "bucket_container_name": "dev",
+            "backend_type": "GCS",
+            "GCS": {
+                "endpoint": "http://fake-gcs:4443"
+            }
+        },
+        {
             "dir_name": "minio",
             "bucket_container_name": "dev",
             "backend_type": "S3",
