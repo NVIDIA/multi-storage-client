@@ -70,7 +70,10 @@ def len_should_wait(expected_len: int) -> Callable[[Iterable], bool]:
 
 def delete_files(storage_client: msc.StorageClient, prefix: str) -> None:
     for object in storage_client.list(prefix=prefix):
-        storage_client.delete(object.key)
+        try:
+            storage_client.delete(object.key)
+        except FileNotFoundError:
+            pass
 
 
 def verify_shortcuts(profile: str, prefix: str) -> None:
