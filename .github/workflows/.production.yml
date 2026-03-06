@@ -13,11 +13,16 @@ defaults:
 jobs:
   get-tag-message:
     name: Get Tag Message
+    permissions:
+      contents: read
     outputs:
       tag-message: ${{ steps.get-tag-message.outputs.tag-message }}
     runs-on: ubuntu-latest
     steps:
       - uses: DeterminateSystems/nix-installer-action@main
+        with:
+          summarize: false
+      - uses: DeterminateSystems/magic-nix-cache-action@main
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.ref }}
@@ -39,14 +44,25 @@ jobs:
       id-token: write
     runs-on: ubuntu-latest
     steps:
+      # Assumes the Source child workflow ran before in the same parent workflow.
+      #
+      # All `actions/upload-artifact` paths must include a `-` path to preserve workspace structure.
+      #
+      # https://github.com/actions/upload-artifact/issues/174
+      # - uses: actions/download-artifact@v7
+      #   with:
+      #     merge-multiple: true
       - uses: DeterminateSystems/nix-installer-action@main
+        with:
+          summarize: false
+      - uses: DeterminateSystems/magic-nix-cache-action@main
       - uses: actions/checkout@v6
       # Set locale for Sphinx.
       #
       # `locale` comes with most Unix-like operating systems.
       #
       # https://github.com/sphinx-doc/sphinx/issues/11739
-      - working-directory: ./multi-storage-client-docs
+      - working-directory: multi-storage-client-docs
         run: |
           echo 'All locales:'
           locale --all-locales
@@ -69,8 +85,19 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: DeterminateSystems/nix-installer-action@main
+        with:
+          summarize: false
+      - uses: DeterminateSystems/magic-nix-cache-action@main
       - uses: actions/checkout@v6
-      - working-directory: ./multi-storage-file-system
+      # Assumes the Source child workflow ran before in the same parent workflow.
+      #
+      # All `actions/upload-artifact` paths must include a `-` path to preserve workspace structure.
+      #
+      # https://github.com/actions/upload-artifact/issues/174
+      # - uses: actions/download-artifact@v7
+      #   with:
+      #     merge-multiple: true
+      - working-directory: multi-storage-file-system
         run: |
           just package
       # Skip creation if a release for the tag already exists.

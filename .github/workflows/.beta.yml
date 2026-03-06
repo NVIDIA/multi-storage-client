@@ -1,0 +1,43 @@
+#
+# GitHub Actions workflow configuration.
+#
+# https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions
+#
+
+name: Beta
+on:
+  workflow_call:
+defaults:
+  run:
+    shell: nix develop --command bash -e {0}
+jobs:
+  run-e2e-tests:
+    name: Run E2E Tests
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      matrix:
+        python-binary:
+          - python3.10
+          - python3.11
+          - python3.12
+          - python3.13
+      fail-fast: false
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: nix develop ${{ github.workspace }}#"\"${{ matrix.python-binary }}\"" --command bash -e {0}
+    steps:
+      - uses: DeterminateSystems/nix-installer-action@main
+        with:
+          summarize: false
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: actions/checkout@v6
+      - working-directory: multi-storage-client
+        # TODO: Broken until credentials migrated to workload identity federation.
+        run: |
+          export OCI_CONFIG_FILE=${OCI_CLIENT_CONFIGURATION_BETA}
+          export MSC_CONFIG=${MULTI_STORAGE_CLIENT_CONFIGURATION_BETA}
+          cp ${MULTI_STORAGE_CLIENT_RCLONE_CONF_BETA} "~/.rclone.conf"
+          just python-binary=${{ matrix.python-binary }} run-e2e-tests

@@ -22,6 +22,7 @@
   netcat-gnu,
   nix,
   nixfmt,
+  nodejs-slim,
   openssh,
   pyright,
   python310,
@@ -60,11 +61,23 @@ mkShell {
     treefmt
     # Bun.
     bun
+    # Node.js.
+    #
+    # Vitest uses `node:inspector` for coverage which Bun doesn't support yet.
+    #
+    # https://github.com/oven-sh/bun/issues/4145
+    nodejs-slim
     # Python.
     #
-    # Maturin effectively requires us to only have 1 Python package per shell.
+    # mkShell effectively requires us to only have 1 Python interpreter per shell.
     #
-    # https://github.com/PyO3/maturin/issues/2198
+    # https://github.com/PyO3/maturin/discussions/2176
+    # https://github.com/NixOS/nixpkgs/issues/167695
+    #
+    # Specifically, `EXT_SUFFIX` for all Python interpreters is set to the value for the final one specified.
+    #
+    # Maturin will emit Python extension files using the virtual environment Python interpreter version's expected extension suffix.
+    # Python interpreters with the wrong `EXT_SUFFIX` won't load the Python extension files and throw a ModuleNotFoundError.
     pythonInterpreter
     # Rust.
     rustup

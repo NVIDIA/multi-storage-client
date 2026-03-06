@@ -24,8 +24,6 @@ prepare-toolchain:
     else \
         uv sync --all-extras --locked --python {{python-binary}}; \
     fi
-    # Run Rust tests.
-    cd rust && cargo test
 
 # Start the Python REPL.
 start-repl: prepare-toolchain
@@ -146,17 +144,19 @@ start-telemetry-systems: stop-telemetry-systems
 run-unit-tests: prepare-toolchain start-storage-systems && stop-storage-systems
     # Remove test artifacts.
     rm -rf .reports/unit
-    # Unit test.
+    # Run Rust unit tests.
+    cd rust && cargo test
+    # Run Python unit tests.
     uv run pytest --cov --cov-report term --cov-report html --cov-report xml --durations 10 --junit-xml .reports/unit/pytest.xml --numprocesses auto --timeout 120 --ignore tests/test_multistorageclient/unit/contrib/test_ray.py
 
 # Run load tests. For dummy load generation when experimenting with telemetry.
 run-load-tests: prepare-toolchain start-storage-systems && stop-storage-systems
-    # Load test.
+    # Run load tests.
     uv run pytest --minutes 30 tests/test_multistorageclient/load/local.py
 
 # Run Ray tests.
 run-ray-tests: prepare-toolchain
-    # Ray test.
+    # Run Ray unit tests.
     uv run pytest --cov --cov-append --cov-report term --cov-report html --cov-report xml --timeout 120 tests/test_multistorageclient/unit/contrib/test_ray.py
 
 # Create package archives.
@@ -188,7 +188,7 @@ package: prepare-toolchain
         esac; \
         PYTHON_VERSION=$(uv run {{python-binary}} -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')") && \
         echo "Building for target $TARGET with $PYTHON_VERSION" && \
-        env --unset _PYTHON_HOST_PLATFORM uv run maturin build --out dist --release --target $TARGET --zig -i $PYTHON_VERSION; \
+        env --unset _PYTHON_HOST_PLATFORM uv run maturin build --interpreter $PYTHON_VERSION --out dist --release --target $TARGET --zig; \
     done
 
 # Release build.
@@ -199,12 +199,12 @@ build: analyze run-unit-tests run-ray-tests
 run-e2e-tests: prepare-toolchain
     # Remove test artifacts.
     rm -rf .reports/e2e
-    # E2E test.
+    # Run E2E tests.
     uv run pytest --durations 10 --junit-xml .reports/e2e/pytest.xml --numprocesses auto tests/test_multistorageclient/e2e
 
 # Run minimal verification without any optional dependencies.
 run-minimal-verification:
     # Prepare the virtual environment without optional dependencies.
     if [[ -z "${CI:-}" ]]; then uv sync --python {{python-binary}}; else uv sync --locked --python {{python-binary}}; fi
-    # Minimal verification.
+    # Run minimal verification unit tests.
     uv run pytest tests/test_multistorageclient/unit/test_minimal.py

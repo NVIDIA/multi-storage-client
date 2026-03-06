@@ -4,48 +4,43 @@
 # https://just.systems/man/en
 #
 
-# Output directory for built assets
-output-dir := "../multi-storage-client/src/multistorageclient/explorer/static"
-
 # List recipes.
 help:
     just --list
 
-# Install Node.js dependencies.
-install:
+# Prepare the toolchain.
+prepare-toolchain:
+    # Install JavaScript dependencies.
     if [[ -z "${CI:-}" ]]; then bun install; else bun install --frozen-lockfile; fi
 
-# Start development server (port 5175, proxies API to localhost:8888).
-start-frontend: install
-    bun run dev
+# Start the frontend server.
+start-frontend: prepare-toolchain
+    # Start the frontend server.
+    bun run vite dev
 
-# Start the backend server for development
+# Start the backend server.
 start-backend:
+    # Start the backend server.
     just ../multi-storage-client/start-explorer
 
-# Run ESLint.
-lint: install
-    bun run lint
+# Run static analysis (format, lint).
+analyze: prepare-toolchain
+    # Format + lint.
+    if [[ -z "${CI:-}" ]]; then bun run eslint --fix; else bun run eslint; fi
 
-# Fix ESLint issues.
-lint-fix: install
-    bun run lint:fix
+# Run unit tests.
+run-unit-tests: prepare-toolchain
+    # Remove test artifacts.
+    rm -rf .reports/unit
+    # Run unit tests.
+    bun run vitest run --coverage
 
-# Run frontend unit tests.
-test: install
-    bun run test
+# Create frontend bundle.
+bundle: prepare-toolchain
+    # Remove frontend bundle.
+    rm -rf ../multi-storage-client/src/multistorageclient/explorer/static
+    # Create frontend bundle.
+    bun run vite build
 
-# Run tests with coverage report.
-test-coverage: install
-    bun run test:coverage
-
-# Build production assets to backend static directory.
-build: install lint test
-    bun run build
-    @echo "Frontend assets built to {{output-dir}}"
-
-# Clean all build artifacts.
-clean:
-    rm -rf node_modules
-    rm -rf {{output-dir}}/*
-    @echo "Cleaned build artifacts"
+# Release build.
+build: analyze run-unit-tests bundle

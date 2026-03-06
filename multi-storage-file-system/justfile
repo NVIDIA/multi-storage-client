@@ -6,7 +6,7 @@
 
 # MSFS matches the MSC version.
 version := `cd ../multi-storage-client && uv version --short`
-tag := `git describe --dirty --always`
+tag := `git describe --always --dirty`
 
 # List recipes.
 help:

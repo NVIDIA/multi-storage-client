@@ -145,23 +145,23 @@ def test_path_glob(file_storage_config):
         create_file(msc.Path(f"{temp_dir}/dir1/dir3/testfile.txt"))
 
         path = msc.Path(f"{temp_dir}/")
-        assert list(path.glob("*")) == [msc.Path(f"{temp_dir}/dir1")]
-        assert list(path.glob("dir1/*")) == [
+        assert set(path.glob("*")) == {msc.Path(f"{temp_dir}/dir1")}
+        assert set(path.glob("dir1/*")) == {
             msc.Path(f"{temp_dir}/dir1/dir2"),
             msc.Path(f"{temp_dir}/dir1/dir3"),
             msc.Path(f"{temp_dir}/dir1/testfile.txt"),
-        ]
-        assert list(path.glob("dir1/dir2/*")) == [msc.Path(f"{temp_dir}/dir1/dir2/testfile.txt")]
-        assert list(path.glob("**/*.txt")) == [
+        }
+        assert set(path.glob("dir1/dir2/*")) == {msc.Path(f"{temp_dir}/dir1/dir2/testfile.txt")}
+        assert set(path.glob("**/*.txt")) == {
             msc.Path(f"{temp_dir}/dir1/testfile.txt"),
             msc.Path(f"{temp_dir}/dir1/dir2/testfile.txt"),
             msc.Path(f"{temp_dir}/dir1/dir3/testfile.txt"),
-        ]
-        assert list(path.rglob("*.txt")) == [
+        }
+        assert set(path.rglob("*.txt")) == {
             msc.Path(f"{temp_dir}/dir1/testfile.txt"),
             msc.Path(f"{temp_dir}/dir1/dir2/testfile.txt"),
             msc.Path(f"{temp_dir}/dir1/dir3/testfile.txt"),
-        ]
+        }
 
 
 def test_shutil_rmtree(file_storage_config):

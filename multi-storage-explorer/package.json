@@ -4,18 +4,6 @@
   "version": "0.0.0",
   "type": "module",
   "description": "Frontend for MSC Explorer - Web UI for Multi-Storage Client",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
-    "lint": "eslint .",
-    "lint:fix": "eslint . --fix",
-    "clean": "rm -rf ../multi-storage-client/src/multistorageclient/explorer/static/* && echo 'Cleaned build artifacts'",
-    "build:prod": "npm run build && echo 'Frontend built to ../multi-storage-client/src/multistorageclient/explorer/static/'",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
-  },
   "dependencies": {
     "@ant-design/icons": "^6.1.0",
     "antd": "^6.2.3",

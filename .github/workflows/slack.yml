@@ -21,6 +21,7 @@ jobs:
     name: Discussion Created
     if: ${{ github.event_name == 'discussion' && github.event.action == 'created' }}
     environment: Slack
+    permissions: {}
     runs-on: ubuntu-latest
     steps:
       - uses: slackapi/slack-github-action@v2
@@ -32,6 +33,7 @@ jobs:
     name: Issue Opened
     if: ${{ github.event_name == 'issues' && github.event.action == 'opened' }}
     environment: Slack
+    permissions: {}
     runs-on: ubuntu-latest
     steps:
       - uses: slackapi/slack-github-action@v2
@@ -43,6 +45,7 @@ jobs:
     name: Issue Reopened
     if: ${{ github.event_name == 'issues' && github.event.action == 'reopened' }}
     environment: Slack
+    permissions: {}
     runs-on: ubuntu-latest
     steps:
       - uses: slackapi/slack-github-action@v2

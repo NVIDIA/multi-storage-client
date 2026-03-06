@@ -17,6 +17,7 @@ export default defineConfig({
         'src/mocks/**',
         'src/main.jsx',
       ],
+      reportsDirectory: '.reports/unit/coverage'
     },
   },
 });

@@ -1,0 +1,37 @@
+#
+# GitHub Actions workflow configuration.
+#
+# https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions
+#
+
+name: Pull Request
+on:
+  pull_request:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  source:
+    name: Source
+    uses: ./.github/workflows/.source.yml
+  status:
+    name: Status
+    needs:
+      - source
+    if: ${{ always() }}
+    permissions:
+      contents: read
+      statuses: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            github.rest.repos.createCommitStatus({
+              ...context.repo,
+              // The branch ruleset's required status check name must match the workflow name.
+              context: context.workflow,
+              sha: context.sha,
+              state: ${{ toJSON(needs.*.result) }}.every(status => status == 'success') ? 'success' : 'error',
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}?pr=${context.payload.pull_request.number}`
+            })
