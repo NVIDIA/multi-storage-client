@@ -33,6 +33,7 @@
   tempo,
   treefmt,
   uv,
+  versitygw,
   zip,
   zlib,
 }:
@@ -81,7 +82,7 @@ mkShell {
     multi-storage-client.packages.aistore
     azurite
     fake-gcs-server
-    multi-storage-client.packages.versitygw
+    versitygw
     # Telemetry systems.
     grafana
     mimir
