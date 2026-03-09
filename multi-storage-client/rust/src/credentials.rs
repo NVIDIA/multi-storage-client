@@ -36,7 +36,7 @@ struct CredentialCache<C> {
 // refreshing, and Python integration, avoiding code duplication.
 struct CoreCredentialsProvider {
     // Python credentials provider object
-    py_provider: PyObject,
+    py_provider: Py<PyAny>,
     // Async mutex to coordinate credential refresh operations (prevents thundering herd)
     refresh_lock: Arc<Mutex<()>>,
     // Time in seconds before expiration to trigger credential refresh
@@ -44,7 +44,7 @@ struct CoreCredentialsProvider {
 }
 
 impl CoreCredentialsProvider {
-    fn new(py_provider: PyObject, refresh_threshold: Option<i64>) -> Self {
+    fn new(py_provider: Py<PyAny>, refresh_threshold: Option<i64>) -> Self {
         Self {
             py_provider,
             refresh_lock: Arc::new(Mutex::new(())),
@@ -77,7 +77,7 @@ impl CoreCredentialsProvider {
 impl Clone for CoreCredentialsProvider {
     fn clone(&self) -> Self {
         Self {
-            py_provider: Python::with_gil(|py| self.py_provider.clone_ref(py)),
+            py_provider: Python::attach(|py| self.py_provider.clone_ref(py)),
             refresh_lock: Arc::clone(&self.refresh_lock),
             refresh_threshold: self.refresh_threshold,
         }
@@ -118,7 +118,7 @@ fn py_err_to_object_store_error(e: PyErr) -> object_store::Error {
 }
 
 // A credential provider that bridges Python credentials provider to Rust's object_store for AWS.
-// 
+//
 // This provider wraps a Python credentials object and handles credential caching,
 // refreshing, and thread-safe access for AWS/S3-compatible storage services.
 pub struct AwsCredentialsProvider {
@@ -146,7 +146,7 @@ impl std::fmt::Debug for AwsCredentialsProvider {
 }
 
 impl AwsCredentialsProvider {
-    pub fn new(py_provider: PyObject, refresh_threshold: Option<i64>) -> Self {
+    pub fn new(py_provider: Py<PyAny>, refresh_threshold: Option<i64>) -> Self {
         Self {
             core: Arc::new(CoreCredentialsProvider::new(py_provider, refresh_threshold)),
             cached_credentials: Arc::new(RwLock::new(None)),
@@ -155,12 +155,12 @@ impl AwsCredentialsProvider {
 
     fn get_credentials(&self, py: Python) -> PyResult<CredentialCache<AwsCredential>> {
         let credentials = self.core.py_provider.call_method0(py, "get_credentials")?;
-        
+
         let access_key = credentials.getattr(py, "access_key")?.extract::<String>(py)?;
         let secret_key = credentials.getattr(py, "secret_key")?.extract::<String>(py)?;
         let token = credentials.getattr(py, "token")?.extract::<Option<String>>(py)?;
         let expiration = credentials.getattr(py, "expiration")?.extract::<Option<String>>(py)?;
-        
+
         let expire_time = parse_expiration(expiration);
 
         Ok(CredentialCache {
@@ -175,13 +175,13 @@ impl AwsCredentialsProvider {
 }
 
 // Implements object_store's credential provider by delegating to MSC's Python credentials provider.
-// 
+//
 // Uses a two-tier caching strategy with double-checked locking to minimize Python GIL
 // contention while ensuring credentials are refreshed before expiration.
 #[async_trait]
 impl object_store::CredentialProvider for AwsCredentialsProvider {
     type Credential = AwsCredential;
-    
+
     // Retrieves credentials from Python credentials provider, refreshing them if necessary.
     async fn get_credential(&self) -> object_store::Result<Arc<Self::Credential>> {
         // Fast path: Check the cache without blocking
@@ -193,10 +193,10 @@ impl object_store::CredentialProvider for AwsCredentialsProvider {
                 }
             }
         }
-        
+
         // Acquire refresh lock to coordinate refresh (prevents thundering herd)
         let _refresh_guard = self.core.acquire_refresh_lock().await;
-        
+
         // Double-check: another thread might have refreshed while we waited
         {
             let cached_guard = self.cached_credentials.read().unwrap();
@@ -206,14 +206,14 @@ impl object_store::CredentialProvider for AwsCredentialsProvider {
                 }
             }
         }
-        
+
         // Spawn blocking task to refresh credentials
         let cached_arc = Arc::clone(&self.cached_credentials);
         let core = Arc::clone(&self.core);
         let this = self.clone();
 
         tokio::task::spawn_blocking(move || {
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 // Get the credentials from the Python credentials provider
                 let mut refreshed_credential = this.get_credentials(py)?;
 
@@ -222,20 +222,20 @@ impl object_store::CredentialProvider for AwsCredentialsProvider {
                     core.refresh_credentials(py)?;
                     refreshed_credential = this.get_credentials(py)?;
                 }
-                
+
                 // Create credential to return
                 let credential = AwsCredential {
                     key_id: refreshed_credential.credential.key_id.clone(),
                     secret_key: refreshed_credential.credential.secret_key.clone(),
                     token: refreshed_credential.credential.token.clone(),
                 };
-                
+
                 // Update cache with write lock
                 {
                     let mut cached_guard = cached_arc.write().unwrap();
                     *cached_guard = Some(refreshed_credential);
                 }
-                
+
                 Ok(credential)
             })
         })
@@ -317,7 +317,7 @@ impl std::fmt::Debug for GcpCredentialsProvider {
 }
 
 impl GcpCredentialsProvider {
-    pub fn new(py_provider: PyObject, refresh_threshold: Option<i64>) -> Self {
+    pub fn new(py_provider: Py<PyAny>, refresh_threshold: Option<i64>) -> Self {
         Self {
             core: Arc::new(CoreCredentialsProvider::new(py_provider, refresh_threshold)),
             cached_credentials: Arc::new(RwLock::new(None)),
@@ -326,7 +326,7 @@ impl GcpCredentialsProvider {
 
     fn get_credentials(&self, py: Python) -> PyResult<CredentialCache<GcpCredential>> {
         let credentials = self.core.py_provider.call_method0(py, "get_credentials")?;
-        
+
         // GCP Rust credentials provider requires a non-None bearer token
         let token = credentials
             .getattr(py, "token")?
@@ -336,9 +336,9 @@ impl GcpCredentialsProvider {
                     "GCP Rust credentials provider requires a non-None `token` string."
                 )
             })?;
-        
+
         let expiration = credentials.getattr(py, "expiration")?.extract::<Option<String>>(py)?;
-        
+
         let expire_time = parse_expiration(expiration);
 
         Ok(CredentialCache {
@@ -351,13 +351,13 @@ impl GcpCredentialsProvider {
 }
 
 // Implements object_store's credential provider for GCP by delegating to MSC's Python credentials provider.
-// 
+//
 // Uses a two-tier caching strategy with double-checked locking to minimize Python GIL
 // contention while ensuring credentials are refreshed before expiration.
 #[async_trait]
 impl object_store::CredentialProvider for GcpCredentialsProvider {
     type Credential = GcpCredential;
-    
+
     // Retrieves GCP credentials from Python credentials provider, refreshing them if necessary.
     async fn get_credential(&self) -> object_store::Result<Arc<Self::Credential>> {
         // Fast path: Check the cache without blocking
@@ -369,10 +369,10 @@ impl object_store::CredentialProvider for GcpCredentialsProvider {
                 }
             }
         }
-        
+
         // Acquire refresh lock to coordinate refresh (prevents thundering herd)
         let _refresh_guard = self.core.acquire_refresh_lock().await;
-        
+
         // Double-check: another thread might have refreshed while we waited
         {
             let cached_guard = self.cached_credentials.read().unwrap();
@@ -382,14 +382,14 @@ impl object_store::CredentialProvider for GcpCredentialsProvider {
                 }
             }
         }
-        
+
         // Spawn blocking task to refresh credentials
         let cached_arc = Arc::clone(&self.cached_credentials);
         let core = Arc::clone(&self.core);
         let this = self.clone();
 
         tokio::task::spawn_blocking(move || {
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 // Get the credentials from the Python credentials provider
                 let mut refreshed_credential = this.get_credentials(py)?;
 
@@ -398,18 +398,18 @@ impl object_store::CredentialProvider for GcpCredentialsProvider {
                     core.refresh_credentials(py)?;
                     refreshed_credential = this.get_credentials(py)?;
                 }
-                
+
                 // Return the refreshed credentials and cache them
                 let credential = GcpCredential {
                     bearer: refreshed_credential.credential.bearer.clone(),
                 };
-                
+
                 // Update cache with write lock
                 {
                     let mut cached_guard = cached_arc.write().unwrap();
                     *cached_guard = Some(refreshed_credential);
                 }
-                
+
                 Ok(credential)
             })
         })
@@ -432,7 +432,7 @@ mod tests {
     // Initialize Python interpreter once for all tests
     fn initialize_python() {
         INIT.call_once(|| {
-            pyo3::prepare_freethreaded_python();
+            Python::initialize();
         });
     }
 
@@ -456,7 +456,7 @@ mod tests {
         secret_key: &str,
         token: Option<&str>,
         expiration: Option<&str>,
-    ) -> PyObject {
+    ) -> Py<PyAny> {
         Py::new(
             py,
             MockCredentials {
@@ -500,7 +500,7 @@ mod tests {
             }
         }
 
-        fn get_credentials(&mut self, py: Python) -> PyResult<PyObject> {
+        fn get_credentials(&mut self, py: Python) -> PyResult<Py<PyAny>> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
             let expiration = self.expiration.read().unwrap().clone();
             Ok(create_mock_credentials(
@@ -549,7 +549,7 @@ mod tests {
     #[test]
     fn test_should_refresh_expired() {
         initialize_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let mock_provider = Py::new(
                 py,
                 MockCredentialsProvider::new(
@@ -573,7 +573,7 @@ mod tests {
     #[test]
     fn test_get_credentials_from_python() {
         initialize_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let mock_provider = Py::new(
                 py,
                 MockCredentialsProvider::new(
@@ -595,11 +595,11 @@ mod tests {
             assert_eq!(cached.credential.token, Some("test_token".to_string()));
         });
     }
-    
+
     #[test]
     fn test_refresh_credentials_succeeds() {
         initialize_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let mock_provider = Py::new(
                 py,
                 MockCredentialsProvider::new(
@@ -612,11 +612,11 @@ mod tests {
             .unwrap();
 
             let provider = AwsCredentialsProvider::new(mock_provider.into(), None);
-            
+
             // Call refresh_credentials through core which should succeed
             let result = provider.core.refresh_credentials(py);
             assert!(result.is_ok());
-            
+
             // Then get credentials should return fresh credentials
             let creds = provider.get_credentials(py);
             assert!(creds.is_ok());
@@ -629,10 +629,10 @@ mod tests {
     async fn test_concurrent_access_async() {
         use object_store::CredentialProvider;
         use tokio::sync::Barrier;
-        
+
         initialize_python();
-        
-        let (mock_provider_obj, provider) = Python::with_gil(|py| {
+
+        let (mock_provider_obj, provider) = Python::attach(|py| {
             let mock_provider_obj = Py::new(
                 py,
                 MockCredentialsProvider::new(
@@ -643,39 +643,39 @@ mod tests {
                 ),
             )
             .unwrap();
-            
+
             let provider = Arc::new(AwsCredentialsProvider::new(mock_provider_obj.clone_ref(py).into(), Some(0)));
-            
+
             (mock_provider_obj, provider)
         });
-        
+
         let barrier = Arc::new(Barrier::new(4));
         let mut handles = vec![];
-        
+
         for thread_id in 0..4 {
             let provider_clone = Arc::clone(&provider);
             let barrier_clone = Arc::clone(&barrier);
-            
+
             let handle = tokio::spawn(async move {
                 barrier_clone.wait().await;
-                
+
                 let result = provider_clone.get_credential().await;
                 assert!(result.is_ok(), "Thread {} failed to get credentials", thread_id);
-                
+
                 let cred = result.unwrap();
                 assert_eq!(cred.key_id, "concurrent_access");
                 assert_eq!(cred.secret_key, "concurrent_secret");
                 assert_eq!(cred.token, Some("concurrent_token".to_string()));
             });
-            
+
             handles.push(handle);
         }
-        
+
         for handle in handles {
             handle.await.expect("Task panicked");
         }
-        
-        Python::with_gil(|py| {
+
+        Python::attach(|py| {
             let call_count = mock_provider_obj.borrow(py).get_call_count();
             let refresh_count = mock_provider_obj.borrow(py).get_refresh_count();
             println!("Total credential calls: {}, refresh calls: {}", call_count, refresh_count);
@@ -706,7 +706,7 @@ mod tests {
             Self { token, expiration }
         }
 
-        fn get_credentials(&self, py: Python) -> PyResult<PyObject> {
+        fn get_credentials(&self, py: Python) -> PyResult<Py<PyAny>> {
             Py::new(
                 py,
                 MockGcpCredentials {
@@ -723,7 +723,7 @@ mod tests {
     #[test]
     fn test_gcp_get_credentials_with_valid_token() {
         initialize_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let mock_provider = Py::new(
                 py,
                 MockGcpCredentialsProvider::new(
@@ -745,7 +745,7 @@ mod tests {
     #[test]
     fn test_gcp_none_token_error() {
         initialize_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let mock_provider = Py::new(
                 py,
                 MockGcpCredentialsProvider::new(None, None),

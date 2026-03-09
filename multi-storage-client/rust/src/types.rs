@@ -15,7 +15,7 @@
 
 use pyo3::prelude::*;
 
-#[pyclass(get_all, set_all)]
+#[pyclass(from_py_object, get_all, set_all)]
 #[derive(Clone, Debug, Default)]
 pub struct ObjectMetadata {
     pub key: String,
@@ -43,7 +43,7 @@ impl ObjectMetadata {
     }
 }
 
-#[pyclass(get_all, set_all)]
+#[pyclass(from_py_object, get_all, set_all)]
 #[derive(Clone, Debug, Default)]
 pub struct ListResult {
     pub objects: Vec<ObjectMetadata>,
@@ -64,7 +64,7 @@ pub struct ByteRangeLike {
     pub size: u64,
 }
 
-#[pyclass(get_all, set_all)]
+#[pyclass(from_py_object, get_all, set_all)]
 #[derive(Clone, Debug)]
 pub struct RustRetryConfig {
     pub attempts: usize,

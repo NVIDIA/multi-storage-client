@@ -23,7 +23,7 @@ use object_store::ClientOptions;
 use object_store::limit::LimitStore;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule};
-use pyo3::{PyAny, PyObject};
+use pyo3::{Py, PyAny};
 use pyo3::exceptions::PyException;
 use pyo3_async_runtimes::tokio::future_into_py;
 use pyo3_bytes::PyBytes;
@@ -94,12 +94,12 @@ fn extract_status_code(err: &object_store::Error) -> Option<u16> {
 fn format_error_chain(err: &object_store::Error) -> String {
     let mut chain = vec![err.to_string()];
     let mut current = err.source();
-    
+
     while let Some(source) = current {
         chain.push(source.to_string());
         current = source.source();
     }
-    
+
     chain.join(" -> ")
 }
 
@@ -113,7 +113,7 @@ impl From<object_store::Error> for StorageError {
     /// 4. Wraps other errors as generic `ObjectStoreError`.
     fn from(err: object_store::Error) -> Self {
         let error_msg = format_error_chain(&err);
-        
+
         // Attempt to extract status code from the error chain if it's an HTTP error
         let status_code = extract_status_code(&err);
 
@@ -217,7 +217,7 @@ fn get_retry_config(retry_config: Option<&RustRetryConfig>) -> RetryConfig {
             max_backoff: Duration::from_secs(rust_retry_config.max_backoff),
             base: rust_retry_config.backoff_multiplier,
         };
-        
+
         RetryConfig {
             backoff: backoff_config,
             max_retries: rust_retry_config.attempts,
@@ -230,7 +230,7 @@ fn get_retry_config(retry_config: Option<&RustRetryConfig>) -> RetryConfig {
             max_backoff: Duration::from_secs(DEFAULT_RETRY_MAX_BACKOFF),
             base: DEFAULT_RETRY_BACKOFF_BASE,
         };
-        
+
         RetryConfig {
             backoff: backoff_config,
             max_retries: DEFAULT_RETRY_MAX_RETRIES,
@@ -242,7 +242,7 @@ fn get_retry_config(retry_config: Option<&RustRetryConfig>) -> RetryConfig {
 fn create_store(
     provider: &str,
     configs: Option<&HashMap<String, ConfigValue>>,
-    py_credentials_provider: Option<PyObject>,
+    py_credentials_provider: Option<Py<PyAny>>,
     max_pool_connections: usize,
     retry_config: Option<&RustRetryConfig>,
 ) -> PyResult<Arc<dyn ObjectStore>> {
@@ -299,7 +299,7 @@ fn parse_path(path: &str) -> Result<Path, StorageError> {
 
 fn build_s3_store<'a>(
     configs: Option<&'a HashMap<String, ConfigValue>>,
-    py_credentials_provider: Option<PyObject>,
+    py_credentials_provider: Option<Py<PyAny>>,
     retry_config: Option<&RustRetryConfig>,
 ) -> PyResult<Arc<dyn ObjectStore>> {
     // TODO: Add support for other configuration fields of AmazonS3Builder, full list here:
@@ -387,7 +387,7 @@ fn build_s3_store<'a>(
 
 fn build_gcs_store<'a>(
     configs: Option<&'a HashMap<String, ConfigValue>>,
-    py_credentials_provider: Option<PyObject>,
+    py_credentials_provider: Option<Py<PyAny>>,
     retry_config: Option<&RustRetryConfig>,
 ) -> PyResult<Arc<dyn ObjectStore>> {
     let mut builder = GoogleCloudStorageBuilder::new();
@@ -502,11 +502,11 @@ impl RustClient {
     fn new(
         provider: &str,
         configs: Option<&Bound<'_, PyDict>>,
-        credentials_provider: Option<PyObject>,
+        credentials_provider: Option<Py<PyAny>>,
         retry: Option<RustRetryConfig>,
     ) -> PyResult<Self> {
         let provider = provider.to_lowercase();
-        
+
         // Convert Python Dict to Rust HashMap<String, ConfigValue>
         let mut configs_map = HashMap::new();
         let mut max_concurrency = DEFAULT_MAX_CONCURRENCY;
@@ -516,9 +516,9 @@ impl RustClient {
         if let Some(configs_dict) = configs {
             for (key, value) in configs_dict.iter() {
                 let key_str = key.extract::<String>()?;
-                
+
                 // Convert Python values to ConfigValue
-                Python::with_gil(|_py| {
+                Python::attach(|_py| {
                     if key_str == "max_concurrency" {
                         if let Ok(int_val) = value.extract::<i64>() {
                             max_concurrency = int_val as usize;
@@ -547,7 +547,7 @@ impl RustClient {
                 })?;
             }
         }
-        
+
         let store = create_store(
             &provider,
             Some(&configs_map),
@@ -555,7 +555,7 @@ impl RustClient {
             max_pool_connections,
             retry.as_ref(),
         )?;
-        
+
         Ok(Self {
             store,
             max_concurrency,
@@ -756,7 +756,7 @@ impl RustClient {
         future_into_py(py, async move {
             let result = store.head(&remote_path).await.map_err(StorageError::from)?;
             let total_size = result.size;
-            
+
             // Create the temp file in the same directory of local_path because tempfile.persist()
             // does not support cross filesystem.
             let target_path = StdPath::new(&local_path);
@@ -765,15 +765,15 @@ impl RustClient {
 
             let mut output_file = tokio::fs::File::from_std(temp_file.reopen().map_err(StorageError::from)?);
             output_file.set_len(total_size).await.map_err(StorageError::from)?;
-            
+
             let num_chunks = (total_size + chunksize as u64 - 1) / chunksize as u64;
-            
+
             let semaphore = Arc::new(Semaphore::new(concurrency));
             let (tx , mut rx): (
                 mpsc::Sender<Result<(u64, Vec<u8>), StorageError>>,
                 mpsc::Receiver<Result<(u64, Vec<u8>), StorageError>>,
             ) = mpsc::channel(concurrency);
-            
+
             // Start a task to process downloaded chunks in arrival order and write to file
             let write_handle = tokio::task::spawn(async move {
                 while let Some(result) = rx.recv().await {
@@ -802,7 +802,7 @@ impl RustClient {
                 let tx = tx.clone();
                 let start_offset = chunk_index * chunksize as u64;
                 let end_offset = std::cmp::min(start_offset + chunksize as u64, total_size);
-                
+
                 tokio::task::spawn(async move {
                     let range = start_offset..end_offset;
                     match store.get_range(&remote_path, range).await {
@@ -823,7 +823,7 @@ impl RustClient {
             write_handle.await.unwrap()?;
 
             temp_file.persist(&local_path).map_err(StorageError::from)?;
-            
+
             Ok(total_size)
         })
     }
@@ -864,7 +864,7 @@ impl RustClient {
 
             let num_chunks = (total_size + chunksize as u64 - 1) / chunksize as u64;
             let mut chunks = Vec::with_capacity(num_chunks as usize);
-            
+
             for i in 0..num_chunks {
                 let chunk_start = start_offset + i * chunksize as u64;
                 let chunk_end = std::cmp::min(chunk_start + chunksize as u64 - 1, end_offset);
@@ -878,7 +878,7 @@ impl RustClient {
                 let permit = semaphore.clone().acquire_owned().await.unwrap();
                 let store = Arc::clone(&store);
                 let remote_path = remote_path.clone();
-                
+
                 tasks.push(tokio::task::spawn(async move {
                     let range = chunk_start..chunk_end + 1;
                     let result = store.get_range(&remote_path, range).await.map_err(StorageError::from)?;
@@ -1060,20 +1060,20 @@ mod tests {
             store: "S3",
             source: Box::new(connection_error),
         };
-        
+
         let chain = format_error_chain(&generic_error);
-        
+
         // Should contain the root cause
         assert!(chain.contains("Connection reset by peer (os error 104)"));
         // Should be formatted as a chain
         assert!(chain.contains(" -> "));
-        
+
         // Test that it gets classified as retryable when it contains the HTTP error pattern
         let http_error = object_store::Error::Generic {
             store: "S3",
             source: Box::new(io::Error::new(io::ErrorKind::ConnectionReset, "HTTP error: error sending request")),
         };
-        
+
         let storage_error = StorageError::from(http_error);
         match storage_error {
             StorageError::RetryExhaustedError(msg) => {
