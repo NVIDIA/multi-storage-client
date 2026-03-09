@@ -9,18 +9,32 @@
 # https://tools.slack.dev/slack-github-action
 name: Slack
 on:
+  discussion:
+    types:
+      - created
   issues:
     types:
       - opened
       - reopened
 jobs:
+  discussion-created:
+    name: Discussion Created
+    if: ${{ github.event_name == 'discussion' && github.event.action == 'created' }}
+    environment: Slack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: slackapi/slack-github-action@v2
+        with:
+          payload-delimiter: _
+          webhook: ${{ secrets.DISCUSSION_CREATED_WEBHOOK_URL }}
+          webhook-type: webhook-trigger
   issue-opened:
     name: Issue Opened
     if: ${{ github.event_name == 'issues' && github.event.action == 'opened' }}
     environment: Slack
     runs-on: ubuntu-latest
     steps:
-      - uses: slackapi/slack-github-action@v2.0.0
+      - uses: slackapi/slack-github-action@v2
         with:
           payload-delimiter: _
           webhook: ${{ secrets.ISSUE_OPENED_WEBHOOK_URL }}
@@ -31,7 +45,7 @@ jobs:
     environment: Slack
     runs-on: ubuntu-latest
     steps:
-      - uses: slackapi/slack-github-action@v2.0.0
+      - uses: slackapi/slack-github-action@v2
         with:
           payload-delimiter: _
           webhook: ${{ secrets.ISSUE_REOPENED_WEBHOOK_URL }}
