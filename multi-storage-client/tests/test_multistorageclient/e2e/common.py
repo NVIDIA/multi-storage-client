@@ -16,56 +16,19 @@
 import logging
 import os
 import tempfile
-import time
 import uuid
-from collections.abc import Callable, Iterable
-from typing import Optional, TypeVar
+from typing import Optional
 
 import pytest
 
 import multistorageclient as msc
 from multistorageclient.providers.huggingface import HuggingFaceStorageProvider
 from multistorageclient.types import MSC_PROTOCOL, ExecutionMode, SourceVersionCheckMode
+from test_multistorageclient.utils.wait import len_should_wait, wait
 
 logger = logging.getLogger(__name__)
 
-T = TypeVar("T")
 MB = 1024 * 1024
-
-
-def wait(
-    waitable: Callable[[], T],
-    should_wait: Callable[[T], bool],
-    max_attempts: int = 3,
-    attempt_interval_seconds: int = 1,
-) -> T:
-    """
-    Wait for the return value of a function ``waitable`` to satisfy a wait condition.
-
-    Defaults to 60 attempts at 1 second intervals.
-
-    For handling storage services with eventually consistent operations.
-    """
-    assert max_attempts >= 1
-    assert attempt_interval_seconds >= 0
-
-    for attempt in range(max_attempts):
-        value = waitable()
-        if should_wait(value) and attempt < max_attempts - 1 and attempt_interval_seconds > 0:
-            time.sleep(attempt_interval_seconds)
-        else:
-            return value
-
-    raise AssertionError(f"Waitable didn't return a desired value within {max_attempts} attempt(s)!")
-
-
-def len_should_wait(expected_len: int) -> Callable[[Iterable], bool]:
-    """
-    Returns a wait condition on the length of an iterable return value.
-
-    For list and glob operations.
-    """
-    return lambda value: len(list(value)) != expected_len
 
 
 def delete_files(storage_client: msc.StorageClient, prefix: str) -> None:

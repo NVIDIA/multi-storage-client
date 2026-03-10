@@ -24,8 +24,8 @@ import pytest
 
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.types import ExecutionMode
-from test_multistorageclient.e2e.common import wait
 from test_multistorageclient.unit.utils import tempdatastore
+from test_multistorageclient.utils.wait import wait
 
 # Type alias for configuration dictionary to avoid complex nested types
 ConfigDict = Dict[str, Any]

@@ -29,9 +29,31 @@ from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.constants import MEMORY_LOAD_LIMIT
 from multistorageclient.providers.ais import AIStoreStorageProvider
 from multistorageclient.providers.ais_s3 import AIStoreS3StorageProvider
+from multistorageclient.providers.azure import AzureBlobStorageProvider
 from multistorageclient.providers.base import BaseStorageProvider
+from multistorageclient.providers.gcs import GoogleStorageProvider
+from multistorageclient.providers.posix_file import PosixFileStorageProvider
+from multistorageclient.providers.s3 import S3StorageProvider
+from multistorageclient.providers.s8k import S8KStorageProvider
 from multistorageclient.types import PreconditionFailedError, Range
 from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
+from test_multistorageclient.utils.wait import wait
+
+
+def wait_for_is_file(storage_client: StorageClient, path: str, is_file: bool):
+    """
+    Wait for :py:meth:`StorageClient.is_file` to return the expected value. For eventually consistent data stores.
+
+    :param storage_client: Storage client to use.
+    :param path: Path to check.
+    :param is_file: Expected value.
+    """
+    wait(
+        waitable=lambda: storage_client.is_file(path=path),
+        should_wait=lambda actual_is_file: actual_is_file != is_file,
+        max_attempts=5,
+        attempt_interval_seconds=1,
+    )
 
 
 @pytest.mark.parametrize(
@@ -101,6 +123,7 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
 
         # Write a file.
         storage_client.write(path=file_path, body=file_body_bytes)
+        wait_for_is_file(storage_client=storage_client, path=file_path, is_file=True)
 
         # Check the file contents.
         assert storage_client.read(path=file_path) == file_body_bytes
@@ -179,13 +202,14 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
 
         # Delete the file.
         storage_client.delete(path=file_path)
+        wait_for_is_file(storage_client=storage_client, path=file_path, is_file=False)
 
         # Upload + download the file.
         with tempfile.NamedTemporaryFile(delete=False) as temp_file:
             temp_file.write(file_body_bytes)
             temp_file.close()
             storage_client.upload_file(remote_path=file_path, local_path=temp_file.name)
-        assert storage_client.is_file(path=file_path)
+        wait_for_is_file(storage_client=storage_client, path=file_path, is_file=True)
         with tempfile.NamedTemporaryFile(delete=False) as temp_file:
             temp_file.close()
             storage_client.download_file(remote_path=file_path, local_path=temp_file.name)
@@ -193,21 +217,23 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
 
         # Delete the file.
         storage_client.delete(path=file_path)
+        wait_for_is_file(storage_client=storage_client, path=file_path, is_file=False)
 
         # Open the file for writes + reads (bytes).
         with storage_client.open(path=file_path, mode="wb") as file:
             file.write(file_body_bytes)
-        assert storage_client.is_file(path=file_path)
+        wait_for_is_file(storage_client=storage_client, path=file_path, is_file=True)
         with storage_client.open(path=file_path, mode="rb") as file:
             assert file.read() == file_body_bytes
 
         # Delete the file.
         storage_client.delete(path=file_path)
+        wait_for_is_file(storage_client=storage_client, path=file_path, is_file=False)
 
         # Open the file for writes + reads (string).
         with storage_client.open(path=file_path, mode="w") as file:
             file.write(file_body_string)
-        assert storage_client.is_file(path=file_path)
+        wait_for_is_file(storage_client=storage_client, path=file_path, is_file=True)
         with storage_client.open(path=file_path, mode="r", prefetch_file=True) as file:
             assert file.read() == file_body_string
 
@@ -215,44 +241,48 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
         file_copy_path_fragments = ["copy", *file_path_fragments]
         file_copy_path = os.path.join(*file_copy_path_fragments)
         storage_client.copy(src_path=file_path, dest_path=file_copy_path)
+        wait_for_is_file(storage_client=storage_client, path=file_copy_path, is_file=True)
         assert storage_client.read(path=file_copy_path) == file_body_bytes
 
         # Delete the file and its copy.
         for path in [file_path, file_copy_path]:
             storage_client.delete(path=path)
+            wait_for_is_file(storage_client=storage_client, path=path, is_file=False)
         assert len(list(storage_client.list(prefix=file_path_fragments[0]))) == 0
         assert len(list(storage_client.list(prefix=file_copy_path_fragments[0]))) == 0
 
         # Open the file for appends (bytes).
         with storage_client.open(path=file_path, mode="ab", prefetch_file=True) as file:
             file.write(file_body_bytes)
-        assert storage_client.is_file(path=file_path)
+        wait_for_is_file(storage_client=storage_client, path=file_path, is_file=True)
         with storage_client.open(path=file_path, mode="rb", prefetch_file=True) as file:
             assert file.read() == file_body_bytes
 
         # Delete the file.
         storage_client.delete(path=file_path)
+        wait_for_is_file(storage_client=storage_client, path=file_path, is_file=False)
 
         # Open the file for appends (string).
         with storage_client.open(path=file_path, mode="a", prefetch_file=True) as file:
             file.write(file_body_string)
-        assert storage_client.is_file(path=file_path)
+        wait_for_is_file(storage_client=storage_client, path=file_path, is_file=True)
         with storage_client.open(path=file_path, mode="r", prefetch_file=True) as file:
             assert file.read() == file_body_string
 
         # Delete the file.
         storage_client.delete(path=file_path)
+        wait_for_is_file(storage_client=storage_client, path=file_path, is_file=False)
 
         MEMORY_LOAD_LIMIT = 64 * 1024 * 1024
         # Open the file for writes + reads (bytes).
-        if cast(BaseStorageProvider, storage_client._storage_provider)._provider_name == "gcs":
+        if isinstance(storage_provider, GoogleStorageProvider):
             # GCS simulator does not support multipart uploads
             large_file_body_bytes = b"\x00" * MEMORY_LOAD_LIMIT
         else:
             large_file_body_bytes = b"\x00" * (MEMORY_LOAD_LIMIT + 1)
         with storage_client.open(path=file_path, mode="wb") as file:
             file.write(large_file_body_bytes)
-        assert storage_client.is_file(path=file_path)
+        wait_for_is_file(storage_client=storage_client, path=file_path, is_file=True)
         with storage_client.open(path=file_path, mode="rb", prefetch_file=True) as file:
             content = b""
             for chunk in iter(functools.partial(file.read, (MEMORY_LOAD_LIMIT // 2)), b""):
@@ -261,11 +291,13 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
 
         # Delete the file.
         storage_client.delete(path=file_path)
+        wait_for_is_file(storage_client=storage_client, path=file_path, is_file=False)
 
         # Write files.
         file_numbers = range(1, 3)
         for i in file_numbers:
             storage_client.write(path=f"{i}{file_extension}", body=file_body_bytes)
+            wait_for_is_file(storage_client=storage_client, path=file_path, is_file=True)
 
         # List the files (paginated).
         for i in file_numbers:
@@ -276,14 +308,14 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
             assert files[0].key.endswith(f"{i}{file_extension}")
 
         # Delete all the files recursively (GCS simulator does not support batch delete API).
-        if cast(BaseStorageProvider, storage_client._storage_provider)._provider_name != "gcs":
+        if not isinstance(storage_provider, GoogleStorageProvider):
             storage_client.delete(path="", recursive=True)
         else:
             for i in file_numbers:
                 storage_client.delete(path=f"{i}{file_extension}")
         # Verify deletes
         for i in file_numbers:
-            assert not storage_client.is_file(path=f"{i}{file_extension}")
+            wait_for_is_file(storage_client=storage_client, path=f"{i}{file_extension}", is_file=False)
 
         # Test with special characters in file path (URL encoded)
         prefix = f"{uuid.uuid4().hex}"
@@ -291,10 +323,12 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
         special_chars_body = b"test content with special chars in path"
 
         storage_client.write(special_chars_path, special_chars_body)
+        wait_for_is_file(storage_client=storage_client, path=special_chars_path, is_file=True)
         assert storage_client.read(path=special_chars_path) == special_chars_body
 
         # Delete the file
         storage_client.delete(path=special_chars_path)
+        wait_for_is_file(storage_client=storage_client, path=special_chars_path, is_file=False)
 
 
 @pytest.mark.parametrize(
@@ -360,7 +394,7 @@ def test_put_object_with_etag_metadata(temp_data_store_type: type[tempdatastore.
         file_info = storage_provider._get_object_metadata(path=file_path)
         assert file_info is not None
         # Skip metadata verification for POSIX if extended attributes are not supported
-        if storage_provider._provider_name != "file" or hasattr(os, "setxattr"):
+        if (not isinstance(storage_provider, PosixFileStorageProvider)) or hasattr(os, "setxattr"):
             assert file_info.metadata is not None
             assert file_info.metadata["etag"] == test_etag
 
@@ -409,10 +443,10 @@ def test_delete_object_with_etag(temp_data_store_type: type[tempdatastore.Tempor
 
         # Test deletion with mismatched etag
         mismatched_etag = "different_etag_value"
-        if storage_provider._provider_name == "gcs":
+        if isinstance(storage_provider, GoogleStorageProvider):
             # Skip mismatched ETag test for GCS since fake-gcs-server doesn't support precondition checks
             pass
-        elif storage_provider._provider_name == "azure":
+        elif isinstance(storage_provider, AzureBlobStorageProvider):
             # Azure raises PreconditionFailedError with 412 status code
             with pytest.raises(PreconditionFailedError, match="412"):
                 storage_provider._delete_object(path=file_path, if_match=mismatched_etag)
@@ -530,7 +564,7 @@ def test_put_object_with_conditional_params(temp_data_store_type: type[tempdatas
         updated_body = b"updated content"
 
         # Test if_none_match="*" - should succeed if object doesn't exist
-        if storage_provider._provider_name in ["s3", "swiftstack"]:
+        if isinstance(storage_provider, (S3StorageProvider, S8KStorageProvider)):
             # For S3, SwiftStack, and OCI, test if_none_match="*"
             storage_provider._put_object(path=file_path, body=file_body, if_none_match="*")
             assert storage_provider._get_object(path=file_path) == file_body
@@ -555,7 +589,7 @@ def test_put_object_with_conditional_params(temp_data_store_type: type[tempdatas
         mismatched_etag = "different_etag_value"
 
         # testing string to int conversion for gcs, this should fail because gcs expects a numeric generation number
-        if storage_provider._provider_name == "gcs":
+        if isinstance(storage_provider, GoogleStorageProvider):
             # GCS requires numeric generation numbers for etags
             with pytest.raises(RuntimeError, match="Failed to PUT object"):
                 storage_provider._put_object(path=file_path, body=file_body, if_match=mismatched_etag)
@@ -593,6 +627,7 @@ def test_storage_with_root_base_path(temp_data_store_type: type[tempdatastore.Te
         file_names = [f"{bucket}/folder/file{i}.txt" for i in range(5)]
         for fname in file_names:
             storage_client.write(path=fname, body=file_body_bytes)
+            wait_for_is_file(storage_client=storage_client, path=fname, is_file=True)
 
         # List the files.
         files = list(storage_client.list(path=bucket))
@@ -616,6 +651,7 @@ def test_storage_with_root_base_path(temp_data_store_type: type[tempdatastore.Te
         # Delete the files.
         for fname in file_names:
             storage_client.delete(path=fname)
+            wait_for_is_file(storage_client=storage_client, path=fname, is_file=False)
 
         assert len(list(storage_client.list(prefix=bucket))) == 0
 
@@ -643,6 +679,7 @@ def test_storage_with_base_path_contains_prefix(temp_data_store_type: type[tempd
         file_names = [f"folder/file{i}.txt" for i in range(5)]
         for fname in file_names:
             storage_client.write(path=fname, body=file_body_bytes)
+            wait_for_is_file(storage_client=storage_client, path=fname, is_file=True)
 
         # List the file with bucket and subfolder
         files = list(storage_client.list(path="folder/"))
@@ -657,6 +694,7 @@ def test_storage_with_base_path_contains_prefix(temp_data_store_type: type[tempd
         # Delete the files.
         for fname in file_names:
             storage_client.delete(path=fname)
+            wait_for_is_file(storage_client=storage_client, path=fname, is_file=False)
 
         assert len(list(storage_client.list(""))) == 0
 
@@ -675,6 +713,7 @@ def test_storage_providers_with_rust_client(
         profile = "data"
         config_dict = {"profiles": {profile: temp_data_store.profile_config_dict()}}
         storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
+        storage_provider = cast(BaseStorageProvider, storage_client._storage_provider)
         file_extension = ".txt"
         # add a random string to the file path below so concurrent tests don't conflict
         file_path_fragments = [f"{uuid.uuid4().hex}-prefix", "infix", f"suffix{file_extension}"]
@@ -709,7 +748,7 @@ def test_storage_providers_with_rust_client(
         storage_client.delete(path=file_path)
 
         # Test Multipart Upload and Download
-        if cast(BaseStorageProvider, storage_client._storage_provider)._provider_name == "gcs":
+        if isinstance(storage_provider, GoogleStorageProvider):
             # GCS simulator does not support multipart uploads
             large_file_body_bytes = os.urandom(MEMORY_LOAD_LIMIT)
         else:
