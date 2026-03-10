@@ -27,6 +27,7 @@ from ..types import (
     ObjectMetadata,
     PatternList,
     Range,
+    SignerType,
     SourceVersionCheckMode,
     SyncResult,
 )
@@ -422,6 +423,23 @@ class CompositeStorageClient(AbstractStorageClient):
                 obj.key = join_paths(f"{MSC_PROTOCOL}{self._config.profile}", obj.key)
 
             yield obj
+
+    def generate_presigned_url(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        signer_type: Optional[SignerType] = None,
+        signer_options: Optional[dict[str, Any]] = None,
+    ) -> str:
+        resolved = self._metadata_provider.realpath(path)
+        if not resolved.exists:
+            raise FileNotFoundError(f"Path '{path}' not found")
+
+        child = self._get_child_client(resolved.profile)
+        return child.generate_presigned_url(
+            resolved.physical_path, method=method, signer_type=signer_type, signer_options=signer_options
+        )
 
     def __getstate__(self) -> dict[str, Any]:
         """Support for pickling."""

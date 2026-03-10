@@ -17,6 +17,7 @@ import functools
 import io
 import os
 import tempfile
+import urllib.request
 import uuid
 from datetime import datetime, timezone
 from typing import Union, cast
@@ -868,3 +869,37 @@ def test_get_posix_path(temp_data_store_type: type[tempdatastore.TemporaryDataSt
             # For non-POSIX providers (cloud storage), should return None
             posix_path = storage_client.get_posix_path(test_path)
             assert posix_path is None
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryAWSS3Bucket],
+    ],
+)
+def test_presigned_url_get_and_put(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """Round-trip test: generate presigned URLs and verify they work over plain HTTP."""
+    with temp_data_store_type() as temp_data_store:
+        profile = "data"
+        config_dict = {"profiles": {profile: temp_data_store.profile_config_dict()}}
+        storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
+
+        # Presigned GET
+        get_key = f"presign-get-{uuid.uuid4()}.bin"
+        get_body = b"hello presigned GET"
+        storage_client.write(get_key, get_body)
+
+        get_url = storage_client.generate_presigned_url(get_key, method="GET")
+        with urllib.request.urlopen(get_url) as resp:
+            assert resp.read() == get_body
+
+        # Presigned PUT
+        put_key = f"presign-put-{uuid.uuid4()}.bin"
+        put_body = b"hello presigned PUT"
+
+        put_url = storage_client.generate_presigned_url(put_key, method="PUT")
+        req = urllib.request.Request(put_url, data=put_body, method="PUT")
+        with urllib.request.urlopen(req):
+            pass
+
+        assert storage_client.read(put_key) == put_body

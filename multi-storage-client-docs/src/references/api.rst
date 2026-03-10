@@ -105,6 +105,14 @@ Providers
    :members:
    :undoc-members:
 
+********************
+Signed URL Providers
+********************
+
+.. automodule:: multistorageclient.signers
+   :members:
+   :undoc-members:
+
 *********
 Telemetry
 *********

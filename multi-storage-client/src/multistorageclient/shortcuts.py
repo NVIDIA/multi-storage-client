@@ -24,7 +24,7 @@ from .client import StorageClient
 from .config import RESERVED_POSIX_PROFILE_NAME, SUPPORTED_IMPLICIT_PROFILE_PROTOCOLS, StorageClientConfig
 from .file import ObjectFile, PosixFile
 from .telemetry import Telemetry
-from .types import MSC_PROTOCOL, ExecutionMode, ObjectMetadata, PatternList, SyncResult
+from .types import MSC_PROTOCOL, ExecutionMode, ObjectMetadata, PatternList, SignerType, SyncResult
 
 _TELEMETRY_PROVIDER: Optional[Callable[[], Telemetry]] = None
 _TELEMETRY_PROVIDER_LOCK = threading.Lock()
@@ -543,3 +543,23 @@ def commit_metadata(url: str) -> None:
     """
     client, path = resolve_storage_client(url)
     client.commit_metadata(prefix=path)
+
+
+def generate_presigned_url(
+    url: str,
+    *,
+    method: str = "GET",
+    signer_type: Optional[SignerType] = None,
+    signer_options: Optional[dict[str, Any]] = None,
+) -> str:
+    """
+    Generate a pre-signed URL granting temporary access to the object at *url*.
+
+    :param url: The storage URL. (example: ``msc://profile/prefix/file.bin``)
+    :param method: The HTTP method the URL should authorise (e.g. ``"GET"``, ``"PUT"``).
+    :param signer_type: The signing backend to use. ``None`` means the provider's native signer.
+    :param signer_options: Backend-specific options forwarded to the signer.
+    :return: A pre-signed URL string.
+    """
+    client, path = resolve_storage_client(url)
+    return client.generate_presigned_url(path, method=method, signer_type=signer_type, signer_options=signer_options)

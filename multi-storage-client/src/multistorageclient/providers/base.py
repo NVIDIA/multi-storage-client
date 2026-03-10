@@ -31,7 +31,7 @@ import opentelemetry.util.types as api_types
 
 from ..telemetry import Telemetry
 from ..telemetry.attributes.base import AttributesProvider, collect_attributes
-from ..types import ObjectMetadata, Range, StorageProvider
+from ..types import ObjectMetadata, Range, SignerType, StorageProvider
 from ..utils import (
     create_attribute_filter_evaluator,
     extract_prefix_from_glob,
@@ -604,6 +604,27 @@ class BaseStorageProvider(StorageProvider):
             operation=BaseStorageProvider._Operation.DELETE_MANY,
             f=lambda: self._delete_objects(paths),
         )
+
+    def generate_presigned_url(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        signer_type: Optional[SignerType] = None,
+        signer_options: Optional[dict[str, Any]] = None,
+    ) -> str:
+        path = self._prepend_base_path(path)
+        return self._generate_presigned_url(path, method=method, signer_type=signer_type, signer_options=signer_options)
+
+    def _generate_presigned_url(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        signer_type: Optional[SignerType] = None,
+        signer_options: Optional[dict[str, Any]] = None,
+    ) -> str:
+        raise NotImplementedError(f"{type(self).__name__} does not support presigned URL generation.")
 
     def _delete_objects(self, paths: list[str]) -> None:
         """

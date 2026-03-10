@@ -28,6 +28,7 @@ It provides a generic interface to interact with objects and files across variou
    :maxdepth: 2
    :caption: Advanced Usage
 
+   user_guide/presigned_urls
    user_guide/replicas
    user_guide/rust
    user_guide/multi_storage_file_system

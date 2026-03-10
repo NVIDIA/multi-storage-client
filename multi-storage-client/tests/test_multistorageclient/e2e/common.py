@@ -997,6 +997,102 @@ def test_on_demand_replica_fetch_with_cache_using_read(profile: str):
     _do_cleanup(client, prefix + "/")
 
 
+def test_presigned_url(profile: str) -> None:
+    """Test presigned GET and PUT URLs work end-to-end against a real S3 backend."""
+    import urllib.request
+
+    client, _ = msc.resolve_storage_client(f"msc://{profile}/")
+    prefix = f"presigned-{uuid.uuid4()}"
+    key = f"{prefix}/testfile.bin"
+    body = b"presigned-url integration test content"
+
+    try:
+        client.write(key, body)
+
+        # Presigned GET
+        get_url = client.generate_presigned_url(key, method="GET")
+        with urllib.request.urlopen(get_url) as resp:
+            assert resp.read() == body
+
+        # Presigned PUT
+        put_key = f"{prefix}/put-testfile.bin"
+        put_body = b"uploaded via presigned PUT"
+        put_url = client.generate_presigned_url(put_key, method="PUT")
+
+        req = urllib.request.Request(put_url, data=put_body, method="PUT")
+        with urllib.request.urlopen(req):
+            pass
+
+        assert client.read(put_key) == put_body
+    finally:
+        delete_files(client, prefix)
+
+
+def get_cloudfront_env() -> Optional[dict[str, str]]:
+    """Return CloudFront signer options from environment variables, or ``None`` if not configured.
+
+    Accepted variables:
+        CLOUDFRONT_KEY_PAIR_ID      – CloudFront public-key ID.
+        CLOUDFRONT_DOMAIN           – Distribution domain name.
+        CLOUDFRONT_PRIVATE_KEY_PATH – Path to the PEM private key file.
+    """
+    key_pair_id = os.environ.get("CLOUDFRONT_KEY_PAIR_ID")
+    domain = os.environ.get("CLOUDFRONT_DOMAIN")
+    private_key_path = os.environ.get("CLOUDFRONT_PRIVATE_KEY_PATH")
+
+    if not (key_pair_id and domain and private_key_path):
+        return None
+
+    return {
+        "key_pair_id": key_pair_id,
+        "private_key_path": private_key_path,
+        "domain": domain,
+    }
+
+
+def test_cloudfront_presigned_url(profile: str) -> None:
+    """Test CloudFront signed GET URL works end-to-end.
+
+    Requires ``CLOUDFRONT_KEY_PAIR_ID``, ``CLOUDFRONT_DOMAIN``, and
+    ``CLOUDFRONT_PRIVATE_KEY_PATH``.  The CloudFront distribution must serve
+    from the same S3 bucket used by *profile*.
+    """
+    import ssl
+    import urllib.request
+
+    from multistorageclient.types import SignerType
+
+    cf_opts = get_cloudfront_env()
+    if cf_opts is None:
+        pytest.skip(
+            "CloudFront env vars not set — need CLOUDFRONT_KEY_PAIR_ID, CLOUDFRONT_DOMAIN, "
+            "and CLOUDFRONT_PRIVATE_KEY_PATH"
+        )
+
+    client, _ = msc.resolve_storage_client(f"msc://{profile}/")
+    prefix = f"cf-presigned-{uuid.uuid4()}"
+    key = f"{prefix}/testfile.bin"
+    body = b"cloudfront presigned-url integration test content"
+
+    try:
+        client.write(key, body)
+
+        get_url = client.generate_presigned_url(
+            key,
+            method="GET",
+            signer_type=SignerType.CLOUDFRONT,
+            signer_options=cf_opts,
+        )
+
+        assert get_url.startswith(f"https://{cf_opts['domain']}/")
+
+        ctx = ssl.create_default_context()
+        with urllib.request.urlopen(get_url, context=ctx) as resp:
+            assert resp.read() == body
+    finally:
+        delete_files(client, prefix)
+
+
 def test_list_exact_file_no_prefix_match(profile: str) -> None:
     """
     Test that listing an exact file path returns only that file, not files with matching prefix.

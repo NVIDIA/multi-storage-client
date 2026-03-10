@@ -39,6 +39,13 @@ DEFAULT_RETRY_BACKOFF_MULTIPLIER = 2.0
 AWARE_DATETIME_MIN = datetime.min.replace(tzinfo=timezone.utc)
 
 
+class SignerType(str, Enum):
+    """Supported signer backends for presigned URL generation."""
+
+    S3 = "s3"
+    CLOUDFRONT = "cloudfront"
+
+
 @dataclass
 class Credentials:
     """
@@ -337,6 +344,26 @@ class StorageProvider(ABC):
         :return: ``True`` if the key points to a file, ``False`` if it points to a directory or folder.
         """
         pass
+
+    def generate_presigned_url(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        signer_type: Optional[SignerType] = None,
+        signer_options: Optional[dict[str, Any]] = None,
+    ) -> str:
+        """
+        Generate a pre-signed URL granting temporary access to the object at *path*.
+
+        :param path: The object path within the storage provider.
+        :param method: The HTTP method the URL should authorise (e.g. ``"GET"``, ``"PUT"``).
+        :param signer_type: The signing backend to use. ``None`` means the provider's native signer.
+        :param signer_options: Backend-specific options forwarded to the signer.
+        :return: A pre-signed URL string.
+        :raises NotImplementedError: If this storage provider does not support presigned URLs.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support presigned URL generation.")
 
 
 class ResolvedPathState(str, Enum):

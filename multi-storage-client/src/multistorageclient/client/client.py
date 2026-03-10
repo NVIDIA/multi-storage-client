@@ -26,6 +26,7 @@ from ..types import (
     ObjectMetadata,
     PatternList,
     Range,
+    SignerType,
     SourceVersionCheckMode,
     StorageProvider,
     SyncResult,
@@ -561,6 +562,28 @@ class StorageClient(AbstractStorageClient):
             show_attributes,
             follow_symlinks,
             patterns,
+        )
+
+    def generate_presigned_url(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        signer_type: Optional[SignerType] = None,
+        signer_options: Optional[dict[str, Any]] = None,
+    ) -> str:
+        """
+        Generate a pre-signed URL granting temporary access to the object at *path*.
+
+        :param path: The logical path of the object.
+        :param method: The HTTP method the URL should authorise (e.g. ``"GET"``, ``"PUT"``).
+        :param signer_type: The signing backend to use. ``None`` means the provider's native signer.
+        :param signer_options: Backend-specific options forwarded to the signer.
+        :return: A pre-signed URL string.
+        :raises NotImplementedError: If the underlying storage provider does not support presigned URLs.
+        """
+        return self._delegate.generate_presigned_url(
+            path, method=method, signer_type=signer_type, signer_options=signer_options
         )
 
     def __getstate__(self) -> dict[str, Any]:

@@ -76,6 +76,16 @@ def test_s3_storage_client_rust(profile_name):
 
 
 @pytest.mark.parametrize("profile_name", ["test-s3-iad"])
+def test_s3_presigned_url(profile_name):
+    common.test_presigned_url(profile_name)
+
+
+@pytest.mark.parametrize("profile_name", ["test-s3-iad"])
+def test_s3_cloudfront_presigned_url(profile_name):
+    common.test_cloudfront_presigned_url(profile_name)
+
+
+@pytest.mark.parametrize("profile_name", ["test-s3-iad"])
 def test_s3_list_exact_file_no_prefix_match(profile_name):
     """Test that listing exact file path doesn't match files with same prefix."""
     profile = profile_name

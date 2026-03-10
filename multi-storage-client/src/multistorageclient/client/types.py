@@ -22,7 +22,7 @@ from collections.abc import Iterator
 from typing import IO, TYPE_CHECKING, Any, Optional, Union
 
 from ..constants import MEMORY_LOAD_LIMIT
-from ..types import ExecutionMode, SourceVersionCheckMode, SyncResult
+from ..types import ExecutionMode, SignerType, SourceVersionCheckMode, SyncResult
 
 if TYPE_CHECKING:
     from ..cache import CacheManager
@@ -433,5 +433,26 @@ class AbstractStorageClient(ABC):
         :param patterns: PatternList for include/exclude filtering. If None, all files are included.
         :return: An iterator over ObjectMetadata for matching objects.
         :raises ValueError: If both ``path`` and ``prefix`` parameters are provided (both non-empty).
+        """
+        pass
+
+    @abstractmethod
+    def generate_presigned_url(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        signer_type: Optional[SignerType] = None,
+        signer_options: Optional[dict[str, Any]] = None,
+    ) -> str:
+        """
+        Generate a pre-signed URL granting temporary access to the object at *path*.
+
+        :param path: The logical path of the object.
+        :param method: The HTTP method the URL should authorise (e.g. ``"GET"``, ``"PUT"``).
+        :param signer_type: The signing backend to use. ``None`` means the provider's native signer.
+        :param signer_options: Backend-specific options forwarded to the signer.
+        :return: A pre-signed URL string.
+        :raises NotImplementedError: If the underlying storage provider does not support presigned URLs.
         """
         pass

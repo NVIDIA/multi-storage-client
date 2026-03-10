@@ -32,6 +32,7 @@ from multistorageclient_rust import RustClient, RustClientError, RustRetryableEr
 
 from ..constants import DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT
 from ..rust_utils import parse_retry_config, run_async_rust_client_method
+from ..signers import CloudFrontURLSigner, URLSigner
 from ..telemetry import Telemetry
 from ..types import (
     AWARE_DATETIME_MIN,
@@ -41,6 +42,7 @@ from ..types import (
     PreconditionFailedError,
     Range,
     RetryableError,
+    SignerType,
 )
 from ..utils import (
     get_available_cpu_count,
@@ -106,6 +108,41 @@ class StaticS3CredentialsProvider(CredentialsProvider):
         pass
 
 
+DEFAULT_PRESIGN_EXPIRES_IN = 3600
+
+_S3_METHOD_MAPPING: dict[str, str] = {
+    "GET": "get_object",
+    "PUT": "put_object",
+}
+
+
+class S3URLSigner(URLSigner):
+    """Generates pre-signed URLs using the boto3 S3 client.
+
+    When the underlying credentials are temporary (STS, IAM role, EC2 instance
+    profile), the effective URL lifetime is the **shorter** of ``expires_in``
+    and the remaining credential lifetime — boto3 will not warn if the
+    credential expires before ``expires_in``.
+
+    See https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html
+    """
+
+    def __init__(self, s3_client: Any, bucket: str, expires_in: int = DEFAULT_PRESIGN_EXPIRES_IN) -> None:
+        self._s3_client = s3_client
+        self._bucket = bucket
+        self._expires_in = expires_in
+
+    def generate_presigned_url(self, path: str, *, method: str = "GET") -> str:
+        client_method = _S3_METHOD_MAPPING.get(method.upper())
+        if client_method is None:
+            raise ValueError(f"Unsupported method for S3 presigning: {method!r}")
+        return self._s3_client.generate_presigned_url(
+            ClientMethod=client_method,
+            Params={"Bucket": self._bucket, "Key": path},
+            ExpiresIn=self._expires_in,
+        )
+
+
 class S3StorageProvider(BaseStorageProvider):
     """
     A concrete implementation of the :py:class:`multistorageclient.types.StorageProvider` for interacting with Amazon S3 or S3-compatible object stores.
@@ -162,7 +199,7 @@ class S3StorageProvider(BaseStorageProvider):
         self._credentials_provider = credentials_provider
         self._verify = verify
 
-        self._signature_version = kwargs.get("signature_version", "")
+        self._signature_version = kwargs.get("signature_version", "s3v4")
         self._s3_client = self._create_s3_client(
             request_checksum_calculation=kwargs.get("request_checksum_calculation"),
             response_checksum_validation=kwargs.get("response_checksum_validation"),
@@ -179,6 +216,8 @@ class S3StorageProvider(BaseStorageProvider):
             io_chunksize=int(kwargs.get("io_chunksize", IO_CHUNKSIZE)),
             use_threads=True,
         )
+
+        self._signer_cache: dict[tuple, URLSigner] = {}
 
         self._rust_client = None
         if "rust_client" in kwargs:
@@ -935,3 +974,28 @@ class S3StorageProvider(BaseStorageProvider):
                 return metadata.content_length
 
             return self._translate_errors(_invoke_api, operation="GET", bucket=bucket, key=key)
+
+    def _generate_presigned_url(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        signer_type: Optional[SignerType] = None,
+        signer_options: Optional[dict[str, Any]] = None,
+    ) -> str:
+        options = signer_options or {}
+        bucket, key = split_path(path)
+
+        if signer_type is None or signer_type == SignerType.S3:
+            expires_in = int(options.get("expires_in", DEFAULT_PRESIGN_EXPIRES_IN))
+            cache_key: tuple = (SignerType.S3, bucket, expires_in)
+            if cache_key not in self._signer_cache:
+                self._signer_cache[cache_key] = S3URLSigner(self._s3_client, bucket, expires_in=expires_in)
+        elif signer_type == SignerType.CLOUDFRONT:
+            cache_key = (SignerType.CLOUDFRONT, frozenset(options.items()))
+            if cache_key not in self._signer_cache:
+                self._signer_cache[cache_key] = CloudFrontURLSigner(**options)
+        else:
+            raise ValueError(f"Unsupported signer type for S3 provider: {signer_type!r}")
+
+        return self._signer_cache[cache_key].generate_presigned_url(key, method=method)

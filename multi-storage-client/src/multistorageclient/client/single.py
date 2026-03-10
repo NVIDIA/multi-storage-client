@@ -40,6 +40,7 @@ from ..types import (
     Range,
     Replica,
     ResolvedPathState,
+    SignerType,
     SourceVersionCheckMode,
     StorageProvider,
     SyncResult,
@@ -1083,3 +1084,15 @@ class SingleStorageClient(AbstractStorageClient):
             )
 
         yield from self._filter_and_decorate(objects, include_url_prefix, pattern_matcher)
+
+    def generate_presigned_url(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        signer_type: Optional[SignerType] = None,
+        signer_options: Optional[dict[str, Any]] = None,
+    ) -> str:
+        return self._storage_provider.generate_presigned_url(
+            path, method=method, signer_type=signer_type, signer_options=signer_options
+        )

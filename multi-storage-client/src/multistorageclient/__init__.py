@@ -24,6 +24,7 @@ from .shortcuts import (
     commit_metadata,
     delete,
     download_file,
+    generate_presigned_url,
     get_telemetry_provider,
     glob,
     info,
@@ -39,7 +40,7 @@ from .shortcuts import (
     upload_file,
     write,
 )
-from .types import ProviderBundleV2, ResolvedPath, ResolvedPathState, StorageBackend, SyncResult
+from .types import ProviderBundleV2, ResolvedPath, ResolvedPathState, SignerType, StorageBackend, SyncResult
 
 __version__ = version("multi-storage-client")
 
@@ -53,6 +54,7 @@ __all__ = [
     "ResolvedPath",
     "ResolvedPathState",
     "ProviderBundleV2",
+    "SignerType",
     "StorageBackend",
     "SyncResult",
     # Shortcuts
@@ -63,6 +65,7 @@ __all__ = [
     "is_empty",
     "is_file",
     "open",
+    "generate_presigned_url",
     "resolve_storage_client",
     "set_telemetry_provider",
     "sync",
