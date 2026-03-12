@@ -27,14 +27,18 @@ func (cacheLine *cacheLineStruct) fetch() {
 		cacheLine.state = CacheLineClean
 		cacheLine.eTag = ""
 		cacheLine.content = make([]byte, 0)
-		globals.inboundCacheLineCount--
+		_ = globals.inboundCacheLineList.Remove(cacheLine.listElement)
 		cacheLine.listElement = globals.cleanCacheLineLRU.PushBack(cacheLine)
 		cacheLine.notifyWaiters()
 		globals.Unlock()
 		return
 	}
 
-	backend = inode.backend
+	backend, ok = globals.backendMap[inode.backendNonce]
+	if !ok {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] globals.backendMap[inode.backendNonce] returned !ok")
+	}
 
 	readFileInput = &readFileInputStruct{
 		filePath:        inode.objectPath,
@@ -57,7 +61,7 @@ func (cacheLine *cacheLineStruct) fetch() {
 		cacheLine.state = CacheLineClean
 		cacheLine.eTag = ""
 		cacheLine.content = make([]byte, 0)
-		globals.inboundCacheLineCount--
+		_ = globals.inboundCacheLineList.Remove(cacheLine.listElement)
 		cacheLine.listElement = globals.cleanCacheLineLRU.PushBack(cacheLine)
 		cacheLine.notifyWaiters()
 		globals.Unlock()
@@ -74,7 +78,7 @@ func (cacheLine *cacheLineStruct) fetch() {
 	cacheLine.state = CacheLineClean
 	cacheLine.eTag = readFileOutput.eTag
 	cacheLine.content = readFileOutput.buf
-	globals.inboundCacheLineCount--
+	_ = globals.inboundCacheLineList.Remove(cacheLine.listElement)
 	cacheLine.listElement = globals.cleanCacheLineLRU.PushBack(cacheLine)
 	cacheLine.notifyWaiters()
 	globals.Unlock()
@@ -127,7 +131,7 @@ func cachePrune() {
 		ok               bool
 	)
 
-	for (globals.inboundCacheLineCount + uint64(globals.cleanCacheLineLRU.Len())) >= globals.config.cacheLines {
+	for (uint64(globals.inboundCacheLineList.Len()) + uint64(globals.cleanCacheLineLRU.Len())) >= globals.config.cacheLines {
 		listElement = globals.cleanCacheLineLRU.Front()
 		if listElement == nil {
 			return
@@ -148,12 +152,18 @@ func cachePrune() {
 			globals.logger.Fatalf("[FATAL] globals.inodeMap[cacheLineToEvict.inodeNumber] returned !ok [cachePrune()]")
 		}
 
-		_, ok = inode.cache[cacheLineToEvict.lineNumber]
+		_, ok = inode.cacheMap[cacheLineToEvict.lineNumber]
 		if !ok {
 			dumpStack()
 			globals.logger.Fatalf("[FATAL] inode.cache[cacheLineToEvict.lineNumber] returned !ok")
 		}
+		_, ok = globals.cacheMap[cacheLineToEvict.nonce]
+		if !ok {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] globals.cacheMap[cacheLineToEvict.nonce] returned !ok")
+		}
 
-		delete(inode.cache, cacheLineToEvict.lineNumber)
+		delete(inode.cacheMap, cacheLineToEvict.lineNumber)
+		delete(globals.cacheMap, cacheLineToEvict.nonce)
 	}
 }

@@ -20,12 +20,14 @@ func initFS() {
 
 	timeNow = time.Now()
 
+	globals.backendMap = make(map[uint64]*backendStruct)
+
 	globals.lastNonce = FUSERootDirInodeNumber
 
 	globals.inode = &inodeStruct{
 		inodeNumber:            FUSERootDirInodeNumber,
 		inodeType:              FUSERootDir,
-		backend:                nil,
+		backendNonce:           0,
 		parentInodeNumber:      FUSERootDirInodeNumber,
 		isVirt:                 true,
 		objectPath:             "",
@@ -37,14 +39,14 @@ func initFS() {
 		mTime:                  timeNow,
 		xTime:                  time.Time{},
 		listElement:            nil,
-		fhMap:                  make(map[uint64]*fhStruct),
 		physChildInodeMap:      newStringToUint64Map(PhysChildInodeMap),
 		virtChildInodeMap:      newStringToUint64Map(VirtChildInodeMap),
 		isPrefetchInProgress:   false,
-		cache:                  nil,
+		cacheMap:               nil,
 		inboundCacheLineCount:  0,
 		outboundCacheLineCount: 0,
 		dirtyCacheLineCount:    0,
+		fhSet:                  make(map[uint64]struct{}),
 		pendingDelete:          false,
 	}
 
@@ -60,10 +62,13 @@ func initFS() {
 	globals.inodeEvictorContext, globals.inodeEvictorCancelFunc = context.WithCancel(context.Background())
 	globals.inodeEvictorWaitGroup.Go(inodeEvictor)
 
-	globals.inboundCacheLineCount = 0
+	globals.inboundCacheLineList = list.New()
 	globals.cleanCacheLineLRU = list.New()
-	globals.outboundCacheLineCount = 0
+	globals.outboundCacheLineList = list.New()
 	globals.dirtyCacheLineLRU = list.New()
+
+	globals.cacheMap = make(map[uint64]*cacheLineStruct, globals.config.cacheLines)
+	globals.fhMap = make(map[uint64]*fhStruct)
 
 	globals.fissionMetrics = newFissionMetrics()
 	globals.backendMetrics = newBackendMetrics()
@@ -117,10 +122,12 @@ func processToMountList() {
 			continue
 		}
 
+		backend.nonce = fetchNonce()
+
 		backend.inode = &inodeStruct{
 			inodeNumber:            fetchNonce(),
 			inodeType:              BackendRootDir,
-			backend:                backend,
+			backendNonce:           backend.nonce,
 			parentInodeNumber:      FUSERootDirInodeNumber,
 			isVirt:                 true,
 			objectPath:             "",
@@ -132,14 +139,14 @@ func processToMountList() {
 			mTime:                  timeNow,
 			xTime:                  time.Time{},
 			listElement:            nil,
-			fhMap:                  make(map[uint64]*fhStruct),
 			physChildInodeMap:      newStringToUint64Map(PhysChildInodeMap),
 			virtChildInodeMap:      newStringToUint64Map(VirtChildInodeMap),
 			isPrefetchInProgress:   false,
-			cache:                  nil,
+			cacheMap:               nil,
 			inboundCacheLineCount:  0,
 			outboundCacheLineCount: 0,
 			dirtyCacheLineCount:    0,
+			fhSet:                  make(map[uint64]struct{}),
 			pendingDelete:          false,
 		}
 
@@ -160,6 +167,7 @@ func processToMountList() {
 		backend.mounted = true
 
 		globals.config.backends[dirName] = backend
+		globals.backendMap[backend.nonce] = backend
 	}
 
 	globals.Unlock()
@@ -199,6 +207,7 @@ func processToUnmountListAlreadyLocked() {
 		backend.mounted = false
 
 		delete(globals.config.backends, dirName)
+		delete(globals.backendMap, backend.nonce)
 	}
 }
 
@@ -318,14 +327,21 @@ func (childInode *inodeStruct) convertToPhysInodeIfNecessary() {
 // `createPseudoDirInode` is called while globals.Lock() is held to create a new PsuedoDir inodeStruct.
 func (parentInode *inodeStruct) createPseudoDirInode(isVirt bool, basename string) (pseudoDirInode *inodeStruct) {
 	var (
+		backend *backendStruct
 		ok      bool
 		timeNow = time.Now()
 	)
 
+	backend, ok = globals.backendMap[parentInode.backendNonce]
+	if !ok {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] globals.backendMap[parentInode.backendNonce] returned !ok")
+	}
+
 	pseudoDirInode = &inodeStruct{
 		inodeNumber:       fetchNonce(),
 		inodeType:         PseudoDir,
-		backend:           parentInode.backend,
+		backendNonce:      backend.nonce,
 		parentInodeNumber: parentInode.inodeNumber,
 		isVirt:            isVirt,
 		// objectPath: filled in below
@@ -333,18 +349,18 @@ func (parentInode *inodeStruct) createPseudoDirInode(isVirt bool, basename strin
 		sizeInBackend:          0,
 		sizeInMemory:           0,
 		eTag:                   "",
-		mode:                   uint32(syscall.S_IFDIR | parentInode.backend.dirPerm),
+		mode:                   uint32(syscall.S_IFDIR | backend.dirPerm),
 		mTime:                  timeNow,
 		xTime:                  time.Time{},
 		listElement:            nil,
-		fhMap:                  make(map[uint64]*fhStruct),
 		physChildInodeMap:      newStringToUint64Map(PhysChildInodeMap),
 		virtChildInodeMap:      newStringToUint64Map(VirtChildInodeMap),
 		isPrefetchInProgress:   false,
-		cache:                  nil,
+		cacheMap:               nil,
 		inboundCacheLineCount:  0,
 		outboundCacheLineCount: 0,
 		dirtyCacheLineCount:    0,
+		fhSet:                  make(map[uint64]struct{}),
 		pendingDelete:          false,
 	}
 
@@ -382,13 +398,20 @@ func (parentInode *inodeStruct) createPseudoDirInode(isVirt bool, basename strin
 // `createFileObjectInode` is called while globals.Lock() is held to create a new FileObject inodeStruct.
 func (parentInode *inodeStruct) createFileObjectInode(isVirt bool, basename string, size uint64, eTag string, mTime time.Time) (fileObjectInode *inodeStruct) {
 	var (
-		ok bool
+		backend *backendStruct
+		ok      bool
 	)
+
+	backend, ok = globals.backendMap[parentInode.backendNonce]
+	if !ok {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] globals.backendMap[parentInode.backendNonce] returned !ok")
+	}
 
 	fileObjectInode = &inodeStruct{
 		inodeNumber:       fetchNonce(),
 		inodeType:         FileObject,
-		backend:           parentInode.backend,
+		backendNonce:      backend.nonce,
 		parentInodeNumber: parentInode.inodeNumber,
 		isVirt:            isVirt,
 		// objectPath: filled in below
@@ -396,18 +419,18 @@ func (parentInode *inodeStruct) createFileObjectInode(isVirt bool, basename stri
 		sizeInBackend: size,
 		sizeInMemory:  size,
 		eTag:          eTag,
-		mode:          uint32(syscall.S_IFREG | parentInode.backend.filePerm),
+		mode:          uint32(syscall.S_IFREG | backend.filePerm),
 		mTime:         mTime,
 		xTime:         time.Time{},
 		// listElement: filled in below
-		fhMap:                  make(map[uint64]*fhStruct),
 		physChildInodeMap:      nil,
 		virtChildInodeMap:      nil,
 		isPrefetchInProgress:   false,
-		cache:                  make(map[uint64]*cacheLineStruct),
+		cacheMap:               make(map[uint64]uint64),
 		inboundCacheLineCount:  0,
 		outboundCacheLineCount: 0,
 		dirtyCacheLineCount:    0,
+		fhSet:                  make(map[uint64]struct{}),
 		pendingDelete:          false,
 	}
 
@@ -453,14 +476,21 @@ func (parentInode *inodeStruct) createFileObjectInode(isVirt bool, basename stri
 func clearFileCacheLinesLocked(inode *inodeStruct) {
 	var (
 		cacheLine       *cacheLineStruct
+		cacheLineNonce  uint64
 		cacheLineNumber uint64
+		ok              bool
 	)
 
 	if inode == nil || inode.inodeType != FileObject {
 		return
 	}
 
-	for cacheLineNumber, cacheLine = range inode.cache {
+	for cacheLineNumber, cacheLineNonce = range inode.cacheMap {
+		cacheLine, ok = globals.cacheMap[cacheLineNonce]
+		if !ok {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] globals.cacheMap[cacheLineNonce] returned !ok")
+		}
 		if cacheLine.state != CacheLineClean {
 			dumpStack()
 			globals.logger.Fatalf("[FATAL] cacheLine.state(%v) != CacheLineClean(%v)", cacheLine.state, CacheLineClean)
@@ -469,7 +499,8 @@ func clearFileCacheLinesLocked(inode *inodeStruct) {
 		_ = globals.cleanCacheLineLRU.Remove(cacheLine.listElement)
 		cacheLine.listElement = nil
 
-		delete(inode.cache, cacheLineNumber)
+		delete(inode.cacheMap, cacheLineNumber)
+		delete(globals.cacheMap, cacheLineNonce)
 	}
 }
 
@@ -581,7 +612,7 @@ func (inode *inodeStruct) touch(mTimeAsInterface interface{}) {
 
 	switch inode.inodeType {
 	case FileObject:
-		if !inode.pendingDelete && (len(inode.fhMap) == 0) && ((inode.inboundCacheLineCount + inode.outboundCacheLineCount + inode.dirtyCacheLineCount) == 0) {
+		if !inode.pendingDelete && (len(inode.fhSet) == 0) && ((inode.inboundCacheLineCount + inode.outboundCacheLineCount + inode.dirtyCacheLineCount) == 0) {
 			if inode.isVirt {
 				inode.xTime = time.Now().Add(globals.config.virtualFileTTL)
 			} else {
@@ -594,7 +625,7 @@ func (inode *inodeStruct) touch(mTimeAsInterface interface{}) {
 	case BackendRootDir:
 		// Never placed on any of globals.inodeEvictionLRU
 	case PseudoDir:
-		if (len(inode.fhMap) == 0) && (inode.physChildInodeMap.Len() == 0) && (inode.virtChildInodeMap.Len() == 2) {
+		if (len(inode.fhSet) == 0) && (inode.physChildInodeMap.Len() == 0) && (inode.virtChildInodeMap.Len() == 2) {
 			if inode.isVirt {
 				inode.xTime = time.Now().Add(globals.config.virtualDirTTL)
 			} else {
@@ -753,6 +784,7 @@ func inodeEvictorForceDrain() (numDrained uint64) {
 // an existing object or object prefix is found. Callers should already hold globals.Lock().
 func (parentInode *inodeStruct) findChildInode(basename string) (childInode *inodeStruct, ok bool) {
 	var (
+		backend            *backendStruct
 		childInodeNumber   uint64
 		dirOrFilePath      string
 		err                error
@@ -799,6 +831,12 @@ func (parentInode *inodeStruct) findChildInode(basename string) (childInode *ino
 
 	// We didn't already know about the childInode, so let's first look for an existing object in the backend
 
+	backend, ok = globals.backendMap[parentInode.backendNonce]
+	if !ok {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] globals.backendMap[parentInode.backendNonce] returned !ok")
+	}
+
 	if parentInode.objectPath == "" {
 		dirOrFilePath = basename
 	} else {
@@ -810,7 +848,7 @@ func (parentInode *inodeStruct) findChildInode(basename string) (childInode *ino
 		ifMatch:  "",
 	}
 
-	statFileOutput, err = statFileWrapper(parentInode.backend.context, statFileInput)
+	statFileOutput, err = statFileWrapper(backend.context, statFileInput)
 	if err == nil {
 		// We found an existing object in the backend, so let's create a FileObject inode for it
 
@@ -834,7 +872,7 @@ func (parentInode *inodeStruct) findChildInode(basename string) (childInode *ino
 		dirPath: dirOrFilePath,
 	}
 
-	_, err = statDirectoryWrapper(parentInode.backend.context, statDirectoryInput)
+	_, err = statDirectoryWrapper(backend.context, statDirectoryInput)
 	if err == nil {
 		// We found an existing object prefix in the backend, so let's create a PseudoDir inode for it
 
@@ -863,6 +901,7 @@ func (parentInode *inodeStruct) findChildInode(basename string) (childInode *ino
 // via directory listings that would normally trigger such population.
 func prefetchDirectory(dirInodeNumber uint64) {
 	var (
+		backend                 *backendStruct
 		basename                string
 		continuationToken       = string("")
 		dirInode                *inodeStruct
@@ -885,15 +924,21 @@ func prefetchDirectory(dirInodeNumber uint64) {
 	}
 
 	for {
+		backend, ok = globals.backendMap[dirInode.backendNonce]
+		if !ok {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] globals.backendMap[dirInode.backendNonce] returned !ok [case 1]")
+		}
+
 		listDirectoryInput = &listDirectoryInputStruct{
 			continuationToken: continuationToken,
-			maxItems:          dirInode.backend.directoryPageSize,
+			maxItems:          backend.directoryPageSize,
 			dirPath:           dirInode.objectPath,
 		}
 
 		globals.Unlock()
 
-		listDirectoryOutput, err = listDirectoryWrapper(dirInode.backend.context, listDirectoryInput)
+		listDirectoryOutput, err = listDirectoryWrapper(backend.context, listDirectoryInput)
 		if err != nil {
 			globals.logger.Printf("[WARN] listDirectoryWrapper(dirInode.backend.context, listDirectoryInput) failed: %v", err)
 		}
@@ -901,6 +946,17 @@ func prefetchDirectory(dirInodeNumber uint64) {
 		globals.Lock()
 
 		dirInode, ok = globals.inodeMap[dirInodeNumber]
+		if !ok {
+			// For any reason, the directory inode has been evicted and no longer needs to be prefetched
+			globals.Unlock()
+			return
+		}
+
+		backend, ok = globals.backendMap[dirInode.backendNonce]
+		if !ok {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] globals.backendMap[dirInode.backendNonce] returned !ok [case 2]")
+		}
 
 		// Check first to see if we should continue or the directory inode has been evicted since we last checked
 
@@ -937,7 +993,7 @@ func prefetchDirectory(dirInodeNumber uint64) {
 			dirInode.isPrefetchInProgress = false
 			latency = time.Since(startTime).Seconds()
 			globals.backendMetrics.DirectoryPrefetchLatencies.Observe(latency)
-			dirInode.backend.backendMetrics.DirectoryPrefetchLatencies.Observe(latency)
+			backend.backendMetrics.DirectoryPrefetchLatencies.Observe(latency)
 			globals.Unlock()
 			return
 		}
@@ -1073,6 +1129,7 @@ func dumpFS(w io.Writer) {
 // `dumpFS` called on a particular inode recursively dumps a file system element.
 func (thisInode *inodeStruct) dumpFS(w io.Writer, indent string, expectedInodeNumber uint64, expectedBasename string) {
 	var (
+		backend            *backendStruct
 		childInode         *inodeStruct
 		childInodeBasename string
 		childInodeMapIndex int
@@ -1083,6 +1140,11 @@ func (thisInode *inodeStruct) dumpFS(w io.Writer, indent string, expectedInodeNu
 		thisInodeBasename  string
 	)
 
+	backend, ok = globals.backendMap[thisInode.backendNonce]
+	if !ok {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] globals.backendMap[thisInode.backendNonce] returned !ok")
+	}
 	if thisInode.inodeNumber != expectedInodeNumber {
 		dumpStack()
 		globals.logger.Fatalf("[FATAL] thisInode.inodeNumber(%v) != expectedInodeNumber(%v)", thisInode.inodeNumber, expectedInodeNumber)
@@ -1098,7 +1160,7 @@ func (thisInode *inodeStruct) dumpFS(w io.Writer, indent string, expectedInodeNu
 	case FUSERootDir:
 		thisInodeBasename = "[FUSERootDir]"
 	case BackendRootDir:
-		thisInodeBasename = "[BackendRootDir] \"" + thisInode.basename + "\" (" + thisInode.backend.backendPath + ")"
+		thisInodeBasename = "[BackendRootDir] \"" + thisInode.basename + "\" (" + backend.backendPath + ")"
 	case PseudoDir:
 		thisInodeBasename = "[PseudoDir]      \"" + thisInode.basename + "\" (" + thisInode.objectPath + ")"
 	default:
@@ -1192,7 +1254,9 @@ func (thisInode *inodeStruct) dumpFS(w io.Writer, indent string, expectedInodeNu
 // while unlocked.
 func (thisInode *inodeStruct) finishPendingDelete() {
 	var (
+		backend         *backendStruct
 		cacheLine       *cacheLineStruct
+		cacheLineNonce  uint64
 		cacheLineNumber uint64
 		cacheLineWaiter sync.WaitGroup
 		deleteFileInput *deleteFileInputStruct
@@ -1207,14 +1271,21 @@ Restart:
 
 	// Let's just drop cache lines that are either "clean" io "dirty"
 
-	for cacheLineNumber, cacheLine = range thisInode.cache {
+	for cacheLineNumber, cacheLineNonce = range thisInode.cacheMap {
+		cacheLine, ok = globals.cacheMap[cacheLineNonce]
+		if !ok {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] globals.cacheMap[cacheLineNonce] returned !ok [case 1]")
+		}
 		switch cacheLine.state {
 		case CacheLineClean:
-			delete(thisInode.cache, cacheLineNumber)
+			delete(thisInode.cacheMap, cacheLineNumber)
+			delete(globals.cacheMap, cacheLineNonce)
 			_ = globals.cleanCacheLineLRU.Remove(cacheLine.listElement)
 			cacheLine.listElement = nil
 		case CacheLineDirty:
-			delete(thisInode.cache, cacheLineNumber)
+			delete(thisInode.cacheMap, cacheLineNumber)
+			delete(globals.cacheMap, cacheLineNonce)
 			_ = globals.dirtyCacheLineLRU.Remove(cacheLine.listElement)
 			cacheLine.listElement = nil
 		default:
@@ -1224,7 +1295,12 @@ Restart:
 
 	// Now we need to await any pending "inbound" or "outbound" cache lines (though this shouldn't happen)
 
-	for _, cacheLine = range thisInode.cache {
+	for _, cacheLineNonce = range thisInode.cacheMap {
+		cacheLine, ok = globals.cacheMap[cacheLineNonce]
+		if !ok {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] globals.cacheMap[cacheLineNonce] returned !ok [case 2]")
+		}
 		cacheLineWaiter.Add(1)
 		cacheLine.waiters = append(cacheLine.waiters, &cacheLineWaiter)
 		globals.Unlock()
@@ -1235,13 +1311,19 @@ Restart:
 	// Once we make it here, we need to atomically delete the object (if any)
 
 	if !thisInode.isVirt {
+		backend, ok = globals.backendMap[thisInode.backendNonce]
+		if !ok {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] globals.backendMap[thisInode.backendNonce] returned !ok")
+		}
+
 		deleteFileInput = &deleteFileInputStruct{
 			filePath: thisInode.objectPath,
 			ifMatch:  "",
 		}
 
 		// It's actually ok if the object is already gone
-		_, err = deleteFileWrapper(thisInode.backend.context, deleteFileInput)
+		_, err = deleteFileWrapper(backend.context, deleteFileInput)
 		if err != nil {
 			globals.logger.Printf("[WARN] deleteBackendObjectWhenAndIfNecessary() got deleteFileWrapper(thisInode.backend.context, deleteFileInput) err: %v", err)
 		}
