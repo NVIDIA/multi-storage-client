@@ -103,28 +103,41 @@ type backendStruct struct {
 // `configStruct` describes the global configuration settings as well as the array of backendStruct's configured.
 type configStruct struct {
 	// From <config-file>
-	msfsVersion                 uint64                     // JSON/YAML "msfs_version"                    default:0
-	mountName                   string                     // JSON/YAML "mountname"                       default:"msfs"
-	mountPoint                  string                     // JSON/YAML "mountpoint"                      default:"${MSFS_MOUNTPOINT:-/mnt}""
-	uid                         uint64                     // JSON/YAML "uid"                             default:<current euid>
-	gid                         uint64                     // JSON/YAML "gid"                             default:<current egid>
-	dirPerm                     uint64                     // JSON/YAML "dir_perm"                        default:0o555
-	allowOther                  bool                       // JSON/YAML "allow_other"                     default:true
-	maxWrite                    uint64                     // JSON/YAML "max_write"                       default:131072 (128Ki)
-	entryAttrTTL                time.Duration              // JSON/YAML "entry_attr_ttl"                  default:10000 (in milliseconds)
-	evictableInodeTTL           time.Duration              // JSON/YAML "evictable_inode_ttl"             default:1000000 (in milliseconds)
-	virtualDirTTL               time.Duration              // JSON/YAML "virtual_dir_ttl"                 default:1000000 (in milliseconds)
-	virtualFileTTL              time.Duration              // JSON/YAML "virtual_file_ttl"                default:1000000 (in milliseconds)
-	ttlCheckInterval            time.Duration              // JSON/YAML "ttl_check_interval"              default:250 (in milliseconds)
-	cacheLineSize               uint64                     // JSON/YAML "cache_line_size"                 default:1048576 (1Mi)
-	cacheLines                  uint64                     // JSON/YAML "cache_lines"                     default:4096
-	cacheLinesToPrefetch        uint64                     // JSON/YAML "cache_lines_to_prefetch"         default:4
-	dirtyCacheLinesFlushTrigger uint64                     // JSON/YAML "dirty_cache_lines_flush_trigger" default:80 (as a percentage)
-	dirtyCacheLinesMax          uint64                     // JSON/YAML "dirty_cache_lines_max"           default:90 (as a percentage)
-	autoSIGHUPInterval          time.Duration              // JSON/YAML "auto_sighup_interval"            default:0 (none)
-	observability               *observabilityConfigStruct // JSON/YAML "observability"                   default:nil (disabled)
-	endpoint                    string                     // JSON/YAML "endpoint"                        default:""
-	backends                    map[string]*backendStruct  // JSON/YAML "backends"                        Key == backendStruct.mountPointSubdirectoryName
+	msfsVersion                            uint64                     // JSON/YAML "msfs_version"                                   default:0
+	mountName                              string                     // JSON/YAML "mountname"                                      default:"msfs"
+	mountPoint                             string                     // JSON/YAML "mountpoint"                                     default:"${MSFS_MOUNTPOINT:-/mnt}""
+	uid                                    uint64                     // JSON/YAML "uid"                                            default:<current euid>
+	gid                                    uint64                     // JSON/YAML "gid"                                            default:<current egid>
+	dirPerm                                uint64                     // JSON/YAML "dir_perm"                                       default:0o555
+	allowOther                             bool                       // JSON/YAML "allow_other"                                    default:true
+	maxWrite                               uint64                     // JSON/YAML "max_write"                                      default:131072 (128Ki)
+	entryAttrTTL                           time.Duration              // JSON/YAML "entry_attr_ttl"                                 default:10000 (in milliseconds)
+	evictableInodeTTL                      time.Duration              // JSON/YAML "evictable_inode_ttl"                            default:1000000 (in milliseconds)
+	virtualDirTTL                          time.Duration              // JSON/YAML "virtual_dir_ttl"                                default:1000000 (in milliseconds)
+	virtualFileTTL                         time.Duration              // JSON/YAML "virtual_file_ttl"                               default:1000000 (in milliseconds)
+	ttlCheckInterval                       time.Duration              // JSON/YAML "ttl_check_interval"                             default:250 (in milliseconds)
+	cacheLineSize                          uint64                     // JSON/YAML "cache_line_size"                                default:1048576 (1Mi)
+	cacheLines                             uint64                     // JSON/YAML "cache_lines"                                    default:4096
+	cacheLinesToPrefetch                   uint64                     // JSON/YAML "cache_lines_to_prefetch"                        default:4
+	dirtyCacheLinesFlushTrigger            uint64                     // JSON/YAML "dirty_cache_lines_flush_trigger"                default:80 (as a percentage)
+	dirtyCacheLinesMax                     uint64                     // JSON/YAML "dirty_cache_lines_max"                          default:90 (as a percentage)
+	cacheDirPath                           string                     // JSON/YAML "cache_dir_path"                                 default:""
+	inodeMapKeysPerPageMax                 uint64                     // JSON/YAML "inode_map_keys_per_page_max"                    default:64
+	inodeMapPageEvictLowLimit              uint64                     // JSON/YAML "inode_map_page_evict_low_limit"                 default:200
+	inodeMapPageEvictHighLimit             uint64                     // JSON/YAML "inode_map_page_evict_high_limit"                default:210
+	inodeEvictionQueueKeysPerPageMax       uint64                     // JSON/YAML "inode_eviction_queue_keys_per_page_max"         default:256
+	inodeEvictionQueuePageEvictLowLimit    uint64                     // JSON/YAML "inode_eviction_queue_page_evict_low_limit"      default:50
+	inodeEvictionQueuePageEvictHighLimit   uint64                     // JSON/YAML "inode_eviction_queue_page_evict_high_limit"     default:60
+	physChildDirEntryMapKeysPerPageMax     uint64                     // JSON/YAML "phys_child_dir_entry_map_keys_per_page_max"     default:64
+	physChildDirEntryMapPageEvictLowLimit  uint64                     // JSON/YAML "phys_child_dir_entry_map_page_evict_low_limit"  default:100
+	physChildDirEntryMapPageEvictHighLimit uint64                     // JSON/YAML "phys_child_dir_entry_map_page_evict_high_limit" default:104
+	virtChildDirEntryMapKeysPerPageMax     uint64                     // JSON/YAML "virt_child_dir_entry_map_keys_per_page_max"     default:64
+	virtChildDirEntryMapPageEvictLowLimit  uint64                     // JSON/YAML "virt_child_dir_entry_map_page_evict_low_limit"  default:100
+	virtChildDirEntryMapPageEvictHighLimit uint64                     // JSON/YAML "virt_child_dir_entry_map_page_evict_high_limit" default:104
+	autoSIGHUPInterval                     time.Duration              // JSON/YAML "auto_sighup_interval"                           default:0 (none)
+	observability                          *observabilityConfigStruct // JSON/YAML "observability"                                  default:nil (disabled)
+	endpoint                               string                     // JSON/YAML "endpoint"                                       default:""
+	backends                               map[string]*backendStruct  // JSON/YAML "backends"                                       Key == backendStruct.mountPointSubdirectoryName
 }
 
 // observabilityConfigStruct holds observability configuration
@@ -239,6 +252,8 @@ type cacheLineStruct struct {
 }
 
 // `inodeStruct` contains the state of an inode.
+//
+// Note that this data structure is serialized and deserialized in bptree.go so changes here must be paired with changes there.
 type inodeStruct struct {
 	inodeNumber            uint64                   // Note that, other than the FUSERootDir, any reference to a backend object path migtht change this value
 	inodeType              uint32                   // One of FileObject, FUSERootDir, BackendRootDir, or PseudoDir
@@ -258,9 +273,9 @@ type inodeStruct struct {
 	virtChildInodeMap      *stringToUint64MapStruct // [inodeType != FileObject] maps dirEntries "." and ".." as well as others of type BackendRootDir plus those of type FileObject or PseudoDir for which there doesn't yet exist backing objects
 	isPrefetchInProgress   bool                     // [inodeType == BackendRootDir || PseudoDir] indicates that a background prefetch of the directory is in progress
 	cacheMap               map[uint64]uint64        // [inodeType == FileObject] Key == file offset / globals.config.cacheLineSize; Value = cacheLineStruct.nonce; &cacheLineStruct = globals.cacheMap[Value]
-	inboundCacheLineCount  uint64                   // [inodeType == FileObject] cound of .cache[] elements in state CacheLineInbound
-	outboundCacheLineCount uint64                   // [inodeType == FileObject] cound of .cache[] elements in state CacheLineOutbound
-	dirtyCacheLineCount    uint64                   // [inodeType == FileObject] cound of .cache[] elements in state CacheLineDirty
+	inboundCacheLineCount  uint64                   // [inodeType == FileObject] count of .cache[] elements in state CacheLineInbound
+	outboundCacheLineCount uint64                   // [inodeType == FileObject] count of .cache[] elements in state CacheLineOutbound
+	dirtyCacheLineCount    uint64                   // [inodeType == FileObject] count of .cache[] elements in state CacheLineDirty
 	fhSet                  map[uint64]struct{}      // Key == fhStruct.nonce; &fhStruct = globals.fhMap[Key]
 	pendingDelete          bool                     // [inodeType == FileObject] marked for deletion (prevents being reported in DoReadDir{|Plus}() output but also reuse until last file close enables removal)
 }
@@ -281,6 +296,7 @@ type globalsStruct struct {
 	errChan                chan error                  //
 	fissionVolume          fission.Volume              //
 	lastNonce              uint64                      // Used to safely allocate non-repeating values (initialized to FUSERootDirInodeNumber to ensure skipping it)
+	cacheDir               string                      //
 	inode                  *inodeStruct                // Link to the lone inodeStruct with .inodeNumber == FUSERootDirInodeNumber && .inodeType == FUSERootDir
 	inodeMap               map[uint64]*inodeStruct     // Key: inodeStruct.inodeNumber
 	inodeEvictionLRU       *timeToUint64QueueStruct    // Contains inodeStruct.listElement's of inodeStruct.inodeNumber's ordered by inodeStruct.xTime

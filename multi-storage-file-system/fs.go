@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 	"syscall"
 	"time"
@@ -13,16 +14,26 @@ import (
 // `initFS` initializes the root of the FUSE file system.
 func initFS() {
 	var (
+		err     error
 		timeNow time.Time
 	)
 
 	globals.Lock()
 
-	timeNow = time.Now()
-
 	globals.backendMap = make(map[uint64]*backendStruct)
 
 	globals.lastNonce = FUSERootDirInodeNumber
+
+	globals.cacheDir, err = os.MkdirTemp(globals.config.cacheDirPath, "MSFS_")
+	if err != nil {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] os.MkdirTemp(globals.config.cacheDirPath, \"MSFS\") failed: %v", err)
+	}
+	globals.logger.Printf("[INFO] cache dir: \"%s\"", globals.cacheDir)
+
+	bptree_init() // [TODO]
+
+	timeNow = time.Now()
 
 	globals.inode = &inodeStruct{
 		inodeNumber:            FUSERootDirInodeNumber,
@@ -79,8 +90,9 @@ func initFS() {
 // `drainFS` awaits all backend/asynchronous traffic to complete before
 func drainFS() {
 	var (
-		dirName string
 		backend *backendStruct
+		dirName string
+		err     error
 	)
 
 	globals.inodeEvictorCancelFunc()
@@ -93,6 +105,15 @@ func drainFS() {
 	}
 
 	processToUnmountListAlreadyLocked()
+
+	bptree_drain() // [TODO]
+
+	err = os.RemoveAll(globals.cacheDir)
+	if err != nil {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL]s.RemoveAll(globals.cacheDir:\"%s\") failed: %v", globals.cacheDir, err)
+	}
+	globals.logger.Printf("[INFO] cache dir (\"%s\") removed", globals.cacheDir)
 
 	globals.Unlock()
 }
