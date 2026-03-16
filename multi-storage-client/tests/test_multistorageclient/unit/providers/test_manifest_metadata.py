@@ -835,3 +835,145 @@ def test_manifest_physical_path_tracking(temp_data_store_type: type[tempdatastor
         resolved = provider.realpath("direct/logical.txt")
         assert resolved.exists
         assert resolved.physical_path == "direct/physical/path.txt"
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryPOSIXDirectory],
+        [tempdatastore.TemporaryAWSS3Bucket],
+    ],
+)
+def test_manifest_get_object_metadata_directory(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """Test that get_object_metadata handles directory paths by detecting files under the prefix."""
+    with temp_data_store_type() as temp_data_store:
+        config = StorageClientConfig.from_dict(
+            config_dict={"profiles": {"test": temp_data_store.profile_config_dict()}},
+            profile="test",
+        )
+        storage_client = StorageClient(config)
+
+        assert storage_client._storage_provider is not None
+        provider = ManifestMetadataProvider(
+            storage_provider=storage_client._storage_provider,
+            manifest_path=DEFAULT_MANIFEST_BASE_DIR,
+            writable=True,
+        )
+
+        now = datetime.now(tz=timezone.utc)
+
+        provider.add_file(
+            "models/v1/weights.bin",
+            ObjectMetadata(
+                key="models/v1/weights.bin",
+                content_length=100,
+                last_modified=now,
+            ),
+        )
+        provider.add_file(
+            "models/v1/config.json",
+            ObjectMetadata(
+                key="models/v1/config.json",
+                content_length=50,
+                last_modified=now,
+            ),
+        )
+        provider.add_file(
+            "data/train.csv",
+            ObjectMetadata(
+                key="data/train.csv",
+                content_length=200,
+                last_modified=now,
+            ),
+        )
+        provider.commit_updates()
+
+        # Directory without trailing slash
+        meta = provider.get_object_metadata("models")
+        assert meta.type == "directory"
+        assert meta.key == "models/"
+        assert meta.content_length == 0
+
+        # Directory with trailing slash
+        meta = provider.get_object_metadata("models/")
+        assert meta.type == "directory"
+        assert meta.key == "models/"
+
+        # Nested directory
+        meta = provider.get_object_metadata("models/v1")
+        assert meta.type == "directory"
+        assert meta.key == "models/v1/"
+
+        # Non-existent path that is not a valid directory or file
+        with pytest.raises(FileNotFoundError):
+            provider.get_object_metadata("nonexistent")
+
+        # Partial prefix that does not align to a directory boundary
+        with pytest.raises(FileNotFoundError):
+            provider.get_object_metadata("mod")
+
+        # File path still works
+        meta = provider.get_object_metadata("data/train.csv")
+        assert meta.type == "file"
+        assert meta.key == "data/train.csv"
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryPOSIXDirectory],
+        [tempdatastore.TemporaryAWSS3Bucket],
+    ],
+)
+def test_manifest_get_object_metadata_directory_pending(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """Test directory detection interacts correctly with pending adds and removes."""
+    with temp_data_store_type() as temp_data_store:
+        config = StorageClientConfig.from_dict(
+            config_dict={"profiles": {"test": temp_data_store.profile_config_dict()}},
+            profile="test",
+        )
+        storage_client = StorageClient(config)
+
+        assert storage_client._storage_provider is not None
+        provider = ManifestMetadataProvider(
+            storage_provider=storage_client._storage_provider,
+            manifest_path=DEFAULT_MANIFEST_BASE_DIR,
+            writable=True,
+        )
+
+        now = datetime.now(tz=timezone.utc)
+
+        # Directory only exists in pending adds (not yet committed)
+        provider.add_file(
+            "pending_dir/file.txt",
+            ObjectMetadata(
+                key="pending_dir/file.txt",
+                content_length=10,
+                last_modified=now,
+            ),
+        )
+
+        # Without include_pending, the directory should not be found
+        with pytest.raises(FileNotFoundError):
+            provider.get_object_metadata("pending_dir")
+
+        # With include_pending, the directory should be detected
+        meta = provider.get_object_metadata("pending_dir", include_pending=True)
+        assert meta.type == "directory"
+        assert meta.key == "pending_dir/"
+
+        # Commit, then mark the only file for removal
+        provider.commit_updates()
+
+        meta = provider.get_object_metadata("pending_dir")
+        assert meta.type == "directory"
+
+        provider.remove_file("pending_dir/file.txt")
+
+        # Without include_pending, committed file still visible so directory exists
+        meta = provider.get_object_metadata("pending_dir")
+        assert meta.type == "directory"
+
+        # With include_pending, the file is pending removal so directory should not exist
+        with pytest.raises(FileNotFoundError):
+            provider.get_object_metadata("pending_dir", include_pending=True)

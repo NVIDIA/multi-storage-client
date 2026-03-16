@@ -350,24 +350,7 @@ class SingleStorageClient(AbstractStorageClient):
         if not self._metadata_provider:
             return self._storage_provider.get_object_metadata(path, strict=strict)
 
-        # For metadata_provider, first check if the path exists as a file, then fallback to detecting if path is a directory.
-        # TODO: Consider passing strict argument to the metadata provider.
-        try:
-            return self._metadata_provider.get_object_metadata(path)
-        except FileNotFoundError:
-            # Try listing from the parent to determine if path is a valid directory
-            parent = os.path.dirname(path.rstrip("/")) + "/"
-            parent = "" if parent == "/" else parent
-            target = path.rstrip("/") + "/"
-
-            try:
-                entries = self._metadata_provider.list_objects(parent, include_directories=True)
-                for entry in entries:
-                    if entry.key == target and entry.type == "directory":
-                        return entry
-            except Exception:
-                pass
-            raise  # Raise original FileNotFoundError
+        return self._metadata_provider.get_object_metadata(path, include_pending=not strict)
 
     @retry
     def download_file(self, remote_path: str, local_path: Union[str, IO]) -> None:

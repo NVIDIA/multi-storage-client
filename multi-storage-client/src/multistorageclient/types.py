@@ -434,12 +434,17 @@ class MetadataProvider(ABC):
     @abstractmethod
     def get_object_metadata(self, path: str, include_pending: bool = False) -> ObjectMetadata:
         """
-        Retrieves metadata or information about an object stored in the provider.
+        Retrieves metadata or information about an object or directory stored in the provider.
 
-        :param path: The path of the object.
+        If the path does not match a file, implementations should check whether the path
+        represents a valid directory (i.e. files exist under the path prefix) and return
+        directory metadata accordingly.
+
+        :param path: The path of the object or directory.
         :param include_pending: Whether to include metadata that is not yet committed.
 
-        :return: A metadata object containing the information about the object.
+        :return: A metadata object containing the information about the object or directory.
+        :raises FileNotFoundError: If no object or directory exists at the specified path.
         """
         pass
 

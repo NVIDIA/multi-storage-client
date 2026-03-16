@@ -23,7 +23,14 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional, Union
 
-from ..types import MetadataProvider, ObjectMetadata, ResolvedPath, ResolvedPathState, StorageProvider
+from ..types import (
+    AWARE_DATETIME_MIN,
+    MetadataProvider,
+    ObjectMetadata,
+    ResolvedPath,
+    ResolvedPathState,
+    StorageProvider,
+)
 from ..utils import create_attribute_filter_evaluator, glob, matches_attribute_filter_expression
 from .manifest_formats import ManifestFormat, get_format_handler
 from .manifest_object_metadata import ManifestObjectMetadata
@@ -380,7 +387,25 @@ class ManifestMetadataProvider(MetadataProvider):
         elif include_pending and path in self._pending_adds:
             return self._pending_adds[path]
         else:
+            return self._get_directory_metadata(path, include_pending)
+
+    def _get_directory_metadata(self, path: str, include_pending: bool) -> ObjectMetadata:
+        dir_prefix = path.rstrip("/") + "/"
+
+        has_committed = any(
+            k.startswith(dir_prefix) and (not include_pending or k not in self._pending_removes) for k in self._files
+        )
+        has_pending = include_pending and any(k.startswith(dir_prefix) for k in self._pending_adds)
+
+        if not has_committed and not has_pending:
             raise FileNotFoundError(f"Object {path} does not exist.")
+
+        return ObjectMetadata(
+            key=dir_prefix,
+            type="directory",
+            content_length=0,
+            last_modified=AWARE_DATETIME_MIN,
+        )
 
     def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
         """
