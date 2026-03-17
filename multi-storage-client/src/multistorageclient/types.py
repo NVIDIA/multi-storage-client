@@ -755,6 +755,23 @@ PatternList = list[Tuple[PatternType, str]]
 
 
 @dataclass
+class DryrunResult:
+    """
+    Holds references to JSONL files produced by a dryrun sync operation.
+
+    Each file contains one JSON object per line, matching the :py:class:`ObjectMetadata`
+    serialization format (see :py:meth:`ObjectMetadata.to_dict` / :py:meth:`ObjectMetadata.from_dict`).
+
+    The caller is responsible for cleaning up the files when they are no longer needed.
+    """
+
+    #: Path to a JSONL file listing source objects that would be added to the target.
+    files_to_add: str
+    #: Path to a JSONL file listing target objects that would be deleted.
+    files_to_delete: str
+
+
+@dataclass
 class SyncResult:
     """
     A data class that represents the summary of a sync operation.
@@ -772,10 +789,13 @@ class SyncResult:
     total_bytes_deleted: int = 0
     #: The total time taken to process the sync operation.
     total_time_seconds: float = 0.0
+    #: Dryrun details with paths to JSONL files. ``None`` for normal (non-dryrun) sync operations.
+    dryrun: Optional[DryrunResult] = None
 
     def __str__(self) -> str:
-        return (
-            f"Sync statistics:\n"
+        header = "Sync dryrun statistics:" if self.dryrun else "Sync statistics:"
+        lines = (
+            f"{header}\n"
             f"  Work units: {self.total_work_units}\n"
             f"  Files added: {self.total_files_added}\n"
             f"  Files deleted: {self.total_files_deleted}\n"
@@ -783,6 +803,9 @@ class SyncResult:
             f"  Bytes deleted: {self.total_bytes_deleted}\n"
             f"  Time elapsed: {self.total_time_seconds:.2f}s"
         )
+        if self.dryrun:
+            lines += f"\n  Files to add: {self.dryrun.files_to_add}\n  Files to delete: {self.dryrun.files_to_delete}"
+        return lines
 
 
 class SyncError(RuntimeError):

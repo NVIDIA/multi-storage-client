@@ -40,7 +40,15 @@ from .shortcuts import (
     upload_file,
     write,
 )
-from .types import ProviderBundleV2, ResolvedPath, ResolvedPathState, SignerType, StorageBackend, SyncResult
+from .types import (
+    DryrunResult,
+    ProviderBundleV2,
+    ResolvedPath,
+    ResolvedPathState,
+    SignerType,
+    StorageBackend,
+    SyncResult,
+)
 
 __version__ = version("multi-storage-client")
 
@@ -57,6 +65,7 @@ __all__ = [
     "SignerType",
     "StorageBackend",
     "SyncResult",
+    "DryrunResult",
     # Shortcuts
     "commit_metadata",
     "download_file",

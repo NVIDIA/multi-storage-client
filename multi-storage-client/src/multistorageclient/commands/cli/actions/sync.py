@@ -73,6 +73,15 @@ class SyncAction(Action):
             action="store_true",
             help="Do not ignore hidden files and directories (those starting with a dot). By default, hidden files are ignored.",
         )
+        parser.add_argument(
+            "--dryrun",
+            action="store_true",
+            help="Only enumerate and compare objects without performing any copy/delete. Results are written to JSONL files.",
+        )
+        parser.add_argument(
+            "--dryrun-output-path",
+            help="Directory to write dryrun JSONL files into. Defaults to a temporary directory. Only used with --dryrun.",
+        )
         parser.add_argument("source_url", help="The path or URL for the source storage (POSIX path or msc:// URL)")
 
         # Add examples as description
@@ -124,6 +133,12 @@ class SyncAction(Action):
 
   # Include hidden files in sync (by default they are ignored)
   msc sync /path/to/dataset --no-ignore-hidden --target-url msc://profile/prefix
+
+  # Dryrun: see what would be synced without actually copying/deleting
+  msc sync msc://source-profile/data --dryrun --target-url msc://target-profile/data
+
+  # Dryrun with custom output directory
+  msc sync msc://source-profile/data --dryrun --dryrun-output-path /tmp/my_dryrun --target-url msc://target-profile/data
 """
 
     def run(self, args: argparse.Namespace) -> int:
@@ -154,14 +169,18 @@ class SyncAction(Action):
             ignore_hidden = not args.no_ignore_hidden
 
             if args.target_url:
-                msc.sync(
+                result = msc.sync(
                     args.source_url,
                     args.target_url,
                     args.delete_unmatched_files,
                     execution_mode=execution_mode,
                     patterns=patterns,
                     ignore_hidden=ignore_hidden,
+                    dryrun=args.dryrun,
+                    dryrun_output_path=args.dryrun_output_path,
                 )
+                if args.dryrun:
+                    print(result)
             else:
                 try:
                     replica_indices = (

@@ -288,6 +288,46 @@ For large files, the sync operation uses temporary files to avoid loading entire
 .. note::
    The sync operation automatically handles metadata updates for the target storage client.
 
+Dryrun Mode
+===========
+
+Use ``--dryrun`` to see what would be synced without actually copying or deleting any files. The results are written to JSONL files on disk:
+
+.. code-block:: shell
+
+  $ msc sync msc://source-profile/data --target-url msc://target-profile/data --dryrun
+
+.. code-block:: text
+  :caption: Example dryrun output
+
+  Sync dryrun statistics:
+    Work units: 1045
+    Files added: 42
+    Files deleted: 0
+    Bytes added: 1073741824
+    Bytes deleted: 0
+    Time elapsed: 4.27s
+    Files to add: /tmp/msc_dryrun_abc123/files_to_add.jsonl
+    Files to delete: /tmp/msc_dryrun_abc123/files_to_delete.jsonl
+
+Use ``--dryrun-output-path`` to control where the JSONL files are written:
+
+.. code-block:: shell
+
+  $ msc sync msc://source-profile/data --target-url msc://target-profile/data --dryrun --dryrun-output-path /tmp/my_dryrun
+
+Each JSONL file contains one JSON object per line with ``ObjectMetadata`` fields (``key``, ``content_length``, ``last_modified``, etc.), and can be inspected with standard tools like ``jq``:
+
+.. code-block:: shell
+
+  $ head -1 /tmp/my_dryrun/files_to_add.jsonl | jq .
+  {
+    "key": "data/train/image_000001.jpg",
+    "content_length": 102400,
+    "last_modified": "2025-01-15T08:30:00.000000Z",
+    "type": "file"
+  }
+
 .. _msc-sync-replicas-cli:
 
 Sync Replicas

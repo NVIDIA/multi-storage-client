@@ -358,6 +358,8 @@ def sync(
     patterns: Optional[PatternList] = None,
     preserve_source_attributes: bool = False,
     ignore_hidden: bool = True,
+    dryrun: bool = False,
+    dryrun_output_path: Optional[str] = None,
 ) -> SyncResult:
     """
     Syncs files from the source storage to the target storage.
@@ -375,6 +377,10 @@ def sync(
             request for each object to retrieve attributes, which can significantly impact performance on large-scale
             sync operations. For production use at scale, configure a ``metadata_provider`` in your storage profile.
     :param ignore_hidden: Whether to ignore hidden files and directories (starting with dot). Default is True.
+    :param dryrun: If True, only enumerate and compare objects without performing any copy/delete operations.
+        The returned :py:class:`SyncResult` will include a :py:class:`DryrunResult` with paths to JSONL files.
+    :param dryrun_output_path: Directory to write dryrun JSONL files into. If None (default), a temporary
+        directory is created automatically. Ignored when dryrun is False.
     """
     source_client, source_path = resolve_storage_client(source_url)
     target_client, target_path = resolve_storage_client(target_url)
@@ -387,6 +393,8 @@ def sync(
         patterns=patterns,
         preserve_source_attributes=preserve_source_attributes,
         ignore_hidden=ignore_hidden,
+        dryrun=dryrun,
+        dryrun_output_path=dryrun_output_path,
     )
 
 

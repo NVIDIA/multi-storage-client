@@ -341,6 +341,8 @@ class AbstractStorageClient(ABC):
         source_files: Optional[list[str]] = None,
         ignore_hidden: bool = True,
         commit_metadata: bool = True,
+        dryrun: bool = False,
+        dryrun_output_path: Optional[str] = None,
     ) -> SyncResult:
         """
         Syncs files from the source storage client to "path/".
@@ -368,6 +370,10 @@ class AbstractStorageClient(ABC):
         :param ignore_hidden: Whether to ignore hidden files and directories. Default is ``True``.
         :param commit_metadata: When ``True`` (default), calls :py:meth:`StorageClient.commit_metadata` after sync completes.
             Set to ``False`` to skip the commit, allowing batching of multiple sync operations before committing manually.
+        :param dryrun: If ``True``, only enumerate and compare objects without performing any copy/delete operations.
+            The returned :py:class:`SyncResult` will include a :py:class:`DryrunResult` with paths to JSONL files.
+        :param dryrun_output_path: Directory to write dryrun JSONL files into. If ``None`` (default), a temporary
+            directory is created automatically. Ignored when ``dryrun`` is ``False``.
         :raises ValueError: If both source_files and patterns are provided.
         :raises NotImplementedError: If sync operations are not supported (e.g., CompositeStorageClient as target).
         """

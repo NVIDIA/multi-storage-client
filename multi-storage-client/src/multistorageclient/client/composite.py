@@ -359,6 +359,8 @@ class CompositeStorageClient(AbstractStorageClient):
         source_files: Optional[list[str]] = None,
         ignore_hidden: bool = True,
         commit_metadata: bool = True,
+        dryrun: bool = False,
+        dryrun_output_path: Optional[str] = None,
     ) -> SyncResult:
         raise NotImplementedError(
             "CompositeStorageClient cannot be used as sync target (write operation). "

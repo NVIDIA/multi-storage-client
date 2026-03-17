@@ -14,15 +14,18 @@
 # limitations under the License.
 
 import importlib.util
+import json
 import logging
 import multiprocessing
+import os
 import queue
+import tempfile
 import threading
 import time
 from typing import TYPE_CHECKING, Optional
 
 from ..constants import DEFAULT_SYNC_BATCH_SIZE
-from ..types import ExecutionMode, SyncError, SyncResult
+from ..types import DryrunResult, ExecutionMode, SyncError, SyncResult
 from ..utils import PatternMatcher, calculate_worker_processes_and_threads
 from .monitors import ErrorMonitorThread, ResultMonitorThread
 from .producer import ProducerThread
@@ -87,6 +90,8 @@ class SyncManager:
         ignore_hidden: bool = True,
         commit_metadata: bool = True,
         batch_size: int = DEFAULT_SYNC_BATCH_SIZE,
+        dryrun: bool = False,
+        dryrun_output_path: Optional[str] = None,
     ) -> SyncResult:
         """
         Synchronize objects from source to target storage location.
@@ -123,10 +128,27 @@ class SyncManager:
             (ADD to DELETE or vice versa), when file size buckets change (to group similar-sized files), or when the producer
             completes iteration. Batching reduces queue overhead, improves load balancing, and enables future bulk transfer
             optimizations.
+        :param dryrun: If True, only enumerate and compare objects without performing any copy/delete operations.
+            The returned SyncResult will include a :py:class:`DryrunResult` with paths to JSONL files.
+        :param dryrun_output_path: Directory to write dryrun JSONL files into. If ``None``, a temporary
+            directory is created automatically. Ignored when ``dryrun`` is ``False``.
         :raises SyncError: If errors occur during sync operations. Exception message contains details of all errors encountered.
             The sync operation will stop on the first error (fail-fast) and report all errors collected up to that point.
             The SyncError includes a partial SyncResult showing what was accomplished before the error occurred.
         """
+        if dryrun:
+            return self._sync_objects_dryrun(
+                description=description,
+                delete_unmatched_files=delete_unmatched_files,
+                pattern_matcher=pattern_matcher,
+                preserve_source_attributes=preserve_source_attributes,
+                follow_symlinks=follow_symlinks,
+                source_files=source_files,
+                ignore_hidden=ignore_hidden,
+                batch_size=batch_size,
+                output_path=dryrun_output_path,
+            )
+
         sync_start_time = time.time()
 
         logger.debug(f"Starting sync operation {description}")
@@ -349,3 +371,101 @@ class SyncManager:
             )
 
         return sync_result
+
+    def _sync_objects_dryrun(
+        self,
+        description: str = "Syncing",
+        delete_unmatched_files: bool = False,
+        pattern_matcher: Optional[PatternMatcher] = None,
+        preserve_source_attributes: bool = False,
+        follow_symlinks: bool = True,
+        source_files: Optional[list[str]] = None,
+        ignore_hidden: bool = True,
+        batch_size: int = DEFAULT_SYNC_BATCH_SIZE,
+        output_path: Optional[str] = None,
+    ) -> SyncResult:
+        """Dryrun variant: enumerate and compare only, stream results to JSONL files on disk."""
+        sync_start_time = time.time()
+
+        logger.debug(f"Starting dryrun sync operation {description}")
+
+        if pattern_matcher and pattern_matcher.has_patterns():
+            logger.debug(f"Using pattern filtering: {pattern_matcher}")
+
+        file_queue: queue.Queue = queue.Queue()
+        shutdown_event = threading.Event()
+
+        progress = ProgressBar(desc=f"{description} (dryrun)", show_progress=True, total_items=0)
+
+        producer_thread = ProducerThread(
+            self.source_client,
+            self.source_path,
+            self.target_client,
+            self.target_path,
+            progress,
+            file_queue,
+            1,  # num_workers=1 so producer sends exactly one STOP sentinel
+            shutdown_event,
+            delete_unmatched_files,
+            pattern_matcher,
+            preserve_source_attributes,
+            follow_symlinks,
+            source_files,
+            ignore_hidden,
+            batch_size,
+        )
+        producer_thread.start()
+        producer_thread.join()
+
+        if output_path:
+            dryrun_dir = output_path
+            os.makedirs(dryrun_dir, exist_ok=True)
+        else:
+            dryrun_dir = tempfile.mkdtemp(prefix="msc_dryrun_")
+        add_path = os.path.join(dryrun_dir, "files_to_add.jsonl")
+        delete_path = os.path.join(dryrun_dir, "files_to_delete.jsonl")
+
+        total_files_added = 0
+        total_files_deleted = 0
+        total_bytes_added = 0
+        total_bytes_deleted = 0
+
+        with open(add_path, "w") as add_file, open(delete_path, "w") as delete_file:
+            while True:
+                batch = file_queue.get()
+                if batch.operation == OperationType.STOP:
+                    break
+                if batch.operation == OperationType.ADD:
+                    for item in batch.items:
+                        add_file.write(json.dumps(item.to_dict()) + "\n")
+                        total_files_added += 1
+                        total_bytes_added += item.content_length
+                elif batch.operation == OperationType.DELETE:
+                    for item in batch.items:
+                        delete_file.write(json.dumps(item.to_dict()) + "\n")
+                        total_files_deleted += 1
+                        total_bytes_deleted += item.content_length
+
+        progress.close()
+        logger.debug(f"Completed dryrun sync operation {description}")
+
+        if producer_thread.error:
+            sync_result = SyncResult(
+                total_work_units=producer_thread.total_work_units,
+                total_time_seconds=time.time() - sync_start_time,
+                dryrun=DryrunResult(files_to_add=add_path, files_to_delete=delete_path),
+            )
+            raise SyncError(
+                f"Errors in dryrun sync operation: Producer thread error: {producer_thread.error}",
+                sync_result=sync_result,
+            )
+
+        return SyncResult(
+            total_work_units=producer_thread.total_work_units,
+            total_files_added=total_files_added,
+            total_files_deleted=total_files_deleted,
+            total_bytes_added=total_bytes_added,
+            total_bytes_deleted=total_bytes_deleted,
+            total_time_seconds=time.time() - sync_start_time,
+            dryrun=DryrunResult(files_to_add=add_path, files_to_delete=delete_path),
+        )
