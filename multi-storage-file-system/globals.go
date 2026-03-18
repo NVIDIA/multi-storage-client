@@ -103,41 +103,50 @@ type backendStruct struct {
 // `configStruct` describes the global configuration settings as well as the array of backendStruct's configured.
 type configStruct struct {
 	// From <config-file>
-	msfsVersion                            uint64                     // JSON/YAML "msfs_version"                                   default:0
-	mountName                              string                     // JSON/YAML "mountname"                                      default:"msfs"
-	mountPoint                             string                     // JSON/YAML "mountpoint"                                     default:"${MSFS_MOUNTPOINT:-/mnt}""
-	uid                                    uint64                     // JSON/YAML "uid"                                            default:<current euid>
-	gid                                    uint64                     // JSON/YAML "gid"                                            default:<current egid>
-	dirPerm                                uint64                     // JSON/YAML "dir_perm"                                       default:0o555
-	allowOther                             bool                       // JSON/YAML "allow_other"                                    default:true
-	maxWrite                               uint64                     // JSON/YAML "max_write"                                      default:131072 (128Ki)
-	entryAttrTTL                           time.Duration              // JSON/YAML "entry_attr_ttl"                                 default:10000 (in milliseconds)
-	evictableInodeTTL                      time.Duration              // JSON/YAML "evictable_inode_ttl"                            default:1000000 (in milliseconds)
-	virtualDirTTL                          time.Duration              // JSON/YAML "virtual_dir_ttl"                                default:1000000 (in milliseconds)
-	virtualFileTTL                         time.Duration              // JSON/YAML "virtual_file_ttl"                               default:1000000 (in milliseconds)
-	ttlCheckInterval                       time.Duration              // JSON/YAML "ttl_check_interval"                             default:250 (in milliseconds)
-	cacheLineSize                          uint64                     // JSON/YAML "cache_line_size"                                default:1048576 (1Mi)
-	cacheLines                             uint64                     // JSON/YAML "cache_lines"                                    default:4096
-	cacheLinesToPrefetch                   uint64                     // JSON/YAML "cache_lines_to_prefetch"                        default:4
-	dirtyCacheLinesFlushTrigger            uint64                     // JSON/YAML "dirty_cache_lines_flush_trigger"                default:80 (as a percentage)
-	dirtyCacheLinesMax                     uint64                     // JSON/YAML "dirty_cache_lines_max"                          default:90 (as a percentage)
-	cacheDirPath                           string                     // JSON/YAML "cache_dir_path"                                 default:""
-	inodeMapKeysPerPageMax                 uint64                     // JSON/YAML "inode_map_keys_per_page_max"                    default:64
-	inodeMapPageEvictLowLimit              uint64                     // JSON/YAML "inode_map_page_evict_low_limit"                 default:200
-	inodeMapPageEvictHighLimit             uint64                     // JSON/YAML "inode_map_page_evict_high_limit"                default:210
-	inodeEvictionQueueKeysPerPageMax       uint64                     // JSON/YAML "inode_eviction_queue_keys_per_page_max"         default:256
-	inodeEvictionQueuePageEvictLowLimit    uint64                     // JSON/YAML "inode_eviction_queue_page_evict_low_limit"      default:50
-	inodeEvictionQueuePageEvictHighLimit   uint64                     // JSON/YAML "inode_eviction_queue_page_evict_high_limit"     default:60
-	physChildDirEntryMapKeysPerPageMax     uint64                     // JSON/YAML "phys_child_dir_entry_map_keys_per_page_max"     default:64
-	physChildDirEntryMapPageEvictLowLimit  uint64                     // JSON/YAML "phys_child_dir_entry_map_page_evict_low_limit"  default:100
-	physChildDirEntryMapPageEvictHighLimit uint64                     // JSON/YAML "phys_child_dir_entry_map_page_evict_high_limit" default:104
-	virtChildDirEntryMapKeysPerPageMax     uint64                     // JSON/YAML "virt_child_dir_entry_map_keys_per_page_max"     default:64
-	virtChildDirEntryMapPageEvictLowLimit  uint64                     // JSON/YAML "virt_child_dir_entry_map_page_evict_low_limit"  default:100
-	virtChildDirEntryMapPageEvictHighLimit uint64                     // JSON/YAML "virt_child_dir_entry_map_page_evict_high_limit" default:104
-	autoSIGHUPInterval                     time.Duration              // JSON/YAML "auto_sighup_interval"                           default:0 (none)
-	observability                          *observabilityConfigStruct // JSON/YAML "observability"                                  default:nil (disabled)
-	endpoint                               string                     // JSON/YAML "endpoint"                                       default:""
-	backends                               map[string]*backendStruct  // JSON/YAML "backends"                                       Key == backendStruct.mountPointSubdirectoryName
+	msfsVersion                               uint64                     // JSON/YAML "msfs_version"                                      default:0
+	mountName                                 string                     // JSON/YAML "mountname"                                         default:"msfs"
+	mountPoint                                string                     // JSON/YAML "mountpoint"                                        default:"${MSFS_MOUNTPOINT:-/mnt}""
+	uid                                       uint64                     // JSON/YAML "uid"                                               default:<current euid>
+	gid                                       uint64                     // JSON/YAML "gid"                                               default:<current egid>
+	dirPerm                                   uint64                     // JSON/YAML "dir_perm"                                          default:0o555
+	allowOther                                bool                       // JSON/YAML "allow_other"                                       default:true
+	maxWrite                                  uint64                     // JSON/YAML "max_write"                                         default:131072 (128Ki)
+	entryAttrTTL                              time.Duration              // JSON/YAML "entry_attr_ttl"                                    default:10000 (in milliseconds)
+	evictableInodeTTL                         time.Duration              // JSON/YAML "evictable_inode_ttl"                               default:1000000 (in milliseconds)
+	virtualDirTTL                             time.Duration              // JSON/YAML "virtual_dir_ttl"                                   default:1000000 (in milliseconds)
+	virtualFileTTL                            time.Duration              // JSON/YAML "virtual_file_ttl"                                  default:1000000 (in milliseconds)
+	ttlCheckInterval                          time.Duration              // JSON/YAML "ttl_check_interval"                                default:250 (in milliseconds)
+	cacheLineSize                             uint64                     // JSON/YAML "cache_line_size"                                   default:1048576 (1Mi)
+	cacheLines                                uint64                     // JSON/YAML "cache_lines"                                       default:4096
+	cacheLinesToPrefetch                      uint64                     // JSON/YAML "cache_lines_to_prefetch"                           default:4
+	dirtyCacheLinesFlushTrigger               uint64                     // JSON/YAML "dirty_cache_lines_flush_trigger"                   default:80 (as a percentage)
+	dirtyCacheLinesMax                        uint64                     // JSON/YAML "dirty_cache_lines_max"                             default:90 (as a percentage)
+	cacheDirPath                              string                     // JSON/YAML "cache_dir_path"                                    default:""
+	inodeMapKeysPerPageMax                    uint64                     // JSON/YAML "inode_map_keys_per_page_max"                       default:400
+	inodeMapPageEvictLowLimit                 uint64                     // JSON/YAML "inode_map_page_evict_low_limit"                    default:100
+	inodeMapPageEvictHighLimit                uint64                     // JSON/YAML "inode_map_page_evict_high_limit"                   default:104
+	inodeMapPageDirtyFlushTrigger             uint64                     // JSON/YAML "inode_map_page_dirty_flush_trigger"                default:50
+	inodeMapFlushedPerGC                      uint64                     // JSON/YAML "inode_map_flushes_per_gc"                          default:10
+	inodeEvictionQueueKeysPerPageMax          uint64                     // JSON/YAML "inode_eviction_queue_keys_per_page_max"            default:300
+	inodeEvictionQueuePageEvictLowLimit       uint64                     // JSON/YAML "inode_eviction_queue_page_evict_low_limit"         default:100
+	inodeEvictionQueuePageEvictHighLimit      uint64                     // JSON/YAML "inode_eviction_queue_page_evict_high_limit"        default:104
+	inodeEvictionQueuePageDirtyFlushTrigger   uint64                     // JSON/YAML "inode_eviction_queue_page_dirty_flush_trigger"     default:50
+	inodeEvictionQueueFlushedPerGC            uint64                     // JSON/YAML "inode_eviction_queue_flushes_per_gc"               default:10
+	physChildDirEntryMapKeysPerPageMax        uint64                     // JSON/YAML "phys_child_dir_entry_map_keys_per_page_max"        default:250
+	physChildDirEntryMapPageEvictLowLimit     uint64                     // JSON/YAML "phys_child_dir_entry_map_page_evict_low_limit"     default:100
+	physChildDirEntryMapPageEvictHighLimit    uint64                     // JSON/YAML "phys_child_dir_entry_map_page_evict_high_limit"    default:104
+	physChildDirEntryMapPageDirtyFlushTrigger uint64                     // JSON/YAML "phys_child_dir_entry_map_page_dirty_flush_trigger" default:50
+	physChildDirEntryMapFlushedPerGC          uint64                     // JSON/YAML "phys_child_dir_entry_map_flushes_per_gc"           default:10
+	virtChildDirEntryMapKeysPerPageMax        uint64                     // JSON/YAML "virt_child_dir_entry_map_keys_per_page_max"        default:250
+	virtChildDirEntryMapPageEvictLowLimit     uint64                     // JSON/YAML "virt_child_dir_entry_map_page_evict_low_limit"     default:100
+	virtChildDirEntryMapPageEvictHighLimit    uint64                     // JSON/YAML "virt_child_dir_entry_map_page_evict_high_limit"    default:104
+	virtChildDirEntryMapPageDirtyFlushTrigger uint64                     // JSON/YAML "virt_child_dir_entry_map_page_dirty_flush_trigger" default:50
+	virtChildDirEntryMapFlushedPerGC          uint64                     // JSON/YAML "virt_child_dir_entry_map_flushes_per_gc"           default:10
+	processMemoryLimit                        uint64                     // JSON/YAML "process_memory_limit"                              default:4294967296 (4Gi)
+	autoSIGHUPInterval                        time.Duration              // JSON/YAML "auto_sighup_interval"                              default:0 (none)
+	observability                             *observabilityConfigStruct // JSON/YAML "observability"                                     default:nil (disabled)
+	endpoint                                  string                     // JSON/YAML "endpoint"                                          default:""
+	backends                                  map[string]*backendStruct  // JSON/YAML "backends"                                          Key == backendStruct.mountPointSubdirectoryName
 }
 
 // observabilityConfigStruct holds observability configuration

@@ -755,60 +755,84 @@ func checkConfigFile() (err error) {
 		return
 	}
 
-	config.inodeMapKeysPerPageMax, ok = parseUint64(configFileMap, "inode_map_keys_per_page_max", uint64(64))
+	config.inodeMapKeysPerPageMax, ok = parseUint64(configFileMap, "inode_map_keys_per_page_max", uint64(400))
 	if !ok {
 		err = errors.New("bad inode_map_keys_per_page_max value")
 		return
 	}
 	inodeMapKeysPerPageMin = config.inodeMapKeysPerPageMax / 2
-	if (config.inodeMapKeysPerPageMax == 0) || (config.inodeMapKeysPerPageMax != (2 * inodeMapKeysPerPageMin)) {
-		err = errors.New("inode_map_keys_per_page_max must be >0 and a multiple of 2")
+	if (config.inodeMapKeysPerPageMax < 4) || (config.inodeMapKeysPerPageMax != (2 * inodeMapKeysPerPageMin)) {
+		err = errors.New("inode_map_keys_per_page_max must be >3 and a multiple of 2")
 		return
 	}
 
-	config.inodeMapPageEvictLowLimit, ok = parseUint64(configFileMap, "inode_map_page_evict_low_limit", uint64(200))
+	config.inodeMapPageEvictLowLimit, ok = parseUint64(configFileMap, "inode_map_page_evict_low_limit", uint64(100))
 	if !ok {
 		err = errors.New("bad inode_map_page_evict_low_limit value")
 		return
 	}
 
-	config.inodeMapPageEvictHighLimit, ok = parseUint64(configFileMap, "inode_map_page_evict_high_limit", uint64(210))
+	config.inodeMapPageEvictHighLimit, ok = parseUint64(configFileMap, "inode_map_page_evict_high_limit", uint64(104))
 	if !ok {
 		err = errors.New("bad inode_map_page_evict_high_limit value")
 		return
 	}
 
-	config.inodeEvictionQueueKeysPerPageMax, ok = parseUint64(configFileMap, "inode_eviction_queue_keys_per_page_max", uint64(256))
+	config.inodeMapPageDirtyFlushTrigger, ok = parseUint64(configFileMap, "inode_map_page_dirty_flush_trigger", uint64(50))
+	if !ok || (config.inodeMapPageDirtyFlushTrigger == 0) {
+		err = errors.New("bad inode_map_page_dirty_flush_trigger value (must be >0)")
+		return
+	}
+
+	config.inodeMapFlushedPerGC, ok = parseUint64(configFileMap, "inode_map_flushes_per_gc", uint64(10))
+	if !ok {
+		err = errors.New("bad inode_map_flushes_per_gc value")
+		return
+	}
+
+	config.inodeEvictionQueueKeysPerPageMax, ok = parseUint64(configFileMap, "inode_eviction_queue_keys_per_page_max", uint64(300))
 	if !ok {
 		err = errors.New("bad inode_eviction_queue_keys_per_page_max value")
 		return
 	}
 	inodeEvictionQueueKeysPerPageMin = config.inodeEvictionQueueKeysPerPageMax / 2
-	if (config.inodeEvictionQueueKeysPerPageMax == 0) || (config.inodeEvictionQueueKeysPerPageMax != (2 * inodeEvictionQueueKeysPerPageMin)) {
-		err = errors.New("inode_eviction_queue_keys_per_page_max must be >0 and a multiple of 2")
+	if (config.inodeEvictionQueueKeysPerPageMax < 4) || (config.inodeEvictionQueueKeysPerPageMax != (2 * inodeEvictionQueueKeysPerPageMin)) {
+		err = errors.New("inode_eviction_queue_keys_per_page_max must be >3 and a multiple of 2")
 		return
 	}
 
-	config.inodeEvictionQueuePageEvictLowLimit, ok = parseUint64(configFileMap, "inode_eviction_queue_page_evict_low_limit", uint64(50))
+	config.inodeEvictionQueuePageEvictLowLimit, ok = parseUint64(configFileMap, "inode_eviction_queue_page_evict_low_limit", uint64(100))
 	if !ok {
 		err = errors.New("bad inode_eviction_queue_page_evict_low_limit value")
 		return
 	}
 
-	config.inodeEvictionQueuePageEvictHighLimit, ok = parseUint64(configFileMap, "inode_eviction_queue_page_evict_high_limit", uint64(60))
+	config.inodeEvictionQueuePageEvictHighLimit, ok = parseUint64(configFileMap, "inode_eviction_queue_page_evict_high_limit", uint64(104))
 	if !ok {
 		err = errors.New("bad inode_eviction_queue_page_evict_high_limit value")
 		return
 	}
 
-	config.physChildDirEntryMapKeysPerPageMax, ok = parseUint64(configFileMap, "phys_child_dir_entry_map_keys_per_page_max", uint64(64))
+	config.inodeEvictionQueuePageDirtyFlushTrigger, ok = parseUint64(configFileMap, "inode_eviction_queue_page_dirty_flush_trigger", uint64(50))
+	if !ok || (config.inodeEvictionQueuePageDirtyFlushTrigger == 0) {
+		err = errors.New("bad inode_eviction_queue_page_dirty_flush_trigger value (must be >0)")
+		return
+	}
+
+	config.inodeEvictionQueueFlushedPerGC, ok = parseUint64(configFileMap, "inode_eviction_queue_flushes_per_gc", uint64(10))
+	if !ok {
+		err = errors.New("bad inode_eviction_queue_flushes_per_gc value")
+		return
+	}
+
+	config.physChildDirEntryMapKeysPerPageMax, ok = parseUint64(configFileMap, "phys_child_dir_entry_map_keys_per_page_max", uint64(250))
 	if !ok {
 		err = errors.New("bad phys_child_dir_entry_map_keys_per_page_max value")
 		return
 	}
 	physChildDirEntryMapKeysPerPageMin = config.physChildDirEntryMapKeysPerPageMax / 2
-	if (config.physChildDirEntryMapKeysPerPageMax == 0) || (config.physChildDirEntryMapKeysPerPageMax != (2 * physChildDirEntryMapKeysPerPageMin)) {
-		err = errors.New("phys_child_dir_entry_map_keys_per_page_max must be >0 and a multiple of 2")
+	if (config.physChildDirEntryMapKeysPerPageMax < 4) || (config.physChildDirEntryMapKeysPerPageMax != (2 * physChildDirEntryMapKeysPerPageMin)) {
+		err = errors.New("phys_child_dir_entry_map_keys_per_page_max must be >3 and a multiple of 2")
 		return
 	}
 
@@ -824,14 +848,26 @@ func checkConfigFile() (err error) {
 		return
 	}
 
-	config.virtChildDirEntryMapKeysPerPageMax, ok = parseUint64(configFileMap, "virt_child_dir_entry_map_keys_per_page_max", uint64(64))
+	config.physChildDirEntryMapPageDirtyFlushTrigger, ok = parseUint64(configFileMap, "phys_child_dir_entry_map_page_dirty_flush_trigger", uint64(50))
+	if !ok || (config.physChildDirEntryMapPageDirtyFlushTrigger == 0) {
+		err = errors.New("bad phys_child_dir_entry_map_page_dirty_flush_trigger value (must be >0)")
+		return
+	}
+
+	config.physChildDirEntryMapFlushedPerGC, ok = parseUint64(configFileMap, "phys_child_dir_entry_map_flushes_per_gc", uint64(10))
+	if !ok {
+		err = errors.New("bad phys_child_dir_entry_map_flushes_per_gc value")
+		return
+	}
+
+	config.virtChildDirEntryMapKeysPerPageMax, ok = parseUint64(configFileMap, "virt_child_dir_entry_map_keys_per_page_max", uint64(250))
 	if !ok {
 		err = errors.New("bad virt_child_dir_entry_map_keys_per_page_max value")
 		return
 	}
 	virtChildDirEntryMapKeysPerPageMin = config.virtChildDirEntryMapKeysPerPageMax / 2
-	if (config.virtChildDirEntryMapKeysPerPageMax == 0) || (config.virtChildDirEntryMapKeysPerPageMax != (2 * virtChildDirEntryMapKeysPerPageMin)) {
-		err = errors.New("virt_child_dir_entry_map_keys_per_page_max must be >0 and a multiple of 2")
+	if (config.virtChildDirEntryMapKeysPerPageMax < 4) || (config.virtChildDirEntryMapKeysPerPageMax != (2 * virtChildDirEntryMapKeysPerPageMin)) {
+		err = errors.New("virt_child_dir_entry_map_keys_per_page_max must be >3 and a multiple of 2")
 		return
 	}
 
@@ -844,6 +880,24 @@ func checkConfigFile() (err error) {
 	config.virtChildDirEntryMapPageEvictHighLimit, ok = parseUint64(configFileMap, "virt_child_dir_entry_map_page_evict_high_limit", uint64(104))
 	if !ok {
 		err = errors.New("bad virt_child_dir_entry_map_page_evict_high_limit value")
+		return
+	}
+
+	config.virtChildDirEntryMapPageDirtyFlushTrigger, ok = parseUint64(configFileMap, "virt_child_dir_entry_map_page_dirty_flush_trigger", uint64(50))
+	if !ok || (config.virtChildDirEntryMapPageDirtyFlushTrigger == 0) {
+		err = errors.New("bad virt_child_dir_entry_map_page_dirty_flush_trigger value (must be >0)")
+		return
+	}
+
+	config.virtChildDirEntryMapFlushedPerGC, ok = parseUint64(configFileMap, "virt_child_dir_entry_map_flushes_per_gc", uint64(10))
+	if !ok {
+		err = errors.New("bad virt_child_dir_entry_map_flushes_per_gc value")
+		return
+	}
+
+	config.processMemoryLimit, ok = parseUint64(configFileMap, "process_memory_limit", uint64(4294967296))
+	if !ok {
+		err = errors.New("bad process_memory_limit value")
 		return
 	}
 
@@ -1495,6 +1549,16 @@ func checkConfigFile() (err error) {
 			return
 		}
 
+		if globals.config.inodeMapPageDirtyFlushTrigger != config.inodeMapPageDirtyFlushTrigger {
+			err = errors.New("cannot change inode_map_page_dirty_flush_trigger via SIGHUP")
+			return
+		}
+
+		if globals.config.inodeMapFlushedPerGC != config.inodeMapFlushedPerGC {
+			err = errors.New("cannot change inode_map_flushes_per_gc via SIGHUP")
+			return
+		}
+
 		if globals.config.inodeEvictionQueueKeysPerPageMax != config.inodeEvictionQueueKeysPerPageMax {
 			err = errors.New("cannot change inode_eviction_queue_keys_per_page_max via SIGHUP")
 			return
@@ -1507,6 +1571,16 @@ func checkConfigFile() (err error) {
 
 		if globals.config.inodeEvictionQueuePageEvictHighLimit != config.inodeEvictionQueuePageEvictHighLimit {
 			err = errors.New("cannot change inode_eviction_queue_page_evict_high_limit via SIGHUP")
+			return
+		}
+
+		if globals.config.inodeEvictionQueuePageDirtyFlushTrigger != config.inodeEvictionQueuePageDirtyFlushTrigger {
+			err = errors.New("cannot change inode_eviction_queue_page_dirty_flush_trigger via SIGHUP")
+			return
+		}
+
+		if globals.config.inodeEvictionQueueFlushedPerGC != config.inodeEvictionQueueFlushedPerGC {
+			err = errors.New("cannot change inode_eviction_queue_flushes_per_gc via SIGHUP")
 			return
 		}
 
@@ -1525,6 +1599,16 @@ func checkConfigFile() (err error) {
 			return
 		}
 
+		if globals.config.physChildDirEntryMapPageDirtyFlushTrigger != config.physChildDirEntryMapPageDirtyFlushTrigger {
+			err = errors.New("cannot change phys_child_dir_entry_map_page_dirty_flush_trigger via SIGHUP")
+			return
+		}
+
+		if globals.config.physChildDirEntryMapFlushedPerGC != config.physChildDirEntryMapFlushedPerGC {
+			err = errors.New("cannot change phys_child_dir_entry_map_flushes_per_gc via SIGHUP")
+			return
+		}
+
 		if globals.config.virtChildDirEntryMapKeysPerPageMax != config.virtChildDirEntryMapKeysPerPageMax {
 			err = errors.New("cannot change virt_child_dir_entry_map_keys_per_page_max via SIGHUP")
 			return
@@ -1537,6 +1621,21 @@ func checkConfigFile() (err error) {
 
 		if globals.config.virtChildDirEntryMapPageEvictHighLimit != config.virtChildDirEntryMapPageEvictHighLimit {
 			err = errors.New("cannot change virt_child_dir_entry_map_page_evict_high_limit via SIGHUP")
+			return
+		}
+
+		if globals.config.virtChildDirEntryMapPageDirtyFlushTrigger != config.virtChildDirEntryMapPageDirtyFlushTrigger {
+			err = errors.New("cannot change virt_child_dir_entry_map_page_dirty_flush_trigger via SIGHUP")
+			return
+		}
+
+		if globals.config.virtChildDirEntryMapFlushedPerGC != config.virtChildDirEntryMapFlushedPerGC {
+			err = errors.New("cannot change virt_child_dir_entry_map_flushes_per_gc via SIGHUP")
+			return
+		}
+
+		if globals.config.processMemoryLimit != config.processMemoryLimit {
+			err = errors.New("cannot change process_memory_limit via SIGHUP")
 			return
 		}
 

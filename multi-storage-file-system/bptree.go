@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
+	"runtime/debug"
 	"time"
 
 	"github.com/NVIDIA/sortedmap"
@@ -21,34 +23,32 @@ var toAddToGlobals toAddToGlobalsStruct
 
 func bptree_init() {
 	globals.logger.Printf("[TODO] bptree_init() called")
-	toAddToGlobals.inodeMap = inodeNumberToInodeStructMapStructCreate("globals.inodeMap", globals.config.inodeMapKeysPerPageMax, globals.config.inodeMapPageEvictLowLimit, globals.config.inodeMapPageEvictHighLimit)
-	toAddToGlobals.inodeEvictionQueue = xTimeInodeNumberSetStructCreate("globals.inodeEvictionQueue", globals.config.inodeEvictionQueueKeysPerPageMax, globals.config.inodeEvictionQueuePageEvictLowLimit, globals.config.inodeEvictionQueuePageEvictHighLimit)
-	toAddToGlobals.physChildDirEntryMap = parentInodeNumberChildBasenameToChildInodeNumberStructCreate("globals.physChildDirEntryMap", globals.config.physChildDirEntryMapKeysPerPageMax, globals.config.physChildDirEntryMapPageEvictLowLimit, globals.config.physChildDirEntryMapPageEvictHighLimit)
-	toAddToGlobals.virtChildDirEntryMap = parentInodeNumberChildBasenameToChildInodeNumberStructCreate("globals.virtChildDirEntryMap", globals.config.virtChildDirEntryMapKeysPerPageMax, globals.config.virtChildDirEntryMapPageEvictLowLimit, globals.config.virtChildDirEntryMapPageEvictHighLimit)
-}
-
-func bptree_drain() {
-	globals.logger.Printf("[TODO] bptree_drain() called")
-	toAddToGlobals.inodeMap.discard()
-	toAddToGlobals.inodeEvictionQueue.discard()
-	toAddToGlobals.physChildDirEntryMap.discard()
-	toAddToGlobals.virtChildDirEntryMap.discard()
+	toAddToGlobals.inodeMap = inodeNumberToInodeStructMapStructCreate("globals.inodeMap", globals.config.inodeMapKeysPerPageMax, globals.config.inodeMapPageEvictLowLimit, globals.config.inodeMapPageEvictHighLimit, globals.config.inodeMapPageDirtyFlushTrigger, globals.config.inodeMapFlushedPerGC)
+	toAddToGlobals.inodeEvictionQueue = xTimeInodeNumberSetStructCreate("globals.inodeEvictionQueue", globals.config.inodeEvictionQueueKeysPerPageMax, globals.config.inodeEvictionQueuePageEvictLowLimit, globals.config.inodeEvictionQueuePageEvictHighLimit, globals.config.inodeEvictionQueuePageDirtyFlushTrigger, globals.config.inodeEvictionQueueFlushedPerGC)
+	toAddToGlobals.physChildDirEntryMap = parentInodeNumberChildBasenameToChildInodeNumberStructCreate("globals.physChildDirEntryMap", globals.config.physChildDirEntryMapKeysPerPageMax, globals.config.physChildDirEntryMapPageEvictLowLimit, globals.config.physChildDirEntryMapPageEvictHighLimit, globals.config.physChildDirEntryMapPageDirtyFlushTrigger, globals.config.physChildDirEntryMapFlushedPerGC)
+	toAddToGlobals.virtChildDirEntryMap = parentInodeNumberChildBasenameToChildInodeNumberStructCreate("globals.virtChildDirEntryMap", globals.config.virtChildDirEntryMapKeysPerPageMax, globals.config.virtChildDirEntryMapPageEvictLowLimit, globals.config.virtChildDirEntryMapPageEvictHighLimit, globals.config.virtChildDirEntryMapPageDirtyFlushTrigger, globals.config.virtChildDirEntryMapFlushedPerGC)
 }
 
 // `inodeNumberToInodeStructMapStruct` is used to maintain a sortedmap.BPlusTree used
 // to map an inodeStruct.inodeNumber to the corresponding inodeStruct. An instance of
 // this struct is used to provide globals.inodeMap functionality.
 type inodeNumberToInodeStructMapStruct struct {
-	name        string
-	bpTree      sortedmap.BPlusTree // Key: inodeStruct.inodeNumber; Value: *inodeStruct
-	bpTreeCache sortedmap.BPlusTreeCache
+	name                  string
+	bpTree                sortedmap.BPlusTree // Key: inodeStruct.inodeNumber; Value: *inodeStruct
+	bpTreeCache           sortedmap.BPlusTreeCache
+	pageDirtyFlushTrigger uint64
+	flushesSinceLastGC    uint64
+	flushesSinceLastGCMax uint64
 }
 
 // `inodeNumberToInodeStructMapStructCreate` is called to instantiate a `inodeNumberToInodeStructMapStruct`.
-func inodeNumberToInodeStructMapStructCreate(name string, maxKeysPerNode, evictLowLimit, evictHighLimit uint64) (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) {
+func inodeNumberToInodeStructMapStructCreate(name string, maxKeysPerNode, evictLowLimit, evictHighLimit, pageDirtyFlushTrigger, flushesSinceLastGCMax uint64) (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) {
 	inodeNumberToInodeStructMap = &inodeNumberToInodeStructMapStruct{
-		name:        name,
-		bpTreeCache: sortedmap.NewBPlusTreeCache(evictLowLimit, evictHighLimit),
+		name:                  name,
+		bpTreeCache:           sortedmap.NewBPlusTreeCache(evictLowLimit, evictHighLimit),
+		pageDirtyFlushTrigger: pageDirtyFlushTrigger,
+		flushesSinceLastGC:    0,
+		flushesSinceLastGCMax: flushesSinceLastGCMax,
 	}
 	inodeNumberToInodeStructMap.bpTree = sortedmap.NewBPlusTree(maxKeysPerNode, sortedmap.CompareUint64, inodeNumberToInodeStructMap, inodeNumberToInodeStructMap.bpTreeCache)
 	return
@@ -65,6 +65,8 @@ func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) delete(ino
 		dumpStack()
 		globals.logger.Fatalf("[FATAL] inodeNumberToInodeStructMap.bpTree.DeleteByKey(inode.inodeNumber) failed: %v", err)
 	}
+
+	inodeNumberToInodeStructMap.flushIfNecessary()
 
 	return
 }
@@ -118,6 +120,8 @@ func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) put(inode 
 		globals.logger.Fatalf("[FATAL] inodeNumberToInodeStructMap.bpTree.Put(inode.inodeNumber, inode) failed: %v", err)
 	}
 
+	inodeNumberToInodeStructMap.flushIfNecessary()
+
 	return
 }
 
@@ -147,7 +151,44 @@ func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) touch(inod
 		globals.logger.Fatalf("[FATAL] inodeNumberToInodeStructMap.bpTree.Put(inode.inodeNumber, inode) returned !ok")
 	}
 
+	inodeNumberToInodeStructMap.flushIfNecessary()
+
 	return
+}
+
+// `flushIfNecessary` will track the number of updates (one is assumed per call to this function)
+// and use the configured updates per flush to decide when to trigger a flush.
+func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) flushIfNecessary() {
+	var (
+		bpTreeCacheStats *sortedmap.BPlusTreeCacheStats
+		err              error
+	)
+
+	bpTreeCacheStats = inodeNumberToInodeStructMap.bpTreeCache.Stats()
+
+	if bpTreeCacheStats.DirtyLRUItems > inodeNumberToInodeStructMap.pageDirtyFlushTrigger {
+		_, _, _, err = inodeNumberToInodeStructMap.bpTree.Flush(false)
+		if err != nil {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] inodeNumberToInodeStructMap.bpTree.Flush(false) failed: %v", err)
+		}
+		err = inodeNumberToInodeStructMap.bpTree.Prune()
+		if err != nil {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] inodeNumberToInodeStructMap.bpTree.Prune() failed: %v", err)
+		}
+
+		if inodeNumberToInodeStructMap.flushesSinceLastGCMax > 0 {
+			inodeNumberToInodeStructMap.flushesSinceLastGC++
+
+			if inodeNumberToInodeStructMap.flushesSinceLastGC >= inodeNumberToInodeStructMap.flushesSinceLastGCMax {
+				runtime.GC()
+				debug.FreeOSMemory()
+
+				inodeNumberToInodeStructMap.flushesSinceLastGC = 0
+			}
+		}
+	}
 }
 
 // `DumpKey` is here to satisfy sortedmap.DumpCallbacks interface for inodeNumberToInodeStructMapStruct.
@@ -190,125 +231,19 @@ func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) DumpValue(
 
 // `GetNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for inodeNumberToInodeStructMapStruct.
 func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) GetNode(objectNumber, objectOffset, objectLength uint64) (nodeByteSlice []byte, err error) {
-	var (
-		nodeFilePath string
-	)
-
-	if objectOffset != 0 {
-		err = fmt.Errorf("objectOffset(%v) != 0", objectOffset)
-		return
-	}
-
-	nodeFilePath = fmt.Sprintf("%s/%016X", globals.config.cacheDirPath, objectNumber)
-
-	nodeByteSlice, err = os.ReadFile(nodeFilePath)
-	if err != nil {
-		err = fmt.Errorf("os.ReadFile(nodeFilePath:\"%s\") failed: %v", nodeFilePath, err)
-		return
-	}
-
-	if objectLength != uint64(len(nodeByteSlice)) {
-		err = fmt.Errorf("objectLength[%v] != uint64(len(nodeByteSlice))[%v]", objectLength, uint64(len(nodeByteSlice)))
-		return
-	}
-
+	nodeByteSlice, err = readNodeFile(objectNumber, objectOffset, objectLength)
 	return
 }
 
 // `PutNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for inodeNumberToInodeStructMapStruct.
 func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) PutNode(nodeByteSlice []byte) (objectNumber, objectOffset uint64, err error) {
-	var (
-		nodeFile     *os.File
-		nodeFilePath string
-	)
-
-	objectNumber = fetchNonce()
-	objectOffset = 0
-
-	nodeFilePath = fmt.Sprintf("%s/%016X", globals.config.cacheDirPath, objectNumber)
-
-	nodeFile, err = os.OpenFile(nodeFilePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			err = fmt.Errorf("os.OpenFile(nodeFilePath:\"%s\", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) failed due to pre-existing file", nodeFilePath)
-		} else {
-			err = fmt.Errorf("os.OpenFile(nodeFilePath:\"%s\", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) failed: %v", nodeFilePath, err)
-		}
-		return
-	}
-
-	_, err = nodeFile.Write(nodeByteSlice)
-	if err != nil {
-		err = fmt.Errorf("nodeFile[\"%s\"].Write(nodeByteSlice) failed: %v", nodeFilePath, err)
-		return
-	}
-
-	err = nodeFile.Close()
-	if err != nil {
-		err = fmt.Errorf("nodeFile[\"%s\"].Close() failed: %v", nodeFilePath, err)
-		return
-	}
-
+	objectNumber, objectOffset, err = writeNodeFile(nodeByteSlice)
 	return
 }
 
 // `DiscardNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for inodeNumberToInodeStructMapStruct.
 func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) DiscardNode(objectNumber, objectOffset, objectLength uint64) (err error) {
-	var (
-		closeErr     error
-		nodeFile     *os.File
-		nodeFileInfo os.FileInfo
-		nodeFilePath string
-	)
-
-	if objectOffset != 0 {
-		err = fmt.Errorf("objectOffset(%v) != 0", objectOffset)
-		return
-	}
-
-	nodeFilePath = fmt.Sprintf("%s/%016X", globals.config.cacheDirPath, objectNumber)
-
-	nodeFile, err = os.OpenFile(nodeFilePath, os.O_RDWR, 0o600)
-	if err != nil {
-		err = fmt.Errorf("os.OpenFile(nodeFilePath:\"%s\", os.O_RDWR, 0o600) failed: %v", nodeFilePath, err)
-		return
-	}
-
-	err = os.Remove(nodeFilePath)
-	if err != nil {
-		err = fmt.Errorf("os.Remove(nodeFilePath:\"%s\", os.O_RDWR, 0o600) failed: %v", nodeFilePath, err)
-		closeErr = nodeFile.Close()
-		if closeErr != nil {
-			err = fmt.Errorf("%s as did nodeFile.Close(): %v", err, closeErr)
-		}
-		return
-	}
-
-	nodeFileInfo, err = nodeFile.Stat()
-	if err != nil {
-		err = fmt.Errorf("nodeFile[\"%s\"].Stat() failed: %v", nodeFilePath, err)
-		closeErr = nodeFile.Close()
-		if closeErr != nil {
-			err = fmt.Errorf("%s as did nodeFile.Close(): %v", err, closeErr)
-		}
-		return
-	}
-
-	if objectLength != uint64(nodeFileInfo.Size()) {
-		err = fmt.Errorf("objectLength[%v] != uint64(nodeFileInfo.Size())[%v]", objectLength, uint64(nodeFileInfo.Size()))
-		closeErr = nodeFile.Close()
-		if closeErr != nil {
-			err = fmt.Errorf("%s as did nodeFile.Close(): %v", err, closeErr)
-		}
-		return
-	}
-
-	err = nodeFile.Close()
-	if err != nil {
-		err = fmt.Errorf("nodeFile[\"%s\"].Close() failed: %v", nodeFilePath, err)
-		return
-	}
-
+	err = discardNodeFile(objectNumber, objectOffset, objectLength)
 	return
 }
 
@@ -341,6 +276,7 @@ func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) UnpackKey(
 	}
 
 	key = binary.BigEndian.Uint64(payloadData[:8])
+	bytesConsumed = 8
 
 	err = nil
 	return
@@ -459,6 +395,13 @@ func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) PackValue(
 	}
 	packedValuePos += 8
 
+	if inode.isPrefetchInProgress {
+		packedValue[packedValuePos] = 1
+	} else {
+		packedValue[packedValuePos] = 0
+	}
+	packedValuePos++
+
 	binary.BigEndian.PutUint64(packedValue[packedValuePos:packedValuePos+8], uint64(cacheMapLen))
 	packedValuePos += 8
 	for cacheMapElementKey, cacheMapElementValue = range inode.cacheMap {
@@ -467,13 +410,6 @@ func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) PackValue(
 		binary.BigEndian.PutUint64(packedValue[packedValuePos:packedValuePos+8], cacheMapElementValue)
 		packedValuePos += 8
 	}
-
-	if inode.isPrefetchInProgress {
-		packedValue[packedValuePos] = 1
-	} else {
-		packedValue[packedValuePos] = 0
-	}
-	packedValuePos++
 
 	binary.BigEndian.PutUint64(packedValue[packedValuePos:packedValuePos+8], inode.inboundCacheLineCount)
 	packedValuePos += 8
@@ -728,16 +664,22 @@ func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) UnpackValu
 // as a set such that it implements a time-ordered (by xTime) queue. An instance
 // of this struct is used to provide globals.inodeEvictionQueue functionality.
 type xTimeInodeNumberSetStruct struct {
-	name        string
-	bpTree      sortedmap.BPlusTree // Key: tuple(inodeStruct.xTime,inodeStruct.inodeNumber); Value: struct{}
-	bpTreeCache sortedmap.BPlusTreeCache
+	name                  string
+	bpTree                sortedmap.BPlusTree // Key: tuple(inodeStruct.xTime,inodeStruct.inodeNumber); Value: struct{}
+	bpTreeCache           sortedmap.BPlusTreeCache
+	pageDirtyFlushTrigger uint64
+	flushesSinceLastGC    uint64
+	flushesSinceLastGCMax uint64
 }
 
 // `xTimeInodeNumberSetStructCreate` is called to instantiate a `xTimeInodeNumberSetStruct`.
-func xTimeInodeNumberSetStructCreate(name string, maxKeysPerNode, evictLowLimit, evictHighLimit uint64) (xTimeInodeNumberSet *xTimeInodeNumberSetStruct) {
+func xTimeInodeNumberSetStructCreate(name string, maxKeysPerNode, evictLowLimit, evictHighLimit, pageDirtyFlushTrigger, flushesSinceLastGCMax uint64) (xTimeInodeNumberSet *xTimeInodeNumberSetStruct) {
 	xTimeInodeNumberSet = &xTimeInodeNumberSetStruct{
-		name:        name,
-		bpTreeCache: sortedmap.NewBPlusTreeCache(evictLowLimit, evictHighLimit),
+		name:                  name,
+		bpTreeCache:           sortedmap.NewBPlusTreeCache(evictLowLimit, evictHighLimit),
+		pageDirtyFlushTrigger: pageDirtyFlushTrigger,
+		flushesSinceLastGC:    0,
+		flushesSinceLastGCMax: flushesSinceLastGCMax,
 	}
 	xTimeInodeNumberSet.bpTree = sortedmap.NewBPlusTree(maxKeysPerNode, sortedmap.CompareByteSlice, xTimeInodeNumberSet, xTimeInodeNumberSet.bpTreeCache)
 	return
@@ -795,6 +737,8 @@ func (xTimeInodeNumberSet *xTimeInodeNumberSetStruct) insert(inode *inodeStruct)
 		globals.logger.Fatalf("[FATAL] xTimeInodeNumberSet.bpTree.Put(timeTimeUint64TupleToByteSlice(inode.xTime,inode.inodeNumber), struct{}{}) failed: %v", err)
 	}
 
+	xTimeInodeNumberSet.flushIfNecessary()
+
 	return
 }
 
@@ -810,7 +754,43 @@ func (xTimeInodeNumberSet *xTimeInodeNumberSetStruct) remove(inode *inodeStruct)
 		globals.logger.Fatalf("[FATAL] xTimeInodeNumberSet.bpTree.DeleteByKey(timeTimeUint64TupleToByteSlice(inode.xTime,inode.inodeNumber)) failed: %v", err)
 	}
 
+	xTimeInodeNumberSet.flushIfNecessary()
+
 	return
+}
+
+// `flushIfNecessary` will track the number of updates (one is assumed per call to this function)
+// and use the configured updates per flush to decide when to trigger a flush.
+func (xTimeInodeNumberSet *xTimeInodeNumberSetStruct) flushIfNecessary() {
+	var (
+		bpTreeCacheStats *sortedmap.BPlusTreeCacheStats
+		err              error
+	)
+
+	bpTreeCacheStats = xTimeInodeNumberSet.bpTreeCache.Stats()
+
+	if bpTreeCacheStats.DirtyLRUItems > xTimeInodeNumberSet.pageDirtyFlushTrigger {
+		_, _, _, err = xTimeInodeNumberSet.bpTree.Flush(false)
+		if err != nil {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] xTimeInodeNumberSet.bpTree.Flush(false) failed: %v", err)
+		}
+		err = xTimeInodeNumberSet.bpTree.Prune()
+		if err != nil {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] xTimeInodeNumberSet.bpTree.Prune() failed: %v", err)
+		}
+
+		if xTimeInodeNumberSet.flushesSinceLastGCMax > 0 {
+			xTimeInodeNumberSet.flushesSinceLastGC++
+
+			if xTimeInodeNumberSet.flushesSinceLastGC >= xTimeInodeNumberSet.flushesSinceLastGCMax {
+				runtime.GC()
+
+				xTimeInodeNumberSet.flushesSinceLastGC = 0
+			}
+		}
+	}
 }
 
 // `byteSliceToTimeTimeUint64Tuple` is called to convert a byte slice to a time.Time uint64 tuple
@@ -896,125 +876,19 @@ func (xTimeInodeNumberSet *xTimeInodeNumberSetStruct) DumpValue(value sortedmap.
 
 // `GetNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for xTimeInodeNumberSetStruct.
 func (xTimeInodeNumberSet *xTimeInodeNumberSetStruct) GetNode(objectNumber, objectOffset, objectLength uint64) (nodeByteSlice []byte, err error) {
-	var (
-		nodeFilePath string
-	)
-
-	if objectOffset != 0 {
-		err = fmt.Errorf("objectOffset(%v) != 0", objectOffset)
-		return
-	}
-
-	nodeFilePath = fmt.Sprintf("%s/%016X", globals.config.cacheDirPath, objectNumber)
-
-	nodeByteSlice, err = os.ReadFile(nodeFilePath)
-	if err != nil {
-		err = fmt.Errorf("os.ReadFile(nodeFilePath:\"%s\") failed: %v", nodeFilePath, err)
-		return
-	}
-
-	if objectLength != uint64(len(nodeByteSlice)) {
-		err = fmt.Errorf("objectLength[%v] != uint64(len(nodeByteSlice))[%v]", objectLength, uint64(len(nodeByteSlice)))
-		return
-	}
-
+	nodeByteSlice, err = readNodeFile(objectNumber, objectOffset, objectLength)
 	return
 }
 
 // `PutNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for xTimeInodeNumberSetStruct.
 func (xTimeInodeNumberSet *xTimeInodeNumberSetStruct) PutNode(nodeByteSlice []byte) (objectNumber, objectOffset uint64, err error) {
-	var (
-		nodeFile     *os.File
-		nodeFilePath string
-	)
-
-	objectNumber = fetchNonce()
-	objectOffset = 0
-
-	nodeFilePath = fmt.Sprintf("%s/%016X", globals.config.cacheDirPath, objectNumber)
-
-	nodeFile, err = os.OpenFile(nodeFilePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			err = fmt.Errorf("os.OpenFile(nodeFilePath:\"%s\", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) failed due to pre-existing file", nodeFilePath)
-		} else {
-			err = fmt.Errorf("os.OpenFile(nodeFilePath:\"%s\", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) failed: %v", nodeFilePath, err)
-		}
-		return
-	}
-
-	_, err = nodeFile.Write(nodeByteSlice)
-	if err != nil {
-		err = fmt.Errorf("nodeFile[\"%s\"].Write(nodeByteSlice) failed: %v", nodeFilePath, err)
-		return
-	}
-
-	err = nodeFile.Close()
-	if err != nil {
-		err = fmt.Errorf("nodeFile[\"%s\"].Close() failed: %v", nodeFilePath, err)
-		return
-	}
-
+	objectNumber, objectOffset, err = writeNodeFile(nodeByteSlice)
 	return
 }
 
 // `DiscardNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for xTimeInodeNumberSetStruct.
 func (xTimeInodeNumberSet *xTimeInodeNumberSetStruct) DiscardNode(objectNumber, objectOffset, objectLength uint64) (err error) {
-	var (
-		closeErr     error
-		nodeFile     *os.File
-		nodeFileInfo os.FileInfo
-		nodeFilePath string
-	)
-
-	if objectOffset != 0 {
-		err = fmt.Errorf("objectOffset(%v) != 0", objectOffset)
-		return
-	}
-
-	nodeFilePath = fmt.Sprintf("%s/%016X", globals.config.cacheDirPath, objectNumber)
-
-	nodeFile, err = os.OpenFile(nodeFilePath, os.O_RDWR, 0o600)
-	if err != nil {
-		err = fmt.Errorf("os.OpenFile(nodeFilePath:\"%s\", os.O_RDWR, 0o600) failed: %v", nodeFilePath, err)
-		return
-	}
-
-	err = os.Remove(nodeFilePath)
-	if err != nil {
-		err = fmt.Errorf("os.Remove(nodeFilePath:\"%s\", os.O_RDWR, 0o600) failed: %v", nodeFilePath, err)
-		closeErr = nodeFile.Close()
-		if closeErr != nil {
-			err = fmt.Errorf("%s as did nodeFile.Close(): %v", err, closeErr)
-		}
-		return
-	}
-
-	nodeFileInfo, err = nodeFile.Stat()
-	if err != nil {
-		err = fmt.Errorf("nodeFile[\"%s\"].Stat() failed: %v", nodeFilePath, err)
-		closeErr = nodeFile.Close()
-		if closeErr != nil {
-			err = fmt.Errorf("%s as did nodeFile.Close(): %v", err, closeErr)
-		}
-		return
-	}
-
-	if objectLength != uint64(nodeFileInfo.Size()) {
-		err = fmt.Errorf("objectLength[%v] != uint64(nodeFileInfo.Size())[%v]", objectLength, uint64(nodeFileInfo.Size()))
-		closeErr = nodeFile.Close()
-		if closeErr != nil {
-			err = fmt.Errorf("%s as did nodeFile.Close(): %v", err, closeErr)
-		}
-		return
-	}
-
-	err = nodeFile.Close()
-	if err != nil {
-		err = fmt.Errorf("nodeFile[\"%s\"].Close() failed: %v", nodeFilePath, err)
-		return
-	}
-
+	err = discardNodeFile(objectNumber, objectOffset, objectLength)
 	return
 }
 
@@ -1080,18 +954,41 @@ func (xTimeInodeNumberSet *xTimeInodeNumberSetStruct) UnpackValue(payloadData []
 // and a child inodeStruct.basename to the child inodeStruct.inodeNumber. An instance of
 // this struct is used to provide globals.{phys|virt}ChildDirEntryMap functionality.
 type parentInodeNumberChildBasenameToChildInodeNumberStruct struct {
-	name        string
-	bpTree      sortedmap.BPlusTree // Key: tuple(parent's inodeStruct.inodeNumber,child's inodeStruct.basename); Value: child's inodeStruct.inodeNumber
-	bpTreeCache sortedmap.BPlusTreeCache
+	name                  string
+	bpTree                sortedmap.BPlusTree // Key: tuple(parent's inodeStruct.inodeNumber,child's inodeStruct.basename); Value: child's inodeStruct.inodeNumber
+	bpTreeCache           sortedmap.BPlusTreeCache
+	pageDirtyFlushTrigger uint64
+	flushesSinceLastGC    uint64
+	flushesSinceLastGCMax uint64
 }
 
 // `parentInodeNumberChildBasenameToChildInodeNumberStructCreate` is called to instantiate a `parentInodeNumberChildBasenameToChildInodeNumberStruct`.
-func parentInodeNumberChildBasenameToChildInodeNumberStructCreate(name string, maxKeysPerNode, evictLowLimit, evictHighLimit uint64) (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) {
+func parentInodeNumberChildBasenameToChildInodeNumberStructCreate(name string, maxKeysPerNode, evictLowLimit, evictHighLimit, pageDirtyFlushTrigger, flushesSinceLastGCMax uint64) (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) {
 	parentInodeNumberChildBasenameToChildInodeNumber = &parentInodeNumberChildBasenameToChildInodeNumberStruct{
-		name:        name,
-		bpTreeCache: sortedmap.NewBPlusTreeCache(evictLowLimit, evictHighLimit),
+		name:                  name,
+		bpTreeCache:           sortedmap.NewBPlusTreeCache(evictLowLimit, evictHighLimit),
+		pageDirtyFlushTrigger: pageDirtyFlushTrigger,
+		flushesSinceLastGC:    0,
+		flushesSinceLastGCMax: flushesSinceLastGCMax,
 	}
 	parentInodeNumberChildBasenameToChildInodeNumber.bpTree = sortedmap.NewBPlusTree(maxKeysPerNode, sortedmap.CompareByteSlice, parentInodeNumberChildBasenameToChildInodeNumber, parentInodeNumberChildBasenameToChildInodeNumber.bpTreeCache)
+	return
+}
+
+// `delete` is called to put a `childInode` in a `parentInode's` logical `{phys|virt}ChildDirEntryMap`.
+func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) delete(parentInode, childInode *inodeStruct) (ok bool) {
+	var (
+		err error
+	)
+
+	ok, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.DeleteByKey(uint64StringTupleToByteSlice(parentInode.inodeNumber, childInode.basename))
+	if err != nil {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] parentInodeNumberChildBasenameToChildInodeNumber.bpTree.DeleteByKey(uint64StringTupleToByteSlice(parentInode.inodeNumber, childInode.basename)) failed: %v", err)
+	}
+
+	parentInodeNumberChildBasenameToChildInodeNumber.flushIfNecessary()
+
 	return
 }
 
@@ -1194,7 +1091,43 @@ func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBa
 		globals.logger.Fatalf("[FATAL] parentInodeNumberChildBasenameToChildInodeNumber.bpTree.Put(uint64StringTupleToByteSlice(parentInode.inodeNumber, childInode.basename),childInode.inodeNumber) failed: %v", err)
 	}
 
+	parentInodeNumberChildBasenameToChildInodeNumber.flushIfNecessary()
+
 	return
+}
+
+// `flushIfNecessary` will track the number of updates (one is assumed per call to this function)
+// and use the configured updates per flush to decide when to trigger a flush.
+func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) flushIfNecessary() {
+	var (
+		bpTreeCacheStats *sortedmap.BPlusTreeCacheStats
+		err              error
+	)
+
+	bpTreeCacheStats = parentInodeNumberChildBasenameToChildInodeNumber.bpTreeCache.Stats()
+
+	if bpTreeCacheStats.DirtyLRUItems > parentInodeNumberChildBasenameToChildInodeNumber.pageDirtyFlushTrigger {
+		_, _, _, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.Flush(false)
+		if err != nil {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] inodeNumberToInodeStructMap.bpTree.Flush(false) failed: %v", err)
+		}
+		err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.Prune()
+		if err != nil {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] inodeNumberToInodeStructMap.bpTree.Prune() failed: %v", err)
+		}
+
+		if parentInodeNumberChildBasenameToChildInodeNumber.flushesSinceLastGCMax > 0 {
+			parentInodeNumberChildBasenameToChildInodeNumber.flushesSinceLastGC++
+
+			if parentInodeNumberChildBasenameToChildInodeNumber.flushesSinceLastGC >= parentInodeNumberChildBasenameToChildInodeNumber.flushesSinceLastGCMax {
+				runtime.GC()
+
+				parentInodeNumberChildBasenameToChildInodeNumber.flushesSinceLastGC = 0
+			}
+		}
+	}
 }
 
 // `byteSliceToUint64StringTuple` is called to convert a byte slice to a uint64 string tuple
@@ -1273,125 +1206,19 @@ func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBa
 
 // `GetNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for parentInodeNumberChildBasenameToChildInodeNumberStruct.
 func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) GetNode(objectNumber, objectOffset, objectLength uint64) (nodeByteSlice []byte, err error) {
-	var (
-		nodeFilePath string
-	)
-
-	if objectOffset != 0 {
-		err = fmt.Errorf("objectOffset(%v) != 0", objectOffset)
-		return
-	}
-
-	nodeFilePath = fmt.Sprintf("%s/%016X", globals.config.cacheDirPath, objectNumber)
-
-	nodeByteSlice, err = os.ReadFile(nodeFilePath)
-	if err != nil {
-		err = fmt.Errorf("os.ReadFile(nodeFilePath:\"%s\") failed: %v", nodeFilePath, err)
-		return
-	}
-
-	if objectLength != uint64(len(nodeByteSlice)) {
-		err = fmt.Errorf("objectLength[%v] != uint64(len(nodeByteSlice))[%v]", objectLength, uint64(len(nodeByteSlice)))
-		return
-	}
-
+	nodeByteSlice, err = readNodeFile(objectNumber, objectOffset, objectLength)
 	return
 }
 
 // `PutNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for parentInodeNumberChildBasenameToChildInodeNumberStruct.
 func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) PutNode(nodeByteSlice []byte) (objectNumber, objectOffset uint64, err error) {
-	var (
-		nodeFile     *os.File
-		nodeFilePath string
-	)
-
-	objectNumber = fetchNonce()
-	objectOffset = 0
-
-	nodeFilePath = fmt.Sprintf("%s/%016X", globals.config.cacheDirPath, objectNumber)
-
-	nodeFile, err = os.OpenFile(nodeFilePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			err = fmt.Errorf("os.OpenFile(nodeFilePath:\"%s\", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) failed due to pre-existing file", nodeFilePath)
-		} else {
-			err = fmt.Errorf("os.OpenFile(nodeFilePath:\"%s\", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) failed: %v", nodeFilePath, err)
-		}
-		return
-	}
-
-	_, err = nodeFile.Write(nodeByteSlice)
-	if err != nil {
-		err = fmt.Errorf("nodeFile[\"%s\"].Write(nodeByteSlice) failed: %v", nodeFilePath, err)
-		return
-	}
-
-	err = nodeFile.Close()
-	if err != nil {
-		err = fmt.Errorf("nodeFile[\"%s\"].Close() failed: %v", nodeFilePath, err)
-		return
-	}
-
+	objectNumber, objectOffset, err = writeNodeFile(nodeByteSlice)
 	return
 }
 
 // `DiscardNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for parentInodeNumberChildBasenameToChildInodeNumberStruct.
 func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) DiscardNode(objectNumber, objectOffset, objectLength uint64) (err error) {
-	var (
-		closeErr     error
-		nodeFile     *os.File
-		nodeFileInfo os.FileInfo
-		nodeFilePath string
-	)
-
-	if objectOffset != 0 {
-		err = fmt.Errorf("objectOffset(%v) != 0", objectOffset)
-		return
-	}
-
-	nodeFilePath = fmt.Sprintf("%s/%016X", globals.config.cacheDirPath, objectNumber)
-
-	nodeFile, err = os.OpenFile(nodeFilePath, os.O_RDWR, 0o600)
-	if err != nil {
-		err = fmt.Errorf("os.OpenFile(nodeFilePath:\"%s\", os.O_RDWR, 0o600) failed: %v", nodeFilePath, err)
-		return
-	}
-
-	err = os.Remove(nodeFilePath)
-	if err != nil {
-		err = fmt.Errorf("os.Remove(nodeFilePath:\"%s\", os.O_RDWR, 0o600) failed: %v", nodeFilePath, err)
-		closeErr = nodeFile.Close()
-		if closeErr != nil {
-			err = fmt.Errorf("%s as did nodeFile.Close(): %v", err, closeErr)
-		}
-		return
-	}
-
-	nodeFileInfo, err = nodeFile.Stat()
-	if err != nil {
-		err = fmt.Errorf("nodeFile[\"%s\"].Stat() failed: %v", nodeFilePath, err)
-		closeErr = nodeFile.Close()
-		if closeErr != nil {
-			err = fmt.Errorf("%s as did nodeFile.Close(): %v", err, closeErr)
-		}
-		return
-	}
-
-	if objectLength != uint64(nodeFileInfo.Size()) {
-		err = fmt.Errorf("objectLength[%v] != uint64(nodeFileInfo.Size())[%v]", objectLength, uint64(nodeFileInfo.Size()))
-		closeErr = nodeFile.Close()
-		if closeErr != nil {
-			err = fmt.Errorf("%s as did nodeFile.Close(): %v", err, closeErr)
-		}
-		return
-	}
-
-	err = nodeFile.Close()
-	if err != nil {
-		err = fmt.Errorf("nodeFile[\"%s\"].Close() failed: %v", nodeFilePath, err)
-		return
-	}
-
+	err = discardNodeFile(objectNumber, objectOffset, objectLength)
 	return
 }
 
@@ -1466,7 +1293,178 @@ func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBa
 	}
 
 	value = binary.BigEndian.Uint64(payloadData[:8])
+	bytesConsumed = 8
 
 	err = nil
+	return
+}
+
+// `readNodeFile` provides a generic function to read a node's existing file in its entirety.
+func readNodeFile(nodeFileNumber, mustBeZeroOffset, requiredLength uint64) (nodeByteSlice []byte, err error) {
+	var (
+		closeErr     error
+		nodeFile     *os.File
+		nodeFileInfo os.FileInfo
+		nodeFilePath string
+	)
+
+	if mustBeZeroOffset != 0 {
+		err = fmt.Errorf("mustBeZeroOffset[%v] != 0", mustBeZeroOffset)
+		return
+	}
+
+	nodeFilePath = fmt.Sprintf("%s/%016X", globals.cacheDir, nodeFileNumber)
+
+	nodeFile, err = os.Open(nodeFilePath)
+	if err != nil {
+		err = fmt.Errorf("os.Open(nodeFilePath[\"%s\"]) failed: %v", nodeFilePath, err)
+		return
+	}
+
+	nodeFileInfo, err = nodeFile.Stat()
+	if err != nil {
+		err = fmt.Errorf("nodeFile[\"%s\"].Stat() failed: %v", nodeFilePath, err)
+		closeErr = nodeFile.Close()
+		if closeErr != nil {
+			err = fmt.Errorf("%s [and nodeFile.Close() failed: %v]", err, closeErr)
+		}
+		return
+	}
+
+	if uint64(nodeFileInfo.Size()) != requiredLength {
+		err = fmt.Errorf("uint64(nodeFileInfo[\"%s\"].Size())[%v] != requiredLength[%v]", nodeFilePath, nodeFileInfo.Size(), requiredLength)
+		closeErr = nodeFile.Close()
+		if closeErr != nil {
+			err = fmt.Errorf("%s [and nodeFile.Close() failed: %v]", err, closeErr)
+		}
+		return
+	}
+
+	nodeByteSlice = make([]byte, requiredLength)
+
+	_, err = nodeFile.ReadAt(nodeByteSlice, int64(mustBeZeroOffset))
+	if err != nil {
+		err = fmt.Errorf("nodeFile[\"%s\"].ReadAt(buf, int(mustBeZeroOffset)) failed: %v", nodeFilePath, err)
+		closeErr = nodeFile.Close()
+		if closeErr != nil {
+			err = fmt.Errorf("%s [and nodeFile.Close() failed: %v]", err, closeErr)
+		}
+		return
+	}
+
+	err = nodeFile.Close()
+	if err != nil {
+		err = fmt.Errorf("nodeFile[\"%s\"].Close() failed: %v", nodeFilePath, err)
+		return
+	}
+
+	return
+}
+
+// `writeNodeFile` provides a generic function to write a node's new file in its entirety.
+func writeNodeFile(nodeByteSlice []byte) (nodeFileNumber, nodeFileOffset uint64, err error) {
+	var (
+		closeErr     error
+		nodeFile     *os.File
+		nodeFilePath string
+	)
+
+	nodeFileNumber = fetchNonce()
+	nodeFileOffset = 0
+
+	nodeFilePath = fmt.Sprintf("%s/%016X", globals.cacheDir, nodeFileNumber)
+
+	nodeFile, err = os.OpenFile(nodeFilePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			err = fmt.Errorf("os.OpenFile(nodeFilePath[\"%s\"], os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) failed due to pre-existing file", nodeFilePath)
+		} else {
+			err = fmt.Errorf("os.OpenFile(nodeFilePath[\"%s\"], os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) failed: %v", nodeFilePath, err)
+		}
+		return
+	}
+
+	_, err = nodeFile.Write(nodeByteSlice)
+	if err != nil {
+		err = fmt.Errorf("nodeFile[\"%s\"].Write(nodeByteSlice) failed: %v", nodeFilePath, err)
+		closeErr = nodeFile.Close()
+		if closeErr != nil {
+			err = fmt.Errorf("%s [and nodeFile.Close() failed: %v]", err, closeErr)
+		}
+		return
+	}
+
+	err = nodeFile.Close()
+	if err != nil {
+		err = fmt.Errorf("nodeFile[\"%s\"].Close() failed: %v", nodeFilePath, err)
+		return
+	}
+
+	return
+}
+
+// `discardNodeFile` provides a generic function to discard a node's existing file.
+func discardNodeFile(nodeFileNumber, mustBeZeroOffset, requiredLength uint64) (err error) {
+	var (
+		closeErr     error
+		nodeFile     *os.File
+		nodeFileInfo os.FileInfo
+		nodeFilePath string
+	)
+
+	if mustBeZeroOffset != 0 {
+		err = fmt.Errorf("mustBeZeroOffset[%v] != 0", mustBeZeroOffset)
+		return
+	}
+
+	nodeFilePath = fmt.Sprintf("%s/%016X", globals.cacheDir, nodeFileNumber)
+
+	nodeFile, err = os.Open(nodeFilePath)
+	if err != nil {
+		err = fmt.Errorf("os.Open(nodeFilePath[\"%s\"]) failed: %v", nodeFilePath, err)
+		return
+	}
+
+	nodeFile, err = os.OpenFile(nodeFilePath, os.O_RDWR, 0o600)
+	if err != nil {
+		err = fmt.Errorf("os.OpenFile(nodeFilePath[\"%s\"], os.O_RDWR, 0o600) failed: %v", nodeFilePath, err)
+		return
+	}
+
+	nodeFileInfo, err = nodeFile.Stat()
+	if err != nil {
+		err = fmt.Errorf("nodeFile[\"%s\"].Stat() failed: %v", nodeFilePath, err)
+		closeErr = nodeFile.Close()
+		if closeErr != nil {
+			err = fmt.Errorf("%s [and nodeFile.Close() failed: %v]", err, closeErr)
+		}
+		return
+	}
+
+	if uint64(nodeFileInfo.Size()) != requiredLength {
+		err = fmt.Errorf("uint64(nodeFileInfo[\"%s\"].Size())[%v] != requiredLength[%v]", nodeFilePath, nodeFileInfo.Size(), requiredLength)
+		closeErr = nodeFile.Close()
+		if closeErr != nil {
+			err = fmt.Errorf("%s [and nodeFile.Close() failed: %v]", err, closeErr)
+		}
+		return
+	}
+
+	err = os.Remove(nodeFilePath)
+	if err != nil {
+		err = fmt.Errorf("os.Remove(nodeFilePath[\"%s\"], os.O_RDWR, 0o600) failed: %v", nodeFilePath, err)
+		closeErr = nodeFile.Close()
+		if closeErr != nil {
+			err = fmt.Errorf("%s as did nodeFile.Close(): %v", err, closeErr)
+		}
+		return
+	}
+
+	err = nodeFile.Close()
+	if err != nil {
+		err = fmt.Errorf("nodeFile[\"%s\"].Close() failed: %v", nodeFilePath, err)
+		return
+	}
+
 	return
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"sync"
 	"syscall"
 	"time"
@@ -32,6 +33,10 @@ func initFS() {
 	globals.logger.Printf("[INFO] cache dir: \"%s\"", globals.cacheDir)
 
 	bptree_init() // [TODO]
+
+	if globals.config.processMemoryLimit > 0 {
+		_ = debug.SetMemoryLimit(int64(globals.config.processMemoryLimit))
+	}
 
 	timeNow = time.Now()
 
@@ -105,8 +110,6 @@ func drainFS() {
 	}
 
 	processToUnmountListAlreadyLocked()
-
-	bptree_drain() // [TODO]
 
 	err = os.RemoveAll(globals.cacheDir)
 	if err != nil {

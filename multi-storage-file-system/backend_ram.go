@@ -54,9 +54,392 @@ func (backend *backendStruct) setupRAMContext() (err error) {
 	}
 
 	backend.backendPath = "ram://"
+	// TODOmoveThisToATestBench() // [UNDO]
 
 	err = nil
 	return
+}
+
+func TODOmoveThisToATestBench() {
+	const (
+		doDeletes = false
+
+		enableInodeMap             = true
+		enableInodeEvictionQueue   = true
+		enablePhysChildDirEntryMap = true
+		enableVirtChildDirEntryMap = false
+
+		inodeNumberBase  = uint64(10000000)  //  10M
+		inodeNumberCount = uint64(100000000) // 100M
+
+		tUpdateDuration = 10 * time.Second
+	)
+	var (
+		inode       *inodeStruct
+		inodeNumber uint64
+		limit       uint64
+		ok          bool
+		parentInode *inodeStruct
+		start       uint64
+	)
+
+	globals.lastNonce = inodeNumberBase + inodeNumberCount
+
+	parentInode = &inodeStruct{
+		inodeNumber:       1,
+		parentInodeNumber: 1,
+		isVirt:            true,
+		objectPath:        "/somedir",
+		basename:          "somedir",
+		eTag:              "",
+		mTime:             time.Time{},
+		xTime:             time.Time{},
+		cacheMap:          nil,
+		fhSet:             make(map[uint64]struct{}),
+	}
+
+	inode = &inodeStruct{
+		inodeNumber:       0, // to be computed
+		parentInodeNumber: 1,
+		isVirt:            true,
+		objectPath:        "/somedir/somebase",
+		basename:          "somebase",
+		eTag:              "someETag",
+		mTime:             time.Now(),
+		xTime:             time.Now().Add(time.Second),
+		cacheMap:          make(map[uint64]uint64),
+		fhSet:             make(map[uint64]struct{}),
+	}
+
+	tNextUpdate := time.Now().Add(tUpdateDuration)
+
+	t0 := time.Now()
+
+	if enableInodeMap {
+		for inodeNumber = inodeNumberBase; inodeNumber < inodeNumberBase+inodeNumberCount; inodeNumber++ {
+			inode.inodeNumber = inodeNumber
+
+			ok = toAddToGlobals.inodeMap.put(inode)
+			if !ok {
+				globals.logger.Fatalf("[FATAL] toAddToGlobals.inodeMap.put(inode) returned !ok")
+			}
+
+			if time.Now().After(tNextUpdate) {
+				globals.logger.Printf("[BENCH] toAddToGlobals.inodeMap.put(%v/%v)...", (inodeNumber - inodeNumberBase + 1), inodeNumberCount)
+				tNextUpdate = tNextUpdate.Add(tUpdateDuration)
+			}
+		}
+	}
+
+	t1 := time.Now()
+
+	if enableInodeMap {
+		for inodeNumber = inodeNumberBase; inodeNumber < inodeNumberBase+inodeNumberCount; inodeNumber++ {
+			_, ok = toAddToGlobals.inodeMap.get(inodeNumber)
+			if !ok {
+				globals.logger.Fatalf("[FATAL] toAddToGlobals.inodeMap.get(inodeNumber) returned !ok")
+			}
+
+			if time.Now().After(tNextUpdate) {
+				globals.logger.Printf("[BENCH] toAddToGlobals.inodeMap.get(%v/%v)...", (inodeNumber - inodeNumberBase + 1), inodeNumberCount)
+				tNextUpdate = tNextUpdate.Add(tUpdateDuration)
+			}
+		}
+	}
+
+	t2 := time.Now()
+
+	if enableInodeMap {
+		for inodeNumber = inodeNumberBase; inodeNumber < inodeNumberBase+inodeNumberCount; inodeNumber++ {
+			inode.inodeNumber = inodeNumber
+
+			ok = toAddToGlobals.inodeMap.touch(inode)
+			if !ok {
+				globals.logger.Fatalf("[FATAL] toAddToGlobals.inodeMap.touch(inode) returned !ok")
+			}
+
+			if time.Now().After(tNextUpdate) {
+				globals.logger.Printf("[BENCH] toAddToGlobals.inodeMap.touch(%v/%v)...", (inodeNumber - inodeNumberBase + 1), inodeNumberCount)
+				tNextUpdate = tNextUpdate.Add(tUpdateDuration)
+			}
+		}
+	}
+
+	t3 := time.Now()
+
+	if enableInodeMap {
+		if doDeletes {
+			for inodeNumber = inodeNumberBase; inodeNumber < inodeNumberBase+inodeNumberCount; inodeNumber++ {
+				inode.inodeNumber = inodeNumber
+
+				ok = toAddToGlobals.inodeMap.delete(inode)
+				if !ok {
+					globals.logger.Fatalf("[FATAL] toAddToGlobals.inodeMap.delete(inode) returned !ok")
+				}
+
+				if time.Now().After(tNextUpdate) {
+					globals.logger.Printf("[BENCH] toAddToGlobals.inodeMap.delete(%v/%v)...", (inodeNumber - inodeNumberBase + 1), inodeNumberCount)
+					tNextUpdate = tNextUpdate.Add(tUpdateDuration)
+				}
+			}
+		}
+	}
+
+	t4 := time.Now()
+
+	if enableInodeEvictionQueue {
+		for inodeNumber = inodeNumberBase; inodeNumber < inodeNumberBase+inodeNumberCount; inodeNumber++ {
+			inode.inodeNumber = inodeNumber
+
+			ok = toAddToGlobals.inodeEvictionQueue.insert(inode)
+			if !ok {
+				globals.logger.Fatalf("[FATAL] toAddToGlobals.inodeEvictionQueue.insert(inode) returned !ok")
+			}
+
+			if time.Now().After(tNextUpdate) {
+				globals.logger.Printf("[BENCH] toAddToGlobals.inodeEvictionQueue.insert(%v/%v)...", (inodeNumber - inodeNumberBase + 1), inodeNumberCount)
+				tNextUpdate = tNextUpdate.Add(tUpdateDuration)
+			}
+		}
+	}
+
+	t5 := time.Now()
+
+	if enableInodeEvictionQueue {
+		if doDeletes {
+			for inodeNumber = inodeNumberBase; inodeNumber < inodeNumberBase+inodeNumberCount; inodeNumber++ {
+				inode.inodeNumber = inodeNumber
+
+				ok = toAddToGlobals.inodeEvictionQueue.remove(inode)
+				if !ok {
+					globals.logger.Fatalf("[FATAL] toAddToGlobals.inodeEvictionQueue.remove(inode) returned !ok")
+				}
+
+				if time.Now().After(tNextUpdate) {
+					globals.logger.Printf("[BENCH] toAddToGlobals.inodeEvictionQueue.remove(%v/%v)...", (inodeNumber - inodeNumberBase + 1), inodeNumberCount)
+					tNextUpdate = tNextUpdate.Add(tUpdateDuration)
+				}
+			}
+		}
+	}
+
+	t6 := time.Now()
+
+	if enablePhysChildDirEntryMap {
+		for inodeNumber = inodeNumberBase; inodeNumber < inodeNumberBase+inodeNumberCount; inodeNumber++ {
+			inode.inodeNumber = inodeNumber
+			inode.basename = fmt.Sprintf("%016X", inodeNumber)
+
+			ok = toAddToGlobals.physChildDirEntryMap.put(parentInode, inode)
+			if !ok {
+				globals.logger.Fatalf("[FATAL] toAddToGlobals.physChildDirEntryMap.put(parentInode, inode) returned !ok")
+			}
+
+			if time.Now().After(tNextUpdate) {
+				globals.logger.Printf("[BENCH] toAddToGlobals.physChildDirEntryMap.put(%v/%v)...", (inodeNumber - inodeNumberBase + 1), inodeNumberCount)
+				tNextUpdate = tNextUpdate.Add(tUpdateDuration)
+			}
+		}
+	}
+
+	t7 := time.Now()
+
+	if enablePhysChildDirEntryMap {
+		for inodeNumber = inodeNumberBase; inodeNumber < inodeNumberBase+inodeNumberCount; inodeNumber++ {
+			inode.inodeNumber = inodeNumber
+			inode.basename = fmt.Sprintf("%016X", inodeNumber)
+
+			_, ok = toAddToGlobals.physChildDirEntryMap.getByBasename(parentInode, inode.basename)
+			if !ok {
+				globals.logger.Fatalf("[FATAL] toAddToGlobals.physChildDirEntryMap.getByBasename(parentInode, inodeMap[inodeNumber].basename) returned !ok")
+			}
+
+			if time.Now().After(tNextUpdate) {
+				globals.logger.Printf("[BENCH] toAddToGlobals.physChildDirEntryMap.getByBasename(%v/%v)...", (inodeNumber - inodeNumberBase + 1), inodeNumberCount)
+				tNextUpdate = tNextUpdate.Add(tUpdateDuration)
+			}
+		}
+	}
+
+	t8 := time.Now()
+
+	if enablePhysChildDirEntryMap {
+		start, limit = toAddToGlobals.physChildDirEntryMap.getIndexRange(parentInode)
+	}
+
+	t9 := time.Now()
+
+	if enablePhysChildDirEntryMap {
+		for i := start; i < limit; i++ {
+			_, ok = toAddToGlobals.physChildDirEntryMap.getByIndex(i)
+			if !ok {
+				globals.logger.Fatalf("[FATAL] toAddToGlobals.physChildDirEntryMap.getByIndex(i) returned !ok")
+			}
+
+			if time.Now().After(tNextUpdate) {
+				globals.logger.Printf("[BENCH] toAddToGlobals.physChildDirEntryMap.getByIndex(%v/%v)...", (i - start + 1), (limit - start))
+				tNextUpdate = tNextUpdate.Add(tUpdateDuration)
+			}
+		}
+	}
+
+	t10 := time.Now()
+
+	if enablePhysChildDirEntryMap {
+		if doDeletes {
+			for inodeNumber = inodeNumberBase; inodeNumber < inodeNumberBase+inodeNumberCount; inodeNumber++ {
+				inode.inodeNumber = inodeNumber
+				inode.basename = fmt.Sprintf("%016X", inodeNumber)
+
+				ok = toAddToGlobals.physChildDirEntryMap.delete(parentInode, inode)
+				if !ok {
+					globals.logger.Fatalf("[FATAL] toAddToGlobals.physChildDirEntryMap.delete(parentInode, inode) returned !ok")
+				}
+
+				if time.Now().After(tNextUpdate) {
+					globals.logger.Printf("[BENCH] toAddToGlobals.physChildDirEntryMap.delete(%v/%v)...", (inodeNumber - inodeNumberBase + 1), inodeNumberCount)
+					tNextUpdate = tNextUpdate.Add(tUpdateDuration)
+				}
+			}
+		}
+	}
+
+	t11 := time.Now()
+
+	if enableVirtChildDirEntryMap {
+		for inodeNumber = inodeNumberBase; inodeNumber < inodeNumberBase+inodeNumberCount; inodeNumber++ {
+			inode.inodeNumber = inodeNumber
+			inode.basename = fmt.Sprintf("%016X", inodeNumber)
+
+			ok = toAddToGlobals.virtChildDirEntryMap.put(parentInode, inode)
+			if !ok {
+				globals.logger.Fatalf("[FATAL] toAddToGlobals.virtChildDirEntryMap.put(parentInode, inode) returned !ok")
+			}
+
+			if time.Now().After(tNextUpdate) {
+				globals.logger.Printf("[BENCH] toAddToGlobals.virtChildDirEntryMap.put(%v/%v)...", (inodeNumber - inodeNumberBase + 1), inodeNumberCount)
+				tNextUpdate = tNextUpdate.Add(tUpdateDuration)
+			}
+		}
+	}
+
+	t12 := time.Now()
+
+	if enableVirtChildDirEntryMap {
+		for inodeNumber = inodeNumberBase; inodeNumber < inodeNumberBase+inodeNumberCount; inodeNumber++ {
+			inode.inodeNumber = inodeNumber
+			inode.basename = fmt.Sprintf("%016X", inodeNumber)
+
+			_, ok = toAddToGlobals.virtChildDirEntryMap.getByBasename(parentInode, inode.basename)
+			if !ok {
+				globals.logger.Fatalf("[FATAL] toAddToGlobals.virtChildDirEntryMap.getByBasename(parentInode, inodeMap[inodeNumber].basename) returned !ok")
+			}
+
+			if time.Now().After(tNextUpdate) {
+				globals.logger.Printf("[BENCH] toAddToGlobals.virtChildDirEntryMap.getByBasename(%v/%v)...", (inodeNumber - inodeNumberBase + 1), inodeNumberCount)
+				tNextUpdate = tNextUpdate.Add(tUpdateDuration)
+			}
+		}
+	}
+
+	t13 := time.Now()
+
+	if enableVirtChildDirEntryMap {
+		start, limit = toAddToGlobals.virtChildDirEntryMap.getIndexRange(parentInode)
+	}
+
+	t14 := time.Now()
+
+	if enableVirtChildDirEntryMap {
+		for i := start; i < limit; i++ {
+			_, ok = toAddToGlobals.virtChildDirEntryMap.getByIndex(i)
+			if !ok {
+				globals.logger.Fatalf("[FATAL] toAddToGlobals.virtChildDirEntryMap.getByIndex(i) returned !ok")
+			}
+
+			if time.Now().After(tNextUpdate) {
+				globals.logger.Printf("[BENCH] toAddToGlobals.virtChildDirEntryMap.getByIndex(%v/%v)...", (i - start + 1), (limit - start))
+				tNextUpdate = tNextUpdate.Add(tUpdateDuration)
+			}
+		}
+	}
+
+	t15 := time.Now()
+
+	if enableVirtChildDirEntryMap {
+		if doDeletes {
+			for inodeNumber = inodeNumberBase; inodeNumber < inodeNumberBase+inodeNumberCount; inodeNumber++ {
+				inode.inodeNumber = inodeNumber
+				inode.basename = fmt.Sprintf("%016X", inodeNumber)
+
+				ok = toAddToGlobals.virtChildDirEntryMap.delete(parentInode, inode)
+				if !ok {
+					globals.logger.Fatalf("[FATAL] toAddToGlobals.virtChildDirEntryMap.delete(parentInode, inode) returned !ok")
+				}
+
+				if time.Now().After(tNextUpdate) {
+					globals.logger.Printf("[BENCH] toAddToGlobals.virtChildDirEntryMap.delete(%v/%v)...", (inodeNumber - inodeNumberBase + 1), inodeNumberCount)
+					tNextUpdate = tNextUpdate.Add(tUpdateDuration)
+				}
+			}
+		}
+	}
+
+	t16 := time.Now()
+
+	if enableInodeMap {
+		if doDeletes {
+			globals.logger.Printf("[BENCH] Performing %v put/get/touch/delete operations on toAddToGlobals.inodeMap:", inodeNumberCount)
+		} else {
+			globals.logger.Printf("[BENCH] Performing %v put/get/touch operations on toAddToGlobals.inodeMap:", inodeNumberCount)
+		}
+		globals.logger.Printf("[BENCH]   .put():           %v", t1.Sub(t0))
+		globals.logger.Printf("[BENCH]   .get():           %v", t2.Sub(t1))
+		globals.logger.Printf("[BENCH]   .touch():         %v", t3.Sub(t2))
+		if doDeletes {
+			globals.logger.Printf("[BENCH]   .delete():        %v", t4.Sub(t3))
+		}
+	}
+
+	if enableInodeEvictionQueue {
+		if doDeletes {
+			globals.logger.Printf("[BENCH] Performing %v insert/remove operations on toAddToGlobals.inodeEvictionQueue:", inodeNumberCount)
+		} else {
+			globals.logger.Printf("[BENCH] Performing %v insert operations on toAddToGlobals.inodeEvictionQueue:", inodeNumberCount)
+		}
+		globals.logger.Printf("[BENCH]   .insert():        %v", t5.Sub(t4))
+		if doDeletes {
+			globals.logger.Printf("[BENCH]   .remove():        %v", t6.Sub(t5))
+		}
+	}
+
+	if enablePhysChildDirEntryMap {
+		if doDeletes {
+			globals.logger.Printf("[BENCH] Performing %v put/getByBasename/getByIndex/delete operations on toAddToGlobals.physChildDirEntryMap:", inodeNumberCount)
+		} else {
+			globals.logger.Printf("[BENCH] Performing %v put/getByBasename/getByIndex operations on toAddToGlobals.physChildDirEntryMap:", inodeNumberCount)
+		}
+		globals.logger.Printf("[BENCH]   .put():           %v", t7.Sub(t6))
+		globals.logger.Printf("[BENCH]   .getByBasename(): %v", t8.Sub(t7))
+		globals.logger.Printf("[BENCH]   .getByIndex():    %v [single .getByIndex(): %v]", t10.Sub(t9), t9.Sub(t8))
+		if doDeletes {
+			globals.logger.Printf("[BENCH]   .delete():        %v", t11.Sub(t10))
+		}
+	}
+
+	if enableVirtChildDirEntryMap {
+		if doDeletes {
+			globals.logger.Printf("[BENCH] Performing %v put/getByBasename/getByIndex/delete operations on toAddToGlobals.virtChildDirEntryMap:", inodeNumberCount)
+		} else {
+			globals.logger.Printf("[BENCH] Performing %v put/getByBasename/getByIndex operations on toAddToGlobals.virtChildDirEntryMap:", inodeNumberCount)
+		}
+		globals.logger.Printf("[BENCH]   .put():           %v", t12.Sub(t11))
+		globals.logger.Printf("[BENCH]   .getByBasename(): %v", t13.Sub(t12))
+		globals.logger.Printf("[BENCH]   .getByIndex():    %v [single .getByIndex(): %v]", t15.Sub(t14), t14.Sub(t13))
+		if doDeletes {
+			globals.logger.Printf("[BENCH]   .delete():        %v", t16.Sub(t15))
+		}
+	}
 }
 
 // `deleteFile` is called to remove a "file" at the specified path.
