@@ -93,6 +93,19 @@ For CloudFront signed URLs (e.g. wildcard-signed URLs for Zarr datasets), pass
        },
    )
 
+Credential Lifetime and URL Expiration
+=======================================
+
+When the underlying credentials are temporary (STS, IAM roles, EC2 instance
+profiles), the effective URL lifetime is the **shorter** of ``expires_in`` and
+the remaining credential lifetime. For example, if the session token expires in
+10 minutes but ``expires_in`` is set to 3600 (1 hour), the URL will stop
+working after 10 minutes when the token expires. The S3 SDK will **not** warn
+if the credential expires before ``expires_in``.
+
+For more details, see the
+`AWS presigned URL documentation <https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html>`_.
+
 Supported Providers
 ===================
 
