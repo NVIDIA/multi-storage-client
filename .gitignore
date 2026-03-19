@@ -43,3 +43,9 @@ multi-storage-client/src/multistorageclient/explorer/static/
 **/.grafana/sandbox
 **/.mimir/sandbox
 **/.tempo/sandbox
+
+# Credentials.
+**/.aws/sandbox
+**/.gcloud/sandbox
+**/.oci/sandbox
+**/.teleport/sandbox

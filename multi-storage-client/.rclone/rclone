@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+
+# Add this stub to PATH to manipulate config file resolution.
+exit 0

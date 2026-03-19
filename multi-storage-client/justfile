@@ -198,8 +198,52 @@ build: analyze run-unit-tests run-ray-tests
 # Run E2E tests.
 run-e2e-tests: prepare-toolchain
     # Remove test artifacts.
-    rm -rf .reports/e2e
+    rm -rf .{aws,gcloud,oci,teleport}/sandbox .reports/e2e
+    # Create sandbox directories.
+    mkdir --parents .{aws,gcloud,oci,teleport}/sandbox .teleport/sandbox/tbot .teleport/sandbox/workload-identity-jwt/{aws,azure,gcp,oci}
+    # Get Teleport credentials.
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then \
+        tbot start --config .teleport/tbot.yaml --join-method github --token rg-multi-storage-client-beta-github-actions; \
+    elif [[ -n "${GITLAB_CI:-}" ]]; then \
+        tbot start --config .teleport/tbot.yaml --join-method gitlab --token rg-multi-storage-client-beta-gitlab-ci-cd; \
+    else \
+        (bao token renew || bao login -method oidc -path oidc role=namespace-reader) && \
+        bao kv get -field id_bkp beta/teleport-bound-keypair > .teleport/sandbox/tbot/id_bkp && \
+        tbot start --config .teleport/tbot.yaml --join-method bound_keypair --token rg-multi-storage-client-beta-bound-keypair; \
+    fi
+    # Get static credentials.
+    AWS_CONFIG_FILE=.aws/config aws --profile aws secretsmanager get-secret-value --output text --query SecretString --secret-id multi-storage-client-beta > .aws/sandbox/multi-storage-client-beta.json
+    # Create AWS credentials files.
+    cat .aws/credentials.template | GCS_HMAC_ACCESS_KEY_ID=$(jq --raw-output ".GCS_HMAC_ACCESS_KEY_ID" .aws/sandbox/multi-storage-client-beta.json) GCS_HMAC_SECRET_ACCESS_KEY=$(jq --raw-output ".GCS_HMAC_SECRET_ACCESS_KEY" .aws/sandbox/multi-storage-client-beta.json) S8K_ACCESS_KEY_ID=$(jq --raw-output ".S8K_ACCESS_KEY_ID" .aws/sandbox/multi-storage-client-beta.json) S8K_SECRET_ACCESS_KEY=$(jq --raw-output ".S8K_SECRET_ACCESS_KEY" .aws/sandbox/multi-storage-client-beta.json) envsubst > .aws/sandbox/credentials
+    jq --raw-output ".CLOUDFRONT_PRIVATE_KEY" .aws/sandbox/multi-storage-client-beta.json > .aws/sandbox/id_rsa
+    # Create GCP credentials files.
+    gcloud iam workload-identity-pools create-cred-config projects/328033609117/locations/global/workloadIdentityPools/multi-storage-client-beta/providers/multi-storage-client-beta --credential-source-file .teleport/sandbox/workload-identity-jwt/gcp/jwt_svid --credential-source-type text --output-file .gcloud/sandbox/credentials.json
+    # Create OCI credentials files.
+    openssl genrsa -out .oci/sandbox/id_rsa 4096
+    curl \
+        --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+        --data-urlencode "public_key=$(openssl rsa -in .oci/sandbox/id_rsa -outform PEM -pubout | sed '1d;$d' | tr --delete '\n')" \
+        --data-urlencode "requested_token_type=urn:oci:token-type:oci-upst" \
+        --data-urlencode "subject_token=$(cat .teleport/sandbox/workload-identity-jwt/oci/jwt_svid)" \
+        --data-urlencode "subject_token_type=jwt" \
+        --fail-with-body \
+        --location \
+        --user $(jq --raw-output ".OCI_TOKEN_EXCHANGE_CLIENT_ID" .aws/sandbox/multi-storage-client-beta.json):$(jq --raw-output ".OCI_TOKEN_EXCHANGE_CLIENT_SECRET" .aws/sandbox/multi-storage-client-beta.json) \
+        https://idcs-1a8b8478607a4a329637387e744475be.identity.oraclecloud.com:443/oauth2/v1/token | jq --join-output ".token" > .oci/sandbox/session_token
     # Run E2E tests.
+    AWS_CONFIG_FILE=.aws/config \
+    AWS_SHARED_CREDENTIALS_FILE=.aws/sandbox/credentials \
+    CLOUDFRONT_DOMAIN=$(jq --raw-output ".CLOUDFRONT_DOMAIN" .aws/sandbox/multi-storage-client-beta.json) \
+    CLOUDFRONT_KEY_PAIR_ID=$(jq --raw-output ".CLOUDFRONT_KEY_PAIR_ID" .aws/sandbox/multi-storage-client-beta.json) \
+    CLOUDFRONT_PRIVATE_KEY_PATH=.aws/sandbox/id_rsa \
+    AZURE_FEDERATED_TOKEN_FILE=.teleport/sandbox/workload-identity-jwt/azure/jwt_svid \
+    GOOGLE_APPLICATION_CREDENTIALS=.gcloud/sandbox/credentials.json \
+    OCI_CONFIG_FILE=.oci/config \
+    HF_TOKEN=$(jq --raw-output ".HF_TOKEN" .aws/sandbox/multi-storage-client-beta.json) \
+    PANOPTES_CLIENT_ID=$(jq --raw-output ".PANOPTES_CLIENT_ID" .aws/sandbox/multi-storage-client-beta.json) \
+    PANOPTES_CLIENT_CREDENTIAL=$(jq --raw-output ".PANOPTES_CLIENT_CREDENTIAL" .aws/sandbox/multi-storage-client-beta.json) \
+    MSC_CONFIG=.msc/config.yaml \
+    PATH=.rclone:${PATH} \
     uv run pytest --durations 10 --junit-xml .reports/e2e/pytest.xml --numprocesses auto tests/test_multistorageclient/e2e
 
 # Run minimal verification without any optional dependencies.

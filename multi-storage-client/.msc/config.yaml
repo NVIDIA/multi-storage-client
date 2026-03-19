@@ -1,0 +1,271 @@
+#
+# Multi-Storage Client configuration.
+#
+# https://nvidia.github.io/multi-storage-client/references/configuration
+#
+
+profiles:
+  test-azure-uswest:
+    credentials_provider:
+      type: DefaultAzureCredentials
+      options:
+        workload_identity_tenant_id: 43083d15-7273-40c1-b7db-39efd9ccc17a
+        workload_identity_client_id: dea5cb00-7993-49ca-81f1-1e1c660a7764
+    storage_provider:
+      type: azure
+      options:
+        base_path: msc-test
+        endpoint_url: https://nvdataplatformdev.blob.core.windows.net
+    caching_enabled: true
+  test-gcs:
+    storage_provider:
+      type: gcs
+      options:
+        base_path: nvdataplatformdev/msc-test
+        project_id: data-platform-dev
+        multipart_threshold: 16777216
+        multipart_chunksize: 8388608
+        io_chunk_size: 8388608
+  test-gcs-hmac:
+    storage_provider:
+      type: gcs_s3
+      options:
+        base_path: nvdataplatformdev/msc-test
+        endpoint_url: https://storage.googleapis.com
+        profile_name: gcs-hmac
+        multipart_threshold: 16777216
+        multipart_chunksize: 8388608
+        io_chunksize: 8388608
+  test-gcs-rust:
+    storage_provider:
+      type: gcs
+      options:
+        base_path: nvdataplatformdev/msc-test
+        project_id: data-platform-dev
+        multipart_threshold: 16777216
+        multipart_chunksize: 8388608
+        io_chunk_size: 8388608
+        rust_client:
+          multipart_chunksize: 8388608
+          max_concurrency: 16
+  test-gcs-hmac-rust:
+    storage_provider:
+      type: gcs_s3
+      options:
+        base_path: nvdataplatformdev/msc-test
+        endpoint_url: https://storage.googleapis.com
+        profile_name: gcs-hmac
+        multipart_threshold: 16777216
+        multipart_chunksize: 8388608
+        io_chunksize: 8388608
+        rust_client:
+          multipart_chunksize: 8388608
+          max_concurrency: 16
+  test-oci:
+    storage_provider:
+      type: oci
+      options:
+        base_path: msc-test
+        namespace: axvrabcwoa8f
+        multipart_threshold: 16777216
+        multipart_chunksize: 8388608
+  test-s3-iad:
+    storage_provider:
+      type: s3
+      options:
+        base_path: msc-integration-test-0001
+        endpoint_url: https://s3.us-east-1.amazonaws.com
+        region_name: us-east-1
+        profile_name: aws
+        multipart_threshold: 16777216
+        multipart_chunksize: 8388608
+        io_chunksize: 8388608
+    caching_enabled: true
+  test-s3-iad-with-replica:
+    storage_provider:
+      type: s3
+      options:
+        base_path: msc-integration-test-0001
+        endpoint_url: https://s3.us-east-1.amazonaws.com
+        region_name: us-east-1
+        profile_name: aws
+        multipart_threshold: 16777216
+        multipart_chunksize: 8388608
+        io_chunksize: 8388608
+    caching_enabled: true
+    replicas:
+      - replica_profile: test-s3e
+        read_priority: 1
+  test-s3e:
+    storage_provider:
+      type: s3
+      options:
+        base_path: msc-integration-test-0001--use1-az4--x-s3
+        region_name: us-east-1
+        profile_name: aws
+        multipart_threshold: 16777216
+        multipart_chunksize: 8388608
+        io_chunksize: 8388608
+  test-s3-iad-base-path-with-prefix:
+    storage_provider:
+      type: s3
+      options:
+        base_path: msc-integration-test-0001/test-data
+        endpoint_url: https://s3.us-east-1.amazonaws.com
+        region_name: us-east-1
+        profile_name: aws
+        multipart_threshold: 16777216
+        multipart_chunksize: 8388608
+        io_chunksize: 8388608
+  test-s3-iad-rust:
+    storage_provider:
+      type: s3
+      options:
+        base_path: msc-integration-test-0001
+        endpoint_url: https://s3.us-east-1.amazonaws.com
+        region_name: us-east-1
+        profile_name: aws
+        multipart_threshold: 16777216
+        multipart_chunksize: 8388608
+        io_chunksize: 8388608
+        rust_client: {}
+  test-swift-pdx:
+    storage_provider:
+      type: s8k
+      options:
+        base_path: msc-integration-test-0001
+        endpoint_url: https://pdx.s8k.io
+        region_name: us-east-1
+        profile_name: s8k
+        multipart_threshold: 16777216
+        multipart_chunksize: 8388608
+        io_chunksize: 8388608
+    caching_enabled: true
+  test-swift-pdx-base-path-with-prefix:
+    storage_provider:
+      type: s8k
+      options:
+        base_path: msc-integration-test-0001/test-data
+        endpoint_url: https://pdx.s8k.io
+        region_name: us-east-1
+        profile_name: s8k
+        multipart_threshold: 16777216
+        multipart_chunksize: 8388608
+        io_chunksize: 8388608
+  test-swift-pdx-rust:
+    storage_provider:
+      type: s8k
+      options:
+        base_path: msc-integration-test-0001
+        endpoint_url: https://pdx.s8k.io
+        region_name: us-east-1
+        profile_name: s8k
+        multipart_threshold: 16777216
+        multipart_chunksize: 8388608
+        io_chunksize: 8388608
+        rust_client: {}
+  test-hf-public-model:
+    storage_provider:
+      type: huggingface
+      options:
+        repository_id: microsoft/DialoGPT-medium
+        repo_type: model
+        repo_revision: main
+        base_path: ""
+  test-hf-private-dataset:
+    storage_provider:
+      type: huggingface
+      options:
+        repository_id: msc-hf-testing/ci-test
+        repo_type: dataset
+        repo_revision: main
+        base_path: /
+  test-gcp-public-data:
+    storage_provider:
+      type: gcs
+      options:
+        base_path: gcp-public-data-arco-era5
+        region_name: us-central1
+        skip_signature: true
+  test-gcp-public-data-rust:
+    storage_provider:
+      type: gcs
+      options:
+        base_path: gcp-public-data-arco-era5
+        region_name: us-central1
+        skip_signature: true
+        rust_client: {}
+cache:
+  size: 20G
+  use_etag: true
+  eviction_policy:
+    policy: fifo
+    refresh_interval: 300
+  cache_backend:
+    cache_path: /tmp/msc_cache
+opentelemetry:
+  metrics:
+    attributes:
+      # All environments.
+      - type: static
+        options:
+          attributes:
+            msc.ppp: Multi-Storage Client
+            msc.job: unknown
+            msc.job_nodes: 1
+            msc.job_gpus: 0
+            msc.cluster: CI/CD
+            msc.node_gpus: 0
+      - type: host
+        options:
+          attributes:
+            msc.node: name
+      - type: process
+        options:
+          attributes:
+            msc.process: pid
+      - type: msc_config
+        options:
+          attributes:
+            msc.azure_client_id:
+              expression: opentelemetry.metrics.exporter.options.auth.client_id
+            msc.azure_client_credential:
+              expression: hash('sha3-224', opentelemetry.metrics.exporter.options.auth.client_credential)
+      # Progressive enhancement for local environments.
+      - type: environment_variables
+        options:
+          attributes:
+            msc.job_user: USER
+      # Progressive enhancement for GitLab CI/CD environments.
+      #
+      # https://docs.gitlab.com/ci/variables/predefined_variables
+      - type: environment_variables
+        options:
+          attributes:
+            msc.job: CI_JOB_ID
+            msc.job_user: GITLAB_USER_LOGIN
+      # Progressive enhancement for GitHub Actions environments.
+      #
+      # https://docs.github.com/en/actions/reference/workflows-and-actions/variables
+      - type: environment_variables
+        options:
+          attributes:
+            msc.job: GITHUB_RUN_ID
+            msc.job_user: GITHUB_TRIGGERING_ACTOR
+    reader:
+      options:
+        collect_interval_millis: 10
+        collect_timeout_millis: 100
+        export_interval_millis: 1000
+        export_timeout_millis: 500
+    exporter:
+      type: _otlp_msal
+      options:
+        auth:
+          client_id: ${PANOPTES_CLIENT_ID}
+          client_credential: ${PANOPTES_CLIENT_CREDENTIAL}
+          scopes:
+            - api://dgxc-lgtm-otel-gateway-prod/.default
+          authority: https://login.microsoftonline.com/43083d15-7273-40c1-b7db-39efd9ccc17a
+        exporter:
+          endpoint: https://otel-metrics.us-west-2.aws.telemetry.dgxc.ngc.nvidia.com/v1/metrics

@@ -1,0 +1,49 @@
+#
+# Teleport tbot configuration.
+#
+# https://goteleport.com/docs/reference/machine-workload-identity/configuration
+#
+
+version: v2
+
+credential_ttl: 1h
+oneshot: true
+proxy_server: nv-prd-dgxc.teleport.sh:443
+
+services:
+  - type: workload-identity-jwt
+    audiences:
+      - sts.amazonaws.com
+    destination:
+      type: directory
+      path: .teleport/sandbox/workload-identity-jwt/aws
+    selector:
+      name: rg-multi-storage-client-beta
+  - type: workload-identity-jwt
+    audiences:
+      - api://AzureADTokenExchange
+    destination:
+      type: directory
+      path: .teleport/sandbox/workload-identity-jwt/azure
+    selector:
+      name: rg-multi-storage-client-beta
+  - type: workload-identity-jwt
+    audiences:
+      - https://iam.googleapis.com/projects/328033609117/locations/global/workloadIdentityPools/multi-storage-client-beta/providers/multi-storage-client-beta
+    destination:
+      type: directory
+      path: .teleport/sandbox/workload-identity-jwt/gcp
+    selector:
+      name: rg-multi-storage-client-beta
+  - type: workload-identity-jwt
+    audiences:
+      - https://cloud.oracle.com
+    destination:
+      type: directory
+      path: .teleport/sandbox/workload-identity-jwt/oci
+    selector:
+      name: rg-multi-storage-client-beta
+
+storage:
+  type: directory
+  path: .teleport/sandbox/tbot

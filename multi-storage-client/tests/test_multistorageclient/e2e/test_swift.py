@@ -23,6 +23,10 @@ import multistorageclient as msc
 import test_multistorageclient.e2e.common as common
 
 
+@pytest.mark.skipif(
+    condition=os.getenv("GITHUB_ACTIONS") is not None,
+    reason="Can't access SwiftStack on GitHub-hosted Actions runners.",
+)
 @pytest.mark.parametrize("profile_name", ["test-swift-pdx", "test-swift-pdx-base-path-with-prefix"])
 @pytest.mark.parametrize("config_suffix", ["", "-rclone"])
 def test_swift_shortcuts(profile_name, config_suffix):
@@ -30,6 +34,10 @@ def test_swift_shortcuts(profile_name, config_suffix):
     common.test_shortcuts(profile)
 
 
+@pytest.mark.skipif(
+    condition=os.getenv("GITHUB_ACTIONS") is not None,
+    reason="Can't access SwiftStack on GitHub-hosted Actions runners.",
+)
 @pytest.mark.parametrize("profile_name", ["test-swift-pdx"])
 @pytest.mark.parametrize("config_suffix", ["", "-rclone"])
 def test_swift_storage_client(profile_name, config_suffix):
@@ -37,24 +45,40 @@ def test_swift_storage_client(profile_name, config_suffix):
     common.test_storage_client(profile)
 
 
+@pytest.mark.skipif(
+    condition=os.getenv("GITHUB_ACTIONS") is not None,
+    reason="Can't access SwiftStack on GitHub-hosted Actions runners.",
+)
 @pytest.mark.parametrize("profile_name", ["test-swift-pdx"])
 def test_swift_open_with_source_version_check(profile_name):
     profile = profile_name
     common.test_open_with_source_version_check(profile)
 
 
+@pytest.mark.skipif(
+    condition=os.getenv("GITHUB_ACTIONS") is not None,
+    reason="Can't access SwiftStack on GitHub-hosted Actions runners.",
+)
 @pytest.mark.parametrize("profile_name", ["test-swift-pdx-rust"])
 def test_swift_shortcuts_rust(profile_name):
     profile = profile_name
     common.test_shortcuts(profile)
 
 
+@pytest.mark.skipif(
+    condition=os.getenv("GITHUB_ACTIONS") is not None,
+    reason="Can't access SwiftStack on GitHub-hosted Actions runners.",
+)
 @pytest.mark.parametrize("profile_name", ["test-swift-pdx-rust"])
 def test_swift_storage_client_rust(profile_name):
     profile = profile_name
     common.test_storage_client(profile)
 
 
+@pytest.mark.skipif(
+    condition=os.getenv("GITHUB_ACTIONS") is not None,
+    reason="Can't access SwiftStack on GitHub-hosted Actions runners.",
+)
 @pytest.mark.parametrize("profile_name", ["test-swift-pdx"])
 def test_swift_list_exact_file_no_prefix_match(profile_name):
     """Test that listing exact file path doesn't match files with same prefix (S8K bug fix)."""
@@ -62,6 +86,10 @@ def test_swift_list_exact_file_no_prefix_match(profile_name):
     common.test_list_exact_file_no_prefix_match(profile)
 
 
+@pytest.mark.skipif(
+    condition=os.getenv("GITHUB_ACTIONS") is not None,
+    reason="Can't access SwiftStack on GitHub-hosted Actions runners.",
+)
 def test_swift_content_type_inference():
     """
     Test that WAV files are uploaded with correct content-type when infer_content_type is enabled.

@@ -193,7 +193,6 @@ typeCheckingMode = "basic"
 addopts = [
     "--import-mode=importlib"
 ]
-asyncio_default_fixture_loop_scope = "function"
 markers = [
     "serial: marks tests as serial (deselect with '-m \"not serial\"')"
 ]

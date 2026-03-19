@@ -1,18 +1,23 @@
 {
+  awscli2,
   azurite,
   bun,
   coreutils,
   curl,
   dpkg,
   fake-gcs-server,
+  gettext,
   gh,
   git,
   git-lfs,
+  gnused,
   gnutar,
   go_1_26,
+  google-cloud-sdk,
   golangci-lint,
   grafana,
   jfrog-cli,
+  jq,
   just,
   lib,
   lsof,
@@ -23,7 +28,9 @@
   nix,
   nixfmt,
   nodejs-slim,
+  openbao,
   openssh,
+  openssl,
   pyright,
   python310,
   pythonInterpreter ? python310,
@@ -31,8 +38,10 @@
   ruff,
   rustup,
   stdenv,
+  teleport,
   tempo,
   treefmt,
+  util-linux,
   uv,
   versitygw,
   zip,
@@ -50,8 +59,12 @@ mkShell {
     # Utilities.
     coreutils
     curl
+    gettext
+    gnused
+    jq
     lsof
     netcat-gnu
+    util-linux
     # Git.
     git
     git-lfs
@@ -105,6 +118,16 @@ mkShell {
     gnutar
     rpm
     zip
+    # OpenBao.
+    openbao
+    # Teleport.
+    teleport
+    # AWS CLI.
+    awscli2
+    # Google Cloud CLI.
+    google-cloud-sdk
+    # OpenSSL.
+    openssl
     # JFrog CLI.
     jfrog-cli
     # OpenSSH.
@@ -139,6 +162,12 @@ mkShell {
       #
       # https://github.com/python/cpython/issues/77906
       export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
+
+      # OpenBao/Vault.
+      #
+      # https://openbao.org/docs/commands#environment-variables
+      export VAULT_ADDR=https://prod.vault.nvidia.com
+      export VAULT_NAMESPACE=ngc-multi-storage-client
 
       echo "⚗️"
     '';
