@@ -1,0 +1,7 @@
+profiles:
+  s3-my-bucket:
+    storage_provider:
+      type: s3
+      options:
+        endpoint_url: https://my-endpoint.s3.com
+        base_path: my-bucket

@@ -28,4 +28,5 @@ multi-storage-client = { workspace = true }
 members = [
     "multi-storage-client",
     "multi-storage-client-docs",
+    "reproduction"
 ]

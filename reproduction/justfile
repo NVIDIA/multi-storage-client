@@ -1,0 +1,22 @@
+#
+# Just configuration.
+#
+# https://just.systems/man/en
+#
+
+# Default to the first Python binary on `PATH`.
+python-binary := "python"
+
+# List recipes.
+help:
+    just --list
+
+# Prepare the toolchain.
+prepare-toolchain:
+    # Prepare the virtual environment.
+    uv sync --all-extras --python {{python-binary}}
+
+# Run the reproduction.
+run: prepare-toolchain
+    # Run the reproduction.
+    MSC_CONFIG=msc_bug.yaml uv run msc_bug.py

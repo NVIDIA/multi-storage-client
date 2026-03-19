@@ -1,0 +1,16 @@
+[project]
+name = "reproduction"
+version = "0.0.0"
+requires-python = ">=3.10,<4"
+classifiers = [
+    "Private :: Do Not Upload"
+]
+dependencies = [
+    "multi-storage-client[boto3]"
+]
+
+[tool.ruff]
+extend = "../pyproject.toml"
+
+[tool.uv]
+package = false
