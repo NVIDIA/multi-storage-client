@@ -119,8 +119,13 @@ def _process_single_sync_operation(
                         logger.debug(f"File {target_file_path} already exists and is up-to-date, skipping copy")
 
                         if target_client._metadata_provider:
+                            source_attrs = (
+                                (dict(file_metadata.metadata) if file_metadata.metadata else None)
+                                if preserve_source_attributes
+                                else None
+                            )
                             metadata_for_tracking = (
-                                _replace_object_metadata_attributes(target_metadata, file_metadata.metadata)
+                                _replace_object_metadata_attributes(target_metadata, source_attrs)
                                 if preserve_source_attributes
                                 else target_metadata
                             )
@@ -420,11 +425,12 @@ def _update_posix_metadata(
 ) -> None:
     """Update metadata for POSIX target (metadata provider or xattr)."""
     if target_client._metadata_provider:
+        metadata_copy = dict(file_metadata.metadata) if file_metadata.metadata else None
         physical_metadata = ObjectMetadata(
             key=target_file_path,
             content_length=os.path.getsize(target_physical_path),
             last_modified=datetime.fromtimestamp(os.path.getmtime(target_physical_path), tz=timezone.utc),
-            metadata=file_metadata.metadata,
+            metadata=metadata_copy,
         )
         with target_client._metadata_provider_lock or contextlib.nullcontext():
             target_client._metadata_provider.add_file(target_file_path, physical_metadata)

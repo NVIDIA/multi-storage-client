@@ -49,8 +49,19 @@ class QueueBackedMetadataProvider(MetadataProvider):
     # ── write operations: update local + queue for main process ──
 
     def add_file(self, path: str, metadata: ObjectMetadata) -> None:
+        meta_dict = metadata.metadata if metadata.metadata else None
+        queued_metadata = ObjectMetadata(
+            key=metadata.key,
+            content_length=metadata.content_length,
+            last_modified=metadata.last_modified,
+            type=getattr(metadata, "type", "file"),
+            content_type=getattr(metadata, "content_type"),
+            etag=getattr(metadata, "etag"),
+            storage_class=getattr(metadata, "storage_class"),
+            metadata=dict(meta_dict) if meta_dict else None,
+        )
         self._delegate.add_file(path, metadata)
-        self._result_queue.put((OperationType.ADD, path, metadata))
+        self._result_queue.put((OperationType.ADD, path, queued_metadata))
 
     def remove_file(self, path: str) -> None:
         self._delegate.remove_file(path)

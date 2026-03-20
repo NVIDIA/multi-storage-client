@@ -14,8 +14,9 @@
 # limitations under the License.
 
 import queue
+from collections.abc import Iterator
 from datetime import datetime, timezone
-from typing import cast
+from typing import Optional, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -49,7 +50,10 @@ def test_add_file_delegates_and_queues():
     op, path, queued_metadata = result_queue.get_nowait()
     assert op == OperationType.ADD
     assert path == "file.bin"
-    assert queued_metadata is metadata
+    assert queued_metadata.key == metadata.key
+    assert queued_metadata.content_length == metadata.content_length
+    assert queued_metadata.last_modified == metadata.last_modified
+    assert queued_metadata.metadata == metadata.metadata
 
 
 def test_remove_file_delegates_without_queuing():
@@ -115,6 +119,83 @@ def test_multiple_add_files_queue_in_order():
     assert (op1, path1, m1) == (OperationType.ADD, "a.bin", meta1)
     assert (op2, path2, m2) == (OperationType.ADD, "b.bin", meta2)
     assert result_queue.empty()
+
+
+class _NoOpMutatingDelegate(MetadataProvider):
+    """No-op provider that mutates the metadata dict in add_file (simulates nvdataset-style behavior)."""
+
+    def add_file(self, path: str, metadata: ObjectMetadata) -> None:
+        if getattr(metadata, "metadata", None) is not None:
+            metadata.metadata = {}
+
+    def remove_file(self, path: str) -> None:
+        pass
+
+    def commit_updates(self) -> None:
+        pass
+
+    def list_objects(
+        self,
+        path: str,
+        start_after: Optional[str] = None,
+        end_at: Optional[str] = None,
+        include_directories: bool = False,
+        attribute_filter_expression: Optional[str] = None,
+        show_attributes: bool = False,
+    ) -> Iterator[ObjectMetadata]:
+        return iter([])
+
+    def get_object_metadata(self, path: str, include_pending: bool = False) -> ObjectMetadata:
+        raise FileNotFoundError(path)
+
+    def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
+        return []
+
+    def realpath(self, logical_path: str) -> ResolvedPath:
+        return ResolvedPath(physical_path=logical_path, state=ResolvedPathState.UNTRACKED, profile=None)
+
+    def generate_physical_path(self, logical_path: str, for_overwrite: bool = False) -> ResolvedPath:
+        return self.realpath(logical_path)
+
+    def is_writable(self) -> bool:
+        return True
+
+    def allow_overwrites(self) -> bool:
+        return True
+
+    def should_use_soft_delete(self) -> bool:
+        return False
+
+
+def test_queue_backed_metadata_provider_replay_sees_unmutated_metadata():
+    """Reproduces the bug: QueueBackedMetadataProvider puts the same object it passes to the delegate.
+
+    When the delegate mutates that object (e.g. clears metadata.metadata), the same mutated object
+    is on the result queue, so the replay sees empty metadata. This test asserts the contract: the
+    queued message must contain metadata with custom attributes intact (replay must not see
+    delegate mutation). With current code this test fails.
+    """
+    result_queue = queue.Queue()
+    delegate = _NoOpMutatingDelegate()
+    proxy = QueueBackedMetadataProvider(delegate, result_queue)
+
+    meta = ObjectMetadata(
+        key="dest/file.txt",
+        content_length=10,
+        last_modified=datetime.now(timezone.utc),
+        metadata={"extra_int": "1", "extra_str": "group1"},
+    )
+    proxy.add_file("dest/file.txt", meta)
+
+    op, path, physical_metadata = result_queue.get_nowait()
+    assert op == OperationType.ADD
+    assert path == "dest/file.txt"
+    assert (physical_metadata.metadata or {}) != {}, (
+        "Queued metadata was mutated by delegate; replay would see empty metadata. "
+        "QueueBackedMetadataProvider must put a copy so replay is unaffected by delegate mutation."
+    )
+    assert physical_metadata.metadata.get("extra_int") == "1"
+    assert physical_metadata.metadata.get("extra_str") == "group1"
 
 
 @pytest.mark.parametrize(
