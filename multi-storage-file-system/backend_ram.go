@@ -54,12 +54,12 @@ func (backend *backendStruct) setupRAMContext() (err error) {
 	}
 
 	backend.backendPath = "ram://"
-	// TODOmoveThisToATestBench() // [UNDO]
 
 	err = nil
 	return
 }
 
+/*
 func TODOmoveThisToATestBench() {
 	const (
 		doDeletes = false
@@ -441,6 +441,7 @@ func TODOmoveThisToATestBench() {
 		}
 	}
 }
+*/
 
 // `deleteFile` is called to remove a "file" at the specified path.
 // If a `subdirectory` or nothing is found at that path, an error will be returned.

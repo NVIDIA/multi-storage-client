@@ -21,7 +21,7 @@ func (cacheLine *cacheLineStruct) fetch() {
 
 	globals.Lock()
 
-	inode, ok = globals.inodeMap[cacheLine.inodeNumber]
+	inode, ok = globals.inodeMap.get(cacheLine.inodeNumber)
 	if !ok {
 		globals.logger.Printf("[WARN] [TODO] (*cacheLineStruct) fetch() needs to handle missing inodeStruct [case 1]")
 		cacheLine.state = CacheLineClean
@@ -52,7 +52,7 @@ func (cacheLine *cacheLineStruct) fetch() {
 	if err != nil {
 		globals.Lock()
 		globals.logger.Printf("[WARN] [TODO] (*cacheLineStruct) fetch() needs to handle error reading cache line")
-		inode, ok = globals.inodeMap[cacheLine.inodeNumber]
+		inode, ok = globals.inodeMap.get(cacheLine.inodeNumber)
 		if ok {
 			inode.inboundCacheLineCount--
 		} else {
@@ -69,7 +69,7 @@ func (cacheLine *cacheLineStruct) fetch() {
 	}
 
 	globals.Lock()
-	inode, ok = globals.inodeMap[cacheLine.inodeNumber]
+	inode, ok = globals.inodeMap.get(cacheLine.inodeNumber)
 	if ok {
 		inode.inboundCacheLineCount--
 	} else {
@@ -146,10 +146,10 @@ func cachePrune() {
 		_ = globals.cleanCacheLineLRU.Remove(listElement)
 		cacheLineToEvict.listElement = nil
 
-		inode, ok = globals.inodeMap[cacheLineToEvict.inodeNumber]
+		inode, ok = globals.inodeMap.get(cacheLineToEvict.inodeNumber)
 		if !ok {
 			dumpStack()
-			globals.logger.Fatalf("[FATAL] globals.inodeMap[cacheLineToEvict.inodeNumber] returned !ok [cachePrune()]")
+			globals.logger.Fatalf("[FATAL] globals.inodeMap.get(cacheLineToEvict.inodeNumber) returned !ok [cachePrune()]")
 		}
 
 		_, ok = inode.cacheMap[cacheLineToEvict.lineNumber]

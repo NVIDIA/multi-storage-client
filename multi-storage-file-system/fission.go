@@ -155,7 +155,7 @@ func (*globalsStruct) DoLookup(inHeader *fission.InHeader, lookupIn *fission.Loo
 
 	globals.Lock()
 
-	parentInode, ok = globals.inodeMap[inHeader.NodeID]
+	parentInode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
 		// We no longer know how to map inHeader.NodeID (an inodeNumber) to the parentInode
 		backend = nil
@@ -182,11 +182,11 @@ func (*globalsStruct) DoLookup(inHeader *fission.InHeader, lookupIn *fission.Loo
 	}
 
 	if parentInode.inodeType == FUSERootDir {
-		// If lookupIn.Name exists, it is in parentInode.childDirMap
+		// If lookupIn.Name exists, it is in parentInode's portion of the global {phys|virt}ChildDirEntryMap
 
-		childInodeNumber, ok = parentInode.physChildInodeMap.GetByKey(string(lookupIn.Name))
+		childInodeNumber, ok = globals.physChildDirEntryMap.getByBasename(parentInode.inodeNumber, string(lookupIn.Name))
 		if !ok {
-			childInodeNumber, ok = parentInode.virtChildInodeMap.GetByKey(string(lookupIn.Name))
+			childInodeNumber, ok = globals.virtChildDirEntryMap.getByBasename(parentInode.inodeNumber, string(lookupIn.Name))
 			if !ok {
 				globals.Unlock()
 				errno = syscall.ENOENT
@@ -194,10 +194,10 @@ func (*globalsStruct) DoLookup(inHeader *fission.InHeader, lookupIn *fission.Loo
 			}
 		}
 
-		childInode, ok = globals.inodeMap[childInodeNumber]
+		childInode, ok = globals.inodeMap.get(childInodeNumber)
 		if !ok {
 			dumpStack()
-			globals.logger.Fatalf("[FATAL] globals.inodeMap[childInodeNumber] returned !ok [DoLookup()]")
+			globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childInodeNumber) returned !ok [DoLookup()]")
 		}
 	} else {
 		// We only know parentInode is a BackendRootDir or a PseudoDir
@@ -296,7 +296,7 @@ func (*globalsStruct) DoGetAttr(inHeader *fission.InHeader, getAttrIn *fission.G
 
 	globals.Lock()
 
-	thisInode, ok = globals.inodeMap[inHeader.NodeID]
+	thisInode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
 		backend = nil
 		globals.Unlock()
@@ -436,7 +436,7 @@ func (*globalsStruct) DoMkDir(inHeader *fission.InHeader, mkDirIn *fission.MkDir
 
 	globals.Lock()
 
-	parentInode, ok = globals.inodeMap[inHeader.NodeID]
+	parentInode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
 		// We no longer know how to map inHeader.NodeID (an inodeNumber) to the parentInode
 		backend = nil
@@ -559,7 +559,7 @@ func (*globalsStruct) DoUnlink(inHeader *fission.InHeader, unlinkIn *fission.Unl
 
 	globals.Lock()
 
-	parentInode, ok = globals.inodeMap[inHeader.NodeID]
+	parentInode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
 		backend = nil
 		globals.Unlock()
@@ -639,13 +639,17 @@ func (*globalsStruct) DoUnlink(inHeader *fission.InHeader, unlinkIn *fission.Unl
 // `DoRmDir` implements the package fission callback to remove a directory inode.
 func (*globalsStruct) DoRmDir(inHeader *fission.InHeader, rmDirIn *fission.RmDirIn) (errno syscall.Errno) {
 	var (
-		backend     *backendStruct
-		basename    = string(rmDirIn.Name)
-		childInode  *inodeStruct
-		latency     float64
-		ok          bool
-		parentInode *inodeStruct
-		startTime   = time.Now()
+		backend                             *backendStruct
+		basename                            = string(rmDirIn.Name)
+		childInode                          *inodeStruct
+		childInodePhysChildDirEntryMapLimit uint64
+		childInodePhysChildDirEntryMapStart uint64
+		childInodeVirtChildDirEntryMapLimit uint64
+		childInodeVirtChildDirEntryMapStart uint64
+		latency                             float64
+		ok                                  bool
+		parentInode                         *inodeStruct
+		startTime                           = time.Now()
 	)
 
 	defer func() {
@@ -671,7 +675,7 @@ func (*globalsStruct) DoRmDir(inHeader *fission.InHeader, rmDirIn *fission.RmDir
 
 	globals.Lock()
 
-	parentInode, ok = globals.inodeMap[inHeader.NodeID]
+	parentInode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
 		// We no longer know how to map inHeader.NodeID (an inodeNumber) to the parentInode
 		backend = nil
@@ -728,7 +732,9 @@ func (*globalsStruct) DoRmDir(inHeader *fission.InHeader, rmDirIn *fission.RmDir
 		errno = syscall.EBUSY
 		return
 	}
-	if (childInode.physChildInodeMap.Len() > 0) || (childInode.virtChildInodeMap.Len() > 2) {
+	childInodePhysChildDirEntryMapStart, childInodePhysChildDirEntryMapLimit = globals.physChildDirEntryMap.getIndexRange(childInode.inodeNumber)
+	childInodeVirtChildDirEntryMapStart, childInodeVirtChildDirEntryMapLimit = globals.virtChildDirEntryMap.getIndexRange(childInode.inodeNumber)
+	if ((childInodePhysChildDirEntryMapLimit - childInodePhysChildDirEntryMapStart) > 0) || ((childInodeVirtChildDirEntryMapLimit - childInodeVirtChildDirEntryMapStart) > 2) {
 		// Return ENOTEMPTY if childInode has any children
 		globals.Unlock()
 		errno = syscall.ENOTEMPTY
@@ -737,30 +743,44 @@ func (*globalsStruct) DoRmDir(inHeader *fission.InHeader, rmDirIn *fission.RmDir
 
 	// From here, we know we will succeed
 
-	if childInode.listElement != nil {
-		globals.inodeEvictionLRU.Remove(childInode.xTime, childInode.listElement)
-		childInode.xTime = time.Time{}
-		childInode.listElement = nil
+	if !childInode.xTime.IsZero() {
+		ok = globals.inodeEvictionQueue.remove(childInode)
+		if !ok {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] globals.inodeEvictionQueue.remove(childInode) returned !ok")
+		}
 	}
 
-	_ = childInode.virtChildInodeMap.DeleteByKey(DotDirEntryBasename)
-	_ = childInode.virtChildInodeMap.DeleteByKey(DotDotDirEntryBasename)
+	ok = globals.virtChildDirEntryMap.delete(childInode.inodeNumber, DotDirEntryBasename)
+	if !ok {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] globals.virtChildDirEntryMap.delete(childInode.inodeNumber, DotDirEntryBasename) returned !ok")
+	}
+	ok = globals.virtChildDirEntryMap.delete(childInode.inodeNumber, DotDotDirEntryBasename)
+	if !ok {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] globals.virtChildDirEntryMap.delete(childInode.inodeNumber, DotDotDirEntryBasename) returned !ok")
+	}
 
 	if childInode.isVirt {
-		ok = parentInode.virtChildInodeMap.DeleteByKey(basename)
+		ok = globals.virtChildDirEntryMap.delete(parentInode.inodeNumber, basename)
 		if !ok {
 			dumpStack()
-			globals.logger.Fatalf("[FATAL] parentInode.virtChildInodeMap.DeleteByKey(basename) returned !ok")
+			globals.logger.Fatalf("[FATAL] globals.virtChildDirEntryMap.delete(parentInode.inodeNumber, basename) returned !ok")
 		}
 	} else {
-		ok = parentInode.physChildInodeMap.DeleteByKey(basename)
+		ok = globals.physChildDirEntryMap.delete(parentInode.inodeNumber, basename)
 		if !ok {
 			dumpStack()
-			globals.logger.Fatalf("[FATAL] parentInode.physChildInodeMap.DeleteByKey(basename) returned !ok")
+			globals.logger.Fatalf("[FATAL] globals.physChildDirEntryMap.delete(parentInode.inodeNumber, basename) returned !ok")
 		}
 	}
 
-	delete(globals.inodeMap, childInode.inodeNumber)
+	ok = globals.inodeMap.delete(childInode.inodeNumber)
+	if !ok {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] globals.inodeMap.delete(childInode.inodeNumber) returned !ok")
+	}
 
 	parentInode.touch(nil)
 
@@ -821,7 +841,7 @@ func (*globalsStruct) DoOpen(inHeader *fission.InHeader, openIn *fission.OpenIn)
 
 	globals.Lock()
 
-	inode, ok = globals.inodeMap[inHeader.NodeID]
+	inode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
 		backend = nil
 		globals.Unlock()
@@ -974,7 +994,7 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 	for len(readOut.Data) < cap(readOut.Data) {
 		globals.Lock()
 
-		inode, ok = globals.inodeMap[inHeader.NodeID]
+		inode, ok = globals.inodeMap.get(inHeader.NodeID)
 		if !ok {
 			backend = nil
 			globals.Unlock()
@@ -1162,7 +1182,7 @@ func (*globalsStruct) DoStatFS(inHeader *fission.InHeader) (statFSOut *fission.S
 			Blocks:  uint64(math.MaxUint64) / statFSBlkSize,
 			BFree:   uint64(math.MaxUint64) / statFSBlkSize,
 			BAvail:  uint64(math.MaxUint64) / statFSBlkSize,
-			Files:   uint64(len(globals.inodeMap)),
+			Files:   uint64(globals.inodeMap.len()),
 			FFree:   uint64(math.MaxUint64) - globals.lastNonce,
 			BSize:   uint32(globals.config.cacheLineSize),
 			NameLen: maxNameLen,
@@ -1214,7 +1234,7 @@ func (*globalsStruct) DoRelease(inHeader *fission.InHeader, releaseIn *fission.R
 
 	globals.Lock()
 
-	inode, ok = globals.inodeMap[inHeader.NodeID]
+	inode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
 		backend = nil
 		globals.Unlock()
@@ -1373,7 +1393,7 @@ func (*globalsStruct) DoOpenDir(inHeader *fission.InHeader, openDirIn *fission.O
 
 	globals.Lock()
 
-	inode, ok = globals.inodeMap[inHeader.NodeID]
+	inode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
 		backend = nil
 		globals.Unlock()
@@ -1470,7 +1490,6 @@ func (inode *inodeStruct) appendToReadDirOut(readDirInSize uint64, readDirOut *f
 func (*globalsStruct) DoReadDir(inHeader *fission.InHeader, readDirIn *fission.ReadDirIn) (readDirOut *fission.ReadDirOut, errno syscall.Errno) {
 	var (
 		backend                                     *backendStruct
-		childDirMapIndex                            int
 		childDirMapLen                              uint64
 		childInode                                  *inodeStruct
 		childInodeBasename                          string
@@ -1491,9 +1510,11 @@ func (*globalsStruct) DoReadDir(inHeader *fission.InHeader, readDirIn *fission.R
 		listDirectoryOutput                         *listDirectoryOutputStruct
 		ok                                          bool
 		parentInode                                 *inodeStruct
+		parentInodeVirtChildDirEntryMapLimit        uint64
+		parentInodeVirtChildDirEntryMapStart        uint64
 		startTime                                   = time.Now()
 		subdirectory                                string
-		virtChildInodeMapIndex                      int
+		virtChildDirEntryMapIndex                   uint64
 	)
 
 	defer func() {
@@ -1545,7 +1566,7 @@ func (*globalsStruct) DoReadDir(inHeader *fission.InHeader, readDirIn *fission.R
 
 Restart:
 
-	parentInode, ok = globals.inodeMap[inHeader.NodeID]
+	parentInode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
 		backend = nil
 		globals.Unlock()
@@ -1584,7 +1605,8 @@ Restart:
 	parentInode.touch(nil)
 
 	if parentInode.inodeType == FUSERootDir {
-		childDirMapLen = uint64(parentInode.virtChildInodeMap.Len()) // Will be == 2 + len(globals.config.backends)
+		parentInodeVirtChildDirEntryMapStart, parentInodeVirtChildDirEntryMapLimit = globals.virtChildDirEntryMap.getIndexRange(FUSERootDirInodeNumber)
+		childDirMapLen = parentInodeVirtChildDirEntryMapLimit - parentInodeVirtChildDirEntryMapStart // Will be == 2 + len(globals.config.backends)
 
 		for {
 			if curOffset >= childDirMapLen {
@@ -1593,17 +1615,16 @@ Restart:
 				return
 			}
 
-			childDirMapIndex = int(curOffset)
-			childInodeBasename, childInodeNumber, ok = parentInode.virtChildInodeMap.GetByIndex(childDirMapIndex)
+			_, childInodeBasename, childInodeNumber, ok = globals.virtChildDirEntryMap.getByIndex(parentInodeVirtChildDirEntryMapStart + curOffset)
 			if !ok {
 				dumpStack()
 				globals.logger.Fatalf("[FATAL] parentInode.virtChildInodeMap.GetByIndex(childDirMapIndex < childDirMapLen) returned !ok")
 			}
 
-			childInode, ok = globals.inodeMap[childInodeNumber]
+			childInode, ok = globals.inodeMap.get(childInodeNumber)
 			if !ok {
 				dumpStack()
-				globals.logger.Fatalf("[FATAL] globals.inodeMap[childInodeNumber] returned !ok [DoReadDir() case 1]")
+				globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childInodeNumber) returned !ok [DoReadDir() case 1]")
 			}
 
 			curOffset++
@@ -1712,12 +1733,14 @@ Restart:
 
 		// At this point, we know either we are still reading fh.{prev|next}ListDirectoryOutput's
 		// or we are done with all of them and may proceed to return fh.listDirectorySubdirectoryList
-		// & parentInode.virtChildInodeMap entries
+		// & parentInode's virtChildDirEntryMap entries
+
+		parentInodeVirtChildDirEntryMapStart, parentInodeVirtChildDirEntryMapLimit = globals.virtChildDirEntryMap.getIndexRange(parentInode.inodeNumber)
 
 		curOffsetInPrevListDirectoryOutputCap = fh.nextListDirectoryOutputStartingOffset
 		curOffsetInNextListDirectoryOutputCap = fh.nextListDirectoryOutputStartingOffset + fh.nextListDirectoryOutputFileLen
 		curOffsetInListDirectorySubdirectoryListCap = curOffsetInNextListDirectoryOutputCap + uint64(len(fh.listDirectorySubdirectoryList))
-		curOffsetInVirtChildInodeMapCap = curOffsetInListDirectorySubdirectoryListCap + uint64(parentInode.virtChildInodeMap.Len())
+		curOffsetInVirtChildInodeMapCap = curOffsetInListDirectorySubdirectoryListCap + (parentInodeVirtChildDirEntryMapLimit - parentInodeVirtChildDirEntryMapStart)
 
 		switch {
 		case curOffset < curOffsetInPrevListDirectoryOutputCap:
@@ -1735,16 +1758,16 @@ Restart:
 			childInode.convertToPhysInodeIfNecessary()
 			childInodeBasename = childInode.basename
 		case curOffset < curOffsetInVirtChildInodeMapCap:
-			virtChildInodeMapIndex = int(curOffset - curOffsetInListDirectorySubdirectoryListCap)
-			childInodeBasename, childInodeNumber, ok = parentInode.virtChildInodeMap.GetByIndex(virtChildInodeMapIndex)
+			virtChildDirEntryMapIndex = parentInodeVirtChildDirEntryMapStart + (curOffset - curOffsetInListDirectorySubdirectoryListCap)
+			_, childInodeBasename, childInodeNumber, ok = globals.virtChildDirEntryMap.getByIndex(virtChildDirEntryMapIndex)
 			if !ok {
 				dumpStack()
-				globals.logger.Fatalf("[FATAL] parentInode.virtChildInodeMap.GetByIndex(virtChildInodeMapIndex) returned !ok")
+				globals.logger.Fatalf("[FATAL] globals.virtChildDirEntryMap.getByIndex(virtChildDirEntryMapIndex) returned !ok")
 			}
-			childInode, ok = globals.inodeMap[childInodeNumber]
+			childInode, ok = globals.inodeMap.get(childInodeNumber)
 			if !ok {
 				dumpStack()
-				globals.logger.Fatalf("[FATAL] globals.inodeMap[childInodeNumber] returned !ok [DoReadDir() case 2]")
+				globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childInodeNumber) returned !ok [DoReadDir() case 2]")
 			}
 		default:
 			globals.Unlock()
@@ -1799,7 +1822,7 @@ func (*globalsStruct) DoReleaseDir(inHeader *fission.InHeader, releaseDirIn *fis
 
 	globals.Lock()
 
-	inode, ok = globals.inodeMap[inHeader.NodeID]
+	inode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
 		backend = nil
 		globals.Unlock()
@@ -1923,7 +1946,7 @@ func (*globalsStruct) DoCreate(inHeader *fission.InHeader, createIn *fission.Cre
 
 	globals.Lock()
 
-	parentInode, ok = globals.inodeMap[inHeader.NodeID]
+	parentInode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
 		backend = nil
 		globals.Unlock()
@@ -2087,7 +2110,6 @@ func (inode *inodeStruct) appendToReadDirPlusOut(readDirPlusInSize uint64, readD
 func (*globalsStruct) DoReadDirPlus(inHeader *fission.InHeader, readDirPlusIn *fission.ReadDirPlusIn) (readDirPlusOut *fission.ReadDirPlusOut, errno syscall.Errno) {
 	var (
 		backend                                     *backendStruct
-		childDirMapIndex                            int
 		childDirMapLen                              uint64
 		childInode                                  *inodeStruct
 		childInodeBasename                          string
@@ -2110,9 +2132,11 @@ func (*globalsStruct) DoReadDirPlus(inHeader *fission.InHeader, readDirPlusIn *f
 		listDirectoryOutput                         *listDirectoryOutputStruct
 		ok                                          bool
 		parentInode                                 *inodeStruct
+		parentInodeVirtChildDirEntryMapLimit        uint64
+		parentInodeVirtChildDirEntryMapStart        uint64
 		startTime                                   = time.Now()
 		subdirectory                                string
-		virtChildInodeMapIndex                      int
+		virtChildDirEntryMapIndex                   uint64
 	)
 
 	defer func() {
@@ -2166,7 +2190,7 @@ func (*globalsStruct) DoReadDirPlus(inHeader *fission.InHeader, readDirPlusIn *f
 
 Restart:
 
-	parentInode, ok = globals.inodeMap[inHeader.NodeID]
+	parentInode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
 		backend = nil
 		globals.Unlock()
@@ -2205,7 +2229,8 @@ Restart:
 	parentInode.touch(nil)
 
 	if parentInode.inodeType == FUSERootDir {
-		childDirMapLen = uint64(parentInode.virtChildInodeMap.Len()) // Will be == 2 + len(globals.config.backends)
+		parentInodeVirtChildDirEntryMapStart, parentInodeVirtChildDirEntryMapLimit = globals.virtChildDirEntryMap.getIndexRange(FUSERootDirInodeNumber)
+		childDirMapLen = parentInodeVirtChildDirEntryMapLimit - parentInodeVirtChildDirEntryMapStart // Will be == 2 + len(globals.config.backends)
 
 		for {
 			if curOffset >= childDirMapLen {
@@ -2214,17 +2239,16 @@ Restart:
 				return
 			}
 
-			childDirMapIndex = int(curOffset)
-			childInodeBasename, childInodeNumber, ok = parentInode.virtChildInodeMap.GetByIndex(childDirMapIndex)
+			_, childInodeBasename, childInodeNumber, ok = globals.virtChildDirEntryMap.getByIndex(parentInodeVirtChildDirEntryMapStart + curOffset)
 			if !ok {
 				dumpStack()
 				globals.logger.Fatalf("[FATAL] parentInode.virtChildInodeMap.GetByIndex(childDirMapIndex < childDirMapLen) returned !ok")
 			}
 
-			childInode, ok = globals.inodeMap[childInodeNumber]
+			childInode, ok = globals.inodeMap.get(childInodeNumber)
 			if !ok {
 				dumpStack()
-				globals.logger.Fatalf("[FATAL] globals.inodeMap[childInodeNumber] returned !ok [DoReadDirPlus() case 1]")
+				globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childInodeNumber) returned !ok [DoReadDirPlus() case 1]")
 			}
 
 			curOffset++
@@ -2333,12 +2357,14 @@ Restart:
 
 		// At this point, we know either we are still reading fh.{prev|next}ListDirectoryOutput's
 		// or we are done with all of them and may proceed to return fh.listDirectorySubdirectoryList
-		// & parentInode.virtChildInodeMap entries
+		// & parentInode's virtChildDirEntryMap entries
+
+		parentInodeVirtChildDirEntryMapStart, parentInodeVirtChildDirEntryMapLimit = globals.virtChildDirEntryMap.getIndexRange(parentInode.inodeNumber)
 
 		curOffsetInPrevListDirectoryOutputCap = fh.nextListDirectoryOutputStartingOffset
 		curOffsetInNextListDirectoryOutputCap = fh.nextListDirectoryOutputStartingOffset + fh.nextListDirectoryOutputFileLen
 		curOffsetInListDirectorySubdirectoryListCap = curOffsetInNextListDirectoryOutputCap + uint64(len(fh.listDirectorySubdirectoryList))
-		curOffsetInVirtChildInodeMapCap = curOffsetInListDirectorySubdirectoryListCap + uint64(parentInode.virtChildInodeMap.Len())
+		curOffsetInVirtChildInodeMapCap = curOffsetInListDirectorySubdirectoryListCap + (parentInodeVirtChildDirEntryMapLimit - parentInodeVirtChildDirEntryMapStart)
 
 		switch {
 		case curOffset < curOffsetInPrevListDirectoryOutputCap:
@@ -2356,16 +2382,16 @@ Restart:
 			childInode.convertToPhysInodeIfNecessary()
 			childInodeBasename = childInode.basename
 		case curOffset < curOffsetInVirtChildInodeMapCap:
-			virtChildInodeMapIndex = int(curOffset - curOffsetInListDirectorySubdirectoryListCap)
-			childInodeBasename, childInodeNumber, ok = parentInode.virtChildInodeMap.GetByIndex(virtChildInodeMapIndex)
+			virtChildDirEntryMapIndex = parentInodeVirtChildDirEntryMapStart + (curOffset - curOffsetInListDirectorySubdirectoryListCap)
+			_, childInodeBasename, childInodeNumber, ok = globals.virtChildDirEntryMap.getByIndex(virtChildDirEntryMapIndex)
 			if !ok {
 				dumpStack()
-				globals.logger.Fatalf("[FATAL] parentInode.virtChildInodeMap.GetByIndex(virtChildInodeMapIndex) returned !ok")
+				globals.logger.Fatalf("[FATAL] globals.virtChildDirEntryMap.getByIndex(virtChildDirEntryMapIndex) returned !ok")
 			}
-			childInode, ok = globals.inodeMap[childInodeNumber]
+			childInode, ok = globals.inodeMap.get(childInodeNumber)
 			if !ok {
 				dumpStack()
-				globals.logger.Fatalf("[FATAL] globals.inodeMap[childInodeNumber] returned !ok [DoReadDirPlus() case 2]")
+				globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childInodeNumber) returned !ok [DoReadDirPlus() case 2]")
 			}
 		default:
 			globals.Unlock()
@@ -2441,7 +2467,7 @@ func (*globalsStruct) DoStatX(inHeader *fission.InHeader, statXIn *fission.StatX
 
 	globals.Lock()
 
-	thisInode, ok = globals.inodeMap[inHeader.NodeID]
+	thisInode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
 		backend = nil
 		globals.Unlock()

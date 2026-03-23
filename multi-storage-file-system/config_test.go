@@ -557,8 +557,10 @@ func TestBadNoSuffixConfig(t *testing.T) {
 
 func TestConfigFileGoodConfigFileUpdate(t *testing.T) {
 	var (
-		err error
-		ok  bool
+		err   error
+		limit uint64
+		ok    bool
+		start uint64
 	)
 
 	initGlobals(testOsArgs(testGlobals.testConfigFilePathMap[".yaml"]))
@@ -587,23 +589,25 @@ backends: [
 
 	processToMountList()
 
-	if globals.inode.virtChildInodeMap.Len() != 3 {
-		t.Fatalf("globals.inode.virtChildInodeMap.Len() should have been 3 (\".\", \"..\", \"ram1\")")
+	start, limit = globals.virtChildDirEntryMap.getIndexRange(FUSERootDirInodeNumber)
+	if (limit - start) != 3 {
+		t.Fatalf("globals.virtChildDirEntryMap.getIndexRange(FUSERootDirInodeNumber) should have returned [i:i+3) (\".\", \"..\", \"ram1\")")
 	}
-	_, ok = globals.inode.virtChildInodeMap.GetByKey(".")
+	_, ok = globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, ".")
 	if !ok {
-		t.Fatalf("globals.inode.virtChildInodeMap.GetByKey(\".\") returned !ok")
+		t.Fatalf("globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, \".\") returned !ok")
 	}
-	_, ok = globals.inode.virtChildInodeMap.GetByKey("..")
+	_, ok = globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, "..")
 	if !ok {
-		t.Fatalf("globals.inode.virtChildInodeMap.GetByKey(\"..\") returned !ok")
+		t.Fatalf("globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, \"..\") returned !ok")
 	}
-	_, ok = globals.inode.virtChildInodeMap.GetByKey("ram1")
+	_, ok = globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, "ram1")
 	if !ok {
-		t.Fatalf("globals.inode.virtChildInodeMap.GetByKey(\"ram1\") returned !ok")
+		t.Fatalf("globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, \"ram1\") returned !ok")
 	}
-	if globals.inode.physChildInodeMap.Len() != 0 {
-		t.Fatalf("globals.inode.physChildInodeMap.Len() should have been 0")
+	start, limit = globals.physChildDirEntryMap.getIndexRange(FUSERootDirInodeNumber)
+	if (limit - start) != 0 {
+		t.Fatalf("globals.physChildDirEntryMap.getIndexRange(FUSERootDirInodeNumber) should have returned [i:i)")
 	}
 
 	err = os.WriteFile(globals.configFilePath, []byte(`
@@ -634,27 +638,29 @@ backends: [
 
 	processToMountList()
 
-	if globals.inode.virtChildInodeMap.Len() != 4 {
-		t.Fatalf("globals.inode.virtChildInodeMap.Len() should have been 4 (\".\", \"..\", \"ram1\", \"ram2\")")
+	start, limit = globals.virtChildDirEntryMap.getIndexRange(FUSERootDirInodeNumber)
+	if (limit - start) != 4 {
+		t.Fatalf("globals.virtChildDirEntryMap.getIndexRange(FUSERootDirInodeNumber) should have returned [i:i+4) (\".\", \"..\", \"ram1\", \"ram2\")")
 	}
-	_, ok = globals.inode.virtChildInodeMap.GetByKey(".")
+	_, ok = globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, ".")
 	if !ok {
-		t.Fatalf("globals.inode.virtChildInodeMap.GetByKey(\".\") returned !ok")
+		t.Fatalf("globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, \".\") returned !ok")
 	}
-	_, ok = globals.inode.virtChildInodeMap.GetByKey("..")
+	_, ok = globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, "..")
 	if !ok {
-		t.Fatalf("globals.inode.virtChildInodeMap.GetByKey(\"..\") returned !ok")
+		t.Fatalf("globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, \"..\") returned !ok")
 	}
-	_, ok = globals.inode.virtChildInodeMap.GetByKey("ram1")
+	_, ok = globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, "ram1")
 	if !ok {
-		t.Fatalf("globals.inode.virtChildInodeMap.GetByKey(\"ram1\") returned !ok")
+		t.Fatalf("globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, \"ram1\") returned !ok")
 	}
-	_, ok = globals.inode.virtChildInodeMap.GetByKey("ram2")
+	_, ok = globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, "ram2")
 	if !ok {
-		t.Fatalf("globals.inode.virtChildInodeMap.GetByKey(\"ram2\") returned !ok")
+		t.Fatalf("globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, \"ram2\") returned !ok")
 	}
-	if globals.inode.physChildInodeMap.Len() != 0 {
-		t.Fatalf("globals.inode.physChildInodeMap.Len() should have been 0")
+	start, limit = globals.physChildDirEntryMap.getIndexRange(FUSERootDirInodeNumber)
+	if (limit - start) != 0 {
+		t.Fatalf("globals.physChildDirEntryMap.getIndexRange(FUSERootDirInodeNumber) should have returned [i:i)")
 	}
 
 	err = os.WriteFile(globals.configFilePath, []byte(`
@@ -680,23 +686,25 @@ backends: [
 
 	processToMountList()
 
-	if globals.inode.virtChildInodeMap.Len() != 3 {
-		t.Fatalf("globals.inode.virtChildInodeMap.Len() should have been 3 (\".\", \"..\", \"ram2\")")
+	start, limit = globals.virtChildDirEntryMap.getIndexRange(FUSERootDirInodeNumber)
+	if (limit - start) != 3 {
+		t.Fatalf("globals.virtChildDirEntryMap.getIndexRange(FUSERootDirInodeNumber) should have returned [i:i+3) (\".\", \"..\", \"ram1\")")
 	}
-	_, ok = globals.inode.virtChildInodeMap.GetByKey(".")
+	_, ok = globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, ".")
 	if !ok {
-		t.Fatalf("globals.inode.virtChildInodeMap.GetByKey(\".\") returned !ok")
+		t.Fatalf("globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, \".\") returned !ok")
 	}
-	_, ok = globals.inode.virtChildInodeMap.GetByKey("..")
+	_, ok = globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, "..")
 	if !ok {
-		t.Fatalf("globals.inode.virtChildInodeMap.GetByKey(\"..\") returned !ok")
+		t.Fatalf("globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, \"..\") returned !ok")
 	}
-	_, ok = globals.inode.virtChildInodeMap.GetByKey("ram2")
+	_, ok = globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, "ram2")
 	if !ok {
-		t.Fatalf("globals.inode.virtChildInodeMap.GetByKey(\"ram2\") returned !ok")
+		t.Fatalf("globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, \"ram2\") returned !ok")
 	}
-	if globals.inode.physChildInodeMap.Len() != 0 {
-		t.Fatalf("globals.inode.physChildInodeMap.Len() should have been 0")
+	start, limit = globals.physChildDirEntryMap.getIndexRange(FUSERootDirInodeNumber)
+	if (limit - start) != 0 {
+		t.Fatalf("globals.physChildDirEntryMap.getIndexRange(FUSERootDirInodeNumber) should have returned [i:i)")
 	}
 }
 

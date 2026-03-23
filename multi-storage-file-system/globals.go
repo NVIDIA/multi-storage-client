@@ -264,62 +264,60 @@ type cacheLineStruct struct {
 //
 // Note that this data structure is serialized and deserialized in bptree.go so changes here must be paired with changes there.
 type inodeStruct struct {
-	inodeNumber            uint64                   // Note that, other than the FUSERootDir, any reference to a backend object path migtht change this value
-	inodeType              uint32                   // One of FileObject, FUSERootDir, BackendRootDir, or PseudoDir
-	backendNonce           uint64                   // If inodeType == FUSERootDir, == 0
-	parentInodeNumber      uint64                   // If inodeType == FUSERootDir, == .inodeNumber == FUSERootDirInodeNumber [Note: This is only a reference to a directory that may no longer be in globalsStruct.inodeMap]
-	isVirt                 bool                     // If == true, found on parent inodeStruct's .virtChild{Dir|File}Map; if == false, likely found on parent inodeStruct's .physChild{Dir|File}Map
-	objectPath             string                   // If inodeType == FUSERootDir, == ""; otherwise == path relative to backend.backendPath [inluding trailing slash if directory]
-	basename               string                   // If inodeType == FUSERootDir, == ""; otherwise == path/filepath.Base(.objectPath) [excluding trailing slash if directory]
-	sizeInBackend          uint64                   // If inodeType == FileObject, contains the size returned by the most recent backend call for it; otherwise == 0
-	sizeInMemory           uint64                   // If inodeType == FileObject, contains the size currently maintained in-memory only until the file is written to the backend; otherwise == 0
-	eTag                   string                   // If inodeType == FileObject, contains the eTag returned by the most recent call to readFileWrapper() for the object; otherwise == ""
-	mode                   uint32                   // If inodeType == FileObject, == (syscall.S_IFREG | file_perm); otherwise, == (syscall.S_IFDIR | dir_perm)
-	mTime                  time.Time                // Time when this inodeStruct was last modified - note this is reported for aTime, bTime, and cTime as well
-	xTime                  time.Time                // If != time.Time{}, marks the time when, if not recently accessed, the inode may be evicted
-	listElement            *list.Element            // If != nil, maintains position on globals.inodeEvictionLRU identified by .inodeNumber ordered by .xTime
-	physChildInodeMap      *stringToUint64MapStruct // [inodeType != FileObject] maps dirEntries of type FileObject or PseudoDir for which there are existing backend objects
-	virtChildInodeMap      *stringToUint64MapStruct // [inodeType != FileObject] maps dirEntries "." and ".." as well as others of type BackendRootDir plus those of type FileObject or PseudoDir for which there doesn't yet exist backing objects
-	isPrefetchInProgress   bool                     // [inodeType == BackendRootDir || PseudoDir] indicates that a background prefetch of the directory is in progress
-	cacheMap               map[uint64]uint64        // [inodeType == FileObject] Key == file offset / globals.config.cacheLineSize; Value = cacheLineStruct.nonce; &cacheLineStruct = globals.cacheMap[Value]
-	inboundCacheLineCount  uint64                   // [inodeType == FileObject] count of .cache[] elements in state CacheLineInbound
-	outboundCacheLineCount uint64                   // [inodeType == FileObject] count of .cache[] elements in state CacheLineOutbound
-	dirtyCacheLineCount    uint64                   // [inodeType == FileObject] count of .cache[] elements in state CacheLineDirty
-	fhSet                  map[uint64]struct{}      // Key == fhStruct.nonce; &fhStruct = globals.fhMap[Key]
-	pendingDelete          bool                     // [inodeType == FileObject] marked for deletion (prevents being reported in DoReadDir{|Plus}() output but also reuse until last file close enables removal)
+	inodeNumber            uint64              // Note that, other than the FUSERootDir, any reference to a backend object path migtht change this value
+	inodeType              uint32              // One of FileObject, FUSERootDir, BackendRootDir, or PseudoDir
+	backendNonce           uint64              // If inodeType == FUSERootDir, == 0
+	parentInodeNumber      uint64              // If inodeType == FUSERootDir, == .inodeNumber == FUSERootDirInodeNumber [Note: This is only a reference to a directory that may no longer be in globalsStruct.inodeMap]
+	isVirt                 bool                // If == true, found on parent inodeStruct's .virtChild{Dir|File}Map; if == false, likely found on parent inodeStruct's .physChild{Dir|File}Map
+	objectPath             string              // If inodeType == FUSERootDir, == ""; otherwise == path relative to backend.backendPath [inluding trailing slash if directory]
+	basename               string              // If inodeType == FUSERootDir, == ""; otherwise == path/filepath.Base(.objectPath) [excluding trailing slash if directory]
+	sizeInBackend          uint64              // If inodeType == FileObject, contains the size returned by the most recent backend call for it; otherwise == 0
+	sizeInMemory           uint64              // If inodeType == FileObject, contains the size currently maintained in-memory only until the file is written to the backend; otherwise == 0
+	eTag                   string              // If inodeType == FileObject, contains the eTag returned by the most recent call to readFileWrapper() for the object; otherwise == ""
+	mode                   uint32              // If inodeType == FileObject, == (syscall.S_IFREG | file_perm); otherwise, == (syscall.S_IFDIR | dir_perm)
+	mTime                  time.Time           // Time when this inodeStruct was last modified - note this is reported for aTime, bTime, and cTime as well
+	xTime                  time.Time           // If != time.Time{}, marks the time when, if not recently accessed, the inode may be evicted
+	isPrefetchInProgress   bool                // [inodeType == BackendRootDir || PseudoDir] indicates that a background prefetch of the directory is in progress
+	cacheMap               map[uint64]uint64   // [inodeType == FileObject] Key == file offset / globals.config.cacheLineSize; Value = cacheLineStruct.nonce; &cacheLineStruct = globals.cacheMap[Value]
+	inboundCacheLineCount  uint64              // [inodeType == FileObject] count of .cache[] elements in state CacheLineInbound
+	outboundCacheLineCount uint64              // [inodeType == FileObject] count of .cache[] elements in state CacheLineOutbound
+	dirtyCacheLineCount    uint64              // [inodeType == FileObject] count of .cache[] elements in state CacheLineDirty
+	fhSet                  map[uint64]struct{} // Key == fhStruct.nonce; &fhStruct = globals.fhMap[Key]
+	pendingDelete          bool                // [inodeType == FileObject] marked for deletion (prevents being reported in DoReadDir{|Plus}() output but also reuse until last file close enables removal)
 }
 
 // `globalsStruct` is the sync.Mutex protected global data structure under which all details about daemon state are tracked.
 type globalsStruct struct {
-	sync.Mutex                                         //
-	logger                 *log.Logger                 //
-	metrics                interface{}                 // observability.MSFSMetrics (nil if observability disabled)
-	meterProvider          interface{}                 // *sdkmetric.MeterProvider (nil if observability disabled)
-	configFilePath         string                      //
-	config                 *configStruct               //
-	configFileMap          map[string]interface{}      // Parsed config map for msc_config attribute provider
-	backendsToUnmount      map[string]*backendStruct   //
-	backendsToMount        map[string]*backendStruct   //
-	backendsSkipped        map[string]struct{}         //
-	backendMap             map[uint64]*backendStruct   // Key == backend.nonce
-	errChan                chan error                  //
-	fissionVolume          fission.Volume              //
-	lastNonce              uint64                      // Used to safely allocate non-repeating values (initialized to FUSERootDirInodeNumber to ensure skipping it)
-	cacheDir               string                      //
-	inode                  *inodeStruct                // Link to the lone inodeStruct with .inodeNumber == FUSERootDirInodeNumber && .inodeType == FUSERootDir
-	inodeMap               map[uint64]*inodeStruct     // Key: inodeStruct.inodeNumber
-	inodeEvictionLRU       *timeToUint64QueueStruct    // Contains inodeStruct.listElement's of inodeStruct.inodeNumber's ordered by inodeStruct.xTime
-	inodeEvictorContext    context.Context             //
-	inodeEvictorCancelFunc context.CancelFunc          //
-	inodeEvictorWaitGroup  sync.WaitGroup              //
-	inboundCacheLineList   *list.List                  // List of cacheLineStruct's where state == CacheLineInbound
-	cleanCacheLineLRU      *list.List                  // Contains cacheLineStruct.listElement's for state == CacheLineClean
-	outboundCacheLineList  *list.List                  // List of cacheLineStruct's where state == CacheLineOutbound
-	dirtyCacheLineLRU      *list.List                  // Contains cacheLineStruct.listElement's for state == CacheLineDirty
-	cacheMap               map[uint64]*cacheLineStruct // Key == cacheLineStruct.nonce
-	fhMap                  map[uint64]*fhStruct        // Key == fhStruct.nonce
-	fissionMetrics         *fissionMetricsStruct       //
-	backendMetrics         *backendMetricsStruct       //
+	sync.Mutex                                                                     //
+	logger                 *log.Logger                                             //
+	metrics                interface{}                                             // observability.MSFSMetrics (nil if observability disabled)
+	meterProvider          interface{}                                             // *sdkmetric.MeterProvider (nil if observability disabled)
+	configFilePath         string                                                  //
+	config                 *configStruct                                           //
+	configFileMap          map[string]interface{}                                  // Parsed config map for msc_config attribute provider
+	backendsToUnmount      map[string]*backendStruct                               //
+	backendsToMount        map[string]*backendStruct                               //
+	backendsSkipped        map[string]struct{}                                     //
+	backendMap             map[uint64]*backendStruct                               // Key == backend.nonce
+	errChan                chan error                                              //
+	fissionVolume          fission.Volume                                          //
+	lastNonce              uint64                                                  // Used to safely allocate non-repeating values (initialized to FUSERootDirInodeNumber to ensure skipping it)
+	cacheDir               string                                                  //
+	inodeMap               *inodeNumberToInodeStructMapStruct                      // Key: inodeStruct.inodeNumber;                                              Value: *inodeStruct
+	inodeEvictionQueue     *xTimeInodeNumberSetStruct                              // Key: tuple(inodeStruct.xTime,inodeStruct.inodeNumber);                     Value: struct{}
+	physChildDirEntryMap   *parentInodeNumberChildBasenameToChildInodeNumberStruct // Key: tuple(parent's inodeStruct.inodeNumber,child's inodeStruct.basename); Value: child's inodeStruct.inodeNumber
+	virtChildDirEntryMap   *parentInodeNumberChildBasenameToChildInodeNumberStruct // Key: tuple(parent's inodeStruct.inodeNumber,child's inodeStruct.basename); Value: child's inodeStruct.inodeNumber
+	inodeEvictorContext    context.Context                                         //
+	inodeEvictorCancelFunc context.CancelFunc                                      //
+	inodeEvictorWaitGroup  sync.WaitGroup                                          //
+	inboundCacheLineList   *list.List                                              // List of cacheLineStruct's where state == CacheLineInbound
+	cleanCacheLineLRU      *list.List                                              // Contains cacheLineStruct.listElement's for state == CacheLineClean
+	outboundCacheLineList  *list.List                                              // List of cacheLineStruct's where state == CacheLineOutbound
+	dirtyCacheLineLRU      *list.List                                              // Contains cacheLineStruct.listElement's for state == CacheLineDirty
+	cacheMap               map[uint64]*cacheLineStruct                             // Key == cacheLineStruct.nonce
+	fhMap                  map[uint64]*fhStruct                                    // Key == fhStruct.nonce
+	fissionMetrics         *fissionMetricsStruct                                   //
+	backendMetrics         *backendMetricsStruct                                   //
 }
 
 var globals globalsStruct

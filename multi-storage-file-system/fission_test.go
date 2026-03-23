@@ -1155,6 +1155,7 @@ func TestFissionDoUnlinkRollbackOnBackendFailure(t *testing.T) {
 		inHeader  *fission.InHeader
 		lookupIn  *fission.LookupIn
 		lookupOut *fission.LookupOut
+		ok        bool
 		ramDirIno uint64
 	)
 
@@ -1189,19 +1190,19 @@ func TestFissionDoUnlinkRollbackOnBackendFailure(t *testing.T) {
 
 	// Verify fileA exists in parent's child map
 	globals.Lock()
-	ramDirInode, ok := globals.inodeMap[ramDirIno]
+	_, ok = globals.inodeMap.get(ramDirIno)
 	if !ok {
 		globals.Unlock()
 		t.Fatalf("ramDir inode not found")
 	}
-	_, ok = globals.inodeMap[fileAIno]
+	_, ok = globals.inodeMap.get(fileAIno)
 	if !ok {
 		globals.Unlock()
 		t.Fatalf("fileA inode not found")
 	}
 
 	// Verify fileA is in parent's physChildInodeMap
-	_, ok = ramDirInode.physChildInodeMap.GetByKey("fileA")
+	_, ok = globals.physChildDirEntryMap.getByBasename(ramDirIno, "fileA")
 	if !ok {
 		globals.Unlock()
 		t.Fatalf("fileA should be in parent's physChildInodeMap")
@@ -1535,16 +1536,21 @@ func TestFissionDoCreateSameNameAsUnlinkedOpenFile(t *testing.T) {
 
 func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 	var (
-		dir2Ino   uint64
-		dir2Inode *inodeStruct
-		errno     syscall.Errno
-		inHeader  *fission.InHeader
-		lookupIn  *fission.LookupIn
-		lookupOut *fission.LookupOut
-		mkDirIn   *fission.MkDirIn
-		ok        bool
-		ramDirIno uint64
-		rmDirIn   *fission.RmDirIn
+		dir2Ino          uint64
+		dir2Inode        *inodeStruct
+		errno            syscall.Errno
+		inHeader         *fission.InHeader
+		initialPhysCount uint64
+		limit            uint64
+		lookupIn         *fission.LookupIn
+		lookupOut        *fission.LookupOut
+		mkDirIn          *fission.MkDirIn
+		ok               bool
+		physCount        uint64
+		ramDirIno        uint64
+		rmDirIn          *fission.RmDirIn
+		start            uint64
+		virtCount        uint64
 	)
 
 	fissionTestUp(t)
@@ -1578,7 +1584,7 @@ func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 
 	// Verify dir2 is physical
 	globals.Lock()
-	dir2Inode, ok = globals.inodeMap[dir2Ino]
+	dir2Inode, ok = globals.inodeMap.get(dir2Ino)
 	if !ok {
 		globals.Unlock()
 		t.Fatalf("dir2 inode not found")
@@ -1587,7 +1593,8 @@ func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 		globals.Unlock()
 		t.Fatalf("dir2 should be physical initially")
 	}
-	initialPhysCount := dir2Inode.physChildInodeMap.Len()
+	start, limit = globals.physChildDirEntryMap.getIndexRange(dir2Ino)
+	initialPhysCount = limit - start
 	t.Logf("Initial state: dir2.isVirt=%v, physChildren=%d", dir2Inode.isVirt, initialPhysCount)
 	globals.Unlock()
 
@@ -1606,12 +1613,13 @@ func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 
 	// Verify virtual directory was created
 	globals.Lock()
-	dir2Inode, ok = globals.inodeMap[dir2Ino]
+	dir2Inode, ok = globals.inodeMap.get(dir2Ino)
 	if !ok {
 		globals.Unlock()
 		t.Fatalf("dir2 inode not found after mkdir")
 	}
-	virtCount := dir2Inode.virtChildInodeMap.Len()
+	start, limit = globals.virtChildDirEntryMap.getIndexRange(dir2Ino)
+	virtCount = limit - start
 	t.Logf("After mkdir: dir2.virtChildren=%d", virtCount)
 	globals.Unlock()
 
@@ -1644,17 +1652,19 @@ func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 	// For testing, we'll just remove dir4 from dir2's physChildInodeMap manually
 	// since we can't use DoRmDir on a physical directory
 	globals.Lock()
-	dir2Inode, ok = globals.inodeMap[dir2Ino]
+	dir2Inode, ok = globals.inodeMap.get(dir2Ino)
 	if !ok {
 		globals.Unlock()
 		t.Fatalf("dir2 inode not found")
 	}
 
 	// Manually remove dir4 to simulate it being deleted
-	_ = dir2Inode.physChildInodeMap.DeleteByKey("dir4")
+	_ = globals.physChildDirEntryMap.delete(dir2Ino, "dir4")
 
-	physCount := dir2Inode.physChildInodeMap.Len()
-	virtCount = dir2Inode.virtChildInodeMap.Len()
+	start, limit = globals.physChildDirEntryMap.getIndexRange(dir2Ino)
+	physCount = limit - start
+	start, limit = globals.virtChildDirEntryMap.getIndexRange(dir2Ino)
+	virtCount = limit - start
 	t.Logf("After manual removal: dir2.physChildren=%d, virtChildren=%d, isVirt=%v",
 		physCount, virtCount, dir2Inode.isVirt)
 

@@ -12,23 +12,6 @@ import (
 	"github.com/NVIDIA/sortedmap"
 )
 
-type toAddToGlobalsStruct struct {
-	inodeMap             *inodeNumberToInodeStructMapStruct                      // Key: inodeStruct.inodeNumber;                                              Value: *inodeStruct
-	inodeEvictionQueue   *xTimeInodeNumberSetStruct                              // Key: tuple(inodeStruct.xTime,inodeStruct.inodeNumber);                     Value: struct{}
-	physChildDirEntryMap *parentInodeNumberChildBasenameToChildInodeNumberStruct // Key: tuple(parent's inodeStruct.inodeNumber,child's inodeStruct.basename); Value: child's inodeStruct.inodeNumber
-	virtChildDirEntryMap *parentInodeNumberChildBasenameToChildInodeNumberStruct // Key: tuple(parent's inodeStruct.inodeNumber,child's inodeStruct.basename); Value: child's inodeStruct.inodeNumber
-}
-
-var toAddToGlobals toAddToGlobalsStruct
-
-func bptree_init() {
-	globals.logger.Printf("[TODO] bptree_init() called")
-	toAddToGlobals.inodeMap = inodeNumberToInodeStructMapStructCreate("globals.inodeMap", globals.config.inodeMapKeysPerPageMax, globals.config.inodeMapPageEvictLowLimit, globals.config.inodeMapPageEvictHighLimit, globals.config.inodeMapPageDirtyFlushTrigger, globals.config.inodeMapFlushedPerGC)
-	toAddToGlobals.inodeEvictionQueue = xTimeInodeNumberSetStructCreate("globals.inodeEvictionQueue", globals.config.inodeEvictionQueueKeysPerPageMax, globals.config.inodeEvictionQueuePageEvictLowLimit, globals.config.inodeEvictionQueuePageEvictHighLimit, globals.config.inodeEvictionQueuePageDirtyFlushTrigger, globals.config.inodeEvictionQueueFlushedPerGC)
-	toAddToGlobals.physChildDirEntryMap = parentInodeNumberChildBasenameToChildInodeNumberStructCreate("globals.physChildDirEntryMap", globals.config.physChildDirEntryMapKeysPerPageMax, globals.config.physChildDirEntryMapPageEvictLowLimit, globals.config.physChildDirEntryMapPageEvictHighLimit, globals.config.physChildDirEntryMapPageDirtyFlushTrigger, globals.config.physChildDirEntryMapFlushedPerGC)
-	toAddToGlobals.virtChildDirEntryMap = parentInodeNumberChildBasenameToChildInodeNumberStructCreate("globals.virtChildDirEntryMap", globals.config.virtChildDirEntryMapKeysPerPageMax, globals.config.virtChildDirEntryMapPageEvictLowLimit, globals.config.virtChildDirEntryMapPageEvictHighLimit, globals.config.virtChildDirEntryMapPageDirtyFlushTrigger, globals.config.virtChildDirEntryMapFlushedPerGC)
-}
-
 // `inodeNumberToInodeStructMapStruct` is used to maintain a sortedmap.BPlusTree used
 // to map an inodeStruct.inodeNumber to the corresponding inodeStruct. An instance of
 // this struct is used to provide globals.inodeMap functionality.
@@ -55,15 +38,15 @@ func inodeNumberToInodeStructMapStructCreate(name string, maxKeysPerNode, evictL
 }
 
 // `delete` is called to delete an inode from a `inodeNumberToInodeStructMapStruct`.
-func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) delete(inode *inodeStruct) (ok bool) {
+func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) delete(inodeNumber uint64) (ok bool) {
 	var (
 		err error
 	)
 
-	ok, err = inodeNumberToInodeStructMap.bpTree.DeleteByKey(inode.inodeNumber)
+	ok, err = inodeNumberToInodeStructMap.bpTree.DeleteByKey(inodeNumber)
 	if err != nil {
 		dumpStack()
-		globals.logger.Fatalf("[FATAL] inodeNumberToInodeStructMap.bpTree.DeleteByKey(inode.inodeNumber) failed: %v", err)
+		globals.logger.Fatalf("[FATAL] inodeNumberToInodeStructMap.bpTree.DeleteByKey(inodeNumber) failed: %v", err)
 	}
 
 	inodeNumberToInodeStructMap.flushIfNecessary()
@@ -103,6 +86,21 @@ func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) get(inodeN
 			dumpStack()
 			globals.logger.Fatalf("[FATAL] inodeAsValue.(*inodeStruct) returned !ok")
 		}
+	}
+
+	return
+}
+
+// `len` is called to report the number of inodeNumber to inodeStruct items are in a `inodeNumberToInodeStructMapStruct`.
+func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) len() (numberOfItems int) {
+	var (
+		err error
+	)
+
+	numberOfItems, err = inodeNumberToInodeStructMap.bpTree.Len()
+	if err != nil {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] inodeNumberToInodeStructMap.bpTree.Len() failed: %v", err)
 	}
 
 	return
@@ -521,7 +519,7 @@ func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) UnpackValu
 		err = fmt.Errorf("len(payloadData) [%v] insufficient to decode .basename [case 2]", len(payloadData))
 		return
 	}
-	inode.objectPath = string(payloadData[bytesConsumed : bytesConsumed+basenameAsByteSliceLen])
+	inode.basename = string(payloadData[bytesConsumed : bytesConsumed+basenameAsByteSliceLen])
 	bytesConsumed += basenameAsByteSliceLen
 
 	if uint64(len(payloadData)) < (bytesConsumed + 8) {
@@ -976,15 +974,15 @@ func parentInodeNumberChildBasenameToChildInodeNumberStructCreate(name string, m
 }
 
 // `delete` is called to put a `childInode` in a `parentInode's` logical `{phys|virt}ChildDirEntryMap`.
-func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) delete(parentInode, childInode *inodeStruct) (ok bool) {
+func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) delete(parentInodeNumber uint64, childInodeBasename string) (ok bool) {
 	var (
 		err error
 	)
 
-	ok, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.DeleteByKey(uint64StringTupleToByteSlice(parentInode.inodeNumber, childInode.basename))
+	ok, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.DeleteByKey(uint64StringTupleToByteSlice(parentInodeNumber, childInodeBasename))
 	if err != nil {
 		dumpStack()
-		globals.logger.Fatalf("[FATAL] parentInodeNumberChildBasenameToChildInodeNumber.bpTree.DeleteByKey(uint64StringTupleToByteSlice(parentInode.inodeNumber, childInode.basename)) failed: %v", err)
+		globals.logger.Fatalf("[FATAL] parentInodeNumberChildBasenameToChildInodeNumber.bpTree.DeleteByKey(uint64StringTupleToByteSlice(parentInodeNumber, childInodeBasename)) failed: %v", err)
 	}
 
 	parentInodeNumberChildBasenameToChildInodeNumber.flushIfNecessary()
@@ -1006,16 +1004,16 @@ func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBa
 }
 
 // `getByBasename` is called to find the `childInode` in a `parentInode's` logical `{phys|virt}ChildDirEntryMap`.
-func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) getByBasename(parentInode *inodeStruct, childBasename string) (childInodeNumber uint64, ok bool) {
+func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) getByBasename(parentInodeNumber uint64, childBasename string) (childInodeNumber uint64, ok bool) {
 	var (
 		childInodeNumberAsValue sortedmap.Value
 		err                     error
 	)
 
-	childInodeNumberAsValue, ok, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.GetByKey(uint64StringTupleToByteSlice(parentInode.inodeNumber, childBasename))
+	childInodeNumberAsValue, ok, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.GetByKey(uint64StringTupleToByteSlice(parentInodeNumber, childBasename))
 	if err != nil {
 		dumpStack()
-		globals.logger.Fatalf("[FATAL] parentInodeNumberChildBasenameToChildInodeNumber.bpTree.GetByKey(uint64StringTupleToByteSlice(parentInode.inodeNumber, childBasename)) failed: %v", err)
+		globals.logger.Fatalf("[FATAL] parentInodeNumberChildBasenameToChildInodeNumber.bpTree.GetByKey(uint64StringTupleToByteSlice(parentInodeNumber, childBasename)) failed: %v", err)
 	}
 
 	if ok {
@@ -1030,24 +1028,35 @@ func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBa
 }
 
 // `getByIndex` is called to find the `inode` in `globals.{phys|virt}ChildDirEntryMap` given its `index`.
-func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) getByIndex(index uint64) (childInodeNumber uint64, ok bool) {
+func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) getByIndex(index uint64) (parentInodeNumber uint64, childInodeBasename string, childInodeNumber uint64, ok bool) {
 	var (
-		childInodeNumberAsValue sortedmap.Value
-		err                     error
+		childInodeNumberAsValue                   sortedmap.Value
+		err                                       error
+		parentInodeNumberChildBasenameAsByteSlice []byte
+		parentInodeNumberChildBasenameAsKey       sortedmap.Key
 	)
 
-	_, childInodeNumberAsValue, ok, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.GetByIndex(int(index))
+	parentInodeNumberChildBasenameAsKey, childInodeNumberAsValue, ok, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.GetByIndex(int(index))
 	if err != nil {
 		dumpStack()
 		globals.logger.Fatalf("[FATAL] parentInodeNumberChildBasenameToChildInodeNumber.bpTree.GetByIndex(int(index)) failed: %v", err)
 	}
+	if !ok {
+		return
+	}
 
-	if ok {
-		childInodeNumber, ok = childInodeNumberAsValue.(uint64)
-		if !ok {
-			dumpStack()
-			globals.logger.Fatalf("[FATAL] childInodeNumberAsValue.(uint64) returned !ok")
-		}
+	parentInodeNumberChildBasenameAsByteSlice, ok = parentInodeNumberChildBasenameAsKey.([]byte)
+	if !ok {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] parentInodeNumberChildBasenameAsKey.([]byte) returned !ok")
+	}
+
+	parentInodeNumber, childInodeBasename = byteSliceToUint64StringTuple(parentInodeNumberChildBasenameAsByteSlice)
+
+	childInodeNumber, ok = childInodeNumberAsValue.(uint64)
+	if !ok {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] childInodeNumberAsValue.(uint64) returned !ok")
 	}
 
 	return
@@ -1055,22 +1064,22 @@ func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBa
 
 // `getIndexRange` is called to get the (inclusive) `start` and (exclusive) `limit` indices in `globals.{phys|virt}ChildDirEntryMap` for a given `parentInode`.
 // Note that the returned range is "closed" on the left (start) and "open" on the right (limit).
-func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) getIndexRange(parentInode *inodeStruct) (start, limit uint64) {
+func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) getIndexRange(parentInodeNumber uint64) (start, limit uint64) {
 	var (
 		err        error
 		limitAsInt int
 		startAsInt int
 	)
 
-	startAsInt, _, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.BisectRight(uint64StringTupleToByteSlice(parentInode.inodeNumber, ""))
+	startAsInt, _, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.BisectRight(uint64StringTupleToByteSlice(parentInodeNumber, ""))
 	if err != nil {
 		dumpStack()
-		globals.logger.Fatalf("[FATAL] parentInodeNumberChildBasenameToChildInodeNumber.bpTree.BisectRight(uint64StringTupleToByteSlice(parentInode.inodeNumber, \"\")) failed: %v", err)
+		globals.logger.Fatalf("[FATAL] parentInodeNumberChildBasenameToChildInodeNumber.bpTree.BisectRight(uint64StringTupleToByteSlice(parentInodeNumber, \"\")) failed: %v", err)
 	}
-	limitAsInt, _, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.BisectRight(uint64StringTupleToByteSlice(parentInode.inodeNumber+1, ""))
+	limitAsInt, _, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.BisectRight(uint64StringTupleToByteSlice(parentInodeNumber+1, ""))
 	if err != nil {
 		dumpStack()
-		globals.logger.Fatalf("[FATAL] parentInodeNumberChildBasenameToChildInodeNumber.bpTree.BisectRight(uint64StringTupleToByteSlice(parentInode.inodeNumber+1, \"\")) failed: %v", err)
+		globals.logger.Fatalf("[FATAL] parentInodeNumberChildBasenameToChildInodeNumber.bpTree.BisectRight(uint64StringTupleToByteSlice(parentInodeNumber+1, \"\")) failed: %v", err)
 	}
 
 	start = uint64(startAsInt)
@@ -1080,15 +1089,15 @@ func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBa
 }
 
 // `put` is called to put a `childInode` in a `parentInode's` logical `{phys|virt}ChildDirEntryMap`.
-func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) put(parentInode, childInode *inodeStruct) (ok bool) {
+func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) put(parentInodeNumber uint64, childInodeBasename string, childInodeNumber uint64) (ok bool) {
 	var (
 		err error
 	)
 
-	ok, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.Put(uint64StringTupleToByteSlice(parentInode.inodeNumber, childInode.basename), childInode.inodeNumber)
+	ok, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.Put(uint64StringTupleToByteSlice(parentInodeNumber, childInodeBasename), childInodeNumber)
 	if err != nil {
 		dumpStack()
-		globals.logger.Fatalf("[FATAL] parentInodeNumberChildBasenameToChildInodeNumber.bpTree.Put(uint64StringTupleToByteSlice(parentInode.inodeNumber, childInode.basename),childInode.inodeNumber) failed: %v", err)
+		globals.logger.Fatalf("[FATAL] parentInodeNumberChildBasenameToChildInodeNumber.bpTree.Put(uint64StringTupleToByteSlice(parentInodeNumber, childInodeBasename), childInodeNumber) failed: %v", err)
 	}
 
 	parentInodeNumberChildBasenameToChildInodeNumber.flushIfNecessary()
@@ -1135,7 +1144,7 @@ func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBa
 func byteSliceToUint64StringTuple(bs []byte) (u64 uint64, s string) {
 	if len(bs) < 8 {
 		dumpStack()
-		globals.logger.Fatalf("[FATAL] len(bs) < 9")
+		globals.logger.Fatalf("[FATAL] len(bs) < 8")
 	}
 
 	u64 = binary.BigEndian.Uint64(bs[:8])
