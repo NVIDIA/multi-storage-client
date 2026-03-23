@@ -266,11 +266,15 @@ fn create_store(
 }
 
 /// Load AWS credentials provider from the default credential chain
-fn load_aws_credentials_provider() -> Result<AwsSdkCredentialsProvider, StorageError> {
+fn load_aws_credentials_provider(profile_name_config: Option<&ConfigValue>) -> Result<AwsSdkCredentialsProvider, StorageError> {
     // Load AWS config asynchronously
     let sdk_config = if let Ok(handle) = tokio::runtime::Handle::try_current() {
         handle.block_on(async {
-            aws_config::defaults(BehaviorVersion::latest())
+            let mut config_loader = aws_config::defaults(BehaviorVersion::latest());
+            if let Some(profile_name_val) = profile_name_config {
+                config_loader = config_loader.profile_name(profile_name_val.to_string());
+            }
+            config_loader
                 .load()
                 .await
         })
@@ -278,7 +282,11 @@ fn load_aws_credentials_provider() -> Result<AwsSdkCredentialsProvider, StorageE
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| StorageError::ConfigError(format!("Failed to create tokio runtime: {}", e)))?;
         rt.block_on(async {
-            aws_config::defaults(BehaviorVersion::latest())
+            let mut config_loader = aws_config::defaults(BehaviorVersion::latest());
+            if let Some(profile_name_val) = profile_name_config {
+                config_loader = config_loader.profile_name(profile_name_val.to_string());
+            }
+            config_loader
                 .load()
                 .await
         })
@@ -315,7 +323,7 @@ fn build_s3_store<'a>(
         builder = builder.with_credentials(Arc::new(aws_provider));
     } else {
         // Use AWS SDK default credential chain
-        let aws_provider = load_aws_credentials_provider()?;
+        let aws_provider = load_aws_credentials_provider(configs.get("profile_name"))?;
         builder = builder.with_credentials(Arc::new(aws_provider));
     }
 

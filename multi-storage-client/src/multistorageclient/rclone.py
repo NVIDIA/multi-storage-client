@@ -91,6 +91,7 @@ def _parse_s3_storage_provider_config(section: configparser.SectionProxy) -> tup
     _set_if_exists(section, storage_provider_options, "region_name", "region")
     _set_if_exists(section, storage_provider_options, "endpoint_url", "endpoint")
     _set_if_exists(section, storage_provider_options, "base_path", "base_path")
+    _set_if_exists(section, storage_provider_options, "profile_name", "profile_name")
     _set_if_exists(section, storage_provider_options, "request_checksum_calculation", "request_checksum_calculation")
     _set_if_exists(section, storage_provider_options, "response_checksum_validation", "response_checksum_validation")
 
@@ -210,7 +211,7 @@ def _parse_config_section(section: configparser.SectionProxy) -> dict[str, Any]:
     #   - rclone default storage type key (e.g. azureblob)
     #
     # Then, convert to storage type to MSC configuration storage key (e.g. azure).
-    if storage_type == "s3" or storage_type == "s8k":
+    if storage_type == "s3" or storage_type == "s8k" or storage_type == "gcs_s3":
         storage_provider_options, credentials_provider = _parse_s3_storage_provider_config(section)
     elif storage_type == "azure" or storage_type == "azureblob":
         storage_provider_options, credentials_provider = _parse_azure_storage_provider_config(section)

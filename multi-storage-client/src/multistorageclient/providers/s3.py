@@ -154,6 +154,7 @@ class S3StorageProvider(BaseStorageProvider):
         endpoint_url: str = "",
         base_path: str = "",
         credentials_provider: Optional[CredentialsProvider] = None,
+        profile_name: Optional[str] = None,
         config_dict: Optional[dict[str, Any]] = None,
         telemetry_provider: Optional[Callable[[], Telemetry]] = None,
         verify: Optional[Union[bool, str]] = None,
@@ -166,6 +167,7 @@ class S3StorageProvider(BaseStorageProvider):
         :param endpoint_url: The custom endpoint URL for the S3 service.
         :param base_path: The root prefix path within the S3 bucket where all operations will be scoped.
         :param credentials_provider: The provider to retrieve S3 credentials.
+        :param profile_name: AWS shared configuration + credentials files profile. For :py:class:`boto3.session.Session`. Ignored if ``credentials_provider`` is set.
         :param config_dict: Resolved MSC config.
         :param telemetry_provider: A function that provides a telemetry instance.
         :param verify: Controls SSL certificate verification.
@@ -197,6 +199,7 @@ class S3StorageProvider(BaseStorageProvider):
         self._region_name = region_name
         self._endpoint_url = endpoint_url
         self._credentials_provider = credentials_provider
+        self._profile_name = profile_name
         self._verify = verify
 
         self._signature_version = kwargs.get("signature_version", "s3v4")
@@ -319,7 +322,8 @@ class S3StorageProvider(BaseStorageProvider):
             options["config"] = options["config"].merge(signature_config)
 
         # Fallback to standard credential chain.
-        return boto3.client("s3", **options)
+        session = boto3.Session(profile_name=self._profile_name)
+        return session.client("s3", **options)
 
     def _create_rust_client(self, rust_client_options: Optional[dict[str, Any]] = None):
         """
@@ -335,6 +339,9 @@ class S3StorageProvider(BaseStorageProvider):
 
         if self._endpoint_url and "endpoint_url" not in configs:
             configs["endpoint_url"] = self._endpoint_url
+
+        if self._profile_name and "profile_name" not in configs:
+            configs["profile_name"] = self._profile_name
 
         # If the user specifies a bucket, use it. Otherwise, use the base path.
         if "bucket" not in configs:
