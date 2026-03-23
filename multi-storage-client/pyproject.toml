@@ -59,6 +59,10 @@ vault = [
     "hvac>=2.3,<3"
 ]
 
+cloudfront = [
+    "cryptography>=44,<46"
+]
+
 # MCP.
 mcp = [
     "fastmcp>=3,<4"
@@ -76,7 +80,7 @@ aistore = [
     "aistore>=1.16,<2"
 ]
 azure-storage-blob = [
-    "azure-storage-blob>=12.29.0b1,<13",
+    "azure-storage-blob>=12.28.0,<13",
     "azure-identity>=1.25,<2"
 ]
 boto3 = [

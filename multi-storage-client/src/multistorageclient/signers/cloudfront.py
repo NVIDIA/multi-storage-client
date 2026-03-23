@@ -20,9 +20,14 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from cryptography.hazmat.primitives.asymmetric.padding import PKCS1v15
-from cryptography.hazmat.primitives.hashes import SHA1
-from cryptography.hazmat.primitives.serialization import load_pem_private_key
+try:
+    from cryptography.hazmat.primitives.asymmetric.padding import PKCS1v15
+    from cryptography.hazmat.primitives.hashes import SHA1
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
+except ImportError:
+    PKCS1v15 = None  # type: ignore[assignment, misc]
+    SHA1 = None  # type: ignore[assignment, misc]
+    load_pem_private_key = None  # type: ignore[assignment]
 
 from .base import URLSigner
 
@@ -52,6 +57,11 @@ class CloudFrontURLSigner(URLSigner):
         expires_in: int = DEFAULT_CLOUDFRONT_EXPIRES_IN,
         **_kwargs: Any,
     ) -> None:
+        if load_pem_private_key is None:
+            raise ImportError(
+                "The 'cryptography' package is required for CloudFront URL signing. "
+                "Install it with: pip install 'multi-storage-client[cloudfront]'"
+            )
         self._key_pair_id = key_pair_id
         self._private_key_path = private_key_path
         self._domain = domain.rstrip("/")
@@ -60,6 +70,7 @@ class CloudFrontURLSigner(URLSigner):
 
     def _get_private_key(self) -> Any:
         if self._private_key is None:
+            assert load_pem_private_key is not None
             with open(self._private_key_path, "rb") as f:
                 self._private_key = load_pem_private_key(f.read(), password=None)
         return self._private_key

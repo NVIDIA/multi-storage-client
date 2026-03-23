@@ -1790,6 +1790,9 @@ azure-storage-blob = [
 boto3 = [
     { name = "boto3" },
 ]
+cloudfront = [
+    { name = "cryptography" },
+]
 explorer = [
     { name = "aiofiles" },
     { name = "fastapi" },
@@ -1866,8 +1869,9 @@ requires-dist = [
     { name = "aiofiles", marker = "extra == 'explorer'", specifier = ">=23.2.1" },
     { name = "aistore", marker = "extra == 'aistore'", specifier = ">=1.16,<2" },
     { name = "azure-identity", marker = "extra == 'azure-storage-blob'", specifier = ">=1.25,<2" },
-    { name = "azure-storage-blob", marker = "extra == 'azure-storage-blob'", specifier = ">=12.29.0b1,<13" },
+    { name = "azure-storage-blob", marker = "extra == 'azure-storage-blob'", specifier = ">=12.28.0,<13" },
     { name = "boto3", marker = "extra == 'boto3'", specifier = ">=1.36,<2" },
+    { name = "cryptography", marker = "extra == 'cloudfront'", specifier = ">=44,<46" },
     { name = "fastapi", marker = "extra == 'explorer'", specifier = ">=0.128.3,<1" },
     { name = "fastmcp", marker = "extra == 'mcp'", specifier = ">=3,<4" },
     { name = "filelock", specifier = ">=3.20.3,<4" },
@@ -1903,7 +1907,7 @@ requires-dist = [
     { name = "zarr", marker = "python_full_version == '3.10.*' and extra == 'zarr'", specifier = ">=2.18.3,<3" },
     { name = "zarr", marker = "python_full_version >= '3.11' and extra == 'zarr'", specifier = ">=2.18.7,<3" },
 ]
-provides-extras = ["observability-otel", "msal", "vault", "mcp", "explorer", "aistore", "azure-storage-blob", "boto3", "google-cloud-storage", "huggingface", "oci", "parquet", "fsspec", "hydra-core", "numpy", "ray", "torch", "xarray", "zarr"]
+provides-extras = ["observability-otel", "msal", "vault", "cloudfront", "mcp", "explorer", "aistore", "azure-storage-blob", "boto3", "google-cloud-storage", "huggingface", "oci", "parquet", "fsspec", "hydra-core", "numpy", "ray", "torch", "xarray", "zarr"]
 
 [package.metadata.requires-dev]
 dev = [
