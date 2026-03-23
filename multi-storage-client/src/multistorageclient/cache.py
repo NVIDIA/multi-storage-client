@@ -59,6 +59,8 @@ class CacheManager:
         self._max_cache_size = cache_config.size_bytes()
         self._last_refresh_time = datetime.now()
         self._cache_refresh_interval = cache_config.eviction_policy.refresh_interval
+        self._cache_refresh_thread: Optional[threading.Thread] = None
+        self._cache_refresh_thread_lock = threading.Lock()
 
         # Range cache configuration
         self._cache_line_size = cache_config.cache_line_size_bytes()
@@ -142,7 +144,9 @@ class CacheManager:
             for file_name in filenames:
                 file_path = os.path.join(dirpath, file_name)
                 # Skip lock files, but allow chunk files (hidden files that contain '#chunk')
-                if file_name.endswith(".lock") or (file_name.startswith(".") and "#chunk" not in file_name):
+                if file_name.endswith(".lock"):
+                    continue
+                if file_name.startswith(".") and "#chunk" not in file_name:
                     continue
                 try:
                     if os.path.isfile(file_path):
@@ -228,6 +232,7 @@ class CacheManager:
         source_version: Optional[str] = None,
         byte_range: Optional[Range] = None,
         storage_provider: Optional[Any] = None,
+        source_size: Optional[int] = None,
     ) -> Optional[bytes]:
         """Read the contents of a file from the cache if it exists.
 
@@ -239,6 +244,7 @@ class CacheManager:
         :param source_version: Optional source version for cache validation
         :param byte_range: Optional byte range for partial file reads
         :param storage_provider: Storage provider required for range reads
+        :param source_size: Optional size of the source object in bytes
         :return: The file contents as bytes, or None if not found in cache
         """
         # If this is a range read, check for full cached file first
@@ -251,7 +257,7 @@ class CacheManager:
                 return range_data
 
             # No valid full cached file, delegate to chunk-based range reading
-            return self._read_range(cache_path, byte_range, storage_provider, source_version, key)  # type: ignore[arg-type]
+            return self._read_range(cache_path, byte_range, storage_provider, source_version, source_size, key)  # type: ignore[arg-type]
 
         # Full-file cached read (existing behavior)
         try:
@@ -319,11 +325,7 @@ class CacheManager:
         # Update access time if applicable
         self._update_access_time(file_path)
 
-        # Refresh cache after a few minutes
-        if self._should_refresh_cache():
-            thread = threading.Thread(target=self.refresh_cache)
-            thread.daemon = True
-            thread.start()
+        self._schedule_refresh_if_needed()
 
     def contains(
         self,
@@ -451,7 +453,29 @@ class CacheManager:
     def _should_refresh_cache(self) -> bool:
         """Check if enough time has passed since the last refresh."""
         now = datetime.now()
-        return (now - self._last_refresh_time).seconds > self._cache_refresh_interval
+        return (now - self._last_refresh_time).total_seconds() > self._cache_refresh_interval
+
+    def _run_refresh_cache(self) -> None:
+        """Run refresh_cache and clear the scheduling guard when finished."""
+        try:
+            self.refresh_cache()
+        finally:
+            with self._cache_refresh_thread_lock:
+                if self._cache_refresh_thread is threading.current_thread():
+                    self._cache_refresh_thread = None
+
+    def _schedule_refresh_if_needed(self) -> None:
+        """Schedule an asynchronous cache refresh if the interval has elapsed."""
+        if not self._should_refresh_cache():
+            return
+
+        with self._cache_refresh_thread_lock:
+            if self._cache_refresh_thread and self._cache_refresh_thread.is_alive():
+                return
+
+            thread = threading.Thread(target=self._run_refresh_cache, daemon=True)
+            self._cache_refresh_thread = thread
+            thread.start()
 
     # Range cache methods
     def _get_chunk_path(self, cache_path: str, chunk_idx: int) -> str:
@@ -477,6 +501,7 @@ class CacheManager:
         configured_cache_line_size: int,
         storage_provider,
         source_version: Optional[str],
+        source_size: Optional[int],
     ) -> None:
         """Download all missing chunks for a given range with optimized performance."""
 
@@ -488,7 +513,13 @@ class CacheManager:
         # Download missing chunks with minimal locking
         for chunk_idx in chunks_to_download:
             self._download_single_chunk(
-                cache_path, original_key, chunk_idx, configured_cache_line_size, storage_provider, source_version
+                cache_path,
+                original_key,
+                chunk_idx,
+                configured_cache_line_size,
+                storage_provider,
+                source_version,
+                source_size,
             )
 
     def _identify_missing_chunks(
@@ -550,6 +581,7 @@ class CacheManager:
         cache_line_size: int,
         storage_provider,
         source_version: Optional[str],
+        source_size: Optional[int],
     ) -> None:
         """Download and cache a single chunk with proper locking.
 
@@ -577,7 +609,7 @@ class CacheManager:
 
             # Fetch and cache the chunk
             self._fetch_and_cache_chunk(
-                cache_path, original_key, chunk_idx, cache_line_size, storage_provider, source_version
+                cache_path, original_key, chunk_idx, cache_line_size, storage_provider, source_version, source_size
             )
 
             # Clean up lock file
@@ -591,6 +623,7 @@ class CacheManager:
         cache_line_size: int,
         storage_provider,
         source_version: Optional[str],
+        source_size: Optional[int],
     ) -> None:
         """Fetch chunk data from storage and cache it locally.
 
@@ -613,45 +646,90 @@ class CacheManager:
         )
 
         # Cache the chunk
-        self._write_chunk_to_cache(chunk_path, chunk_data, source_version, cache_line_size)
+        self._write_chunk_to_cache(chunk_path, chunk_data, source_version, chunk_idx, cache_line_size, source_size)
 
         # Handle special case for chunk 0 with small files
         self._handle_chunk0_renaming(cache_path, chunk_path, chunk_idx, cache_line_size)
 
         # Update access time
         self._update_chunk_access_time(cache_path, chunk_path, chunk_idx)
+        self._schedule_refresh_if_needed()
 
     def _write_chunk_to_cache(
-        self, chunk_path: str, chunk_data: bytes, source_version: Optional[str], cache_line_size: int
+        self,
+        chunk_path: str,
+        chunk_data: bytes,
+        source_version: Optional[str],
+        chunk_idx: int,
+        cache_line_size: int,
+        source_size: Optional[int],
     ) -> None:
-        """Write chunk data to cache with proper metadata.
+        """Atomically write chunk data to cache with metadata.
+
+        Writes to a temporary file, sets xattr metadata on it, then
+        atomically replaces the target path. This ensures concurrent readers
+        never see a partially written chunk. Metadata is best-effort: on
+        filesystems without xattr support the write still succeeds, but later
+        validation may invalidate short final chunks and fall back to a
+        remote read.
+
         :param chunk_path: The path to the chunk file
         :param chunk_data: The data to write to the chunk file
         :param source_version: The source version of the object
+        :param chunk_idx: The index of the chunk being cached
         :param cache_line_size: The size of each chunk in bytes
+        :param source_size: Optional size of the source object in bytes
         """
         safe_makedirs(os.path.dirname(chunk_path))
 
-        with open(chunk_path, "wb") as f:
-            f.write(chunk_data)
+        object_size = source_size
+        # If metadata was not fetched, a short chunk implies we reached the final chunk.
+        # In this case the object size is chunk_idx * cache_line_size + len(chunk_data)
+        if object_size is None and len(chunk_data) < cache_line_size:
+            object_size = chunk_idx * cache_line_size + len(chunk_data)
 
-        # Set chunk metadata
-        self._set_chunk_metadata(chunk_path, source_version, cache_line_size)
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb", delete=False, dir=os.path.dirname(chunk_path), prefix=".chunk_tmp_"
+            ) as temp_file:
+                temp_path = temp_file.name
+                temp_file.write(chunk_data)
+            self._set_chunk_metadata(temp_path, source_version, cache_line_size, object_size)
+            os.replace(temp_path, chunk_path)
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
 
-    def _set_chunk_metadata(self, chunk_path: str, source_version: Optional[str], cache_line_size: int) -> None:
+    def _set_chunk_metadata(
+        self, chunk_path: str, source_version: Optional[str], cache_line_size: int, object_size: Optional[int]
+    ) -> None:
         """Set xattr metadata for a chunk file.
         :param chunk_path: The path to the chunk file
         :param source_version: The source version of the object
         :param cache_line_size: The size of each chunk in bytes
+        :param object_size: Optional total size of the source object in bytes
         """
         try:
             if source_version:
                 xattr.setxattr(chunk_path, "user.etag", source_version.encode("utf-8"))
 
             xattr.setxattr(chunk_path, "user.cache_line_size", str(cache_line_size).encode("utf-8"))
+            if object_size is not None:
+                xattr.setxattr(chunk_path, "user.size", str(object_size).encode("utf-8"))
         except OSError:
             # xattrs may not be supported; continue without failing
             pass
+
+    def _get_chunk_object_size(self, chunk_path: str) -> Optional[int]:
+        """Return the stored object size for a chunk, if available."""
+        try:
+            return int(xattr.getxattr(chunk_path, "user.size").decode("utf-8"))
+        except (OSError, ValueError):
+            return None
 
     def _handle_chunk0_renaming(self, cache_path: str, chunk_path: str, chunk_idx: int, cache_line_size: int) -> None:
         """Handle special case where chunk 0 becomes the full file for small files.
@@ -698,11 +776,16 @@ class CacheManager:
     def _assemble_result_from_chunks(
         self, cache_path: str, start_chunk: int, end_chunk: int, configured_cache_line_size: int, byte_range: Range
     ) -> bytes:
-        """Assemble the final result from cached chunks using optimized streaming reads.
+        """Assemble the requested byte range from locally cached chunks.
 
-        This method efficiently reads only the needed portions of chunks from cache
-        and assembles them into the final byte range result. It uses streaming reads
-        to minimize memory usage and I/O operations.
+        Reads only the overlapping portion of each chunk and copies it into a
+        pre-allocated result buffer. When a chunk on disk is shorter than the
+        slice needed from it, the stored ``user.size`` xattr is consulted to
+        determine whether the chunk is a valid short final chunk or corrupt.
+        An ``IOError`` is raised (and the chunk invalidated) when the chunk
+        is too short and the xattr is missing or contradicts the file size,
+        or when reading the expected bytes still returns a short read.
+        Full-size chunks are read without consulting xattr at all.
 
         :param cache_path: The base cache path for the original file
         :param start_chunk: The starting chunk index
@@ -710,8 +793,11 @@ class CacheManager:
         :param configured_cache_line_size: The size of each chunk in bytes
         :param byte_range: The byte range to read (offset and size)
         :return: The assembled byte range data
+        :raises IOError: If a short chunk is missing size metadata, is
+            smaller than the stored object size indicates, or returns a
+            short read
         """
-        # Pre-allocate result buffer
+        # Pre-allocate the largest possible buffer and trim to actual bytes read.
         result = bytearray(byte_range.size)
         result_offset = 0
 
@@ -736,16 +822,49 @@ class CacheManager:
                 chunk_offset = overlap_start - chunk_start
                 length = overlap_end - overlap_start + 1
 
-                # Stream read only the needed portion from the chunk file
+                # The chunk on disk may be shorter than cache_line_size (final chunk).
+                file_size = os.path.getsize(actual_path)
+                expected_length = length
+                if file_size < chunk_offset + length:
+                    # Chunk is too small for the naive slice -- consult object size metadata.
+                    object_size = self._get_chunk_object_size(actual_path)
+                    if object_size is None:
+                        # No metadata to validate; treat as corrupt.
+                        self._remove_invalid_chunk(actual_path)
+                        raise IOError(
+                            f"Chunk file {actual_path} is too small for requested slice: "
+                            f"size={file_size}, needed={chunk_offset + length}"
+                        )
+
+                    # Verify the chunk isn't truncated relative to what object size implies.
+                    expected_chunk_size = min(configured_cache_line_size, max(object_size - chunk_start, 0))
+                    if file_size < expected_chunk_size:
+                        self._remove_invalid_chunk(actual_path)
+                        raise IOError(
+                            f"Chunk file {actual_path} is smaller than expected object metadata: "
+                            f"size={file_size}, expected={expected_chunk_size}"
+                        )
+
+                    # Clamp to the bytes that actually exist in the object.
+                    expected_length = max(min(length, object_size - overlap_start), 0)
+                    if expected_length == 0:
+                        # Requested range is entirely past the object's EOF.
+                        continue
                 with open(actual_path, "rb") as f:
                     f.seek(chunk_offset)
-                    chunk_data = f.read(length)
+                    chunk_data = f.read(expected_length)
+                if len(chunk_data) != expected_length:
+                    self._remove_invalid_chunk(actual_path)
+                    raise IOError(
+                        f"Chunk file {actual_path} returned a short read: "
+                        f"expected={expected_length}, actual={len(chunk_data)}"
+                    )
 
                 # Copy directly to result buffer
-                result[result_offset : result_offset + length] = chunk_data
-                result_offset += length
+                result[result_offset : result_offset + expected_length] = chunk_data
+                result_offset += expected_length
 
-        return bytes(result)
+        return bytes(result[:result_offset])
 
     def _invalidate_chunks(self, cache_path: str):
         """Delete all chunks and metadata for a path.
@@ -805,6 +924,7 @@ class CacheManager:
         byte_range: Range,
         storage_provider,
         source_version: Optional[str],
+        source_size: Optional[int],
         original_key: str,
     ) -> bytes:
         """Read a byte range using optimized chunk-based caching.
@@ -843,6 +963,7 @@ class CacheManager:
                 configured_cache_line_size,
                 storage_provider,
                 source_version,
+                source_size,
             )
 
             # Step 2: Assemble result from cached chunks (streaming)
@@ -852,4 +973,9 @@ class CacheManager:
         except Exception as e:
             # If any step fails, fall back to getting the object directly
             logging.warning(f"Failed to process chunks for {original_key}: {e}")
+            if source_size is not None:
+                remaining = source_size - byte_range.offset
+                if remaining <= 0:
+                    return b""
+                byte_range = Range(offset=byte_range.offset, size=min(byte_range.size, remaining))
             return storage_provider.get_object(original_key, byte_range=byte_range)

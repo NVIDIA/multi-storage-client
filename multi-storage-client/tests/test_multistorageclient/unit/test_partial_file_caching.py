@@ -17,6 +17,7 @@ import os
 import tempfile
 import time
 import uuid
+from datetime import datetime, timedelta
 from typing import Any, Dict
 
 import xattr
@@ -442,16 +443,8 @@ def test_partial_file_caching_chunk_invalidation() -> None:
 
 
 def test_partial_file_caching_cleanup() -> None:
-    """Test partial file caching cleanup with automatic eviction.
-
-    This test verifies that:
-    1. Partial file chunks are properly cached when reading ranges
-    2. After the refresh interval (5 seconds), cleanup kicks in
-    3. Old chunks are properly evicted from the cache
-    4. Cache size limits are respected
-    """
+    """Test partial file caching cleanup with automatic eviction."""
     with tempdatastore.TemporaryAWSS3Bucket() as origin_store:
-        # Create configuration with 5-second refresh interval for testing
         config = {
             "profiles": {
                 "origin": origin_store.profile_config_dict() | {"caching_enabled": True},
@@ -503,24 +496,24 @@ def test_partial_file_caching_cleanup() -> None:
         assert chunk0_size == expected_chunk_size, f"Chunk 0 should be 1MB, got {chunk0_size} bytes"
         assert chunk1_size == expected_chunk_size, f"Chunk 1 should be 1MB, got {chunk1_size} bytes"
 
-        # Wait for cleanup to trigger (refresh_interval is 5 seconds)
-        time.sleep(6)  # Wait a bit more than 5 seconds to ensure cleanup runs
+        cache_manager = client._cache_manager
+        assert cache_manager is not None
+        cache_manager._last_refresh_time = datetime.now() - timedelta(seconds=cache_manager._cache_refresh_interval + 1)
 
-        # Force a cache refresh to trigger cleanup
-        # We can do this by reading a different range that would trigger cache operations
+        # Reading a third chunk should schedule background refresh because the refresh interval has elapsed.
         range_read_3 = Range(offset=2 * 1024 * 1024, size=1 * 1024 * 1024)  # 1MB read
         partial_content_3 = client.read(file_path, byte_range=range_read_3)
         expected_content_3 = test_content[range_read_3.offset : range_read_3.offset + range_read_3.size]
         assert partial_content_3 == expected_content_3
 
-        # Force a cache refresh to trigger cleanup
-        cache_manager = client._cache_manager
-        assert cache_manager is not None
-        cache_manager.refresh_cache()
+        for _ in range(100):
+            if not os.path.exists(chunk0_path):
+                break
+            time.sleep(0.05)
 
-        # Verify that LRU eviction worked correctly:
-        # - chunk0 (oldest) should be deleted (LRU policy)
-        # - chunk1 and chunk2 should remain (within cache size limit)
+        # Verify that background LRU eviction worked correctly:
+        # - chunk0 (oldest) should be deleted
+        # - chunk1 and chunk2 should remain
         assert not os.path.exists(chunk0_path), "Chunk 0 should be deleted after cleanup (LRU eviction)"
         assert os.path.exists(chunk1_path), "Chunk 1 should remain (within cache size limit)"
 

@@ -298,6 +298,7 @@ class SingleStorageClient(AbstractStorageClient):
                         source_version=source_version,
                         byte_range=byte_range,
                         storage_provider=self._storage_provider,
+                        source_size=metadata.content_length if metadata else None,
                     )
                     if data is not None:
                         return data

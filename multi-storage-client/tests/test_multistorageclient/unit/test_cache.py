@@ -19,11 +19,12 @@ import tempfile
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 import xattr
 
+import multistorageclient.cache as cache_module
 import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
 from multistorageclient import StorageClient
 from multistorageclient.cache import DEFAULT_CACHE_REFRESH_INTERVAL, CacheManager
@@ -34,6 +35,22 @@ from multistorageclient.caching.cache_config import (
 from multistorageclient.config import StorageClientConfig
 from multistorageclient.types import Range, SourceVersionCheckMode
 from test_multistorageclient.unit.utils.tempdatastore import create_test_data
+
+
+class RangeAwareStorageProvider:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+        self.call_count = 0
+        self._lock = threading.Lock()
+
+    def get_object(self, _key: str, byte_range: Range | None = None) -> bytes:
+        with self._lock:
+            self.call_count += 1
+
+        if byte_range is None:
+            return self._data
+
+        return self._data[byte_range.offset : byte_range.offset + byte_range.size]
 
 
 @pytest.fixture
@@ -249,6 +266,204 @@ def test_cache_manager_open_file(profile_name, tmpdir, cache_manager):
         assert result.name == os.path.join(tmpdir, profile_name, key)
 
 
+def test_partial_chunk_publish_is_atomic_without_source_version(tmpdir, monkeypatch):
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir)),
+    )
+    storage_provider = RangeAwareStorageProvider(create_test_data(2))
+    key = "bucket/concurrent.bin"
+    byte_range = Range(offset=0, size=16 * 1024)
+
+    cache_path = cache_manager._get_cache_file_path(key)
+    chunk_path = cache_manager._get_chunk_path(cache_path, 0)
+    replace_started = threading.Event()
+    allow_replace = threading.Event()
+    results: list[bytes] = []
+    errors: list[Exception] = []
+    original_replace = cache_module.os.replace
+
+    def blocking_replace(src: str, dst: str) -> None:
+        if dst == chunk_path:
+            assert os.path.exists(src), "Temporary chunk should exist before publication"
+            assert not os.path.exists(dst), "Chunk should remain invisible until replace completes"
+            replace_started.set()
+            assert allow_replace.wait(timeout=5), "Timed out waiting to complete atomic replace"
+        original_replace(src, dst)
+
+    monkeypatch.setattr(cache_module.os, "replace", blocking_replace)
+
+    def read_range() -> None:
+        try:
+            results.append(
+                cache_manager.read(key, byte_range=byte_range, storage_provider=storage_provider)  # type: ignore[arg-type]
+                or b""
+            )
+        except Exception as exc:  # pragma: no cover - failure path asserted below
+            errors.append(exc)
+
+    thread1 = threading.Thread(target=read_range)
+    thread2 = threading.Thread(target=read_range)
+
+    thread1.start()
+    assert replace_started.wait(timeout=5), "First reader never reached the publication point"
+    assert not os.path.exists(chunk_path), "Chunk should not be visible while publication is paused"
+
+    thread2.start()
+
+    allow_replace.set()
+    thread1.join(timeout=5)
+    thread2.join(timeout=5)
+
+    assert not errors, f"Unexpected read errors: {errors}"
+    assert len(results) == 2
+    expected = storage_provider._data[: byte_range.size]
+    assert results == [expected, expected]
+    assert os.path.exists(chunk_path), "Chunk should exist after atomic publication completes"
+    assert storage_provider.call_count == 1
+    assert not [name for name in os.listdir(os.path.dirname(chunk_path)) if name.startswith(".chunk_tmp_")]
+
+
+def test_partial_chunk_metadata_is_set_before_publish(tmpdir, monkeypatch):
+    probe_path = os.path.join(tmpdir, "xattr-probe")
+    with open(probe_path, "wb") as probe_file:
+        probe_file.write(b"probe")
+    try:
+        xattr.setxattr(probe_path, "user.etag", b"probe")
+        xattr.getxattr(probe_path, "user.etag")
+    except OSError:
+        pytest.skip("xattr is not supported on this filesystem")
+    finally:
+        os.unlink(probe_path)
+
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir)),
+    )
+    storage_provider = RangeAwareStorageProvider(create_test_data(2))
+    key = "bucket/versioned.bin"
+    source_version = "etag-123"
+    byte_range = Range(offset=0, size=16 * 1024)
+
+    cache_path = cache_manager._get_cache_file_path(key)
+    chunk_path = cache_manager._get_chunk_path(cache_path, 0)
+    observed: dict[str, str | bool] = {}
+    original_replace = cache_module.os.replace
+
+    def checking_replace(src: str, dst: str) -> None:
+        if dst == chunk_path:
+            observed["chunk_visible_before_replace"] = os.path.exists(dst)
+            observed["etag"] = xattr.getxattr(src, "user.etag").decode("utf-8")
+            observed["cache_line_size"] = xattr.getxattr(src, "user.cache_line_size").decode("utf-8")
+            observed["object_size"] = xattr.getxattr(src, "user.size").decode("utf-8")
+        original_replace(src, dst)
+
+    monkeypatch.setattr(cache_module.os, "replace", checking_replace)
+
+    result = cache_manager.read(
+        key,
+        source_version=source_version,
+        byte_range=byte_range,
+        storage_provider=storage_provider,  # type: ignore[arg-type]
+        source_size=len(storage_provider._data),
+    )
+
+    assert result == storage_provider._data[: byte_range.size]
+    assert observed["chunk_visible_before_replace"] is False
+    assert observed["etag"] == source_version
+    assert observed["cache_line_size"] == str(1024 * 1024)
+    assert observed["object_size"] == str(len(storage_provider._data))
+    assert xattr.getxattr(chunk_path, "user.etag").decode("utf-8") == source_version
+
+
+def test_assemble_result_handles_short_final_chunk(tmpdir):
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir)),
+    )
+    key = "bucket/edge_case.bin"
+    cache_path = cache_manager._get_cache_file_path(key)
+    chunk_path = cache_manager._get_chunk_path(cache_path, 3)
+    os.makedirs(os.path.dirname(chunk_path), exist_ok=True)
+
+    # Simulate a valid final chunk for a non-4MiB object. The chunk is shorter than cache_line_size
+    # because the object ends before the 4th MiB boundary.
+    short_final_chunk = b"x" * 917504
+    with open(chunk_path, "wb") as chunk_file:
+        chunk_file.write(short_final_chunk)
+    cache_manager._set_chunk_metadata(chunk_path, None, 1024 * 1024, 3 * 1024 * 1024 + len(short_final_chunk))
+
+    # This range matches the existing edge-case test: it starts past the real EOF implied by the
+    # short final chunk, so assembly should return empty bytes rather than invalidating the chunk.
+    result = cache_manager._assemble_result_from_chunks(
+        cache_path=cache_path,
+        start_chunk=3,
+        end_chunk=3,
+        configured_cache_line_size=1024 * 1024,
+        byte_range=Range(offset=4 * 1024 * 1024 - 1024, size=1024),
+    )
+
+    assert result == b""
+    assert os.path.exists(chunk_path), "Valid short final chunk should not be treated as corruption"
+
+
+def test_assemble_result_invalidates_corrupt_short_chunk(tmpdir):
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir)),
+    )
+    key = "bucket/corrupt_chunk.bin"
+    cache_path = cache_manager._get_cache_file_path(key)
+    chunk_path = cache_manager._get_chunk_path(cache_path, 1)
+    os.makedirs(os.path.dirname(chunk_path), exist_ok=True)
+
+    with open(chunk_path, "wb") as chunk_file:
+        chunk_file.write(b"x" * (512 * 1024))
+    cache_manager._set_chunk_metadata(chunk_path, None, 1024 * 1024, 3 * 1024 * 1024)
+
+    with pytest.raises(IOError, match="smaller than expected object metadata"):
+        cache_manager._assemble_result_from_chunks(
+            cache_path=cache_path,
+            start_chunk=1,
+            end_chunk=1,
+            configured_cache_line_size=1024 * 1024,
+            byte_range=Range(offset=1024 * 1024 + 700 * 1024, size=1024),
+        )
+
+    assert not os.path.exists(chunk_path), "Corrupt undersized chunk should be invalidated"
+
+
+def test_short_final_chunk_without_xattr_falls_back_to_remote_read(tmpdir, monkeypatch):
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir)),
+    )
+    test_content = create_test_data(4)
+    storage_provider = RangeAwareStorageProvider(test_content)
+    key = "bucket/no_xattr_edge_case.bin"
+    cache_path = cache_manager._get_cache_file_path(key)
+    chunk_path = cache_manager._get_chunk_path(cache_path, 3)
+    byte_range = Range(offset=len(test_content) - 512, size=1024)
+
+    def raise_xattr_error(*_args, **_kwargs):
+        raise OSError("xattr unsupported")
+
+    monkeypatch.setattr(cache_module.xattr, "setxattr", raise_xattr_error)
+    monkeypatch.setattr(cache_module.xattr, "getxattr", raise_xattr_error)
+
+    result = cache_manager.read(
+        key,
+        source_version="etag-123",
+        byte_range=byte_range,
+        storage_provider=storage_provider,  # type: ignore[arg-type]
+        source_size=len(test_content),
+    )
+
+    assert result == test_content[byte_range.offset : byte_range.offset + byte_range.size]
+    assert not os.path.exists(chunk_path), "Chunk should be invalidated when size metadata cannot be persisted"
+    assert storage_provider.call_count == 2, "Read should fall back to a direct remote range fetch"
+
+
 def test_cache_manager_generate_temp_file_path(cache_manager):
     """Test that CacheManager can generate a temporary file path."""
     temp_file_path = cache_manager.generate_temp_file_path()
@@ -272,13 +487,101 @@ def test_cache_manager_refresh_cache(tmpdir):
         cache_manager.set(file_name, data_10mb)
 
     # Force refresh by setting last refresh time to the past
-    cache_manager._last_refresh_time = datetime.now().replace(year=2000)
+    cache_manager._last_refresh_time = datetime.now() - timedelta(seconds=cache_manager._cache_refresh_interval + 1)
 
     cache_manager.refresh_cache()
     assert cache_manager.cache_size() <= 10 * 1024 * 1024
 
     # Clean up
     shutil.rmtree(cache_dir)
+
+
+def test_chunk_write_schedules_refresh(tmpdir, monkeypatch):
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir)),
+    )
+    storage_provider = RangeAwareStorageProvider(create_test_data(2))
+    key = "bucket/scheduled_refresh.bin"
+    refresh_called = threading.Event()
+
+    monkeypatch.setattr(cache_manager, "_should_refresh_cache", lambda: True)
+
+    def fake_refresh_cache() -> bool:
+        refresh_called.set()
+        return True
+
+    monkeypatch.setattr(cache_manager, "refresh_cache", fake_refresh_cache)
+
+    cache_manager.read(
+        key,
+        byte_range=Range(offset=0, size=16 * 1024),
+        storage_provider=storage_provider,  # type: ignore[arg-type]
+        source_size=len(storage_provider._data),
+    )
+
+    assert refresh_called.wait(timeout=5), "Chunk writes should schedule asynchronous cache refresh"
+    refresh_thread = cache_manager._cache_refresh_thread
+    if refresh_thread is not None:
+        refresh_thread.join(timeout=5)
+    assert storage_provider.call_count == 1
+
+
+def test_partial_chunk_write_triggers_background_eviction(tmpdir):
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="2M", cache_line_size="1M", check_source_version=False, location=str(tmpdir)),
+    )
+    storage_provider = RangeAwareStorageProvider(create_test_data(5))
+    key = "bucket/cleanup.bin"
+    cache_path = cache_manager._get_cache_file_path(key)
+    chunk0_path = cache_manager._get_chunk_path(cache_path, 0)
+    chunk1_path = cache_manager._get_chunk_path(cache_path, 1)
+    chunk2_path = cache_manager._get_chunk_path(cache_path, 2)
+
+    assert (
+        cache_manager.read(
+            key,
+            byte_range=Range(offset=0, size=1024 * 1024),
+            storage_provider=storage_provider,  # type: ignore[arg-type]
+            source_size=len(storage_provider._data),
+        )
+        == storage_provider._data[: 1024 * 1024]
+    )
+    assert (
+        cache_manager.read(
+            key,
+            byte_range=Range(offset=1024 * 1024, size=1024 * 1024),
+            storage_provider=storage_provider,  # type: ignore[arg-type]
+            source_size=len(storage_provider._data),
+        )
+        == storage_provider._data[1024 * 1024 : 2 * 1024 * 1024]
+    )
+
+    assert os.path.exists(chunk0_path)
+    assert os.path.exists(chunk1_path)
+
+    cache_manager._last_refresh_time = datetime.now() - timedelta(seconds=cache_manager._cache_refresh_interval + 1)
+
+    assert (
+        cache_manager.read(
+            key,
+            byte_range=Range(offset=2 * 1024 * 1024, size=1024 * 1024),
+            storage_provider=storage_provider,  # type: ignore[arg-type]
+            source_size=len(storage_provider._data),
+        )
+        == storage_provider._data[2 * 1024 * 1024 : 3 * 1024 * 1024]
+    )
+
+    for _ in range(100):
+        if not os.path.exists(chunk0_path):
+            break
+        time.sleep(0.05)
+
+    assert not os.path.exists(chunk0_path), "Oldest chunk should be evicted by scheduled background refresh"
+    assert os.path.exists(chunk1_path)
+    assert os.path.exists(chunk2_path)
+    assert cache_manager.cache_size() <= 2 * 1024 * 1024
 
 
 @pytest.fixture
