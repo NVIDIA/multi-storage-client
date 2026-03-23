@@ -19,7 +19,13 @@ unfixable = []
 python-downloads = "never"
 python-preference = "only-system"
 resolution = "lowest-direct"
-override-dependencies = ["protobuf>=7.34.0rc2"]
+constraint-dependencies = [
+    "authlib>=1.6.9",
+]
+override-dependencies = [
+    "protobuf>=7.34.0rc2",
+    "pyopenssl>=26.0.0",
+]
 
 [tool.uv.sources]
 multi-storage-client = { workspace = true }

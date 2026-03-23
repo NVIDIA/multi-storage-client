@@ -60,7 +60,7 @@ vault = [
 ]
 
 cloudfront = [
-    "cryptography>=44,<46"
+    "cryptography>=44,<47"
 ]
 
 # MCP.
