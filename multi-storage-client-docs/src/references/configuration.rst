@@ -947,7 +947,7 @@ Options:
     * ``"mru"``: Most Recently Used (**experimental** - requires ``cache_mru_eviction: true``)
     * ``"random"``: Random eviction (stable)
 
-  * ``refresh_interval``: Interval in seconds to trigger cache eviction (optional, default: ``"300"``)
+  * ``refresh_interval``: Interval in seconds to trigger cache eviction (optional, minimum: ``"1"``, default: ``"300"``)
 
   * ``purge_factor``: (**experimental** - requires ``cache_purge_factor: true``) Percentage of cache to delete during eviction (0-100, optional, default: ``"0"``)
 

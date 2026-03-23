@@ -193,11 +193,26 @@ def test_validate_cache():
                 "location": "/path/to/cache",
                 "eviction_policy": {
                     "policy": "FIFO",
-                    "refresh_interval": 300,
+                    "refresh_interval": 1,
                 },
             },
         }
     )
+
+    with pytest.raises(RuntimeError):
+        validate_config(
+            {
+                "profiles": {
+                    "default": default_storage_provider,
+                },
+                "cache": {
+                    "eviction_policy": {
+                        "policy": "FIFO",
+                        "refresh_interval": 0,
+                    }
+                },
+            }
+        )
 
     # Test invalid eviction policy format
     with pytest.raises(RuntimeError):

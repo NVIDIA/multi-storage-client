@@ -85,7 +85,7 @@ CACHE_SCHEMA = {
                     ],
                     "default": "lru",
                 },
-                "refresh_interval": {"type": "integer", "minimum": 300},
+                "refresh_interval": {"type": "integer", "minimum": 1},
                 "purge_factor": {"type": "integer", "minimum": 0, "maximum": 100},
             },
         },

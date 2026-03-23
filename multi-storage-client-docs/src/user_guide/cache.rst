@@ -229,6 +229,8 @@ Use higher purge factors (20-50%) when you want to reduce eviction frequency at 
        refresh_interval: 300
        purge_factor: 20  # Delete 20% (100GB) during eviction, keeping 400GB
 
+``refresh_interval`` accepts values as low as ``1`` second. If omitted, MSC keeps the default ``300``-second refresh interval.
+
 
 **************
 Best Practices
