@@ -252,11 +252,17 @@ func (gcsContext *gcsContextStruct) listObjects(listObjectsInput *listObjectsInp
 		query                 *storage.Query
 	)
 
+	if (listObjectsInput.startAfter != "") && (listObjectsInput.continuationToken != "") {
+		err = errors.New("[GCS] .startAfter and .continuationToken can't both be non-empty strings")
+		return
+	}
+
 	bucketHandle = gcsContext.gcsClient.Bucket(gcsContext.backend.bucketContainerName)
 	bucketHandle = bucketHandle.Retryer(gcsContext.retryOption)
 
 	query = &storage.Query{
-		Prefix: gcsContext.backend.prefix,
+		Prefix:      gcsContext.backend.prefix,
+		StartOffset: listObjectsInput.startAfter,
 	}
 
 	objectIterator = bucketHandle.Objects(context.Background(), query)

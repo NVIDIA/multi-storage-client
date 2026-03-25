@@ -110,7 +110,8 @@ type listDirectoryOutputStruct struct {
 // to listObjects(). Objects to be enumerated are all relative to
 // backend.prefix which, if != "", should end with a trailing "/".
 type listObjectsInputStruct struct {
-	continuationToken string // If != "", from prior listObjectsOutput.nextContinuationToken
+	startAfter        string // If != "", .continuationToken must == ""
+	continuationToken string // If != "", from prior listObjectsOutput.nextContinuationToken and .startAfter must == ""
 	maxItems          uint64 // If == 0, limited instead by the object server
 }
 
@@ -245,7 +246,7 @@ func deleteFileWrapper(backendContext backendContextIf, deleteFileInput *deleteF
 		startTime     time.Time
 	)
 
-	recordRequest(backendCommon.dirName, "delete")
+	recordRequest(backendCommon.dirName, "deleteFile")
 
 	startTime = time.Now()
 
@@ -271,7 +272,7 @@ func deleteFileWrapper(backendContext backendContextIf, deleteFileInput *deleteF
 		globals.Unlock()
 	}(backendCommon, latency)
 
-	recordBackendMetrics(backendCommon.dirName, "delete", startTime, err, 0)
+	recordBackendMetrics(backendCommon.dirName, "deleteFile", startTime, err, 0)
 
 	switch backendCommon.traceLevel {
 	case 0:
@@ -299,7 +300,7 @@ func listDirectoryWrapper(backendContext backendContextIf, listDirectoryInput *l
 		startTime     time.Time
 	)
 
-	recordRequest(backendCommon.dirName, "list")
+	recordRequest(backendCommon.dirName, "listDirectory")
 
 	startTime = time.Now()
 
@@ -325,7 +326,7 @@ func listDirectoryWrapper(backendContext backendContextIf, listDirectoryInput *l
 		globals.Unlock()
 	}(backendCommon, latency)
 
-	recordBackendMetrics(backendCommon.dirName, "list", startTime, err, 0)
+	recordBackendMetrics(backendCommon.dirName, "listDirectory", startTime, err, 0)
 
 	switch backendCommon.traceLevel {
 	case 0:
@@ -351,6 +352,66 @@ func listDirectoryWrapper(backendContext backendContextIf, listDirectoryInput *l
 	return
 }
 
+// `listObjectsWrapper` is a wrapper function around the supplied backendContext's `listObjects` function enabling centralized metrics and tracing capture.
+func listObjectsWrapper(backendContext backendContextIf, listObjectsInput *listObjectsInputStruct) (listObjectsOutput *listObjectsOutputStruct, err error) {
+	var (
+		backendCommon = backendContext.backendCommon()
+		latency       float64
+		startTime     time.Time
+	)
+
+	recordRequest(backendCommon.dirName, "listObjects")
+
+	startTime = time.Now()
+
+	listObjectsOutput, err = backendContext.listObjects(listObjectsInput)
+
+	latency = time.Since(startTime).Seconds()
+
+	go func(backend *backendStruct, latency float64) {
+		globals.Lock()
+		if err == nil {
+			globals.backendMetrics.ListObjectsSuccesses.Inc()
+			globals.backendMetrics.ListObjectsSuccessLatencies.Observe(latency)
+
+			backend.backendMetrics.ListObjectsSuccesses.Inc()
+			backend.backendMetrics.ListObjectsSuccessLatencies.Observe(latency)
+		} else {
+			globals.backendMetrics.ListObjectsFailures.Inc()
+			globals.backendMetrics.ListObjectsFailureLatencies.Observe(latency)
+
+			backend.backendMetrics.ListObjectsFailures.Inc()
+			backend.backendMetrics.ListObjectsFailureLatencies.Observe(latency)
+		}
+		globals.Unlock()
+	}(backendCommon, latency)
+
+	recordBackendMetrics(backendCommon.dirName, "listObjects", startTime, err, 0)
+
+	switch backendCommon.traceLevel {
+	case 0:
+		// Trace nothing
+	case 1:
+		if err != nil {
+			globals.logger.Printf("[WARN] %s.listObjects(%#v) returning err: %v", backendCommon.dirName, listObjectsInput, err)
+		}
+	case 2:
+		if err == nil {
+			globals.logger.Printf("[INFO] %s.listObjects(%#v) succeeded", backendCommon.dirName, listObjectsInput)
+		} else {
+			globals.logger.Printf("[WARN] %s.listObjects(%#v) returning err: %v", backendCommon.dirName, listObjectsInput, err)
+		}
+	default:
+		if err == nil {
+			globals.logger.Printf("[INFO] %s.listObjects(%#v) returning listDirectoryOutput: {len(\"object\"):%v,nextContinuationToken:\"%s\",isTruncated:%v}", backendCommon.dirName, listObjectsInput, len(listObjectsOutput.object), listObjectsOutput.nextContinuationToken, listObjectsOutput.isTruncated)
+		} else {
+			globals.logger.Printf("[WARN] %s.listObjects(%#v) returning err: %v", backendCommon.dirName, listObjectsInput, err)
+		}
+	}
+
+	return
+}
+
 // `readFileWrapper` is a wrapper function around the supplied backendContext's `readFile` function enabling centralized metrics and tracing capture.
 func readFileWrapper(backendContext backendContextIf, readFileInput *readFileInputStruct) (readFileOutput *readFileOutputStruct, err error) {
 	var (
@@ -360,7 +421,7 @@ func readFileWrapper(backendContext backendContextIf, readFileInput *readFileInp
 		startTime     time.Time
 	)
 
-	recordRequest(backendCommon.dirName, "read")
+	recordRequest(backendCommon.dirName, "readFile")
 
 	startTime = time.Now()
 
@@ -389,7 +450,8 @@ func readFileWrapper(backendContext backendContextIf, readFileInput *readFileInp
 	if (err == nil) && (readFileOutput != nil) {
 		bytesRead = int64(len(readFileOutput.buf))
 	}
-	recordBackendMetrics(backendCommon.dirName, "read", startTime, err, bytesRead)
+
+	recordBackendMetrics(backendCommon.dirName, "readFile", startTime, err, bytesRead)
 
 	switch backendCommon.traceLevel {
 	case 0:
@@ -423,7 +485,7 @@ func statDirectoryWrapper(backendContext backendContextIf, statDirectoryInput *s
 		startTime     time.Time
 	)
 
-	recordRequest(backendCommon.dirName, "info")
+	recordRequest(backendCommon.dirName, "statDirectory")
 
 	startTime = time.Now()
 
@@ -449,7 +511,7 @@ func statDirectoryWrapper(backendContext backendContextIf, statDirectoryInput *s
 		globals.Unlock()
 	}(backendCommon, latency)
 
-	recordBackendMetrics(backendCommon.dirName, "info", startTime, err, 0)
+	recordBackendMetrics(backendCommon.dirName, "statDirectory", startTime, err, 0)
 
 	switch backendCommon.traceLevel {
 	case 0:
@@ -484,7 +546,7 @@ func statFileWrapper(backendContext backendContextIf, statFileInput *statFileInp
 		startTime     time.Time
 	)
 
-	recordRequest(backendCommon.dirName, "info")
+	recordRequest(backendCommon.dirName, "statFile")
 
 	startTime = time.Now()
 
@@ -513,7 +575,8 @@ func statFileWrapper(backendContext backendContextIf, statFileInput *statFileInp
 	if (err == nil) && (statFileOutput != nil) {
 		bytesReported = int64(statFileOutput.size)
 	}
-	recordBackendMetrics(backendCommon.dirName, "info", startTime, err, bytesReported)
+
+	recordBackendMetrics(backendCommon.dirName, "statFile", startTime, err, bytesReported)
 
 	switch backendCommon.traceLevel {
 	case 0:

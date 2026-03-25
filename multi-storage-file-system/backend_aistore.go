@@ -228,6 +228,17 @@ func (aisContext *aistoreContextStruct) listObjects(listObjectsInput *listObject
 		timeNow = time.Now()
 	)
 
+	// Validate constraints on .startAfter and .continuationToken
+	if (listObjectsInput.startAfter != "") && (listObjectsInput.continuationToken != "") {
+		err = errors.New("[AIStore] .startAfter and .continuationToken can't both be non-empty strings")
+		return
+	}
+
+	// Set start after if provided
+	if listObjectsInput.startAfter != "" {
+		lsmsg.StartAfter = listObjectsInput.startAfter
+	}
+
 	// Set continuation token if provided
 	if listObjectsInput.continuationToken != "" {
 		lsmsg.ContinuationToken = listObjectsInput.continuationToken
@@ -242,7 +253,7 @@ func (aisContext *aistoreContextStruct) listObjects(listObjectsInput *listObject
 	var lsoResult *cmn.LsoRes                                                                          // List Objects Result
 	lsoResult, err = api.ListObjectsPage(aisContext.baseParams, aisContext.bck, lsmsg, api.ListArgs{}) // List Objects Page
 	if err != nil {
-		err = fmt.Errorf("[AIStore] listDirectory failed: %v", err)
+		err = fmt.Errorf("[AIStore] ListObjectsPage failed: %v", err)
 		return
 	}
 

@@ -424,6 +424,10 @@ type backendMetricsStruct struct {
 	ListDirectoryFailures         prometheus.Counter
 	ListDirectorySuccessLatencies prometheus.Histogram
 	ListDirectoryFailureLatencies prometheus.Histogram
+	ListObjectsSuccesses          prometheus.Counter
+	ListObjectsFailures           prometheus.Counter
+	ListObjectsSuccessLatencies   prometheus.Histogram
+	ListObjectsFailureLatencies   prometheus.Histogram
 	ReadFileSuccesses             prometheus.Counter
 	ReadFileFailures              prometheus.Counter
 	ReadFileSuccessLatencies      prometheus.Histogram
@@ -480,6 +484,25 @@ func newBackendMetrics() (backendMetrics *backendMetricsStruct) {
 		ListDirectoryFailureLatencies: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "backend_list_directory_failure_latency_seconds",
 			Help:    "Latency of failed ListDirectory operations",
+			Buckets: latencyBuckets,
+		}),
+
+		ListObjectsSuccesses: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "backend_list_objects_successes_total",
+			Help: "Total number of successful ListObjects operations",
+		}),
+		ListObjectsFailures: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "backend_list_objects_failures_total",
+			Help: "Total number of failed ListObjects operations",
+		}),
+		ListObjectsSuccessLatencies: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "backend_list_objects_success_latency_seconds",
+			Help:    "Latency of successful ListObjects operations",
+			Buckets: latencyBuckets,
+		}),
+		ListObjectsFailureLatencies: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "backend_list_objects_failure_latency_seconds",
+			Help:    "Latency of failed ListObjects operations",
 			Buckets: latencyBuckets,
 		}),
 
