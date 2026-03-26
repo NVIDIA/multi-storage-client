@@ -101,7 +101,8 @@ def _parse_s3_storage_provider_config(section: configparser.SectionProxy) -> tup
     _set_if_exists(section, credentials_provider_options, "session_token", "session_token")
 
     credentials_provider: dict[str, Any] = {}
-    credentials_provider["options"] = credentials_provider_options
+    if credentials_provider_options:
+        credentials_provider["options"] = credentials_provider_options
 
     # If there's at least an access_key, we can consider this S3Credentials
     if "access_key" in credentials_provider_options:
@@ -126,7 +127,9 @@ def _parse_azure_storage_provider_config(section: configparser.SectionProxy) -> 
     credentials_provider_options: dict[str, Any] = {}
     _set_if_exists(section, credentials_provider_options, "connection", "connection")
 
-    credentials_provider: dict[str, Any] = {"options": credentials_provider_options}
+    credentials_provider: dict[str, Any] = {}
+    if credentials_provider_options:
+        credentials_provider["options"] = credentials_provider_options
 
     # If there's a connection string, we assume static Azure credentials are being used
     if "connection" in credentials_provider_options:
