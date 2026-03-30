@@ -776,6 +776,8 @@ func (inode *inodeStruct) touch(mTimeAsInterface interface{}) {
 		dumpStack()
 		globals.logger.Fatalf("[FATAL] inode.inodeType(%v) must be one of FileObject(%v), FUSERootDir(%v), BackendRootDir(%v), or PseudoDir(%v)", inode.inodeType, FileObject, FUSERootDir, BackendRootDir, PseudoDir)
 	}
+
+	globals.inodeMap.touch(inode)
 }
 
 // `inodeEvictor` is a goroutine that periodically monitors the cache and globals.inodeEvictionLRU
@@ -1296,10 +1298,12 @@ func (thisInode *inodeStruct) dumpFS(w io.Writer, indent string, expectedInodeNu
 		virtChildDirEntryMapStart uint64
 	)
 
-	backend, ok = globals.backendMap[thisInode.backendNonce]
-	if !ok {
-		dumpStack()
-		globals.logger.Fatalf("[FATAL] globals.backendMap[thisInode.backendNonce] returned !ok")
+	if thisInode.inodeType != FUSERootDir {
+		backend, ok = globals.backendMap[thisInode.backendNonce]
+		if !ok {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] globals.backendMap[thisInode.backendNonce] returned !ok")
+		}
 	}
 	if thisInode.inodeNumber != expectedInodeNumber {
 		dumpStack()

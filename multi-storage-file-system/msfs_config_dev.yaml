@@ -46,6 +46,20 @@ backends: [
     },
   },
   {
+    dir_name: pseudo,
+    bucket_container_name: dev,
+    backend_type: PSEUDO,
+    PSEUDO: {
+      files_at_depth_0: 3,
+      files_at_depth_1: 4,
+      files_at_depth_2: 5,
+      files_at_depth_3: 6,
+      subdirectories_at_depth_0: 2,
+      subdirectories_at_depth_1: 3,
+      subdirectories_at_depth_2: 4,
+    },
+  },
+  {
     dir_name: ram,
     bucket_container_name: dev,
     backend_type: RAM,

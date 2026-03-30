@@ -149,9 +149,9 @@ func (ramContext *ramContextStruct) listDirectory(listDirectoryInput *listDirect
 	if listDirectoryInput.continuationToken == "" {
 		continuationTokenAsUint64 = 0
 	} else {
-		continuationTokenAsUint64, err = strconv.ParseUint(listDirectoryInput.continuationToken, 10, 64)
+		continuationTokenAsUint64, err = strconv.ParseUint(listDirectoryInput.continuationToken, 16, 64)
 		if err != nil {
-			err = fmt.Errorf("strconv.ParseUint(listDirectoryInput.continuationToken, 10, 64) failed: %v", err)
+			err = fmt.Errorf("strconv.ParseUint(listDirectoryInput.continuationToken, 16, 64) failed: %v", err)
 			return
 		}
 	}
@@ -238,11 +238,11 @@ func (ramContext *ramContextStruct) listDirectory(listDirectoryInput *listDirect
 	case numDirFileToReturn < uint64(len(listDirectoryOutput.subdirectory)):
 		listDirectoryOutput.subdirectory = listDirectoryOutput.subdirectory[:numDirFileToReturn]
 		listDirectoryOutput.file = listDirectoryOutput.file[:0]
-		listDirectoryOutput.nextContinuationToken = strconv.FormatUint(continuationTokenAsUint64+numDirFileToReturn, 10)
+		listDirectoryOutput.nextContinuationToken = strconv.FormatUint(continuationTokenAsUint64+numDirFileToReturn, 16)
 		listDirectoryOutput.isTruncated = true
 	case numDirFileToReturn < uint64(len(listDirectoryOutput.subdirectory)+len(listDirectoryOutput.file)):
 		listDirectoryOutput.file = listDirectoryOutput.file[:numDirFileToReturn-uint64(len(listDirectoryOutput.subdirectory))]
-		listDirectoryOutput.nextContinuationToken = strconv.FormatUint(continuationTokenAsUint64+numDirFileToReturn, 10)
+		listDirectoryOutput.nextContinuationToken = strconv.FormatUint(continuationTokenAsUint64+numDirFileToReturn, 16)
 		listDirectoryOutput.isTruncated = true
 	default:
 		// listDirectoryOutput.{nextContinuationToken|isTruncated} both fine as no truncation was needed
@@ -322,9 +322,9 @@ func (ramContext *ramContextStruct) listObjects(listObjectsInput *listObjectsInp
 	if listObjectsInput.continuationToken == "" {
 		continuationTokenAsUint64 = 0
 	} else {
-		continuationTokenAsUint64, err = strconv.ParseUint(listObjectsInput.continuationToken, 10, 64)
+		continuationTokenAsUint64, err = strconv.ParseUint(listObjectsInput.continuationToken, 16, 64)
 		if err != nil {
-			err = fmt.Errorf("strconv.ParseUint(listObjectsInput.continuationToken, 10, 64) failed: %v", err)
+			err = fmt.Errorf("strconv.ParseUint(listObjectsInput.continuationToken, 16, 64) failed: %v", err)
 			return
 		}
 	}
@@ -393,7 +393,7 @@ func (ramContext *ramContextStruct) listObjects(listObjectsInput *listObjectsInp
 
 	if numObjectToReturn < uint64(len(listObjectsOutput.object)) {
 		listObjectsOutput.object = listObjectsOutput.object[:numObjectToReturn]
-		listObjectsOutput.nextContinuationToken = strconv.FormatUint(continuationTokenAsUint64+numObjectToReturn, 10)
+		listObjectsOutput.nextContinuationToken = strconv.FormatUint(continuationTokenAsUint64+numObjectToReturn, 16)
 		listObjectsOutput.isTruncated = true
 	}
 

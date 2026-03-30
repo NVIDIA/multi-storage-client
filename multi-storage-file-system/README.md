@@ -116,7 +116,7 @@ the `backends` array as described by settings in the following table:
 | bucket_container_name           | string               |                     | Name of `bucket` (a.k.a. `container`) to present via POSIX                                                               |
 | prefix                          | string               |                  "" | Subdirectory inside `bucket_container_name` to narrow what to present via POSIX; if !="", should end with "/"            |
 | trace_level                     | decimal              |                   0 | If == 0, no tracing; if >= 1, errors traced; if >= 2, successes traced; if > 2, success details traced                   |
-| backend_type                    | string               |                     | One of the supported object store backends (i.e. `AIStore`, `GCS`, `RAM`, or `S3`)                                       |
+| backend_type                    | string               |                     | One of the supported object store backends (i.e. `AIStore`, `GCS`, `PSEUDO`, `RAM`, or `S3`)                             |
 | <backend_type_specific>         | (sub-field section)  |         (see below) | A section containing `backend-type`-specific settings                                                                    |
 
 Note that precisely one section (specific content appropriate for the
@@ -155,6 +155,30 @@ the following table:
 | retry_next_delay_multiplier  | float                |     2.0 | Must be >= 1.0; used to compute delay between prior failure and next retry          |
 | retry_max_delay              | decimal milliseconds |    2000 | Stops retries if next delay would exceed this limit                                 |
 
+### PSEUDO Backend Configuration
+
+If `backend_type` is specified as "PSEUDO", a sub-section of the `backend`
+configuration (whose name is `PSEUDO`) may be provided if any non-defaults
+are are needed. The PSEUDO-specific settings must be provided (or the
+defaults accepted) as described in the following table:
+
+| Setting                    | Units                | Default      | Description                                                                            |
+| :------------------------- | :------------------- | -----------: | :------------------------------------------------------------------------------------- |
+| files_at_depth_0           | decimal              |            0 | Number of files at depth 0 (i.e. in top-most directory)                                |
+| files_at_depth_1           | decimal              |            0 | Number of files at depth 1 (subdirectories_at_depth_0 must be >0)                      |
+| files_at_depth_2           | decimal              |            0 | Number of files at depth 2 (subdirectories_at_depth_{0\|1} must be >0)                 |
+| files_at_depth_3           | decimal              |            0 | Number of files at depth 3 (subdirectories_at_depth_{0\|1\|2} must be >0)              |
+| max_list_page_size         | decimal              |         1000 | Cap on the number of List{Directory\|Objects} returned subdirectories+files or objects |
+| min_latency_delete_file    | decimal_milliseconds |            0 | Minimum latency for a call to .deleteFile                                              |
+| min_latency_list_directory | decimal_milliseconds |            0 | Minimum latency for a call to .listDirectory                                           |
+| min_latency_list_objects   | decimal_milliseconds |            0 | Minimum latency for a call to .listObjects call                                        |
+| min_latency_read_file      | decimal_milliseconds |            0 | Minimum latency for a call to .readFile call                                           |
+| min_latency_stat_directory | decimal_milliseconds |            0 | Minimum latency for a call to .statDirectory call                                      |
+| min_latency_stat_file      | decimal_milliseconds |            0 | Minimum latency for a call to .statFile call                                           |
+| subdirectories_at_depth_0  | decimal              |            0 | Number of subdirectories at depth 0 (i.e. in top-most directory)                       |
+| subdirectories_at_depth_1  | decimal              |            0 | Number of subdirectories at depth 1 (subdirectories_at_depth_0 must be >0)             |
+| subdirectories_at_depth_2  | decimal              |            0 | Number of subdirectories at depth 2 (subdirectories_at_depth_{0\|1} must be >0)        |
+
 ### RAM Backend Configuration
 
 If `backend_type` is specified as "RAM", a sub-section of the `backend`
@@ -162,11 +186,11 @@ configuration (whose name is `RAM`) may be provided if any non-defaults
 are are needed. The RAM-specific settings must be provided (or the
 defaults accepted) as described in the following table:
 
-| Setting                 | Units   | Default         | Description                                                          |
-| :---------------------- | :------ | --------------: | :------------------------------------------------------------------- |
-| max_total_objects       | decimal |           10000 | Cap on the number of objets to support                               |
-| max_total_object_space  | decimal | 1073741824(1Gi) | Cap on the sum of all the object sizes to support                    |
-| max_directory_page_size | decimal |             100 | Cap on the number of ListDirectory returned subdirectories and files |
+| Setting                | Units   | Default         | Description                                                                            |
+| :--------------------- | :------ | --------------: | :------------------------------------------------------------------------------------- |
+| max_list_page_size     | decimal |            1000 | Cap on the number of List{Directory\|Objects} returned subdirectories+files or objects |
+| max_total_objects      | decimal |           10000 | Cap on the number of objects to support                                                |
+| max_total_object_space | decimal | 1073741824(1Gi) | Cap on the sum of all the object sizes to support                                      |
 
 ### S3 Backend Configuration
 
@@ -257,25 +281,25 @@ Docker Container.
 
 A typical development sequence is depicted in the following:
 
-| Host Commands                    | `dev` Container Commands                                                       | Description                                                                                                 |
-| :------------------------------- | :----------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------- |
-| $ docker pull minio/minio:latest |                                                                                | Ensures the latest version of `minio` Docker Container Image is used (optional)                             |
-| $ docker-compose build           |                                                                                | Builds the `dev` Docker Container Image (optionally append `--no-cache` to ensure it is built from scratch) |
-| $ docker-compose up -d dev       |                                                                                | Launches both the `minio` and the `dev` Docker Containers                                                   |
-| $ docker-compose exec dev bash   |                                                                                | Enters a `bash` shell inside the `dev` Docker Container                                                     |
-|                                  | # ./dev_setup.sh {\|ais\|aisMinio\|garage\|gcs\|minio\|versity}                | Creates and populates a `dev` bucket/container, populated with the source tree (defaults to `minio`)        |
-|                                  | # make                                                                         | Builds (if necessary) the FUSE program                                                                      |
-|                                  | # ./msfs &                                                                     | Runs the FUSE program in the background configured by what's in ${MSC_CONFIG} (`./msfs_config_dev.yaml`)    |
-|                                  | ^M                                                                             | Hitting `ENTER` will get us a `#` prompt                                                                    |
-|                                  | # mount | grep fuse                                                            | Shows that the `dev` bucket is mounted via FUSE at `/mnt`                                                   |
-|                                  | # df -h /mnt                                                                   | Shows the "stats" for the FUSE-mounted filesystem                                                           |
-|                                  | # ls -ailR /mnt                                                                | Recursively lists the files (backed by the "dev" bucket objects) via POSIX                                  |
-|                                  | # kill -SIGHUP \`pidof ./msfs\`                                                | Sends a SIGHUP to the FUSE program telling it to re-parse the configuration file (here `dev.json`)          |
-|                                  | ^M                                                                             | Hitting `ENTER` will get us a `#` prompt                                                                    |
-|                                  | # kill -SIGINT \`pidof ./msfs\`                                                | Sends a SIGINT to the FUSE program telling it to cleanly exit                                               |
-|                                  | ^M                                                                             | Hitting `ENTER` will get us a `#` prompt                                                                    |
-|                                  | # exit                                                                         | Exits the `bash` shell running inside the `dev` Docker Container                                            |
-| $ docker-compose down            |                                                                                | Terminates the `minio` and `dev` Docker Containers                                                          |
+| Host Commands                    | `dev` Container Commands                                        | Description                                                                                                 |
+| :------------------------------- | :-------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------- |
+| $ docker pull minio/minio:latest |                                                                 | Ensures the latest version of `minio` Docker Container Image is used (optional)                             |
+| $ docker-compose build           |                                                                 | Builds the `dev` Docker Container Image (optionally append `--no-cache` to ensure it is built from scratch) |
+| $ docker-compose up -d dev       |                                                                 | Launches both the `minio` and the `dev` Docker Containers                                                   |
+| $ docker-compose exec dev bash   |                                                                 | Enters a `bash` shell inside the `dev` Docker Container                                                     |
+|                                  | # ./dev_setup.sh {\|ais\|aisMinio\|garage\|gcs\|minio\|versity} | Creates and populates a `dev` bucket/container, populated with the source tree (defaults to `minio`)        |
+|                                  | # make                                                          | Builds (if necessary) the FUSE program                                                                      |
+|                                  | # ./msfs &                                                      | Runs the FUSE program in the background configured by what's in ${MSC_CONFIG} (`./msfs_config_dev.yaml`)    |
+|                                  | ^M                                                              | Hitting `ENTER` will get us a `#` prompt                                                                    |
+|                                  | # mount | grep fuse                                             | Shows that the `dev` bucket is mounted via FUSE at `/mnt`                                                   |
+|                                  | # df -h /mnt                                                    | Shows the "stats" for the FUSE-mounted filesystem                                                           |
+|                                  | # ls -ailR /mnt                                                 | Recursively lists the files (backed by the "dev" bucket objects) via POSIX                                  |
+|                                  | # kill -SIGHUP \`pidof ./msfs\`                                 | Sends a SIGHUP to the FUSE program telling it to re-parse the configuration file (here `dev.json`)          |
+|                                  | ^M                                                              | Hitting `ENTER` will get us a `#` prompt                                                                    |
+|                                  | # kill -SIGINT \`pidof ./msfs\`                                 | Sends a SIGINT to the FUSE program telling it to cleanly exit                                               |
+|                                  | ^M                                                              | Hitting `ENTER` will get us a `#` prompt                                                                    |
+|                                  | # exit                                                          | Exits the `bash` shell running inside the `dev` Docker Container                                            |
+| $ docker-compose down            |                                                                 | Terminates the `minio` and `dev` Docker Containers                                                          |
 
 ## Mount Helpers
 

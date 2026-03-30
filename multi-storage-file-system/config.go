@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -26,9 +27,11 @@ const (
 	defaultGCSRetryNextDelayMultiplier = float64(2.0)
 	defaultGCSRetryMaxDelay            = 2000 * time.Millisecond
 
-	defaultRAMMaxTotalObjects      = uint64(10000)
-	defaultRAMMaxTotalObjectSpace  = uint64(1073741824) // 2^30 == 1Gi
-	defaultRAMMaxDirectoryPageSize = uint64(100)
+	defaultPSEUDOMaxListPageSize = uint64(1000)
+
+	defaultRAMMaxListPageSize     = uint64(1000)
+	defaultRAMMaxTotalObjectSpace = uint64(1073741824) // 2^30 == 1Gi
+	defaultRAMMaxTotalObjects     = uint64(10000)
 )
 
 // `parseAny` provides a convenient test for the existence of
@@ -268,6 +271,9 @@ func checkConfigFile() (err error) {
 		backendConfigGCSAsInterface           interface{}
 		backendConfigGCSAsMap                 map[string]interface{}
 		backendConfigGCSAsStruct              *backendConfigGCSStruct
+		backendConfigPSEUDOAsInterface        interface{}
+		backendConfigPSEUDOAsMap              map[string]interface{}
+		backendConfigPSEUDOAsStruct           *backendConfigPSEUDOStruct
 		backendConfigRAMAsInterface           interface{}
 		backendConfigRAMAsMap                 map[string]interface{}
 		backendConfigRAMAsStruct              *backendConfigRAMStruct
@@ -1233,6 +1239,187 @@ func checkConfigFile() (err error) {
 				}
 
 				backendAsStructNew.backendTypeSpecifics = backendConfigGCSAsStruct
+			case "PSEUDO":
+				if !backendAsStructNew.readOnly {
+					err = fmt.Errorf("backends[%v (\"%s\")] specified as backend_type \"PSEUDO\" must be readonly", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					return
+				}
+
+				backendConfigPSEUDOAsInterface, ok = backendAsMap["PSEUDO"]
+				if ok {
+					backendConfigPSEUDOAsMap, ok = backendConfigPSEUDOAsInterface.(map[string]interface{})
+					if !ok {
+						err = fmt.Errorf("bad PSEUDO section at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigPSEUDOAsStruct = &backendConfigPSEUDOStruct{}
+
+					backendConfigPSEUDOAsStruct.filesAtDepth0, ok = parseUint64(backendConfigPSEUDOAsMap, "files_at_depth_0", uint64(0))
+					if !ok {
+						err = fmt.Errorf("bad PSEUDO.files_at_depth_0 at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+					if backendConfigPSEUDOAsStruct.filesAtDepth0 > uint64(math.MaxUint32) {
+						err = fmt.Errorf("bad PSEUDO.files_at_depth_0 at backends[%v (\"%s\")] - must fit in a uint32", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigPSEUDOAsStruct.filesAtDepth1, ok = parseUint64(backendConfigPSEUDOAsMap, "files_at_depth_1", uint64(0))
+					if !ok {
+						err = fmt.Errorf("bad PSEUDO.files_at_depth_1 at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+					if backendConfigPSEUDOAsStruct.filesAtDepth1 > uint64(math.MaxUint32) {
+						err = fmt.Errorf("bad PSEUDO.files_at_depth_1 at backends[%v (\"%s\")] - must fit in a uint32", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigPSEUDOAsStruct.filesAtDepth2, ok = parseUint64(backendConfigPSEUDOAsMap, "files_at_depth_2", uint64(0))
+					if !ok {
+						err = fmt.Errorf("bad PSEUDO.files_at_depth_2 at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+					if backendConfigPSEUDOAsStruct.filesAtDepth2 > uint64(math.MaxUint32) {
+						err = fmt.Errorf("bad PSEUDO.files_at_depth_2 at backends[%v (\"%s\")] - must fit in a uint32", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigPSEUDOAsStruct.filesAtDepth3, ok = parseUint64(backendConfigPSEUDOAsMap, "files_at_depth_3", uint64(0))
+					if !ok {
+						err = fmt.Errorf("bad PSEUDO.files_at_depth_3 at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+					if backendConfigPSEUDOAsStruct.filesAtDepth3 > uint64(math.MaxUint32) {
+						err = fmt.Errorf("bad PSEUDO.files_at_depth_3 at backends[%v (\"%s\")] - must fit in a uint32", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigPSEUDOAsStruct.maxListPageSize, ok = parseUint64(backendConfigPSEUDOAsMap, "max_list_page_size", defaultPSEUDOMaxListPageSize)
+					if !ok {
+						err = fmt.Errorf("bad PSEUDO.max_list_page_size at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigPSEUDOAsStruct.minLatencyDeleteFile, ok = parseMilliseconds(backendConfigPSEUDOAsMap, "min_latency_delete_file", time.Duration(0))
+					if !ok {
+						err = fmt.Errorf("bad PSEUDO.min_latency_delete_file at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigPSEUDOAsStruct.minLatencyListDirectory, ok = parseMilliseconds(backendConfigPSEUDOAsMap, "min_latency_list_directory", time.Duration(0))
+					if !ok {
+						err = fmt.Errorf("bad PSEUDO.min_latency_list_directory at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigPSEUDOAsStruct.minLatencyListObjects, ok = parseMilliseconds(backendConfigPSEUDOAsMap, "min_latency_list_objects", time.Duration(0))
+					if !ok {
+						err = fmt.Errorf("bad PSEUDO.min_latency_list_objects at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigPSEUDOAsStruct.minLatencyReadFile, ok = parseMilliseconds(backendConfigPSEUDOAsMap, "min_latency_read_file", time.Duration(0))
+					if !ok {
+						err = fmt.Errorf("bad PSEUDO.min_latency_read_file at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigPSEUDOAsStruct.minLatencyStatDirectory, ok = parseMilliseconds(backendConfigPSEUDOAsMap, "min_latency_stat_directory", time.Duration(0))
+					if !ok {
+						err = fmt.Errorf("bad PSEUDO.min_latency_stat_directory at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigPSEUDOAsStruct.minLatencyStatFile, ok = parseMilliseconds(backendConfigPSEUDOAsMap, "min_latency_stat_file", time.Duration(0))
+					if !ok {
+						err = fmt.Errorf("bad PSEUDO.min_latency_stat_file at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigPSEUDOAsStruct.subdirectoriesAtDepth0, ok = parseUint64(backendConfigPSEUDOAsMap, "subdirectories_at_depth_0", uint64(0))
+					if !ok {
+						err = fmt.Errorf("bad PSEUDO.subdirectories_at_depth_0 at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+					if backendConfigPSEUDOAsStruct.subdirectoriesAtDepth0 > uint64(math.MaxUint32) {
+						err = fmt.Errorf("bad PSEUDO.subdirectories_at_depth_0 at backends[%v (\"%s\")] - must fit in a uint32", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigPSEUDOAsStruct.subdirectoriesAtDepth1, ok = parseUint64(backendConfigPSEUDOAsMap, "subdirectories_at_depth_1", uint64(0))
+					if !ok {
+						err = fmt.Errorf("bad PSEUDO.subdirectories_at_depth_1 at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+					if backendConfigPSEUDOAsStruct.subdirectoriesAtDepth1 > uint64(math.MaxUint32) {
+						err = fmt.Errorf("bad PSEUDO.subdirectories_at_depth_1 at backends[%v (\"%s\")] - must fit in a uint32", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigPSEUDOAsStruct.subdirectoriesAtDepth2, ok = parseUint64(backendConfigPSEUDOAsMap, "subdirectories_at_depth_2", uint64(0))
+					if !ok {
+						err = fmt.Errorf("bad PSEUDO.subdirectories_at_depth_2 at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+					if backendConfigPSEUDOAsStruct.subdirectoriesAtDepth2 > uint64(math.MaxUint32) {
+						err = fmt.Errorf("bad PSEUDO.subdirectories_at_depth_2 at backends[%v (\"%s\")] - must fit in a uint32", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					if backendConfigPSEUDOAsStruct.subdirectoriesAtDepth0 == 0 {
+						if (backendConfigPSEUDOAsStruct.filesAtDepth1 + backendConfigPSEUDOAsStruct.filesAtDepth2 + backendConfigPSEUDOAsStruct.filesAtDepth3 + backendConfigPSEUDOAsStruct.subdirectoriesAtDepth1 + backendConfigPSEUDOAsStruct.subdirectoriesAtDepth2) > 0 {
+							err = fmt.Errorf("non-zero PSEUDO.{files_at_depth_{1|2|3}|subdirectories_at_depth{1|2}} not allowed if PSEUDO.subdirectories_at_depth_0 == 0 at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+							return
+						}
+					} else {
+						if (backendConfigPSEUDOAsStruct.filesAtDepth1 + backendConfigPSEUDOAsStruct.subdirectoriesAtDepth1) == 0 {
+							err = fmt.Errorf("for non-zero PSEUDO.subdirectories_at_depth_0, PSEUDO.files_at_depth_1 and/or PSEUDO.subdirectories_at_depth_1 must be non-zero at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+							return
+						}
+						if backendConfigPSEUDOAsStruct.subdirectoriesAtDepth1 == 0 {
+							if (backendConfigPSEUDOAsStruct.filesAtDepth2 + backendConfigPSEUDOAsStruct.filesAtDepth3 + backendConfigPSEUDOAsStruct.subdirectoriesAtDepth2) > 0 {
+								err = fmt.Errorf("non-zero PSEUDO.{files_at_depth_{2|3}|subdirectories_at_depth2} not allowed if PSEUDO.subdirectories_at_depth_1 == 0 at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+								return
+							}
+						} else {
+							if (backendConfigPSEUDOAsStruct.filesAtDepth2 + backendConfigPSEUDOAsStruct.subdirectoriesAtDepth2) == 0 {
+								err = fmt.Errorf("for non-zero PSEUDO.subdirectories_at_depth_1, PSEUDO.files_at_depth_2 and/or PSEUDO.subdirectories_at_depth_2 must be non-zero at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+								return
+							}
+							if backendConfigPSEUDOAsStruct.subdirectoriesAtDepth2 == 0 {
+								if backendConfigPSEUDOAsStruct.filesAtDepth3 > 0 {
+									err = fmt.Errorf("non-zero PSEUDO.files_at_depth_3 not allowed if PSEUDO.subdirectories_at_depth_2 == 0 at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+									return
+								}
+							} else {
+								if backendConfigPSEUDOAsStruct.filesAtDepth3 == 0 {
+									err = fmt.Errorf("for non-zero PSEUDO.subdirectories_at_depth_2, PSEUDO.files_at_depth_3 must be non-zero at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+									return
+								}
+							}
+						}
+					}
+				} else {
+					backendConfigPSEUDOAsStruct = &backendConfigPSEUDOStruct{
+						filesAtDepth0:           0,
+						filesAtDepth1:           0,
+						filesAtDepth2:           0,
+						filesAtDepth3:           0,
+						maxListPageSize:         defaultPSEUDOMaxListPageSize,
+						minLatencyDeleteFile:    time.Duration(0),
+						minLatencyListDirectory: time.Duration(0),
+						minLatencyListObjects:   time.Duration(0),
+						minLatencyReadFile:      time.Duration(0),
+						minLatencyStatDirectory: time.Duration(0),
+						minLatencyStatFile:      time.Duration(0),
+						subdirectoriesAtDepth0:  0,
+						subdirectoriesAtDepth1:  0,
+						subdirectoriesAtDepth2:  0,
+					}
+				}
+
+				backendAsStructNew.backendTypeSpecifics = backendConfigPSEUDOAsStruct
 			case "RAM":
 				backendConfigRAMAsInterface, ok = backendAsMap["RAM"]
 				if ok {
@@ -1244,9 +1431,9 @@ func checkConfigFile() (err error) {
 
 					backendConfigRAMAsStruct = &backendConfigRAMStruct{}
 
-					backendConfigRAMAsStruct.maxTotalObjects, ok = parseUint64(backendConfigRAMAsMap, "max_total_objects", defaultRAMMaxTotalObjects)
+					backendConfigRAMAsStruct.maxListPageSize, ok = parseUint64(backendConfigRAMAsMap, "max_list_page_size", defaultRAMMaxListPageSize)
 					if !ok {
-						err = fmt.Errorf("bad RAM.max_total_objects at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						err = fmt.Errorf("bad RAM.max_list_page_size at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
 						return
 					}
 
@@ -1256,16 +1443,16 @@ func checkConfigFile() (err error) {
 						return
 					}
 
-					backendConfigRAMAsStruct.maxDirectoryPageSize, ok = parseUint64(backendConfigRAMAsMap, "max_directory_page_size", defaultRAMMaxDirectoryPageSize)
+					backendConfigRAMAsStruct.maxTotalObjects, ok = parseUint64(backendConfigRAMAsMap, "max_total_objects", defaultRAMMaxTotalObjects)
 					if !ok {
-						err = fmt.Errorf("bad RAM.max_directory_page_size at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						err = fmt.Errorf("bad RAM.max_total_objects at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
 						return
 					}
 				} else {
 					backendConfigRAMAsStruct = &backendConfigRAMStruct{
-						maxTotalObjects:      defaultRAMMaxTotalObjects,
-						maxTotalObjectSpace:  defaultRAMMaxTotalObjectSpace,
-						maxDirectoryPageSize: defaultRAMMaxDirectoryPageSize,
+						maxListPageSize:     defaultRAMMaxListPageSize,
+						maxTotalObjectSpace: defaultRAMMaxTotalObjectSpace,
+						maxTotalObjects:     defaultRAMMaxTotalObjects,
 					}
 				}
 
@@ -1785,9 +1972,69 @@ func checkConfigFile() (err error) {
 						err = fmt.Errorf("cannot change GCS.retry_max_delay in backends[\"%s\"]", dirName)
 						return
 					}
+				case "PSEUDO":
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigPSEUDOStruct).filesAtDepth0 != backendAsStructNew.backendTypeSpecifics.(*backendConfigPSEUDOStruct).filesAtDepth0 {
+						err = fmt.Errorf("cannot change PSEUDO.files_at_depth_0 in backends[\"%s\"]", dirName)
+						return
+					}
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigPSEUDOStruct).filesAtDepth1 != backendAsStructNew.backendTypeSpecifics.(*backendConfigPSEUDOStruct).filesAtDepth1 {
+						err = fmt.Errorf("cannot change PSEUDO.files_at_depth_1 in backends[\"%s\"]", dirName)
+						return
+					}
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigPSEUDOStruct).filesAtDepth2 != backendAsStructNew.backendTypeSpecifics.(*backendConfigPSEUDOStruct).filesAtDepth2 {
+						err = fmt.Errorf("cannot change PSEUDO.files_at_depth_2 in backends[\"%s\"]", dirName)
+						return
+					}
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigPSEUDOStruct).filesAtDepth3 != backendAsStructNew.backendTypeSpecifics.(*backendConfigPSEUDOStruct).filesAtDepth3 {
+						err = fmt.Errorf("cannot change PSEUDO.files_at_depth_3 in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigPSEUDOStruct).maxListPageSize != backendAsStructNew.backendTypeSpecifics.(*backendConfigPSEUDOStruct).maxListPageSize {
+						err = fmt.Errorf("cannot change PSEUDO.max_list_page_size in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigPSEUDOStruct).minLatencyDeleteFile != backendAsStructNew.backendTypeSpecifics.(*backendConfigPSEUDOStruct).minLatencyDeleteFile {
+						err = fmt.Errorf("cannot change PSEUDO.min_latency_delete_file in backends[\"%s\"]", dirName)
+						return
+					}
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigPSEUDOStruct).minLatencyListDirectory != backendAsStructNew.backendTypeSpecifics.(*backendConfigPSEUDOStruct).minLatencyListDirectory {
+						err = fmt.Errorf("cannot change PSEUDO.min_latency_list_directory in backends[\"%s\"]", dirName)
+						return
+					}
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigPSEUDOStruct).minLatencyListObjects != backendAsStructNew.backendTypeSpecifics.(*backendConfigPSEUDOStruct).minLatencyListObjects {
+						err = fmt.Errorf("cannot change PSEUDO.min_latency_list_objects in backends[\"%s\"]", dirName)
+						return
+					}
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigPSEUDOStruct).minLatencyReadFile != backendAsStructNew.backendTypeSpecifics.(*backendConfigPSEUDOStruct).minLatencyReadFile {
+						err = fmt.Errorf("cannot change PSEUDO.min_latency_read_file in backends[\"%s\"]", dirName)
+						return
+					}
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigPSEUDOStruct).minLatencyStatDirectory != backendAsStructNew.backendTypeSpecifics.(*backendConfigPSEUDOStruct).minLatencyStatDirectory {
+						err = fmt.Errorf("cannot change PSEUDO.minLatencyStatDirectory in backends[\"%s\"]", dirName)
+						return
+					}
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigPSEUDOStruct).minLatencyStatFile != backendAsStructNew.backendTypeSpecifics.(*backendConfigPSEUDOStruct).minLatencyStatFile {
+						err = fmt.Errorf("cannot change PSEUDO.min_latency_stat_file in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigPSEUDOStruct).subdirectoriesAtDepth0 != backendAsStructNew.backendTypeSpecifics.(*backendConfigPSEUDOStruct).subdirectoriesAtDepth0 {
+						err = fmt.Errorf("cannot change PSEUDO.subdirectories_at_depth_0 in backends[\"%s\"]", dirName)
+						return
+					}
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigPSEUDOStruct).subdirectoriesAtDepth1 != backendAsStructNew.backendTypeSpecifics.(*backendConfigPSEUDOStruct).subdirectoriesAtDepth1 {
+						err = fmt.Errorf("cannot change PSEUDO.subdirectories_at_depth_1 in backends[\"%s\"]", dirName)
+						return
+					}
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigPSEUDOStruct).subdirectoriesAtDepth2 != backendAsStructNew.backendTypeSpecifics.(*backendConfigPSEUDOStruct).subdirectoriesAtDepth2 {
+						err = fmt.Errorf("cannot change PSEUDO.subdirectories_at_depth_2 in backends[\"%s\"]", dirName)
+						return
+					}
 				case "RAM":
-					if backendAsStructOld.backendTypeSpecifics.(*backendConfigRAMStruct).maxTotalObjects != backendAsStructNew.backendTypeSpecifics.(*backendConfigRAMStruct).maxTotalObjects {
-						err = fmt.Errorf("cannot change RAM.max_total_objects in backends[\"%s\"]", dirName)
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigRAMStruct).maxListPageSize != backendAsStructNew.backendTypeSpecifics.(*backendConfigRAMStruct).maxListPageSize {
+						err = fmt.Errorf("cannot change RAM.max_list_page_size in backends[\"%s\"]", dirName)
 						return
 					}
 
@@ -1796,8 +2043,8 @@ func checkConfigFile() (err error) {
 						return
 					}
 
-					if backendAsStructOld.backendTypeSpecifics.(*backendConfigRAMStruct).maxDirectoryPageSize != backendAsStructNew.backendTypeSpecifics.(*backendConfigRAMStruct).maxDirectoryPageSize {
-						err = fmt.Errorf("cannot change RAM.max_directory_page_size in backends[\"%s\"]", dirName)
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigRAMStruct).maxTotalObjects != backendAsStructNew.backendTypeSpecifics.(*backendConfigRAMStruct).maxTotalObjects {
+						err = fmt.Errorf("cannot change RAM.max_total_objects in backends[\"%s\"]", dirName)
 						return
 					}
 				case "S3":

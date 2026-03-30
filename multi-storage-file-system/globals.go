@@ -23,81 +23,106 @@ const (
 // Note: AIStore SDK handles retries internally, so no retry config needed.
 type backendConfigAIStoreStruct struct {
 	// From <config-file>
-	endpoint                 string        //  JSON/YAML "endpoint"                     default:"${AIS_ENDPOINT}"
-	skipTLSCertificateVerify bool          //  JSON/YAML "skip_tls_certificate_verify"  default:false
-	authnToken               string        //  JSON/YAML "authn_token"                  default:"${AIS_AUTHN_TOKEN}"
-	authnTokenFile           string        //  JSON/YAML "authn_token_file"             default:"${AIS_AUTHN_TOKEN_FILE:=~/.config/ais/cli/auth.token}"
-	provider                 string        //  JSON/YAML "provider"                     default:"s3"
-	timeout                  time.Duration //  JSON/YAML "timeout"                      default:30000
+	endpoint                 string        //      JSON/YAML "endpoint"                       default:"${AIS_ENDPOINT}"
+	skipTLSCertificateVerify bool          //      JSON/YAML "skip_tls_certificate_verify"    default:false
+	authnToken               string        //      JSON/YAML "authn_token"                    default:"${AIS_AUTHN_TOKEN}"
+	authnTokenFile           string        //      JSON/YAML "authn_token_file"               default:"${AIS_AUTHN_TOKEN_FILE:=~/.config/ais/cli/auth.token}"
+	provider                 string        //      JSON/YAML "provider"                       default:"s3"
+	timeout                  time.Duration //      JSON/YAML "timeout"                        default:30000
 }
 
+// `backendConfigGCSStruct` describes a backend's GCS-specific settings.
 type backendConfigGCSStruct struct {
-	apiKey                   string        // JSON/YAML "api_key"                      default:""
-	endpoint                 string        // JSON/YAML "endpoint"                     default:""
-	skipTLSCertificateVerify bool          // JSON/YAML "skip_tls_certificate_verify"  default:false
-	retryBaseDelay           time.Duration // JSON/YAML "retry_base_delay"             default:10
-	retryNextDelayMultiplier float64       // JSON/YAML "retry_next_delay_multiplier"  default:2.0
-	retryMaxDelay            time.Duration // JSON/YAML "retry_max_delay"              default:2000
+	apiKey                   string        //      JSON/YAML "api_key"                        default:""
+	endpoint                 string        //      JSON/YAML "endpoint"                       default:""
+	skipTLSCertificateVerify bool          //      JSON/YAML "skip_tls_certificate_verify"    default:false
+	retryBaseDelay           time.Duration //      JSON/YAML "retry_base_delay"               default:10
+	retryNextDelayMultiplier float64       //      JSON/YAML "retry_next_delay_multiplier"    default:2.0
+	retryMaxDelay            time.Duration //      JSON/YAML "retry_max_delay"                default:2000
+}
+
+// `backendConfigPSEUDOStruct` describes a backend's RAM-specific settings.
+type backendConfigPSEUDOStruct struct {
+	// From <config-file>
+	filesAtDepth0           uint64        //       JSON/YAML "files_at_depth_0"               default:0
+	filesAtDepth1           uint64        //       JSON/YAML "files_at_depth_1"               default:0
+	filesAtDepth2           uint64        //       JSON/YAML "files_at_depth_2"               default:0
+	filesAtDepth3           uint64        //       JSON/YAML "files_at_depth_3"               default:0
+	maxListPageSize         uint64        //       JSON/YAML "max_list_page_size"             default:1000
+	minLatencyDeleteFile    time.Duration //       JSON/YAML "min_latency_delete_file"        default 0
+	minLatencyListDirectory time.Duration //       JSON/YAML "min_latency_list_directory"     default 0
+	minLatencyListObjects   time.Duration //       JSON/YAML "min_latency_list_objects"       default 0
+	minLatencyReadFile      time.Duration //       JSON/YAML "min_latency_read_file"          default 0
+	minLatencyStatDirectory time.Duration //       JSON/YAML "min_latency_stat_directory"     default 0
+	minLatencyStatFile      time.Duration //       JSON/YAML "min_latency_stat_file"          default 0
+	subdirectoriesAtDepth0  uint64        //       JSON/YAML "subdirectories_at_depth_0"      default:0
+	subdirectoriesAtDepth1  uint64        //       JSON/YAML "subdirectories_at_depth_1"      default:0
+	subdirectoriesAtDepth2  uint64        //       JSON/YAML "subdirectories_at_depth_2"      default:0
+	// Runtime state
+	maxPathDepth              uint64    //         Convenience recording of largest depth <N> where filesAtDepth<N> > 0 or == 0 if filesAtDepth<N> are all == 0
+	filesAtDepth              [4]uint64 //         Convenience representation of .filesAtDepth[0-3]
+	subdirectoriesAtDepth     [4]uint64 //         Convenience representation of .subdirectoriesAtDepth[0-2] with padding to match size of .filesAtDepth
+	objectsInDirectoryAtDepth [4]uint64 //         Conenvience representation of the number of objects inside directory at depth 0-3
 }
 
 // `backendConfigRAMStruct` describes a backend's RAM-specific settings.
 type backendConfigRAMStruct struct {
 	// From <config-file>
-	maxTotalObjects      uint64 //             JSON/YAML "max_total_objects"            default:10000
-	maxTotalObjectSpace  uint64 //             JSON/YAML "max_total_object_space"       default:1073741824
-	maxDirectoryPageSize uint64 //             JSON/YAML "max_directory_page_size"      default:100
+	maxListPageSize     uint64 //                  JSON/YAML "max_list_page_size"             default:1000
+	maxTotalObjectSpace uint64 //                  JSON/YAML "max_total_object_space"         default:1073741824
+	maxTotalObjects     uint64 //                  JSON/YAML "max_total_objects"              default:10000
 }
 
 // `backendConfigS3Struct` describes a backend's S3-specific settings.
 type backendConfigS3Struct struct {
 	// From <config-file>
-	configCredentialsProfile  string        // JSON/YAML "config_credentials_profile"   default:"${AWS_PROFILE:-default}"
-	useConfigEnv              bool          // JSON/YAML "use_config_env"               default:false
-	configFilePath            string        // YSON/YAML "config_file_path"             default:"${AWS_CONFIG_FILE:-~/.aws/config}"
-	region                    string        // JSON/YAML "region"                       default:"${AWS_REGION:-us-east-1}"
-	endpoint                  string        // JSON/YAML "endpoint"                     default:"${AWS_ENDPOINT}"
-	useCredentialsEnv         bool          // JSON/YAML "use_credentials_env"          default:false
-	credentialsFilePath       string        // JSON/YAML "credentials_file_path"        default:"${AWS_SHARED_CREDENTIALS_FILE:-~/.aws/credentials}"
-	accessKeyID               string        // JSON/YAML "access_key_id"                default:"${AWS_ACCESS_KEY_ID}"
-	secretAccessKey           string        // JSON/YAML "secret_access_key"            default:"${AWS_SECRET_ACCESS_KEY}"
-	skipTLSCertificateVerify  bool          // JSON/YAML "skip_tls_certificate_verify"  default:false
-	virtualHostedStyleRequest bool          // JSON/YAML "virtual_hosted_style_request" default:false
-	unsignedPayload           bool          // JSON/YAML "unsigned_payload"             default:false
-	retryBaseDelay            time.Duration // JSON/YAML "retry_base_delay"             default:10
-	retryNextDelayMultiplier  float64       // JSON/YAML "retry_next_delay_multiplier"  default:2.0
-	retryMaxDelay             time.Duration // JSON/YAML "retry_max_delay"              default:2000
+	configCredentialsProfile  string        //     JSON/YAML "config_credentials_profile"     default:"${AWS_PROFILE:-default}"
+	useConfigEnv              bool          //     JSON/YAML "use_config_env"                 default:false
+	configFilePath            string        //     JSON/YAML "config_file_path"               default:"${AWS_CONFIG_FILE:-~/.aws/config}"
+	region                    string        //     JSON/YAML "region"                         default:"${AWS_REGION:-us-east-1}"
+	endpoint                  string        //     JSON/YAML "endpoint"                       default:"${AWS_ENDPOINT}"
+	useCredentialsEnv         bool          //     JSON/YAML "use_credentials_env"            default:false
+	credentialsFilePath       string        //     JSON/YAML "credentials_file_path"          default:"${AWS_SHARED_CREDENTIALS_FILE:-~/.aws/credentials}"
+	accessKeyID               string        //     JSON/YAML "access_key_id"                  default:"${AWS_ACCESS_KEY_ID}"
+	secretAccessKey           string        //     JSON/YAML "secret_access_key"              default:"${AWS_SECRET_ACCESS_KEY}"
+	skipTLSCertificateVerify  bool          //     JSON/YAML "skip_tls_certificate_verify"    default:false
+	virtualHostedStyleRequest bool          //     JSON/YAML "virtual_hosted_style_request"   default:false
+	unsignedPayload           bool          //     JSON/YAML "unsigned_payload"               default:false
+	retryBaseDelay            time.Duration //     JSON/YAML "retry_base_delay"               default:10
+	retryNextDelayMultiplier  float64       //     JSON/YAML "retry_next_delay_multiplier"    default:2.0
+	retryMaxDelay             time.Duration //     JSON/YAML "retry_max_delay"                default:2000
 	// Runtime state
-	retryDelay []time.Duration //              Delay slice indexed by RetryDelay()'s attempt arg - 1
+	retryDelay []time.Duration //                  Delay slice indexed by RetryDelay()'s attempt arg - 1
 }
 
 // `backendStruct` contains the generic backend's settings and runtime
 // particulars as well is references to backendType-specific details.
 type backendStruct struct {
 	// From <config-file>
-	dirName                     string      // JSON/YAML "dir_name"                       required
-	readOnly                    bool        // JSON/YAML "readonly"                       default:true
-	flushOnClose                bool        // JSON/YAML "flush_on_close"                 default:true
-	uid                         uint64      // JSON/YAML "uid"                            default:<current euid>
-	gid                         uint64      // JSON/YAML "gid"                            default:<current egid>
-	dirPerm                     uint64      // JSON/YAML "dir_perm"                       default:0o555(ro)/0o777(rw)
-	filePerm                    uint64      // JSON/YAML "file_perm"                      default:0o444(ro)/0o666(rw)
-	directoryPageSize           uint64      // JSON/YAML "directory_page_size"            default:0(endpoint determined)
-	multiPartCacheLineThreshold uint64      // JSON/YAML "multipart_cache_line_threshold" default:512
-	uploadPartCacheLines        uint64      // JSON/YAML "upload_part_cache_lines"        default:32
-	uploadPartConcurrency       uint64      // JSON/YAML "upload_part_concurrency"        default:32
-	bucketContainerName         string      // JSON/YAML "bucket_container_name"          required
-	prefix                      string      // JSON/YAML "prefix"                         default:""
-	traceLevel                  uint64      // JSON/YAML "trace_level"                    default:0
-	backendType                 string      // JSON/YAML "backend_type"                   required(one of "AIStore", "RAM", "S3")
-	backendTypeSpecifics        interface{} //                                            required(one of *backendConfig{AIStore|S3|RAM}Struct)
+	dirName                     string      //     JSON/YAML "dir_name"                       required
+	readOnly                    bool        //     JSON/YAML "readonly"                       default:true
+	flushOnClose                bool        //     JSON/YAML "flush_on_close"                 default:true
+	uid                         uint64      //     JSON/YAML "uid"                            default:<current euid>
+	gid                         uint64      //     JSON/YAML "gid"                            default:<current egid>
+	dirPerm                     uint64      //     JSON/YAML "dir_perm"                       default:0o555(ro)/0o777(rw)
+	filePerm                    uint64      //     JSON/YAML "file_perm"                      default:0o444(ro)/0o666(rw)
+	directoryPageSize           uint64      //     JSON/YAML "directory_page_size"            default:0(endpoint determined)
+	multiPartCacheLineThreshold uint64      //     JSON/YAML "multipart_cache_line_threshold" default:512
+	uploadPartCacheLines        uint64      //     JSON/YAML "upload_part_cache_lines"        default:32
+	uploadPartConcurrency       uint64      //     JSON/YAML "upload_part_concurrency"        default:32
+	bucketContainerName         string      //     JSON/YAML "bucket_container_name"          required
+	prefix                      string      //     JSON/YAML "prefix"                         default:""
+	traceLevel                  uint64      //     JSON/YAML "trace_level"                    default:0
+	backendType                 string      //     JSON/YAML "backend_type"                   required(one of "AIStore", "GCS", "PSEUDO", "RAM", "S3")
+	backendTypeSpecifics        interface{} //                                                as-required(one of *backendConfig{AIStore|GCS|PSEUDO|RAM|S3}Struct)
 	// Runtime state
-	nonce          uint64                //    Key in globalsStruct.backendMap
-	backendPath    string                //    URL incorporating each of the above path-related values
+	nonce          uint64                //        Key in globalsStruct.backendMap
+	backendPath    string                //        URL incorporating each of the above path-related values
 	context        backendContextIf      //
-	inode          *inodeStruct          //    Link to this backendStruct's inodeStruct with .inodeType == BackendRootDir
+	inode          *inodeStruct          //        Link to this backendStruct's inodeStruct with .inodeType == BackendRootDir
 	fissionMetrics *fissionMetricsStruct //
 	backendMetrics *backendMetricsStruct //
-	mounted        bool                  //    If false, backendStruct.dirName not in fuseRootDirInodeMAP
+	mounted        bool                  //        If false, backendStruct.dirName not in fuseRootDirInodeMAP
 }
 
 // `configStruct` describes the global configuration settings as well as the array of backendStruct's configured.

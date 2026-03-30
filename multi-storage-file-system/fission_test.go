@@ -51,6 +51,20 @@ func fissionTestUp(t *testing.T) {
 		"msfs_version": 1,
 		"backends": [
 			{
+				"dir_name": "pseudo",
+				"bucket_container_name": "ignored",
+				"backend_type": "PSEUDO",
+				"PSEUDO": {
+					"files_at_depth_0": 3,
+					"files_at_depth_1": 4,
+					"files_at_depth_2": 5,
+					"files_at_depth_3": 6,
+					"subdirectories_at_depth_0": 2,
+					"subdirectories_at_depth_1": 3,
+					"subdirectories_at_depth_2": 4
+				}
+			},
+			{
 				"dir_name": "ram",
 				"bucket_container_name": "ignored",
 				"backend_type": "RAM",
@@ -644,8 +658,8 @@ func TestFissionDoOpenDirReadDirReadDirPlusReleaseDir(t *testing.T) {
 	if errno != 0 {
 		t.Fatalf("DoReadDir(rootDirFH, Offset: 0) unexpectedly failed (errno: %v)", errno)
 	}
-	if len(readDirOut.DirEnt) != 3 {
-		t.Fatalf("DoReadDir(rootDirFH, Offset: 0) returned bad len(readDirOut.DirEnt): %v (expected: 3)", len(readDirOut.DirEnt))
+	if len(readDirOut.DirEnt) != 4 {
+		t.Fatalf("DoReadDir(rootDirFH, Offset: 0) returned bad len(readDirOut.DirEnt): %v (expected: 4)", len(readDirOut.DirEnt))
 	}
 	if string(readDirOut.DirEnt[0].Name) != "." {
 		t.Fatalf("DoReadDir(rootDirFH, Offset: 0) returned wrong DirEnt[0]")
@@ -653,8 +667,11 @@ func TestFissionDoOpenDirReadDirReadDirPlusReleaseDir(t *testing.T) {
 	if string(readDirOut.DirEnt[1].Name) != ".." {
 		t.Fatalf("DoReadDir(rootDirFH, Offset: 0) returned wrong DirEnt[1]")
 	}
-	if string(readDirOut.DirEnt[2].Name) != "ram" {
+	if string(readDirOut.DirEnt[2].Name) != "pseudo" {
 		t.Fatalf("DoReadDir(rootDirFH, Offset: 0) returned wrong DirEnt[2]")
+	}
+	if string(readDirOut.DirEnt[3].Name) != "ram" {
+		t.Fatalf("DoReadDir(rootDirFH, Offset: 0) returned wrong DirEnt[3]")
 	}
 
 	inHeader = &fission.InHeader{
@@ -662,7 +679,7 @@ func TestFissionDoOpenDirReadDirReadDirPlusReleaseDir(t *testing.T) {
 	}
 	readDirIn = &fission.ReadDirIn{
 		FH:     rootDirFH,
-		Offset: readDirOut.DirEnt[2].Off,
+		Offset: readDirOut.DirEnt[3].Off,
 		Size:   testFissionReadDirBufSize,
 	}
 	readDirOut, errno = globals.DoReadDir(inHeader, readDirIn)
@@ -685,8 +702,8 @@ func TestFissionDoOpenDirReadDirReadDirPlusReleaseDir(t *testing.T) {
 	if errno != 0 {
 		t.Fatalf("DoReadDirPlus(rootDirFH, Offset: 0) unexpectedly failed (errno: %v)", errno)
 	}
-	if len(readDirPlusOut.DirEntPlus) != 3 {
-		t.Fatalf("DoReadDirPlus(rootDirFH, Offset: 0) returned bad len(readDirPlusOut.DirEntPlus): %v (expected: 3)", len(readDirPlusOut.DirEntPlus))
+	if len(readDirPlusOut.DirEntPlus) != 4 {
+		t.Fatalf("DoReadDirPlus(rootDirFH, Offset: 0) returned bad len(readDirPlusOut.DirEntPlus): %v (expected: 4)", len(readDirPlusOut.DirEntPlus))
 	}
 	if string(readDirPlusOut.DirEntPlus[0].Name) != "." {
 		t.Fatalf("DoReadDirPlus(rootDirFH, Offset: 0) returned wrong DirEntPlus[0]")
@@ -694,8 +711,11 @@ func TestFissionDoOpenDirReadDirReadDirPlusReleaseDir(t *testing.T) {
 	if string(readDirPlusOut.DirEntPlus[1].Name) != ".." {
 		t.Fatalf("DoReadDirPlus(rootDirFH, Offset: 0) returned wrong DirEntPlus[1]")
 	}
-	if string(readDirPlusOut.DirEntPlus[2].Name) != "ram" {
+	if string(readDirPlusOut.DirEntPlus[2].Name) != "pseudo" {
 		t.Fatalf("DoReadDirPlus(rootDirFH, Offset: 0) returned wrong DirEntPlus[2]")
+	}
+	if string(readDirPlusOut.DirEntPlus[3].Name) != "ram" {
+		t.Fatalf("DoReadDirPlus(rootDirFH, Offset: 0) returned wrong DirEntPlus[3]")
 	}
 
 	inHeader = &fission.InHeader{
@@ -703,7 +723,7 @@ func TestFissionDoOpenDirReadDirReadDirPlusReleaseDir(t *testing.T) {
 	}
 	readDirPlusIn = &fission.ReadDirPlusIn{
 		FH:     rootDirFH,
-		Offset: readDirPlusOut.DirEntPlus[2].Off,
+		Offset: readDirPlusOut.DirEntPlus[3].Off,
 		Size:   testFissionReadDirPlusBufSize,
 	}
 	readDirPlusOut, errno = globals.DoReadDirPlus(inHeader, readDirPlusIn)
