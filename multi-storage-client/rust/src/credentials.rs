@@ -101,7 +101,7 @@ fn join_error_to_object_store_error(e: tokio::task::JoinError) -> object_store::
         store: "credentials_provider",
         source: Box::new(std::io::Error::new(
             std::io::ErrorKind::Other,
-            format!("Join task failed when refreshing credentials: {}", e),
+            format!("Join task failed when refreshing credentials: {:?}", e),
         )),
     }
 }
@@ -112,7 +112,7 @@ fn py_err_to_object_store_error(e: PyErr) -> object_store::Error {
         store: "credentials_provider",
         source: Box::new(std::io::Error::new(
             std::io::ErrorKind::Other,
-            format!("Failed to refresh credentials: {}", e),
+            format!("Failed to refresh credentials: {:?}", e),
         )),
     }
 }
@@ -278,7 +278,7 @@ impl object_store::CredentialProvider for AwsSdkCredentialsProvider {
                     store: "AwsSdkCredentialsProvider",
                     source: Box::new(std::io::Error::new(
                         std::io::ErrorKind::Other,
-                        format!("Failed to get AWS credentials: {}", e),
+                        format!("Failed to get AWS credentials: {:?}", e),
                     )),
                 }
             })?;

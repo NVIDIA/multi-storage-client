@@ -39,6 +39,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
 use http::StatusCode;
+use aws_smithy_http_client::{tls, Builder};
 use aws_config::BehaviorVersion;
 
 mod credentials;
@@ -270,7 +271,11 @@ fn load_aws_credentials_provider(profile_name_config: Option<&ConfigValue>) -> R
     // Load AWS config asynchronously
     let sdk_config = if let Ok(handle) = tokio::runtime::Handle::try_current() {
         handle.block_on(async {
-            let mut config_loader = aws_config::defaults(BehaviorVersion::latest());
+            let http_client = Builder::new()
+                .tls_provider(tls::Provider::Rustls(tls::rustls_provider::CryptoMode::Ring))
+                .build_https();
+            let mut config_loader = aws_config::defaults(BehaviorVersion::latest())
+                .http_client(http_client);
             if let Some(profile_name_val) = profile_name_config {
                 config_loader = config_loader.profile_name(profile_name_val.to_string());
             }
@@ -280,9 +285,13 @@ fn load_aws_credentials_provider(profile_name_config: Option<&ConfigValue>) -> R
         })
     } else {
         let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| StorageError::ConfigError(format!("Failed to create tokio runtime: {}", e)))?;
+            .map_err(|e| StorageError::ConfigError(format!("Failed to create tokio runtime: {:?}", e)))?;
         rt.block_on(async {
-            let mut config_loader = aws_config::defaults(BehaviorVersion::latest());
+            let http_client = Builder::new()
+                .tls_provider(tls::Provider::Rustls(tls::rustls_provider::CryptoMode::Ring))
+                .build_https();
+            let mut config_loader = aws_config::defaults(BehaviorVersion::latest())
+                .http_client(http_client);
             if let Some(profile_name_val) = profile_name_config {
                 config_loader = config_loader.profile_name(profile_name_val.to_string());
             }
@@ -302,7 +311,7 @@ fn load_aws_credentials_provider(profile_name_config: Option<&ConfigValue>) -> R
 
 fn parse_path(path: &str) -> Result<Path, StorageError> {
     // Use Path::parse instead of Path::from to avoid double encoding
-    Path::parse(path).map_err(|e| StorageError::InvalidPathError(format!("Failed to parse path '{}': {}", path, e)))
+    Path::parse(path).map_err(|e| StorageError::InvalidPathError(format!("Failed to parse path '{}': {:?}", path, e)))
 }
 
 fn build_s3_store<'a>(
@@ -897,7 +906,7 @@ impl RustClient {
 
             let mut segments = Vec::with_capacity(tasks.len());
             for task in tasks {
-                let data = task.await.map_err(|e| StorageError::ObjectStoreError(format!("Failed to join multipart download task: {}", e)))??;
+                let data = task.await.map_err(|e| StorageError::ObjectStoreError(format!("Failed to join multipart download task: {:?}", e)))??;
                 segments.push(data);
             }
 
