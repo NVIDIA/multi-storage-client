@@ -125,15 +125,23 @@ def _parse_azure_storage_provider_config(section: configparser.SectionProxy) -> 
     _set_if_exists(section, storage_provider_options, "base_path", "base_path")
 
     credentials_provider_options: dict[str, Any] = {}
+    # Static Azure credentials provider options.
     _set_if_exists(section, credentials_provider_options, "connection", "connection")
+    # Default Azure credentials provider options.
+    _set_if_exists(section, credentials_provider_options, "workload_identity_tenant_id", "workload_identity_tenant_id")
+    _set_if_exists(section, credentials_provider_options, "workload_identity_client_id", "workload_identity_client_id")
 
     credentials_provider: dict[str, Any] = {}
     if credentials_provider_options:
         credentials_provider["options"] = credentials_provider_options
 
-    # If there's a connection string, we assume static Azure credentials are being used
     if "connection" in credentials_provider_options:
         credentials_provider["type"] = "AzureCredentials"
+    elif any(
+        option in credentials_provider_options
+        for option in {"workload_identity_tenant_id", "workload_identity_client_id"}
+    ):
+        credentials_provider["type"] = "DefaultAzureCredentials"
 
     return storage_provider_options, credentials_provider
 
