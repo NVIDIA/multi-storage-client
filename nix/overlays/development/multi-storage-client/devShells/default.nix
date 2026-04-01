@@ -139,7 +139,7 @@ mkShell {
   shellHook =
     let
       apple-sdk = {
-        aarch64 = multi-storage-client.nativePackages.aarch64-darwin.apple-sdk_14;
+        aarch64 = multi-storage-client.pkgsNative.aarch64-darwin.apple-sdk_14;
       };
     in
     ''

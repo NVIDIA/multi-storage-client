@@ -32,9 +32,9 @@ Key:
 │       └── e2e
 │           └── ...
 │
-│   # Build recipes.
-├── justfile
-│
 │   # Python package configuration.
-└── pyproject.toml
+├── pyproject.toml
+│
+│   # Build recipes.
+└── justfile
 ```

@@ -55,14 +55,6 @@ Key:
 🤖 = Generated
 
 .
-│   # GitHub templates and pipelines.
-├── .github
-│   └── ...
-│
-│   # GitLab templates and pipelines.
-├── .gitlab
-│   └── ...
-│
 │   # Release notes.
 ├── .release_notes
 │   └── ...
@@ -94,12 +86,12 @@ Key:
 ├── flake.nix
 ├── flake.lock 🤖
 │
-│   # Build recipes.
-├── justfile
-│
 │   # Python configuration.
 ├── pyproject.toml
-└── uv.lock 🤖
+├── uv.lock 🤖
+│
+│   # Build recipes.
+└── justfile
 ```
 
 ## Tools

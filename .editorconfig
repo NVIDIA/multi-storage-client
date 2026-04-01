@@ -16,7 +16,7 @@ max_line_length = off
 [*.go]
 indent_style = tab
 
-[*.{nix,yml,yaml}]
+[*.{md,nix,yaml,yml}]
 indent_style = space
 indent_size = 2
 

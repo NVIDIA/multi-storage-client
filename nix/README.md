@@ -11,28 +11,20 @@ Key:
 🤖 = Generated
 
 .
-│   # Library.
-├── lib
-│   ├── {attribute}.nix
-│   └── {namespace}
-│       ├── {attribute}.nix
-│       └── ...
+│   # Nixpkgs overlays.
+├── overlays
+│   └── {overlay}
+│       └── multi-storage-client
+│           │   # Packages.
+│           ├── packages
+│           │   └── {package}
+│           │       ├── package.nix
+│           │       └── {package support file (e.g. patch)}
+│           │
+│           │   # Development shells.
+│           └── devShells
+│               └── {shell}.nix
 │
-│   # Packages.
-├── packages
-│   └── {package}
-│       ├── package.nix
-│       └── {package support file (e.g. patch)}
-│
-│   # Development shells.
-├── devShells
-│   └── {shell}.nix
-│
-│   # NixOS modules.
-├── nixosModules
-│   └── {module}.nix
-│
-│   # system-manager configurations.
-└── systemConfigs
-    └── {configuration}.nix
+│   # Build recipes.
+└── justfile
 ```
