@@ -26,9 +26,11 @@ from oci._vendor.requests.exceptions import (
     ConnectionError,
     ContentDecodingError,
 )
+from oci.auth.signers import SecurityTokenSigner
 from oci.exceptions import ServiceError
 from oci.object_storage import ObjectStorageClient, UploadManager
 from oci.retry import DEFAULT_RETRY_STRATEGY, RetryStrategyBuilder
+from oci.signer import load_private_key_from_file
 
 from ..constants import DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT
 from ..telemetry import Telemetry
@@ -58,6 +60,10 @@ class OracleStorageProvider(BaseStorageProvider):
     A concrete implementation of the :py:class:`multistorageclient.types.StorageProvider` for interacting with
     Oracle Cloud Infrastructure (OCI) Object Storage.
     """
+
+    _namespace: str
+    _credentials_provider: Optional[CredentialsProvider]
+    _oci_client: ObjectStorageClient
 
     def __init__(
         self,
@@ -103,7 +109,29 @@ class OracleStorageProvider(BaseStorageProvider):
 
     def _create_oci_client(self) -> ObjectStorageClient:
         config = oci.config.from_file()
-        client = ObjectStorageClient(config, retry_strategy=self._retry_strategy)
+        kwargs = {"retry_strategy": self._retry_strategy}
+
+        # OCI doesn't support `authentication_type=security_token` OCI config entries in their SDKs yet. Manually configure signers.
+        #
+        # https://github.com/oracle/oci-python-sdk/blob/v2.169.0/src/oci/util.py#L213-L225
+        # https://github.com/oracle/oci-ruby-sdk/issues/70
+        if "security_token_file" in config:
+            with open(config["security_token_file"], "r") as security_token_file:
+                kwargs["signer"] = SecurityTokenSigner(
+                    private_key=load_private_key_from_file(
+                        filename=config["key_file"],
+                        pass_phrase=config.get("pass_phrase"),
+                    ),
+                    # The OCI documentation + CLI are unforgiving about newline-terminated security token files.
+                    #
+                    # Do not ignore trailing newlines in case future upstream automatic signer configuration does the same.
+                    #
+                    # https://docs.oracle.com/en-us/iaas/Content/API/Concepts/sdk_authentication_methods.htm#sdk_authentication_methods_session_token
+                    # https://github.com/oracle/oci-cli/blob/v3.77.0/src/oci_cli/cli_session.py#L143-L144
+                    token=security_token_file.read(),
+                )
+
+        client = ObjectStorageClient(config, **kwargs)
         client.base_client.timeout = self._timeout
         return client
 

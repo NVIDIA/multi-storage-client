@@ -18,10 +18,13 @@ import os
 import pickle
 import sys
 import tempfile
+import time
 from typing import cast
 
+import jwt
 import pytest
 import yaml
+from oci.auth.signers import SecurityTokenSigner
 
 import multistorageclient.telemetry as telemetry
 import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
@@ -35,6 +38,7 @@ from multistorageclient.config import (
 )
 from multistorageclient.providers import (
     ManifestMetadataProvider,
+    OracleStorageProvider,
     PosixFileStorageProvider,
     S3StorageProvider,
     S8KStorageProvider,
@@ -607,9 +611,15 @@ def test_azure_storage_provider_passthrough_options() -> None:
 
 
 def test_oci_storage_provider_passthrough_options() -> None:
+    # We need to use the `OCI_CONFIG_FILE` environment variable to control
+    # where the OCI Python SDK looks for the OCI config file.
+    #
+    # That requires us to run OCI provider tests in serial.
+
+    # API-key based authentication.
     with (
-        tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as oci_config_file,
         tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as oci_key_file,
+        tempfile.NamedTemporaryFile(mode="w", suffix=".ini", delete=False) as oci_config_file,
     ):
         # Placeholder PEM file from `openssl genrsa -out oci_api_key.pem 2048`.
         #
@@ -657,8 +667,8 @@ def test_oci_storage_provider_passthrough_options() -> None:
                 # https://docs.oracle.com/en-us/iaas/Content/API/Concepts/apisigningkey.htm#four
                 "fingerprint=26:b1:9b:2b:9b:9d:ec:57:32:bd:a5:1d:24:21:ec:68",
                 f"key_file={oci_key_file.name}",
-                "tenancy=ocid1.tenancy.oc1..unique-id",
                 "region=us-ashburn-1",
+                "tenancy=ocid1.tenancy.oc1..unique-id",
             ]
         )
         oci_config_file.write(oci_config_file_body)
@@ -699,6 +709,100 @@ def test_oci_storage_provider_passthrough_options() -> None:
                 profile=profile,
             )
         )
+
+    # Security token based authentication (workload identity federation).
+    with (
+        tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as oci_key_file,
+        tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as oci_security_token_file,
+        tempfile.NamedTemporaryFile(mode="w", suffix=".ini", delete=False) as oci_config_file,
+    ):
+        # Placeholder PEM file from `openssl genrsa -out oci_api_key.pem 2048`.
+        #
+        # https://docs.oracle.com/en-us/iaas/Content/API/Concepts/apisigningkey.htm#apisigningkey_topic_How_to_Generate_an_API_Signing_Key_Mac_Linux
+        oci_key_file_body = "\n".join(
+            [
+                "-----BEGIN PRIVATE KEY-----",
+                "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCneEzaM/KC4cAd",
+                "31AGTeHj+EwVic84K98uIiw85HBIv0ORIrX510oPleRkK1ElOHAS5bCJ20+UBKXB",
+                "URS9pU3d8UhBLpGyRhH9/L2k+4DEKOjuXLCRZ16r/AA3GPumKdY/OmgY1h2cJWxW",
+                "KQgkIfcQxFb1SVvDnmSWVyEjf313T+f63AWHqXZrIn+R66Le9MqJed0ChG4dklQa",
+                "+kXE2AKGoH3JmGQ18XHcygKq1s/BzO2g+bIdeFi/EoZqybAfuCQjssA2zhaykU+F",
+                "ODYrExqst5mVgn8QJIJR2BY4zrlbPY/mv9Tb3HkZTWGgnxpdN4rLNCNZeZaw5OpY",
+                "8c60WULDAgMBAAECggEAIoKOy7RCuCfPEBjRg8sOzox/GT0hv4CC6B3QoeetH8CS",
+                "KtlNSKPNtjJ8MwweF55useY1H+NanbTrd0+/B2mGB0NOUWhIS8VWtdEcP2A4Y7PO",
+                "dDgThpMXljdC0BfM26vpY3QkuWF+DoxDq+merNt27zSWestYJpKARd7EjG0cLLar",
+                "x0BiUu4nOC3mIAw+lwo43PeF1pCvzuytGPbXDkluuGzEC5VxC129Swgg10IN7JQp",
+                "p7awROqykZYgEbrOh+IWBUG7TXqR5c6qGs/jC9FnMoX3zI/U0G0b4oJE/NRyAl23",
+                "DEm3i7xXLFBrtvVKjKm+bfBOcHkNWNPCRl3EdIvfoQKBgQDnkUnnbZhvAoa+dbbT",
+                "iHUIPOiHc5MQAJNRJ1KBexmjVBJpZliRuSXT5ctC/D5wnzzJh+vzOw8essOiGLzP",
+                "6Zve2uqqTD4gcyaKRf+kc5x64gYQCitjA08WVpCXkNuYDRlQs55WFAVzIDPLo+Jk",
+                "XQsnIhEpJfY0jA+FggDuYsi30wKBgQC5I7cNQ1MWalmhV03M+2Gjy59AZuEFQVNT",
+                "v7LCxOj8FF4wIe/VzvRcHcCE0QVr9Mhl1uQUr74QeOmd5uULYULsc0Q8hojFPU1j",
+                "9L5EpbsmTfXUVZtwSRO+OD0Y9J5JTkxoG0nplroskuqJZLEBaIUyNe1rbeNhMsh7",
+                "pCg7IW3jUQKBgEQTAAjavQ8VTQs8i6yP1ue/EBSRs0/m+2fGCYkq6RSMqIT3o13j",
+                "ce1jBmgAw1JUXYhZPtHYMM+zebNzVj5AzKOs84NwumrLry7C+S4dFolBXMrmUm7f",
+                "ECbe9862tPd0ElcZFpjzdc6sTs20td8PQzIT37ua/0/fRMjYuPFbdOolAoGBAJMX",
+                "yibyd4AWrPGf8INMsk21yOgdFOjc9vxSEQ/n7IfjEtZBEFEaJVFOnheoDhuwlss6",
+                "yWmaG3Lw7gNzYEUDWG2OQwenh+DVjLg+yjC2UBPl2suB3IaAuPvnqLs8Fsp9N/16",
+                "uOWqyG4Dp+3TH0LULQcwi1pQK1idRWXejcw1Ch6RAoGAXpDFjN5lDuismPoYcTrD",
+                "1zwHjK0rsQIsbIqj1APosuZiEfdwB7uRw59omvE1rvhHBn+wMRcRM+Hz5aPKUzMY",
+                "hZ1f3HOEN33OfSBpFjopgcl07JDaJ0/Yaxtti7DpriWxouweXD+08/R1k6aQVzvp",
+                "mMEsnbNZO07g0D3mFCRUDY4=",
+                "-----END PRIVATE KEY-----",
+            ]
+        )
+        oci_key_file.write(oci_key_file_body)
+        oci_key_file.close()
+        jwt_issued_at_time = time.time()
+        jwt_expiry = jwt_issued_at_time + 60
+        oci_security_token_file_body = jwt.encode(
+            payload={
+                "aud": "https://cloud.oracle.com",
+                "exp": jwt_expiry,
+                "iat": jwt_issued_at_time,
+                "iss": "issuer",
+                "sub": "subject",
+            },
+            algorithm="HS256",
+            key="key",
+        )
+        oci_security_token_file.write(oci_security_token_file_body)
+        oci_security_token_file.close()
+        oci_config_file_body = "\n".join(
+            [
+                "[DEFAULT]",
+                f"key_file={oci_key_file.name}",
+                f"security_token_file={oci_security_token_file.name}",
+                "region=us-ashburn-1",
+                "tenancy=ocid1.tenancy.oc1..unique-id",
+            ]
+        )
+        oci_config_file.write(oci_config_file_body)
+        oci_config_file.close()
+        os.environ["OCI_CONFIG_FILE"] = oci_config_file.name
+
+        profile = "data"
+        storage_client = StorageClient(
+            config=StorageClientConfig.from_dict(
+                config_dict={
+                    "profiles": {
+                        profile: {
+                            "storage_provider": {
+                                "type": "oci",
+                                "options": {
+                                    "base_path": "bucket",
+                                    "namespace": "oci-namespace",
+                                },
+                            }
+                        }
+                    }
+                },
+                profile=profile,
+            )
+        )
+        storage_provider = cast(OracleStorageProvider, storage_client._storage_provider)
+        assert isinstance(storage_provider, OracleStorageProvider)
+        assert isinstance(storage_provider._oci_client.base_client.signer, SecurityTokenSigner)
 
 
 def test_s3_storage_provider_passthrough_options() -> None:
