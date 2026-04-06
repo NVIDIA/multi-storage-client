@@ -47,6 +47,8 @@ class CloudFrontURLSigner(URLSigner):
     _private_key_path: str
     _domain: str
     _expires_in: int
+    _origin_path: str
+    _origin_prefix: str
 
     def __init__(
         self,
@@ -55,6 +57,7 @@ class CloudFrontURLSigner(URLSigner):
         private_key_path: str,
         domain: str,
         expires_in: int = DEFAULT_CLOUDFRONT_EXPIRES_IN,
+        origin_path: str = "",
         **_kwargs: Any,
     ) -> None:
         if load_pem_private_key is None:
@@ -66,6 +69,8 @@ class CloudFrontURLSigner(URLSigner):
         self._private_key_path = private_key_path
         self._domain = domain.rstrip("/")
         self._expires_in = expires_in
+        self._origin_path = origin_path.strip("/")
+        self._origin_prefix = self._origin_path + "/" if self._origin_path else ""
         self._private_key: Any = None
 
     def _get_private_key(self) -> Any:
@@ -78,7 +83,17 @@ class CloudFrontURLSigner(URLSigner):
     def generate_presigned_url(self, path: str, *, method: str = "GET") -> str:
         private_key = self._get_private_key()
 
-        url = f"https://{self._domain}/{path.lstrip('/')}"
+        effective = path.lstrip("/")
+        if self._origin_prefix:
+            if effective.startswith(self._origin_prefix):
+                effective = effective[len(self._origin_prefix) :]
+            else:
+                raise ValueError(
+                    f"Object path {path} does not start with CloudFront origin path {self._origin_path}. "
+                    "Ensure the 'origin_path' option matches the distribution's configured origin path."
+                )
+
+        url = f"https://{self._domain}/{effective}"
         expiry = datetime.now(timezone.utc) + timedelta(seconds=self._expires_in)
         epoch = int(expiry.timestamp())
 

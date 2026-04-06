@@ -181,6 +181,60 @@ class TestCloudFrontURLSigner:
     def test_is_url_signer(self):
         assert issubclass(CloudFrontURLSigner, URLSigner)
 
+    def test_origin_path_stripped_from_url(self, rsa_key_pair):
+        from urllib.parse import urlparse
+
+        key_path, _ = rsa_key_pair
+        signer = CloudFrontURLSigner(
+            key_pair_id="K1",
+            private_key_path=key_path,
+            domain="d111111abcdef8.cloudfront.net",
+            origin_path="/cloudfront",
+        )
+
+        url = signer.generate_presigned_url("cloudfront/a.bin")
+        assert urlparse(url).path == "/a.bin"
+
+    def test_origin_path_stripped_with_leading_slash_on_path(self, rsa_key_pair):
+        from urllib.parse import urlparse
+
+        key_path, _ = rsa_key_pair
+        signer = CloudFrontURLSigner(
+            key_pair_id="K1",
+            private_key_path=key_path,
+            domain="d111111abcdef8.cloudfront.net",
+            origin_path="cloudfront",  # no leading slash — should still work
+        )
+
+        url = signer.generate_presigned_url("/cloudfront/subdir/a.bin")
+        assert urlparse(url).path == "/subdir/a.bin"
+
+    def test_origin_path_mismatch_raises(self, rsa_key_pair):
+        key_path, _ = rsa_key_pair
+        signer = CloudFrontURLSigner(
+            key_pair_id="K1",
+            private_key_path=key_path,
+            domain="d111111abcdef8.cloudfront.net",
+            origin_path="/cloudfront",
+        )
+
+        with pytest.raises(ValueError, match="origin path"):
+            signer.generate_presigned_url("other/a.bin")
+
+    def test_no_origin_path_unchanged(self, rsa_key_pair):
+        from urllib.parse import urlparse
+
+        key_path, _ = rsa_key_pair
+        signer = CloudFrontURLSigner(
+            key_pair_id="K1",
+            private_key_path=key_path,
+            domain="d111111abcdef8.cloudfront.net",
+            # no origin
+        )
+
+        url = signer.generate_presigned_url("cloudfront/a.bin")
+        assert urlparse(url).path == "/cloudfront/a.bin"
+
 
 # ---------------------------------------------------------------------------
 # S3StorageProvider._generate_presigned_url dispatch
