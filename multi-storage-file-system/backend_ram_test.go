@@ -116,7 +116,7 @@ func TestRAMBackendDirectly(t *testing.T) {
 		t.Fatalf("listObjectsOutput.nextContinuationToken unexpected [case 1]")
 	}
 	if !listObjectsOutput.isTruncated {
-		t.Fatalf("listObjectsOutput.nextContinuationToken unexpected [case 1]")
+		t.Fatalf("listObjectsOutput.isTruncated unexpected [case 1]")
 	}
 
 	listObjectsInput.continuationToken = listObjectsOutput.nextContinuationToken
@@ -124,7 +124,7 @@ func TestRAMBackendDirectly(t *testing.T) {
 
 	listObjectsOutput, err = listObjectsWrapper(ramBackend.context, listObjectsInput)
 	if err != nil {
-		t.Fatalf("listObjectsWrapper(ramBackend.context, listObjectsInput) failed: %v [case 1]", err)
+		t.Fatalf("listObjectsWrapper(ramBackend.context, listObjectsInput) failed: %v [case 2]", err)
 	}
 	if (len(listObjectsOutput.object) != 2) || (listObjectsOutput.object[0].path != "fileA") || (listObjectsOutput.object[1].path != "fileB") {
 		t.Fatalf("listDirectoryOutput.object unexpected [case 2]")
@@ -133,7 +133,7 @@ func TestRAMBackendDirectly(t *testing.T) {
 		t.Fatalf("listObjectsOutput.nextContinuationToken unexpected [case 2]")
 	}
 	if listObjectsOutput.isTruncated {
-		t.Fatalf("listObjectsOutput.nextContinuationToken unexpected [case 2]")
+		t.Fatalf("listObjectsOutput.isTruncated unexpected [case 2]")
 	}
 
 	listObjectsInput.startAfter = "dir1/fileC"
@@ -150,7 +150,7 @@ func TestRAMBackendDirectly(t *testing.T) {
 		t.Fatalf("listObjectsOutput.nextContinuationToken unexpected [case 3]")
 	}
 	if listObjectsOutput.isTruncated {
-		t.Fatalf("listObjectsOutput.nextContinuationToken unexpected [case 3]")
+		t.Fatalf("listObjectsOutput.isTruncated unexpected [case 3]")
 	}
 
 	listObjectsInput.startAfter = "foo"
@@ -181,7 +181,7 @@ func TestRAMBackendDirectly(t *testing.T) {
 		t.Fatalf("listDirectoryOutput.nextContinuationToken unexpected [case 1]")
 	}
 	if !listDirectoryOutput.isTruncated {
-		t.Fatalf("listDirectoryOutput.nextContinuationToken unexpected [case 1]")
+		t.Fatalf("listDirectoryOutput.isTruncated unexpected [case 1]")
 	}
 
 	listDirectoryInput.continuationToken = listDirectoryOutput.nextContinuationToken
@@ -201,7 +201,7 @@ func TestRAMBackendDirectly(t *testing.T) {
 		t.Fatalf("listDirectoryOutput.nextContinuationToken unexpected [case 2]")
 	}
 	if listDirectoryOutput.isTruncated {
-		t.Fatalf("listDirectoryOutput.nextContinuationToken unexpected [case 2]")
+		t.Fatalf("listDirectoryOutput.isTruncated unexpected [case 2]")
 	}
 
 	statDirectoryInput = &statDirectoryInputStruct{

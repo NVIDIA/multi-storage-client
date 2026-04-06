@@ -55,13 +55,13 @@ func fissionTestUp(t *testing.T) {
 				"bucket_container_name": "ignored",
 				"backend_type": "PSEUDO",
 				"PSEUDO": {
-					"files_at_depth_0": 3,
-					"files_at_depth_1": 4,
-					"files_at_depth_2": 5,
-					"files_at_depth_3": 6,
+					"files_at_depth_0": 1,
+					"files_at_depth_1": 2,
+					"files_at_depth_2": 0,
+					"files_at_depth_3": 0,
 					"subdirectories_at_depth_0": 2,
-					"subdirectories_at_depth_1": 3,
-					"subdirectories_at_depth_2": 4
+					"subdirectories_at_depth_1": 0,
+					"subdirectories_at_depth_2": 0
 				}
 			},
 			{

@@ -359,6 +359,48 @@ func checkPathElement(pathElementFormat, pathElement string, pathElementNumberLi
 	return
 }
 
+// `listObjectsIndexedObjectPathPrefixPruned` computes the object path for the object indexed by
+// `continuationTokenAsUint64` relative to the directory described by `prefixDirPathElements. If
+// the index goes beyond the bounds of object paths inside the directory tree, a fatal condition
+// has been detected. Hence, callers should ensure they bound-check `continuationTokenAsUint64`.
+func (pseudoContext *pseudoContextStruct) listObjectsIndexedObjectPathPrefixPruned(prefixDirPathElements []uint64, continuationTokenAsUint64 uint64) (objectPathPrefixPruned string) {
+	var (
+		prefixDepth         = uint64(len(prefixDirPathElements))
+		subdirectoryIndex   uint64
+		subdirectories      uint64
+		subdirectoryObjects uint64
+	)
+
+	if pseudoContext.backendPSEUDO.objectsInDirectoryAtDepth[len(prefixDirPathElements)] <= continuationTokenAsUint64 {
+		dumpStack()
+		globals.logger.Fatalf("pseudoContext.backendPSEUDO.objectsInDirectoryAtDepth[prefixDepth[==%v]][==%v] <= continuationTokenAsUint64[==%v]", prefixDepth, pseudoContext.backendPSEUDO.objectsInDirectoryAtDepth[prefixDepth], continuationTokenAsUint64)
+	}
+
+	subdirectories = pseudoContext.backendPSEUDO.subdirectoriesAtDepth[prefixDepth]
+
+	if subdirectories > 0 {
+		subdirectoryObjects = pseudoContext.backendPSEUDO.objectsInDirectoryAtDepth[prefixDepth+1]
+
+		subdirectoryIndex = continuationTokenAsUint64 / subdirectoryObjects
+
+		if subdirectoryIndex < subdirectories {
+			prefixDirPathElements = append(prefixDirPathElements, subdirectoryIndex)
+			continuationTokenAsUint64 -= subdirectoryIndex * subdirectoryObjects
+
+			objectPathPrefixPruned = pseudoContext.listObjectsIndexedObjectPathPrefixPruned(prefixDirPathElements, continuationTokenAsUint64)
+			objectPathPrefixPruned = "/" + fmt.Sprintf(PSEUDOSubdirectoryNameFormat, subdirectoryIndex) + objectPathPrefixPruned
+
+			return
+		}
+
+		continuationTokenAsUint64 -= subdirectories * subdirectoryObjects
+	}
+
+	objectPathPrefixPruned = "/" + fmt.Sprintf(PSEUDOFileNameFormat, continuationTokenAsUint64)
+
+	return
+}
+
 // `listObjects` is called to fetch a `page` of the objects. An empty continuationToken or
 // empty list of elements (`objects`) indicates the list of `objects` has been completely
 // enumerated. The `isTruncated` field will also align with this convention.
@@ -368,6 +410,11 @@ func (pseudoContext *pseudoContextStruct) listObjects(listObjectsInput *listObje
 		comparison                     int
 		continuationTokenAsUint64      uint64
 		continuationTokenAsUint64Limit uint64
+		isTruncated                    bool
+		nextContinuationToken          string
+		numObjectToReturn              uint64
+		objectContent                  []byte
+		objectPath                     string
 		ok                             bool
 		prefixDepth                    int
 		prefixDirPath                  string
@@ -453,10 +500,57 @@ func (pseudoContext *pseudoContextStruct) listObjects(listObjectsInput *listObje
 		}
 	}
 
-	globals.logger.Printf("[UNDO] continuationTokenAsUint64:      %016X", continuationTokenAsUint64)
-	globals.logger.Printf("[UNDO] continuationTokenAsUint64Limit: %016X", continuationTokenAsUint64Limit)
+	if continuationTokenAsUint64 >= continuationTokenAsUint64Limit {
+		listObjectsOutput = &listObjectsOutputStruct{
+			object:                make([]listObjectsOutputObjectStruct, 0),
+			nextContinuationToken: "",
+			isTruncated:           false,
+		}
 
-	listObjectsOutput = &listObjectsOutputStruct{object: make([]listObjectsOutputObjectStruct, 0), nextContinuationToken: "", isTruncated: false} // [UNDO]
+		err = nil
+		return
+	}
+
+	numObjectToReturn = continuationTokenAsUint64Limit - continuationTokenAsUint64
+
+	nextContinuationToken = ""
+	isTruncated = false
+
+	if (listObjectsInput.maxItems != 0) && (numObjectToReturn > listObjectsInput.maxItems) {
+		numObjectToReturn = listObjectsInput.maxItems
+
+		nextContinuationToken = fmt.Sprintf("%016X", continuationTokenAsUint64+numObjectToReturn)
+		isTruncated = true
+	}
+	if (pseudoContext.backend.directoryPageSize != 0) && (numObjectToReturn > pseudoContext.backend.directoryPageSize) {
+		numObjectToReturn = pseudoContext.backend.directoryPageSize
+
+		nextContinuationToken = fmt.Sprintf("%016X", continuationTokenAsUint64+numObjectToReturn)
+		isTruncated = true
+	}
+
+	continuationTokenAsUint64Limit = continuationTokenAsUint64 + numObjectToReturn
+
+	listObjectsOutput = &listObjectsOutputStruct{
+		object:                make([]listObjectsOutputObjectStruct, 0, numObjectToReturn),
+		nextContinuationToken: nextContinuationToken,
+		isTruncated:           isTruncated,
+	}
+
+	for continuationTokenAsUint64 < continuationTokenAsUint64Limit {
+		objectPath = pseudoContext.listObjectsIndexedObjectPathPrefixPruned(prefixDirPathElements, continuationTokenAsUint64)
+		objectContent = []byte(objectPath + "\n")
+
+		listObjectsOutput.object = append(listObjectsOutput.object, listObjectsOutputObjectStruct{
+			path:  objectPath,
+			eTag:  fmt.Sprintf(PSEUDOFileCRC32ETagFormat, crc32.ChecksumIEEE(objectContent)),
+			mTime: time.Now(),
+			size:  uint64(len(objectContent)),
+		})
+
+		continuationTokenAsUint64++
+	}
+
 	err = nil
 	return
 }
