@@ -14,7 +14,7 @@
 # limitations under the License.
 
 import pickle
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -22,7 +22,7 @@ import pytest
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.client.composite import CompositeStorageClient
 from multistorageclient.client.single import SingleStorageClient
-from multistorageclient.types import ObjectMetadata
+from multistorageclient.types import ObjectMetadata, ResolvedPath, ResolvedPathState
 
 
 @pytest.fixture
@@ -124,6 +124,7 @@ def test_multi_backend_facade(multi_backend_config):
     [
         ("write", ("/test/path", b"data")),
         ("upload_file", ("/remote/path", "/local/path")),
+        ("upload_files", (["/remote/path"], ["/local/path"])),
         ("delete", ("/test/path",)),
         ("copy", ("/src/path", "/dest/path")),
     ],
@@ -338,3 +339,251 @@ def test_single_list_recursive_file_short_circuit_applies_key_bounds(single_back
     assert filtered_by_start_after == []
     assert filtered_by_end_at == []
     assert [obj.key for obj in included] == ["data/file.bin"]
+
+
+# --- Batch download_files / upload_files tests ---
+
+
+def test_download_files_rejects_mismatched_lengths_single(single_backend_config):
+    client = StorageClient(single_backend_config)
+    with pytest.raises(ValueError, match="same length"):
+        client.download_files(["/a", "/b"], ["/local_a"])
+
+
+def test_download_files_rejects_mismatched_lengths_composite(multi_backend_config):
+    client = StorageClient(multi_backend_config)
+    with pytest.raises(ValueError, match="same length"):
+        client.download_files(["/a"], ["/la", "/lb"])
+
+
+def test_upload_files_rejects_mismatched_lengths(single_backend_config):
+    client = StorageClient(single_backend_config)
+    with pytest.raises(ValueError, match="same length"):
+        client.upload_files(["/a", "/b"], ["/local_a"])
+
+
+def test_download_files_delegates_to_single(single_backend_config):
+    client = StorageClient(single_backend_config)
+    client._delegate.download_files = MagicMock()
+
+    client.download_files(["/remote/a"], ["/local/a"], max_workers=8)
+
+    client._delegate.download_files.assert_called_once_with(["/remote/a"], ["/local/a"], 8)
+
+
+def test_download_files_delegates_to_composite(multi_backend_config):
+    client = StorageClient(multi_backend_config)
+    client._delegate.download_files = MagicMock()
+
+    client.download_files(["/remote/a"], ["/local/a"])
+
+    client._delegate.download_files.assert_called_once_with(["/remote/a"], ["/local/a"], 16)
+
+
+def test_upload_files_delegates_to_single(single_backend_config):
+    client = StorageClient(single_backend_config)
+    client._delegate.upload_files = MagicMock()
+
+    client.upload_files(["/remote/a"], ["/local/a"], max_workers=4)
+
+    client._delegate.upload_files.assert_called_once_with(["/remote/a"], ["/local/a"], 4)
+
+
+def test_single_download_files_without_metadata_delegates_to_provider(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+    assert single._metadata_provider is None
+
+    single._storage_provider.download_files = MagicMock()
+
+    client.download_files(["/a", "/b"], ["/la", "/lb"], max_workers=4)
+
+    single._storage_provider.download_files.assert_called_once_with(["/a", "/b"], ["/la", "/lb"], 4)
+
+
+def test_single_download_files_with_metadata_resolves_paths(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+
+    metadata_provider = MagicMock()
+    metadata_provider.realpath.side_effect = [
+        ResolvedPath(physical_path="physical/a", state=ResolvedPathState.EXISTS),
+        ResolvedPath(physical_path="physical/b", state=ResolvedPathState.EXISTS),
+    ]
+    single._metadata_provider = metadata_provider
+    single._storage_provider.download_files = MagicMock()
+
+    client.download_files(["logical/a", "logical/b"], ["/la", "/lb"], max_workers=8)
+
+    assert metadata_provider.realpath.call_count == 2
+    single._storage_provider.download_files.assert_called_once_with(["physical/a", "physical/b"], ["/la", "/lb"], 8)
+
+
+def test_single_download_files_with_metadata_raises_on_missing_file(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+
+    metadata_provider = MagicMock()
+    metadata_provider.realpath.side_effect = [
+        ResolvedPath(physical_path="physical/a", state=ResolvedPathState.EXISTS),
+        ResolvedPath(physical_path="logical/missing", state=ResolvedPathState.UNTRACKED),
+    ]
+    single._metadata_provider = metadata_provider
+
+    with pytest.raises(FileNotFoundError, match="logical/missing"):
+        client.download_files(["logical/a", "logical/missing"], ["/la", "/lb"])
+
+
+def test_single_download_files_empty_lists(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+
+    single._storage_provider.download_files = MagicMock()
+    client.download_files([], [])
+    single._storage_provider.download_files.assert_called_once_with([], [], 16)
+
+
+def test_single_upload_files_without_metadata_delegates_to_provider(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+    assert single._metadata_provider is None
+
+    single._storage_provider.upload_files = MagicMock()
+
+    client.upload_files(["/remote/a", "/remote/b"], ["/la", "/lb"], max_workers=4)
+
+    single._storage_provider.upload_files.assert_called_once_with(["/la", "/lb"], ["/remote/a", "/remote/b"], 4)
+
+
+def test_single_upload_files_with_metadata_resolves_and_registers(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+
+    metadata_provider = MagicMock()
+    metadata_provider.realpath.side_effect = [
+        ResolvedPath(physical_path="logical/a", state=ResolvedPathState.UNTRACKED),
+        ResolvedPath(physical_path="logical/b", state=ResolvedPathState.UNTRACKED),
+    ]
+    metadata_provider.generate_physical_path.side_effect = [
+        ResolvedPath(physical_path="physical/a", state=ResolvedPathState.UNTRACKED),
+        ResolvedPath(physical_path="physical/b", state=ResolvedPathState.UNTRACKED),
+    ]
+    metadata_provider.allow_overwrites.return_value = False
+
+    obj_meta_a = ObjectMetadata(key="physical/a", content_length=100, last_modified=datetime.now(tz=timezone.utc))
+    obj_meta_b = ObjectMetadata(key="physical/b", content_length=200, last_modified=datetime.now(tz=timezone.utc))
+    single._storage_provider.get_object_metadata = MagicMock(side_effect=[obj_meta_a, obj_meta_b])
+    single._storage_provider.upload_files = MagicMock()
+
+    single._metadata_provider = metadata_provider
+    single._metadata_provider_lock = None
+
+    client.upload_files(["logical/a", "logical/b"], ["/la", "/lb"], max_workers=8)
+
+    single._storage_provider.upload_files.assert_called_once_with(["/la", "/lb"], ["physical/a", "physical/b"], 8)
+    metadata_provider.generate_physical_path.assert_any_call("logical/a", for_overwrite=False)
+    metadata_provider.generate_physical_path.assert_any_call("logical/b", for_overwrite=False)
+    assert metadata_provider.add_file.call_count == 2
+    metadata_provider.add_file.assert_any_call("logical/a", obj_meta_a)
+    metadata_provider.add_file.assert_any_call("logical/b", obj_meta_b)
+
+
+def test_single_upload_files_with_metadata_rejects_overwrite(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+
+    metadata_provider = MagicMock()
+    metadata_provider.realpath.return_value = ResolvedPath(physical_path="existing", state=ResolvedPathState.EXISTS)
+    metadata_provider.allow_overwrites.return_value = False
+    single._metadata_provider = metadata_provider
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        client.upload_files(["existing"], ["/la"])
+
+
+def test_single_upload_files_with_metadata_allows_overwrite(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+
+    metadata_provider = MagicMock()
+    metadata_provider.realpath.return_value = ResolvedPath(physical_path="existing", state=ResolvedPathState.EXISTS)
+    metadata_provider.allow_overwrites.return_value = True
+    metadata_provider.generate_physical_path.return_value = ResolvedPath(
+        physical_path="physical/existing_v2", state=ResolvedPathState.EXISTS
+    )
+    obj_meta = ObjectMetadata(
+        key="physical/existing_v2", content_length=100, last_modified=datetime.now(tz=timezone.utc)
+    )
+    single._storage_provider.get_object_metadata = MagicMock(return_value=obj_meta)
+    single._storage_provider.upload_files = MagicMock()
+    single._metadata_provider = metadata_provider
+    single._metadata_provider_lock = None
+
+    client.upload_files(["existing"], ["/la"])
+
+    metadata_provider.generate_physical_path.assert_called_once_with("existing", for_overwrite=True)
+    single._storage_provider.upload_files.assert_called_once_with(["/la"], ["physical/existing_v2"], 16)
+    metadata_provider.add_file.assert_called_once_with("existing", obj_meta)
+
+
+def test_composite_download_files_groups_by_profile(multi_backend_config):
+    client = StorageClient(multi_backend_config)
+    composite = client._delegate
+    assert isinstance(composite, CompositeStorageClient)
+
+    composite._metadata_provider = MagicMock()
+    composite._metadata_provider.realpath.side_effect = [
+        ResolvedPath(physical_path="phys/a", state=ResolvedPathState.EXISTS, profile="loc1"),
+        ResolvedPath(physical_path="phys/b", state=ResolvedPathState.EXISTS, profile="loc2"),
+        ResolvedPath(physical_path="phys/c", state=ResolvedPathState.EXISTS, profile="loc1"),
+    ]
+
+    loc1_client = MagicMock()
+    loc2_client = MagicMock()
+    composite._child_clients["loc1"] = loc1_client
+    composite._child_clients["loc2"] = loc2_client
+
+    client.download_files(
+        ["logical/a", "logical/b", "logical/c"],
+        ["/la", "/lb", "/lc"],
+        max_workers=4,
+    )
+
+    loc1_client.download_files.assert_called_once_with(["phys/a", "phys/c"], ["/la", "/lc"], 4)
+    loc2_client.download_files.assert_called_once_with(["phys/b"], ["/lb"], 4)
+
+
+def test_composite_download_files_raises_on_missing_file(multi_backend_config):
+    client = StorageClient(multi_backend_config)
+    composite = client._delegate
+    assert isinstance(composite, CompositeStorageClient)
+
+    composite._metadata_provider = MagicMock()
+    composite._metadata_provider.realpath.return_value = ResolvedPath(
+        physical_path="missing", state=ResolvedPathState.UNTRACKED, profile="loc1"
+    )
+
+    with pytest.raises(FileNotFoundError, match="not found"):
+        client.download_files(["missing"], ["/la"])
+
+
+def test_composite_download_files_raises_on_none_profile(multi_backend_config):
+    client = StorageClient(multi_backend_config)
+    composite = client._delegate
+    assert isinstance(composite, CompositeStorageClient)
+
+    composite._metadata_provider = MagicMock()
+    composite._metadata_provider.realpath.return_value = ResolvedPath(
+        physical_path="phys/a", state=ResolvedPathState.EXISTS, profile=None
+    )
+
+    with pytest.raises(ValueError, match="requires profile"):
+        client.download_files(["logical/a"], ["/la"])

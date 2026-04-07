@@ -171,6 +171,19 @@ class AbstractStorageClient(ABC):
         pass
 
     @abstractmethod
+    def download_files(self, remote_paths: list[str], local_paths: list[str], max_workers: int = 16) -> None:
+        """
+        Download multiple remote files to local paths.
+
+        :param remote_paths: List of logical paths of remote files to download.
+        :param local_paths: List of local file paths to save the downloaded files to.
+        :param max_workers: Maximum number of concurrent download workers (default: 16).
+        :raises ValueError: If remote_paths and local_paths have different lengths.
+        :raises FileNotFoundError: If any remote file does not exist.
+        """
+        pass
+
+    @abstractmethod
     def glob(
         self,
         pattern: str,
@@ -312,6 +325,19 @@ class AbstractStorageClient(ABC):
         :param local_path: The local file path or file-like object to upload.
         :param attributes: Optional attributes to add to the file.
         :raises FileNotFoundError: If the local file does not exist.
+        :raises NotImplementedError: If upload operations are not supported (e.g., CompositeStorageClient).
+        """
+        pass
+
+    @abstractmethod
+    def upload_files(self, remote_paths: list[str], local_paths: list[str], max_workers: int = 16) -> None:
+        """
+        Upload multiple local files to remote storage.
+
+        :param remote_paths: List of logical paths where the files will be uploaded.
+        :param local_paths: List of local file paths to upload.
+        :param max_workers: Maximum number of concurrent upload workers (default: 16).
+        :raises ValueError: If remote_paths and local_paths have different lengths.
         :raises NotImplementedError: If upload operations are not supported (e.g., CompositeStorageClient).
         """
         pass

@@ -920,7 +920,6 @@ def test_download_files(temp_data_store_type: type[tempdatastore.TemporaryDataSt
         profile = "data"
         config_dict = {"profiles": {profile: temp_data_store.profile_config_dict()}}
         storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
-        storage_provider = cast(BaseStorageProvider, storage_client._storage_provider)
 
         prefix = uuid.uuid4().hex
         file_contents = {
@@ -932,14 +931,13 @@ def test_download_files(temp_data_store_type: type[tempdatastore.TemporaryDataSt
         for path, body in file_contents.items():
             storage_client.write(path=path, body=body)
 
-        # Wait for the files to be written
         for path in file_contents.keys():
             wait_for_is_file(storage_client=storage_client, path=path, is_file=True)
 
         remote_paths = list(file_contents.keys())
         with tempfile.TemporaryDirectory() as tmpdir:
             local_paths = [os.path.join(tmpdir, p) for p in remote_paths]
-            storage_provider.download_files(remote_paths, local_paths)
+            storage_client.download_files(remote_paths, local_paths)
 
             for remote_path, local_path in zip(remote_paths, local_paths):
                 assert os.path.isfile(local_path), f"{local_path} was not created"
@@ -965,7 +963,6 @@ def test_upload_files(temp_data_store_type: type[tempdatastore.TemporaryDataStor
         profile = "data"
         config_dict = {"profiles": {profile: temp_data_store.profile_config_dict()}}
         storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
-        storage_provider = cast(BaseStorageProvider, storage_client._storage_provider)
 
         prefix = uuid.uuid4().hex
         file_contents = {
@@ -985,7 +982,7 @@ def test_upload_files(temp_data_store_type: type[tempdatastore.TemporaryDataStor
                     f.write(body)
                 local_paths.append(local_path)
 
-            storage_provider.upload_files(local_paths, remote_paths)
+            storage_client.upload_files(remote_paths, local_paths)
 
         for remote_path in remote_paths:
             wait_for_is_file(storage_client=storage_client, path=remote_path, is_file=True)

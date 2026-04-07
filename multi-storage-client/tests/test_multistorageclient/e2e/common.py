@@ -300,18 +300,40 @@ def verify_storage_provider(storage_client: msc.StorageClient, prefix: str) -> N
         "is_empty() should return False for existing directory with files"
     )
 
-    # Test delete many
-    delete_many_prefix = f"{prefix}/delete_many_batch"
-    for i in range(100):
-        storage_client.write(f"{delete_many_prefix}/file_{i:04d}", b"x")
+    # Test upload_files, download_files and delete_many
+    batch_prefix = f"{prefix}/upload_files_batch"
+    num_files = 100
+    remote_paths = [f"{batch_prefix}/file_{i:04d}" for i in range(num_files)]
+
+    with tempfile.TemporaryDirectory() as upload_dir:
+        local_upload_paths = []
+        for i in range(num_files):
+            local_path = os.path.join(upload_dir, f"file_{i:04d}")
+            with open(local_path, "wb") as f:
+                f.write(b"x")
+            local_upload_paths.append(local_path)
+
+        storage_client.upload_files(remote_paths, local_upload_paths)
+
     wait(
-        waitable=lambda: storage_client.list(delete_many_prefix),
-        should_wait=len_should_wait(expected_len=100),
+        waitable=lambda: storage_client.list(batch_prefix),
+        should_wait=len_should_wait(expected_len=num_files),
     )
-    paths_to_delete = [f"{delete_many_prefix}/file_{i:04d}" for i in range(100)]
-    storage_client.delete_many(paths_to_delete)
+    for i in range(num_files):
+        assert storage_client.read(remote_paths[i]) == b"x"
+
+    with tempfile.TemporaryDirectory() as download_dir:
+        local_download_paths = [os.path.join(download_dir, f"file_{i:04d}") for i in range(num_files)]
+        storage_client.download_files(remote_paths, local_download_paths)
+
+        for local_path in local_download_paths:
+            assert os.path.isfile(local_path), f"{local_path} was not created"
+            with open(local_path, "rb") as f:
+                assert f.read() == b"x"
+
+    storage_client.delete_many(remote_paths)
     wait(
-        waitable=lambda: storage_client.list(delete_many_prefix),
+        waitable=lambda: storage_client.list(batch_prefix),
         should_wait=len_should_wait(expected_len=0),
     )
 

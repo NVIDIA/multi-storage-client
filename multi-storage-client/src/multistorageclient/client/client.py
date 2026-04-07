@@ -268,6 +268,18 @@ class StorageClient(AbstractStorageClient):
         """
         return self._delegate.download_file(remote_path, local_path)
 
+    def download_files(self, remote_paths: list[str], local_paths: list[str], max_workers: int = 16) -> None:
+        """
+        Download multiple remote files to local paths.
+
+        :param remote_paths: List of logical paths of remote files to download.
+        :param local_paths: List of local file paths to save the downloaded files to.
+        :param max_workers: Maximum number of concurrent download workers (default: 16).
+        :raises ValueError: If remote_paths and local_paths have different lengths.
+        :raises FileNotFoundError: If any remote file does not exist.
+        """
+        return self._delegate.download_files(remote_paths, local_paths, max_workers)
+
     def glob(
         self,
         pattern: str,
@@ -413,6 +425,18 @@ class StorageClient(AbstractStorageClient):
         :raises NotImplementedError: If upload operations are not supported (e.g., CompositeStorageClient).
         """
         return self._delegate.upload_file(remote_path, local_path, attributes)
+
+    def upload_files(self, remote_paths: list[str], local_paths: list[str], max_workers: int = 16) -> None:
+        """
+        Upload multiple local files to remote storage.
+
+        :param remote_paths: List of logical paths where the files will be uploaded.
+        :param local_paths: List of local file paths to upload.
+        :param max_workers: Maximum number of concurrent upload workers (default: 16).
+        :raises ValueError: If remote_paths and local_paths have different lengths.
+        :raises NotImplementedError: If upload operations are not supported (e.g., CompositeStorageClient).
+        """
+        return self._delegate.upload_files(remote_paths, local_paths, max_workers)
 
     def commit_metadata(self, prefix: Optional[str] = None) -> None:
         """

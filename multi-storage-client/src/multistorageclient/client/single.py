@@ -245,6 +245,63 @@ class SingleStorageClient(AbstractStorageClient):
         """
         return self._replicas
 
+    # -- Metadata resolution helpers --
+
+    def _resolve_read_path(self, logical_path: str) -> str:
+        """
+        Resolve a logical path to its physical storage path for read operations.
+
+        :param logical_path: The user-facing logical path.
+        :return: The physical storage path.
+        :raises FileNotFoundError: If the file does not exist in the metadata provider.
+        """
+        assert self._metadata_provider is not None
+        resolved = self._metadata_provider.realpath(logical_path)
+        if not resolved.exists:
+            raise FileNotFoundError(f"The file at path '{logical_path}' was not found by metadata provider.")
+        return resolved.physical_path
+
+    def _resolve_write_path(self, logical_path: str) -> str:
+        """
+        Resolve a logical path to its physical storage path for write operations.
+
+        Checks overwrite policy and generates the physical path via the metadata provider.
+
+        :param logical_path: The user-facing logical path.
+        :return: The physical storage path to write to.
+        :raises FileExistsError: If the file exists and overwrites are not allowed.
+        """
+        assert self._metadata_provider is not None
+        resolved = self._metadata_provider.realpath(logical_path)
+        if resolved.state in (ResolvedPathState.EXISTS, ResolvedPathState.DELETED):
+            if not self._metadata_provider.allow_overwrites():
+                raise FileExistsError(
+                    f"The file at path '{logical_path}' already exists; "
+                    f"overwriting is not allowed when using a metadata provider."
+                )
+            return self._metadata_provider.generate_physical_path(logical_path, for_overwrite=True).physical_path
+        return self._metadata_provider.generate_physical_path(logical_path, for_overwrite=False).physical_path
+
+    def _register_written_file(
+        self, virtual_path: str, physical_path: str, attributes: Optional[dict[str, str]] = None
+    ) -> None:
+        """
+        Register a written file with the metadata provider.
+
+        Fetches metadata from the storage provider, optionally merges custom attributes,
+        and registers the file with the metadata provider.
+
+        Caller must hold ``_metadata_provider_lock`` if thread-safety is required.
+
+        .. note::
+            TODO(NGCDP-3016): Handle eventual consistency of Swiftstack, without wait.
+        """
+        assert self._metadata_provider is not None
+        obj_metadata = self._storage_provider.get_object_metadata(physical_path)
+        if attributes:
+            obj_metadata.metadata = (obj_metadata.metadata or {}) | attributes
+        self._metadata_provider.add_file(virtual_path, obj_metadata)
+
     @retry
     def read(
         self,
@@ -262,10 +319,7 @@ class SingleStorageClient(AbstractStorageClient):
         :raises FileNotFoundError: If the file at the specified path does not exist.
         """
         if self._metadata_provider:
-            resolved = self._metadata_provider.realpath(path)
-            if not resolved.exists:
-                raise FileNotFoundError(f"The file at path '{path}' was not found.")
-            path = resolved.physical_path
+            path = self._resolve_read_path(path)
 
         # Handle caching logic
         if self._is_cache_enabled() and self._cache_manager:
@@ -363,16 +417,35 @@ class SingleStorageClient(AbstractStorageClient):
         :raises FileNotFoundError: If the remote file does not exist.
         """
         if self._metadata_provider:
-            resolved = self._metadata_provider.realpath(remote_path)
-            if not resolved.exists:
-                raise FileNotFoundError(f"The file at path '{remote_path}' was not found by metadata provider.")
-
+            physical_path = self._resolve_read_path(remote_path)
             metadata = self._metadata_provider.get_object_metadata(remote_path)
-            self._storage_provider.download_file(resolved.physical_path, local_path, metadata)
+            self._storage_provider.download_file(physical_path, local_path, metadata)
         elif self._replica_manager:
             self._replica_manager.download_from_replica_or_primary(remote_path, local_path, self._storage_provider)
         else:
             self._storage_provider.download_file(remote_path, local_path)
+
+    def download_files(self, remote_paths: list[str], local_paths: list[str], max_workers: int = 16) -> None:
+        """
+        Download multiple remote files to local paths.
+
+        :param remote_paths: List of logical paths of remote files to download.
+        :param local_paths: List of local file paths to save the downloaded files to.
+        :param max_workers: Maximum number of concurrent download workers (default: 16).
+        :raises ValueError: If remote_paths and local_paths have different lengths.
+        :raises FileNotFoundError: If any remote file does not exist.
+        """
+        if len(remote_paths) != len(local_paths):
+            raise ValueError("remote_paths and local_paths must have the same length")
+
+        if self._metadata_provider:
+            physical_paths = [self._resolve_read_path(rp) for rp in remote_paths]
+            self._storage_provider.download_files(physical_paths, local_paths, max_workers)
+        elif self._replica_manager:
+            for remote_path, local_path in zip(remote_paths, local_paths):
+                self.download_file(remote_path, local_path)
+        else:
+            self._storage_provider.download_files(remote_paths, local_paths, max_workers)
 
     @retry
     def upload_file(
@@ -388,34 +461,33 @@ class SingleStorageClient(AbstractStorageClient):
         """
         virtual_path = remote_path
         if self._metadata_provider:
-            resolved = self._metadata_provider.realpath(remote_path)
-            if resolved.state in (ResolvedPathState.EXISTS, ResolvedPathState.DELETED):
-                # File exists or has been deleted
-                if not self._metadata_provider.allow_overwrites():
-                    raise FileExistsError(
-                        f"The file at path '{virtual_path}' already exists; "
-                        f"overwriting is not allowed when using a metadata provider."
-                    )
-                # Generate path for overwrite (future: may return different path for versioning)
-                remote_path = self._metadata_provider.generate_physical_path(
-                    remote_path, for_overwrite=True
-                ).physical_path
-            else:
-                # New file - generate path
-                remote_path = self._metadata_provider.generate_physical_path(
-                    remote_path, for_overwrite=False
-                ).physical_path
-
-            # if metadata provider is present, we only write attributes to the metadata provider
-            self._storage_provider.upload_file(remote_path, local_path, attributes=None)
-
-            # TODO(NGCDP-3016): Handle eventual consistency of Swiftstack, without wait.
-            obj_metadata = self._storage_provider.get_object_metadata(remote_path)
-            obj_metadata.metadata = (obj_metadata.metadata or {}) | (attributes or {})
+            physical_path = self._resolve_write_path(remote_path)
+            self._storage_provider.upload_file(physical_path, local_path, attributes=None)
             with self._metadata_provider_lock or contextlib.nullcontext():
-                self._metadata_provider.add_file(virtual_path, obj_metadata)
+                self._register_written_file(virtual_path, physical_path, attributes)
         else:
             self._storage_provider.upload_file(remote_path, local_path, attributes)
+
+    def upload_files(self, remote_paths: list[str], local_paths: list[str], max_workers: int = 16) -> None:
+        """
+        Upload multiple local files to remote storage.
+
+        :param remote_paths: List of logical paths where the files will be uploaded.
+        :param local_paths: List of local file paths to upload.
+        :param max_workers: Maximum number of concurrent upload workers (default: 16).
+        :raises ValueError: If remote_paths and local_paths have different lengths.
+        """
+        if len(remote_paths) != len(local_paths):
+            raise ValueError("remote_paths and local_paths must have the same length")
+
+        if self._metadata_provider:
+            physical_paths = [self._resolve_write_path(rp) for rp in remote_paths]
+            self._storage_provider.upload_files(local_paths, physical_paths, max_workers)
+            with self._metadata_provider_lock or contextlib.nullcontext():
+                for virtual_path, physical_path in zip(remote_paths, physical_paths):
+                    self._register_written_file(virtual_path, physical_path)
+        else:
+            self._storage_provider.upload_files(local_paths, remote_paths, max_workers)
 
     @retry
     def write(self, path: str, body: bytes, attributes: Optional[dict[str, str]] = None) -> None:
@@ -428,28 +500,10 @@ class SingleStorageClient(AbstractStorageClient):
         """
         virtual_path = path
         if self._metadata_provider:
-            resolved = self._metadata_provider.realpath(path)
-            if resolved.state in (ResolvedPathState.EXISTS, ResolvedPathState.DELETED):
-                # File exists or has been deleted
-                if not self._metadata_provider.allow_overwrites():
-                    raise FileExistsError(
-                        f"The file at path '{virtual_path}' already exists; "
-                        f"overwriting is not allowed when using a metadata provider."
-                    )
-                # Generate path for overwrite (future: may return different path for versioning)
-                path = self._metadata_provider.generate_physical_path(path, for_overwrite=True).physical_path
-            else:
-                # New file - generate path
-                path = self._metadata_provider.generate_physical_path(path, for_overwrite=False).physical_path
-
-            # if metadata provider is present, we only write attributes to the metadata provider
-            self._storage_provider.put_object(path, body, attributes=None)
-
-            # TODO(NGCDP-3016): Handle eventual consistency of Swiftstack, without wait.
-            obj_metadata = self._storage_provider.get_object_metadata(path)
-            obj_metadata.metadata = (obj_metadata.metadata or {}) | (attributes or {})
+            physical_path = self._resolve_write_path(path)
+            self._storage_provider.put_object(physical_path, body, attributes=None)
             with self._metadata_provider_lock or contextlib.nullcontext():
-                self._metadata_provider.add_file(virtual_path, obj_metadata)
+                self._register_written_file(virtual_path, physical_path, attributes)
         else:
             self._storage_provider.put_object(path, body, attributes=attributes)
 
@@ -463,33 +517,11 @@ class SingleStorageClient(AbstractStorageClient):
         """
         virtual_dest_path = dest_path
         if self._metadata_provider:
-            # Source: must exist
-            src_resolved = self._metadata_provider.realpath(src_path)
-            if not src_resolved.exists:
-                raise FileNotFoundError(f"The file at path '{src_path}' was not found.")
-            src_path = src_resolved.physical_path
-
-            # Destination: check for overwrites
-            dest_resolved = self._metadata_provider.realpath(dest_path)
-            if dest_resolved.state in (ResolvedPathState.EXISTS, ResolvedPathState.DELETED):
-                # Destination exists or has been deleted
-                if not self._metadata_provider.allow_overwrites():
-                    raise FileExistsError(
-                        f"The file at path '{virtual_dest_path}' already exists; "
-                        f"overwriting is not allowed when using a metadata provider."
-                    )
-                # Generate path for overwrite
-                dest_path = self._metadata_provider.generate_physical_path(dest_path, for_overwrite=True).physical_path
-            else:
-                # New file - generate path
-                dest_path = self._metadata_provider.generate_physical_path(dest_path, for_overwrite=False).physical_path
-
+            src_path = self._resolve_read_path(src_path)
+            dest_path = self._resolve_write_path(dest_path)
             self._storage_provider.copy_object(src_path, dest_path)
-
-            # TODO(NGCDP-3016): Handle eventual consistency of Swiftstack, without wait.
-            obj_metadata = self._storage_provider.get_object_metadata(dest_path)
             with self._metadata_provider_lock or contextlib.nullcontext():
-                self._metadata_provider.add_file(virtual_dest_path, obj_metadata)
+                self._register_written_file(virtual_dest_path, dest_path)
         else:
             self._storage_provider.copy_object(src_path, dest_path)
 
