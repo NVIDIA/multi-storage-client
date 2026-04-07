@@ -335,6 +335,18 @@ class StorageProvider(ABC):
         pass
 
     @abstractmethod
+    def upload_files(self, local_paths: list[str], remote_paths: list[str], max_workers: int = 16) -> None:
+        """
+        Uploads multiple files from the local file system to the storage provider.
+
+        :param local_paths: List of local file paths to upload.
+        :param remote_paths: List of remote paths to upload the files to.
+        :param max_workers: Maximum number of concurrent upload workers (default: 16).
+        :raises ValueError: If local_paths and remote_paths have different lengths.
+        """
+        pass
+
+    @abstractmethod
     def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
         """
         Matches and retrieves a list of object keys in the storage provider that match the specified pattern.

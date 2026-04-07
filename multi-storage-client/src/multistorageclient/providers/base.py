@@ -1003,6 +1003,73 @@ class BaseStorageProvider(StorageProvider):
 
         run_coroutine_sync(_download_all)
 
+    def upload_files(self, local_paths: list[str], remote_paths: list[str], max_workers: int = 16) -> None:
+        if len(local_paths) != len(remote_paths):
+            raise ValueError("local_paths and remote_paths must have the same length")
+
+        if max_workers < 1:
+            raise ValueError("max_workers must be at least 1")
+
+        if not local_paths:
+            return
+
+        rust_client = getattr(self, "_rust_client", None)
+        if rust_client is not None:
+            self._upload_files_async(rust_client, local_paths, remote_paths, max_workers)
+        else:
+            self._upload_files_threaded(local_paths, remote_paths, max_workers)
+
+    def _upload_files_threaded(self, local_paths: list[str], remote_paths: list[str], max_workers: int) -> None:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(self.upload_file, rp, lp) for lp, rp in zip(local_paths, remote_paths)]
+            for future in as_completed(futures):
+                future.result()
+
+    def _upload_files_async(
+        self, rust_client: Any, local_paths: list[str], remote_paths: list[str], max_workers: int
+    ) -> None:
+        if not self._metric_init_event.is_set():
+            self._init_metrics()
+
+        semaphore = asyncio.Semaphore(max_workers)
+
+        async def _upload_one(local_path: str, remote_path: str) -> None:
+            async with semaphore:
+                full_path = self._prepend_base_path(remote_path)
+                _, key = split_path(full_path)
+
+                file_size = await asyncio.to_thread(os.path.getsize, local_path)
+
+                start_time = time.perf_counter()
+                error_type: Optional[str] = None
+                data_size: Optional[int] = None
+                try:
+                    if file_size <= self._multipart_threshold:
+                        data_size = await rust_client.upload(local_path, key)
+                    else:
+                        data_size = await rust_client.upload_multipart_from_file(local_path, key)
+                except Exception as e:
+                    error_type = type(e).__name__
+                    raise
+                finally:
+                    latency = time.perf_counter() - start_time
+                    self._dispatch_metrics(
+                        operation=BaseStorageProvider._Operation.WRITE,
+                        latency=latency,
+                        data_size=data_size,
+                        error_type=error_type,
+                    )
+
+        async def _upload_all() -> None:
+            tasks = [_upload_one(lp, rp) for lp, rp in zip(local_paths, remote_paths)]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            errors = [r for r in results if isinstance(r, Exception)]
+            if errors:
+                logger.error("upload_files: %d/%d uploads failed", len(errors), len(tasks))
+                raise errors[0]
+
+        run_coroutine_sync(_upload_all)
+
     def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
         parent_dir = extract_prefix_from_glob(pattern)
         keys = [object.key for object in self.list_objects(path=parent_dir)]

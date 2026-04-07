@@ -564,3 +564,54 @@ async def test_download_files_async_inside_running_loop():
         provider.download_files(["small1.txt"], ["/tmp/small1.txt"], max_workers=1)
 
     mock_rust_client.download.assert_awaited_once_with("small1.txt", "/tmp/small1.txt")
+
+
+def test_upload_files_threaded():
+    """Threaded path: multiple files, empty list, and validation."""
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+    provider.upload_file = MagicMock()
+
+    with pytest.raises(ValueError, match="same length"):
+        provider.upload_files(["/tmp/a.txt", "/tmp/b.txt"], ["a.txt"])
+
+    with pytest.raises(ValueError, match="at least 1"):
+        provider.upload_files(["/tmp/a.txt"], ["a.txt"], max_workers=0)
+
+    provider.upload_files([], [])
+    provider.upload_file.assert_not_called()
+
+    local_paths = ["/tmp/file1.txt", "/tmp/file2.txt", "/tmp/file3.txt"]
+    remote_paths = ["file1.txt", "file2.txt", "file3.txt"]
+    provider.upload_files(local_paths, remote_paths, max_workers=4)
+
+    assert provider.upload_file.call_count == 3
+    called_args = {call.args for call in provider.upload_file.call_args_list}
+    assert called_args == {
+        ("file1.txt", "/tmp/file1.txt"),
+        ("file2.txt", "/tmp/file2.txt"),
+        ("file3.txt", "/tmp/file3.txt"),
+    }
+
+
+def test_upload_files_async():
+    """Async/Rust path: uses upload for small files, upload_multipart_from_file for large."""
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+    provider._multipart_threshold = 100
+
+    mock_rust_client = MagicMock()
+    mock_rust_client.upload = AsyncMock(return_value=50)
+    mock_rust_client.upload_multipart_from_file = AsyncMock(return_value=200)
+    provider._rust_client = mock_rust_client
+
+    local_paths = ["/tmp/small1.txt", "/tmp/small2.txt", "/tmp/large1.txt"]
+    remote_paths = ["small1.txt", "small2.txt", "large1.txt"]
+
+    def fake_getsize(path: str) -> int:
+        return 200 if "large" in path else 50
+
+    with patch("multistorageclient.providers.base.os.path.getsize", side_effect=fake_getsize):
+        provider.upload_files(local_paths, remote_paths, max_workers=4)
+
+    assert mock_rust_client.upload.await_count == 2
+    assert mock_rust_client.upload_multipart_from_file.await_count == 1
+    assert mock_rust_client.upload_multipart_from_file.call_args.args == ("/tmp/large1.txt", "large1.txt")
