@@ -14,9 +14,13 @@
 # limitations under the License.
 
 import asyncio
-from typing import Any, Optional
+import threading
+from collections.abc import Callable, Coroutine
+from concurrent.futures import Future
+from typing import TYPE_CHECKING, Any, Optional, TypeVar
 
-from multistorageclient_rust import RustRetryConfig
+if TYPE_CHECKING:
+    from multistorageclient_rust import RustRetryConfig
 
 # Retry configuration defaults (matching Rust defaults)
 DEFAULT_RETRY_ATTEMPTS = 10
@@ -25,8 +29,10 @@ DEFAULT_RETRY_INIT_BACKOFF_MS = 100
 DEFAULT_RETRY_MAX_BACKOFF = 15
 DEFAULT_RETRY_BACKOFF_MULTIPLIER = 2.0
 
+_T = TypeVar("_T")
 
-def parse_retry_config(configs: dict[str, Any]) -> Optional[RustRetryConfig]:
+
+def parse_retry_config(configs: dict[str, Any]) -> Optional["RustRetryConfig"]:
     """
     Parse retry configuration from rust_client configs dict.
 
@@ -38,6 +44,8 @@ def parse_retry_config(configs: dict[str, Any]) -> Optional[RustRetryConfig]:
     """
     if "retry" not in configs:
         return None
+
+    from multistorageclient_rust import RustRetryConfig
 
     retry_dict = configs.pop("retry")
 
@@ -56,6 +64,33 @@ def parse_retry_config(configs: dict[str, Any]) -> Optional[RustRetryConfig]:
         )
 
     return None
+
+
+def run_coroutine_sync(coro_factory: Callable[[], Coroutine[Any, Any, _T]]) -> _T:
+    """
+    Run a coroutine from synchronous code.
+
+    If the current thread already has a running event loop, execute the coroutine
+    in a helper thread so nested loop errors are avoided.
+    """
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro_factory())
+
+    result: Future[_T] = Future()
+
+    def _runner() -> None:
+        try:
+            result.set_result(asyncio.run(coro_factory()))
+        except BaseException as exc:
+            result.set_exception(exc)
+
+    thread = threading.Thread(target=_runner)
+    thread.start()
+    thread.join()
+    return result.result()
 
 
 def run_async_rust_client_method(rust_client: Any, method_name: str, *args, **kwargs) -> Any:
@@ -77,9 +112,4 @@ def run_async_rust_client_method(rust_client: Any, method_name: str, *args, **kw
         method = getattr(rust_client, method_name)
         return await method(*args, **kwargs)
 
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(_run_method())
-    else:
-        return loop.run_until_complete(_run_method())
+    return run_coroutine_sync(_run_method)

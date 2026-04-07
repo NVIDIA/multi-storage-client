@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import heapq
 import importlib.metadata as importlib_metadata
 import logging
@@ -22,13 +23,14 @@ import threading
 import time
 from abc import abstractmethod
 from collections.abc import Callable, Iterator, Sequence
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from enum import Enum
 from typing import IO, Any, Optional, TypeVar, Union, cast
 
 import opentelemetry.metrics as api_metrics
 import opentelemetry.util.types as api_types
 
+from ..rust_utils import run_coroutine_sync
 from ..telemetry import Telemetry
 from ..telemetry.attributes.base import AttributesProvider, collect_attributes
 from ..types import ObjectMetadata, Range, SignerType, StorageProvider
@@ -39,6 +41,8 @@ from ..utils import (
     import_class,
     insert_directories,
     matches_attribute_filter_expression,
+    safe_makedirs,
+    split_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -141,6 +145,9 @@ _TELEMETRY_ATTRIBUTES_PROVIDER_MAPPING = {
 
 MAX_ASYNC_QUEUE_SIZE = 100_000
 
+MiB = 1024 * 1024
+DEFAULT_MULTIPART_THRESHOLD = 64 * MiB
+
 
 class BaseStorageProvider(StorageProvider):
     """
@@ -199,6 +206,7 @@ class BaseStorageProvider(StorageProvider):
     ):
         self._base_path = base_path
         self._provider_name = provider_name
+        self._multipart_threshold = DEFAULT_MULTIPART_THRESHOLD
 
         self._config_dict = config_dict
         self._telemetry_provider = telemetry_provider
@@ -505,20 +513,7 @@ class BaseStorageProvider(StorageProvider):
             error_type = type(error).__name__ if error else None
             latency = time.perf_counter() - start_time
             data_size = self._calculate_data_size(result, operation, error_type)
-
-            metric_data = {
-                "operation": operation,
-                "latency": latency,
-                "data_size": data_size,
-                "error_type": error_type,
-            }
-
-            try:
-                assert self._metrics_queue is not None, "Metrics queue must be initialized"
-                self._metrics_queue.put_nowait(metric_data)
-            except queue.Full:
-                with self._metrics_dropped_count_lock:
-                    self._metrics_dropped_count += 1
+            self._dispatch_metrics(operation, latency, data_size, error_type)
 
     def _emit_metrics_sync(self, operation: _Operation, f: Callable[[], _T]) -> _T:
         """Synchronous metric emission - original implementation."""
@@ -535,6 +530,35 @@ class BaseStorageProvider(StorageProvider):
             error_type = type(error).__name__ if error else None
             latency = time.perf_counter() - start_time
             data_size = self._calculate_data_size(result, operation, error_type)
+            self._dispatch_metrics(operation, latency, data_size, error_type)
+
+    def _dispatch_metrics(
+        self,
+        operation: _Operation,
+        latency: float,
+        data_size: Optional[int],
+        error_type: Optional[str],
+    ) -> None:
+        """
+        Dispatch pre-computed metrics via the appropriate path (sync or async queue).
+
+        Unlike :meth:`_emit_metrics` which wraps a callable, this method accepts
+        pre-computed metric values. Used by :meth:`_emit_metrics_sync`, :meth:`_emit_metrics_async`,
+        and directly when the operation is performed outside the standard wrapper (e.g. async Rust downloads).
+        """
+        if self._async_metrics_enabled and self._metrics_queue is not None:
+            metric_data = {
+                "operation": operation,
+                "latency": latency,
+                "data_size": data_size,
+                "error_type": error_type,
+            }
+            try:
+                self._metrics_queue.put_nowait(metric_data)
+            except queue.Full:
+                with self._metrics_dropped_count_lock:
+                    self._metrics_dropped_count += 1
+        else:
             self._record_metrics(operation, latency, data_size, error_type)
 
     def _append_delimiter(self, s: str, delimiter: str = "/") -> str:
@@ -908,6 +932,76 @@ class BaseStorageProvider(StorageProvider):
             operation=BaseStorageProvider._Operation.READ,
             f=lambda: self._download_file(remote_path, f, metadata),
         )
+
+    def download_files(self, remote_paths: list[str], local_paths: list[str], max_workers: int = 16) -> None:
+        if len(remote_paths) != len(local_paths):
+            raise ValueError("remote_paths and local_paths must have the same length")
+
+        if max_workers < 1:
+            raise ValueError("max_workers must be at least 1")
+
+        if not remote_paths:
+            return
+
+        rust_client = getattr(self, "_rust_client", None)
+        if rust_client is not None:
+            self._download_files_async(rust_client, remote_paths, local_paths, max_workers)
+        else:
+            self._download_files_threaded(remote_paths, local_paths, max_workers)
+
+    def _download_files_threaded(self, remote_paths: list[str], local_paths: list[str], max_workers: int) -> None:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(self.download_file, rp, lp) for rp, lp in zip(remote_paths, local_paths)]
+            for future in as_completed(futures):
+                future.result()
+
+    def _download_files_async(
+        self, rust_client: Any, remote_paths: list[str], local_paths: list[str], max_workers: int
+    ) -> None:
+        if not self._metric_init_event.is_set():
+            self._init_metrics()
+
+        semaphore = asyncio.Semaphore(max_workers)
+
+        async def _download_one(remote_path: str, local_path: str) -> None:
+            async with semaphore:
+                full_path = self._prepend_base_path(remote_path)
+                _, key = split_path(full_path)
+
+                if os.path.dirname(local_path):
+                    safe_makedirs(os.path.dirname(local_path))
+
+                metadata = await asyncio.to_thread(self._get_object_metadata, full_path)
+
+                start_time = time.perf_counter()
+                error_type: Optional[str] = None
+                data_size: Optional[int] = None
+                try:
+                    if metadata.content_length <= self._multipart_threshold:
+                        data_size = await rust_client.download(key, local_path)
+                    else:
+                        data_size = await rust_client.download_multipart_to_file(key, local_path)
+                except Exception as e:
+                    error_type = type(e).__name__
+                    raise
+                finally:
+                    latency = time.perf_counter() - start_time
+                    self._dispatch_metrics(
+                        operation=BaseStorageProvider._Operation.READ,
+                        latency=latency,
+                        data_size=data_size,
+                        error_type=error_type,
+                    )
+
+        async def _download_all() -> None:
+            tasks = [_download_one(rp, lp) for rp, lp in zip(remote_paths, local_paths)]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            errors = [r for r in results if isinstance(r, Exception)]
+            if errors:
+                logger.error("download_files: %d/%d downloads failed", len(errors), len(tasks))
+                raise errors[0]
+
+        run_coroutine_sync(_download_all)
 
     def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
         parent_dir = extract_prefix_from_glob(pattern)

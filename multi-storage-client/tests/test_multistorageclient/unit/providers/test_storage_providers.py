@@ -903,3 +903,48 @@ def test_presigned_url_get_and_put(temp_data_store_type: type[tempdatastore.Temp
             pass
 
         assert storage_client.read(put_key) == put_body
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type", "enable_rust"],
+    argvalues=[
+        [tempdatastore.TemporaryPOSIXDirectory, False],
+        [tempdatastore.TemporaryAWSS3Bucket, False],
+        [tempdatastore.TemporaryAWSS3Bucket, True],
+    ],
+)
+def test_download_files(temp_data_store_type: type[tempdatastore.TemporaryDataStore], enable_rust: bool):
+    """Upload several files, then download them all via download_files and verify contents."""
+    kwargs = {"enable_rust_client": enable_rust} if enable_rust else {}
+    with temp_data_store_type(**kwargs) as temp_data_store:
+        profile = "data"
+        config_dict = {"profiles": {profile: temp_data_store.profile_config_dict()}}
+        storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
+        storage_provider = cast(BaseStorageProvider, storage_client._storage_provider)
+
+        prefix = uuid.uuid4().hex
+        file_contents = {
+            f"{prefix}/a.txt": b"content-a",
+            f"{prefix}/sub/b.txt": b"content-b",
+            f"{prefix}/sub/c.txt": b"content-c",
+        }
+
+        for path, body in file_contents.items():
+            storage_client.write(path=path, body=body)
+
+        # Wait for the files to be written
+        for path in file_contents.keys():
+            wait_for_is_file(storage_client=storage_client, path=path, is_file=True)
+
+        remote_paths = list(file_contents.keys())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            local_paths = [os.path.join(tmpdir, p) for p in remote_paths]
+            storage_provider.download_files(remote_paths, local_paths)
+
+            for remote_path, local_path in zip(remote_paths, local_paths):
+                assert os.path.isfile(local_path), f"{local_path} was not created"
+                with open(local_path, "rb") as f:
+                    assert f.read() == file_contents[remote_path]
+
+        for path in remote_paths:
+            storage_client.delete(path=path)

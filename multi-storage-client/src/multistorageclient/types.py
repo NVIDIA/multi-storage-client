@@ -323,6 +323,18 @@ class StorageProvider(ABC):
         pass
 
     @abstractmethod
+    def download_files(self, remote_paths: list[str], local_paths: list[str], max_workers: int = 16) -> None:
+        """
+        Downloads multiple files from the storage provider to the local file system.
+
+        :param remote_paths: List of remote paths of files to download.
+        :param local_paths: List of local file paths to save the downloaded files to.
+        :param max_workers: Maximum number of concurrent download workers (default: 16).
+        :raises ValueError: If remote_paths and local_paths have different lengths.
+        """
+        pass
+
+    @abstractmethod
     def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
         """
         Matches and retrieves a list of object keys in the storage provider that match the specified pattern.

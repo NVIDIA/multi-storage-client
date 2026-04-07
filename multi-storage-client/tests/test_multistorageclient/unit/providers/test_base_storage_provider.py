@@ -17,7 +17,7 @@ import time
 from collections.abc import Iterator
 from datetime import datetime
 from typing import IO, Any, Optional, Union
-from unittest.mock import MagicMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -27,6 +27,8 @@ from multistorageclient.types import ObjectMetadata, Range
 
 
 class MockBaseStorageProvider(BaseStorageProvider):
+    _rust_client: Any = None
+
     def _put_object(self, path: str, body: bytes) -> None:
         pass
 
@@ -487,3 +489,78 @@ class TestParallelListingHeap:
         provider = MockParallelListingProvider(tree=tree, base_path="bucket", provider_name="mock")
         keys = [o.key for o in provider.list_objects_recursive()]
         assert keys == ["a/file.txt"]
+
+
+def test_download_files_threaded():
+    """Threaded path: multiple files, empty list, and validation."""
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+    provider.download_file = MagicMock()
+
+    with pytest.raises(ValueError, match="same length"):
+        provider.download_files(["a.txt", "b.txt"], ["/tmp/a.txt"])
+
+    with pytest.raises(ValueError, match="at least 1"):
+        provider.download_files(["a.txt"], ["/tmp/a.txt"], max_workers=0)
+
+    provider.download_files([], [])
+    provider.download_file.assert_not_called()
+
+    remote_paths = ["file1.txt", "file2.txt", "file3.txt"]
+    local_paths = ["/tmp/file1.txt", "/tmp/file2.txt", "/tmp/file3.txt"]
+    provider.download_files(remote_paths, local_paths, max_workers=4)
+
+    assert provider.download_file.call_count == 3
+    called_args = {call.args for call in provider.download_file.call_args_list}
+    assert called_args == {
+        ("file1.txt", "/tmp/file1.txt"),
+        ("file2.txt", "/tmp/file2.txt"),
+        ("file3.txt", "/tmp/file3.txt"),
+    }
+
+
+def test_download_files_async():
+    """Async/Rust path: uses download for small files, download_multipart_to_file for large."""
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+    provider._multipart_threshold = 100
+
+    small_meta = ObjectMetadata(key="s.txt", content_length=50, type="file", last_modified=datetime.now())
+    large_meta = ObjectMetadata(key="l.txt", content_length=200, type="file", last_modified=datetime.now())
+
+    def fake_get_metadata(path: str, strict: bool = True) -> ObjectMetadata:
+        return large_meta if "large" in path else small_meta
+
+    provider._get_object_metadata = MagicMock(side_effect=fake_get_metadata)
+
+    mock_rust_client = MagicMock()
+    mock_rust_client.download = AsyncMock(return_value=50)
+    mock_rust_client.download_multipart_to_file = AsyncMock(return_value=200)
+    provider._rust_client = mock_rust_client
+
+    remote_paths = ["small1.txt", "small2.txt", "large1.txt"]
+    local_paths = ["/tmp/small1.txt", "/tmp/small2.txt", "/tmp/large1.txt"]
+
+    with patch("multistorageclient.providers.base.safe_makedirs"):
+        provider.download_files(remote_paths, local_paths, max_workers=4)
+
+    assert mock_rust_client.download.await_count == 2
+    assert mock_rust_client.download_multipart_to_file.await_count == 1
+    assert mock_rust_client.download_multipart_to_file.call_args.args == ("large1.txt", "/tmp/large1.txt")
+
+
+@pytest.mark.asyncio
+async def test_download_files_async_inside_running_loop():
+    """Async/Rust batch downloads should work when the caller already has a running event loop."""
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+    provider._multipart_threshold = 100
+    provider._get_object_metadata = MagicMock(
+        return_value=ObjectMetadata(key="s.txt", content_length=50, type="file", last_modified=datetime.now())
+    )
+
+    mock_rust_client = MagicMock()
+    mock_rust_client.download = AsyncMock(return_value=50)
+    provider._rust_client = mock_rust_client
+
+    with patch("multistorageclient.providers.base.safe_makedirs"):
+        provider.download_files(["small1.txt"], ["/tmp/small1.txt"], max_workers=1)
+
+    mock_rust_client.download.assert_awaited_once_with("small1.txt", "/tmp/small1.txt")

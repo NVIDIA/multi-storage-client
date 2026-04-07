@@ -219,6 +219,7 @@ class S3StorageProvider(BaseStorageProvider):
             io_chunksize=int(kwargs.get("io_chunksize", IO_CHUNKSIZE)),
             use_threads=True,
         )
+        self._multipart_threshold = self._transfer_config.multipart_threshold
 
         self._signer_cache: dict[tuple, URLSigner] = {}
 
@@ -835,7 +836,7 @@ class S3StorageProvider(BaseStorageProvider):
             file_size = os.path.getsize(f)
 
             # Upload small files
-            if file_size <= self._transfer_config.multipart_threshold:
+            if file_size <= self._multipart_threshold:
                 if self._rust_client and not attributes and not content_type:
                     run_async_rust_client_method(self._rust_client, "upload", f, key)
                 else:
@@ -873,7 +874,7 @@ class S3StorageProvider(BaseStorageProvider):
             file_size = f.tell()
             f.seek(0)
 
-            if file_size <= self._transfer_config.multipart_threshold:
+            if file_size <= self._multipart_threshold:
                 if isinstance(f, io.StringIO):
                     self._put_object(
                         remote_path, f.read().encode("utf-8"), attributes=attributes, content_type=content_type
@@ -921,7 +922,7 @@ class S3StorageProvider(BaseStorageProvider):
                 safe_makedirs(os.path.dirname(f))
 
             # Download small files
-            if metadata.content_length <= self._transfer_config.multipart_threshold:
+            if metadata.content_length <= self._multipart_threshold:
                 if self._rust_client:
                     run_async_rust_client_method(self._rust_client, "download", key, f)
                 else:
@@ -954,7 +955,7 @@ class S3StorageProvider(BaseStorageProvider):
             return self._translate_errors(_invoke_api, operation="GET", bucket=bucket, key=key)
         else:
             # Download small files
-            if metadata.content_length <= self._transfer_config.multipart_threshold:
+            if metadata.content_length <= self._multipart_threshold:
                 response = self._get_object(remote_path)
                 # Python client returns `bytes`, but Rust client returns an object that implements the buffer protocol,
                 # so we need to check whether `.decode()` is available.
