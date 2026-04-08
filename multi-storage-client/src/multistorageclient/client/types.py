@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from typing import IO, TYPE_CHECKING, Any, Optional, Union
 
 from ..constants import MEMORY_LOAD_LIMIT
@@ -330,14 +330,23 @@ class AbstractStorageClient(ABC):
         pass
 
     @abstractmethod
-    def upload_files(self, remote_paths: list[str], local_paths: list[str], max_workers: int = 16) -> None:
+    def upload_files(
+        self,
+        remote_paths: list[str],
+        local_paths: list[str],
+        attributes: Optional[Sequence[Optional[dict[str, str]]]] = None,
+        max_workers: int = 16,
+    ) -> None:
         """
         Upload multiple local files to remote storage.
 
         :param remote_paths: List of logical paths where the files will be uploaded.
         :param local_paths: List of local file paths to upload.
+        :param attributes: Optional list of per-file attributes to add. When provided, must have the same length
+            as remote_paths/local_paths. Each element may be ``None`` for files that need no attributes.
         :param max_workers: Maximum number of concurrent upload workers (default: 16).
         :raises ValueError: If remote_paths and local_paths have different lengths.
+        :raises ValueError: If attributes is provided and has a different length than remote_paths.
         :raises NotImplementedError: If upload operations are not supported (e.g., CompositeStorageClient).
         """
         pass

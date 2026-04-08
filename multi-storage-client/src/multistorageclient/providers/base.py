@@ -1003,9 +1003,18 @@ class BaseStorageProvider(StorageProvider):
 
         run_coroutine_sync(_download_all)
 
-    def upload_files(self, local_paths: list[str], remote_paths: list[str], max_workers: int = 16) -> None:
+    def upload_files(
+        self,
+        local_paths: list[str],
+        remote_paths: list[str],
+        attributes: Optional[Sequence[Optional[dict[str, str]]]] = None,
+        max_workers: int = 16,
+    ) -> None:
         if len(local_paths) != len(remote_paths):
             raise ValueError("local_paths and remote_paths must have the same length")
+
+        if attributes is not None and len(attributes) != len(local_paths):
+            raise ValueError("attributes must have the same length as local_paths and remote_paths")
 
         if max_workers < 1:
             raise ValueError("max_workers must be at least 1")
@@ -1013,15 +1022,25 @@ class BaseStorageProvider(StorageProvider):
         if not local_paths:
             return
 
+        has_any_attributes = attributes is not None and any(a is not None for a in attributes)
         rust_client = getattr(self, "_rust_client", None)
-        if rust_client is not None:
+        if rust_client is not None and not has_any_attributes:
             self._upload_files_async(rust_client, local_paths, remote_paths, max_workers)
         else:
-            self._upload_files_threaded(local_paths, remote_paths, max_workers)
+            self._upload_files_threaded(local_paths, remote_paths, attributes, max_workers)
 
-    def _upload_files_threaded(self, local_paths: list[str], remote_paths: list[str], max_workers: int) -> None:
+    def _upload_files_threaded(
+        self,
+        local_paths: list[str],
+        remote_paths: list[str],
+        attributes: Optional[Sequence[Optional[dict[str, str]]]] = None,
+        max_workers: int = 16,
+    ) -> None:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(self.upload_file, rp, lp) for lp, rp in zip(local_paths, remote_paths)]
+            futures = [
+                executor.submit(self.upload_file, rp, lp, attributes[i] if attributes is not None else None)
+                for i, (lp, rp) in enumerate(zip(local_paths, remote_paths))
+            ]
             for future in as_completed(futures):
                 future.result()
 

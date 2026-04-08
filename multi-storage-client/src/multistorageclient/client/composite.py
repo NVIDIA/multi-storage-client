@@ -14,7 +14,7 @@
 # limitations under the License.
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from typing import IO, Any, Optional, Union
 
 from ..config import StorageClientConfig
@@ -365,7 +365,13 @@ class CompositeStorageClient(AbstractStorageClient):
             "CompositeStorageClient is read-only. Upload operations are not implemented for multi-location datasets."
         )
 
-    def upload_files(self, remote_paths: list[str], local_paths: list[str], max_workers: int = 16) -> None:
+    def upload_files(
+        self,
+        remote_paths: list[str],
+        local_paths: list[str],
+        attributes: Optional[Sequence[Optional[dict[str, str]]]] = None,
+        max_workers: int = 16,
+    ) -> None:
         """Upload operations not supported in read-only mode."""
         raise NotImplementedError(
             "CompositeStorageClient is read-only. Upload operations are not implemented for multi-location datasets."

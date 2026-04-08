@@ -587,10 +587,76 @@ def test_upload_files_threaded():
     assert provider.upload_file.call_count == 3
     called_args = {call.args for call in provider.upload_file.call_args_list}
     assert called_args == {
-        ("file1.txt", "/tmp/file1.txt"),
-        ("file2.txt", "/tmp/file2.txt"),
-        ("file3.txt", "/tmp/file3.txt"),
+        ("file1.txt", "/tmp/file1.txt", None),
+        ("file2.txt", "/tmp/file2.txt", None),
+        ("file3.txt", "/tmp/file3.txt", None),
     }
+
+
+def test_upload_files_threaded_with_attributes():
+    """Threaded path: per-file attributes are forwarded to each upload_file call."""
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+    provider.upload_file = MagicMock()
+
+    local_paths = ["/tmp/file1.txt", "/tmp/file2.txt", "/tmp/file3.txt"]
+    remote_paths = ["file1.txt", "file2.txt", "file3.txt"]
+    attrs = [{"tag": "a"}, None, {"tag": "c"}]
+    provider.upload_files(local_paths, remote_paths, attributes=attrs, max_workers=4)
+
+    assert provider.upload_file.call_count == 3
+    called_args = sorted([call.args for call in provider.upload_file.call_args_list], key=lambda x: x[0])
+    assert called_args == [
+        ("file1.txt", "/tmp/file1.txt", {"tag": "a"}),
+        ("file2.txt", "/tmp/file2.txt", None),
+        ("file3.txt", "/tmp/file3.txt", {"tag": "c"}),
+    ]
+
+
+def test_upload_files_rejects_mismatched_attributes_length():
+    """Attributes list must match local_paths/remote_paths length."""
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+
+    with pytest.raises(ValueError, match="attributes must have the same length"):
+        provider.upload_files(["/tmp/a.txt", "/tmp/b.txt"], ["a.txt", "b.txt"], attributes=[{"k": "v"}])
+
+
+def test_upload_files_with_attributes_skips_rust_path():
+    """When any file has attributes, the Rust async path is bypassed in favour of threaded."""
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+    provider.upload_file = MagicMock()
+
+    mock_rust_client = MagicMock()
+    provider._rust_client = mock_rust_client
+
+    local_paths = ["/tmp/file1.txt"]
+    remote_paths = ["file1.txt"]
+    attrs = [{"key": "val"}]
+    provider.upload_files(local_paths, remote_paths, attributes=attrs, max_workers=2)
+
+    provider.upload_file.assert_called_once_with("file1.txt", "/tmp/file1.txt", {"key": "val"})
+    mock_rust_client.upload.assert_not_called()
+    mock_rust_client.upload_multipart_from_file.assert_not_called()
+
+
+def test_upload_files_with_all_none_attributes_uses_rust_path():
+    """When attributes list exists but all entries are None, Rust path is still used."""
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+    provider._multipart_threshold = 100
+
+    mock_rust_client = MagicMock()
+    mock_rust_client.upload = AsyncMock(return_value=50)
+    provider._rust_client = mock_rust_client
+
+    local_paths = ["/tmp/file1.txt"]
+    remote_paths = ["file1.txt"]
+
+    def fake_getsize(path: str) -> int:
+        return 50
+
+    with patch("multistorageclient.providers.base.os.path.getsize", side_effect=fake_getsize):
+        provider.upload_files(local_paths, remote_paths, attributes=[None], max_workers=2)
+
+    mock_rust_client.upload.assert_awaited_once()
 
 
 def test_upload_files_async():

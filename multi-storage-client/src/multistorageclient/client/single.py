@@ -18,7 +18,7 @@ import contextlib
 import logging
 import os
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import PurePosixPath
@@ -468,26 +468,38 @@ class SingleStorageClient(AbstractStorageClient):
         else:
             self._storage_provider.upload_file(remote_path, local_path, attributes)
 
-    def upload_files(self, remote_paths: list[str], local_paths: list[str], max_workers: int = 16) -> None:
+    def upload_files(
+        self,
+        remote_paths: list[str],
+        local_paths: list[str],
+        attributes: Optional[Sequence[Optional[dict[str, str]]]] = None,
+        max_workers: int = 16,
+    ) -> None:
         """
         Upload multiple local files to remote storage.
 
         :param remote_paths: List of logical paths where the files will be uploaded.
         :param local_paths: List of local file paths to upload.
+        :param attributes: Optional list of per-file attributes to add. When provided, must have the same length
+            as remote_paths/local_paths. Each element may be ``None`` for files that need no attributes.
         :param max_workers: Maximum number of concurrent upload workers (default: 16).
         :raises ValueError: If remote_paths and local_paths have different lengths.
+        :raises ValueError: If attributes is provided and has a different length than remote_paths.
         """
         if len(remote_paths) != len(local_paths):
             raise ValueError("remote_paths and local_paths must have the same length")
+        if attributes is not None and len(attributes) != len(remote_paths):
+            raise ValueError("attributes must have the same length as remote_paths and local_paths")
 
         if self._metadata_provider:
             physical_paths = [self._resolve_write_path(rp) for rp in remote_paths]
-            self._storage_provider.upload_files(local_paths, physical_paths, max_workers)
+            self._storage_provider.upload_files(local_paths, physical_paths, attributes, max_workers)
             with self._metadata_provider_lock or contextlib.nullcontext():
-                for virtual_path, physical_path in zip(remote_paths, physical_paths):
-                    self._register_written_file(virtual_path, physical_path)
+                for i, (virtual_path, physical_path) in enumerate(zip(remote_paths, physical_paths)):
+                    file_attrs = attributes[i] if attributes is not None else None
+                    self._register_written_file(virtual_path, physical_path, file_attrs)
         else:
-            self._storage_provider.upload_files(local_paths, remote_paths, max_workers)
+            self._storage_provider.upload_files(local_paths, remote_paths, attributes, max_workers)
 
     @retry
     def write(self, path: str, body: bytes, attributes: Optional[dict[str, str]] = None) -> None:

@@ -386,7 +386,17 @@ def test_upload_files_delegates_to_single(single_backend_config):
 
     client.upload_files(["/remote/a"], ["/local/a"], max_workers=4)
 
-    client._delegate.upload_files.assert_called_once_with(["/remote/a"], ["/local/a"], 4)
+    client._delegate.upload_files.assert_called_once_with(["/remote/a"], ["/local/a"], None, 4)
+
+
+def test_upload_files_delegates_attributes_to_single(single_backend_config):
+    client = StorageClient(single_backend_config)
+    client._delegate.upload_files = MagicMock()
+
+    attrs = [{"key": "val"}]
+    client.upload_files(["/remote/a"], ["/local/a"], attributes=attrs, max_workers=4)
+
+    client._delegate.upload_files.assert_called_once_with(["/remote/a"], ["/local/a"], attrs, 4)
 
 
 def test_single_download_files_without_metadata_delegates_to_provider(single_backend_config):
@@ -457,7 +467,21 @@ def test_single_upload_files_without_metadata_delegates_to_provider(single_backe
 
     client.upload_files(["/remote/a", "/remote/b"], ["/la", "/lb"], max_workers=4)
 
-    single._storage_provider.upload_files.assert_called_once_with(["/la", "/lb"], ["/remote/a", "/remote/b"], 4)
+    single._storage_provider.upload_files.assert_called_once_with(["/la", "/lb"], ["/remote/a", "/remote/b"], None, 4)
+
+
+def test_single_upload_files_without_metadata_forwards_attributes(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+    assert single._metadata_provider is None
+
+    single._storage_provider.upload_files = MagicMock()
+
+    attrs = [{"k1": "v1"}, {"k2": "v2"}]
+    client.upload_files(["/remote/a", "/remote/b"], ["/la", "/lb"], attributes=attrs, max_workers=4)
+
+    single._storage_provider.upload_files.assert_called_once_with(["/la", "/lb"], ["/remote/a", "/remote/b"], attrs, 4)
 
 
 def test_single_upload_files_with_metadata_resolves_and_registers(single_backend_config):
@@ -486,12 +510,51 @@ def test_single_upload_files_with_metadata_resolves_and_registers(single_backend
 
     client.upload_files(["logical/a", "logical/b"], ["/la", "/lb"], max_workers=8)
 
-    single._storage_provider.upload_files.assert_called_once_with(["/la", "/lb"], ["physical/a", "physical/b"], 8)
+    single._storage_provider.upload_files.assert_called_once_with(["/la", "/lb"], ["physical/a", "physical/b"], None, 8)
     metadata_provider.generate_physical_path.assert_any_call("logical/a", for_overwrite=False)
     metadata_provider.generate_physical_path.assert_any_call("logical/b", for_overwrite=False)
     assert metadata_provider.add_file.call_count == 2
     metadata_provider.add_file.assert_any_call("logical/a", obj_meta_a)
     metadata_provider.add_file.assert_any_call("logical/b", obj_meta_b)
+
+
+def test_single_upload_files_with_metadata_and_attributes(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+
+    metadata_provider = MagicMock()
+    metadata_provider.realpath.side_effect = [
+        ResolvedPath(physical_path="logical/a", state=ResolvedPathState.UNTRACKED),
+        ResolvedPath(physical_path="logical/b", state=ResolvedPathState.UNTRACKED),
+    ]
+    metadata_provider.generate_physical_path.side_effect = [
+        ResolvedPath(physical_path="physical/a", state=ResolvedPathState.UNTRACKED),
+        ResolvedPath(physical_path="physical/b", state=ResolvedPathState.UNTRACKED),
+    ]
+    metadata_provider.allow_overwrites.return_value = False
+
+    obj_meta_a = ObjectMetadata(key="physical/a", content_length=100, last_modified=datetime.now(tz=timezone.utc))
+    obj_meta_b = ObjectMetadata(
+        key="physical/b", content_length=200, last_modified=datetime.now(tz=timezone.utc), metadata={"existing": "val"}
+    )
+    single._storage_provider.get_object_metadata = MagicMock(side_effect=[obj_meta_a, obj_meta_b])
+    single._storage_provider.upload_files = MagicMock()
+
+    single._metadata_provider = metadata_provider
+    single._metadata_provider_lock = None
+
+    attrs = [{"tag": "first"}, {"tag": "second"}]
+    client.upload_files(["logical/a", "logical/b"], ["/la", "/lb"], attributes=attrs, max_workers=8)
+
+    single._storage_provider.upload_files.assert_called_once_with(
+        ["/la", "/lb"], ["physical/a", "physical/b"], attrs, 8
+    )
+    assert metadata_provider.add_file.call_count == 2
+    added_meta_a = metadata_provider.add_file.call_args_list[0][0][1]
+    assert added_meta_a.metadata == {"tag": "first"}
+    added_meta_b = metadata_provider.add_file.call_args_list[1][0][1]
+    assert added_meta_b.metadata == {"existing": "val", "tag": "second"}
 
 
 def test_single_upload_files_with_metadata_rejects_overwrite(single_backend_config):
@@ -530,8 +593,14 @@ def test_single_upload_files_with_metadata_allows_overwrite(single_backend_confi
     client.upload_files(["existing"], ["/la"])
 
     metadata_provider.generate_physical_path.assert_called_once_with("existing", for_overwrite=True)
-    single._storage_provider.upload_files.assert_called_once_with(["/la"], ["physical/existing_v2"], 16)
+    single._storage_provider.upload_files.assert_called_once_with(["/la"], ["physical/existing_v2"], None, 16)
     metadata_provider.add_file.assert_called_once_with("existing", obj_meta)
+
+
+def test_upload_files_rejects_mismatched_attributes_length(single_backend_config):
+    client = StorageClient(single_backend_config)
+    with pytest.raises(ValueError, match="attributes must have the same length"):
+        client.upload_files(["/a", "/b"], ["/la", "/lb"], attributes=[{"k": "v"}])
 
 
 def test_composite_download_files_groups_by_profile(multi_backend_config):

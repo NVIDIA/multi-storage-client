@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -335,14 +335,23 @@ class StorageProvider(ABC):
         pass
 
     @abstractmethod
-    def upload_files(self, local_paths: list[str], remote_paths: list[str], max_workers: int = 16) -> None:
+    def upload_files(
+        self,
+        local_paths: list[str],
+        remote_paths: list[str],
+        attributes: Optional[Sequence[Optional[dict[str, str]]]] = None,
+        max_workers: int = 16,
+    ) -> None:
         """
         Uploads multiple files from the local file system to the storage provider.
 
         :param local_paths: List of local file paths to upload.
         :param remote_paths: List of remote paths to upload the files to.
+        :param attributes: Optional list of per-file attributes to add. When provided, must have the same length
+            as local_paths/remote_paths. Each element may be ``None`` for files that need no attributes.
         :param max_workers: Maximum number of concurrent upload workers (default: 16).
         :raises ValueError: If local_paths and remote_paths have different lengths.
+        :raises ValueError: If attributes is provided and has a different length than local_paths.
         """
         pass
 
