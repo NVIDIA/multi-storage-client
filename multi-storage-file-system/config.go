@@ -761,6 +761,45 @@ func checkConfigFile() (err error) {
 		return
 	}
 
+	config.metadataCachePagingMode, ok = parseString(configFileMap, "metadata_cache_paging_mode", "pebble")
+	if !ok {
+		err = errors.New("bad metadata_cache_paging_mode value")
+		return
+	}
+	switch config.metadataCachePagingMode {
+	case "file":
+		// We will use a file per BPlusTree page
+	case "pebble":
+		// We will use a PebbleDB key:value per BPlusTree page
+	default:
+		err = fmt.Errorf("bad metadata_cache_paging_mode value (\"%s\") - must be either \"file\" or \"pebble\"", config.metadataCachePagingMode)
+		return
+	}
+
+	config.pebbleCacheSize, ok = parseUint64(configFileMap, "pebble_cache_size", uint64(33554432))
+	if !ok {
+		err = errors.New("bad pebble_cache_size value")
+		return
+	}
+
+	config.pebbleL0CompactionFileThreshold, ok = parseUint64(configFileMap, "pebble_l0_compaction_file_threshold", uint64(4))
+	if !ok {
+		err = errors.New("bad pebble_l0_compaction_file_threshold value")
+		return
+	}
+
+	config.pebbleL0StopWritesThreshold, ok = parseUint64(configFileMap, "pebble_l0_stop_writes_threshold", uint64(12))
+	if !ok {
+		err = errors.New("bad pebble_l0_stop_writes_threshold value")
+		return
+	}
+
+	config.pebbleMemTableSize, ok = parseUint64(configFileMap, "pebble_mem_table_size", uint64(8388608))
+	if !ok {
+		err = errors.New("bad pebble_mem_table_size value")
+		return
+	}
+
 	config.inodeMapKeysPerPageMax, ok = parseUint64(configFileMap, "inode_map_keys_per_page_max", uint64(400))
 	if !ok {
 		err = errors.New("bad inode_map_keys_per_page_max value")
@@ -1718,6 +1757,31 @@ func checkConfigFile() (err error) {
 
 		if globals.config.cacheDirPath != config.cacheDirPath {
 			err = errors.New("cannot change cache_dir_path via SIGHUP")
+			return
+		}
+
+		if globals.config.metadataCachePagingMode != config.metadataCachePagingMode {
+			err = errors.New("cannot change metadata_cache_paging_mode via SIGHUP")
+			return
+		}
+
+		if globals.config.pebbleCacheSize != config.pebbleCacheSize {
+			err = errors.New("cannot change pebble_cache_size via SIGHUP")
+			return
+		}
+
+		if globals.config.pebbleL0CompactionFileThreshold != config.pebbleL0CompactionFileThreshold {
+			err = errors.New("cannot change pebble_l0_compaction_file_threshold via SIGHUP")
+			return
+		}
+
+		if globals.config.pebbleL0StopWritesThreshold != config.pebbleL0StopWritesThreshold {
+			err = errors.New("cannot change pebble_l0_stop_writes_threshold via SIGHUP")
+			return
+		}
+
+		if globals.config.pebbleMemTableSize != config.pebbleMemTableSize {
+			err = errors.New("cannot change pebble_mem_table_size via SIGHUP")
 			return
 		}
 

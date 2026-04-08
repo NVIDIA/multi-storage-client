@@ -34,6 +34,12 @@ func initFS() {
 	}
 	globals.logger.Printf("[INFO] cache dir: \"%s\"", globals.cacheDir)
 
+	err = metadataCacheUp()
+	if err != nil {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] metadataCacheUp() failed: %v", err)
+	}
+
 	globals.inodeMap = inodeNumberToInodeStructMapStructCreate("globals.inodeMap", globals.config.inodeMapKeysPerPageMax, globals.config.inodeMapPageEvictLowLimit, globals.config.inodeMapPageEvictHighLimit, globals.config.inodeMapPageDirtyFlushTrigger, globals.config.inodeMapFlushedPerGC)
 	globals.inodeEvictionQueue = xTimeInodeNumberSetStructCreate("globals.inodeEvictionQueue", globals.config.inodeEvictionQueueKeysPerPageMax, globals.config.inodeEvictionQueuePageEvictLowLimit, globals.config.inodeEvictionQueuePageEvictHighLimit, globals.config.inodeEvictionQueuePageDirtyFlushTrigger, globals.config.inodeEvictionQueueFlushedPerGC)
 	globals.physChildDirEntryMap = parentInodeNumberChildBasenameToChildInodeNumberStructCreate("globals.physChildDirEntryMap", globals.config.physChildDirEntryMapKeysPerPageMax, globals.config.physChildDirEntryMapPageEvictLowLimit, globals.config.physChildDirEntryMapPageEvictHighLimit, globals.config.physChildDirEntryMapPageDirtyFlushTrigger, globals.config.physChildDirEntryMapFlushedPerGC)
@@ -120,6 +126,12 @@ func drainFS() {
 	}
 
 	processToUnmountListAlreadyLocked()
+
+	err = metadataCacheDown()
+	if err != nil {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] metadataCacheDown() failed: %v", err)
+	}
 
 	err = os.RemoveAll(globals.cacheDir)
 	if err != nil {

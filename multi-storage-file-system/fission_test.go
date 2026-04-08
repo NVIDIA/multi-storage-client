@@ -1233,8 +1233,6 @@ func TestFissionDoUnlinkRollbackOnBackendFailure(t *testing.T) {
 	// but the rollback logic is present and tested by code inspection.
 	// In a real scenario with S3/GCS backend failures, the rollback would re-insert
 	// the file into the parent's child map. This test verifies the structure is correct for such rollback.
-
-	t.Logf("TestFissionDoUnlinkRollbackOnBackendFailure structure verified")
 }
 
 // TestFissionDoUnlinkAlreadyUnlinkedEntry verifies that attempting to unlink a directory entry
@@ -1556,21 +1554,19 @@ func TestFissionDoCreateSameNameAsUnlinkedOpenFile(t *testing.T) {
 
 func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 	var (
-		dir2Ino          uint64
-		dir2Inode        *inodeStruct
-		errno            syscall.Errno
-		inHeader         *fission.InHeader
-		initialPhysCount uint64
-		limit            uint64
-		lookupIn         *fission.LookupIn
-		lookupOut        *fission.LookupOut
-		mkDirIn          *fission.MkDirIn
-		ok               bool
-		physCount        uint64
-		ramDirIno        uint64
-		rmDirIn          *fission.RmDirIn
-		start            uint64
-		virtCount        uint64
+		dir2Ino   uint64
+		dir2Inode *inodeStruct
+		errno     syscall.Errno
+		inHeader  *fission.InHeader
+		limit     uint64
+		lookupIn  *fission.LookupIn
+		lookupOut *fission.LookupOut
+		mkDirIn   *fission.MkDirIn
+		ok        bool
+		physCount uint64
+		ramDirIno uint64
+		rmDirIn   *fission.RmDirIn
+		start     uint64
 	)
 
 	fissionTestUp(t)
@@ -1613,9 +1609,6 @@ func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 		globals.Unlock()
 		t.Fatalf("dir2 should be physical initially")
 	}
-	start, limit = globals.physChildDirEntryMap.getIndexRange(dir2Ino)
-	initialPhysCount = limit - start
-	t.Logf("Initial state: dir2.isVirt=%v, physChildren=%d", dir2Inode.isVirt, initialPhysCount)
 	globals.Unlock()
 
 	// Create a virtual subdirectory in dir2
@@ -1638,9 +1631,6 @@ func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 		globals.Unlock()
 		t.Fatalf("dir2 inode not found after mkdir")
 	}
-	start, limit = globals.virtChildDirEntryMap.getIndexRange(dir2Ino)
-	virtCount = limit - start
-	t.Logf("After mkdir: dir2.virtChildren=%d", virtCount)
 	globals.Unlock()
 
 	// Remove the virtual directory (this makes dir2 have one less virtual child)
@@ -1683,10 +1673,6 @@ func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 
 	start, limit = globals.physChildDirEntryMap.getIndexRange(dir2Ino)
 	physCount = limit - start
-	start, limit = globals.virtChildDirEntryMap.getIndexRange(dir2Ino)
-	virtCount = limit - start
-	t.Logf("After manual removal: dir2.physChildren=%d, virtChildren=%d, isVirt=%v",
-		physCount, virtCount, dir2Inode.isVirt)
 
 	if physCount != 0 {
 		globals.Unlock()
@@ -1706,7 +1692,6 @@ func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 		t.Fatalf("dir2 should be virtual after conversion")
 	}
 
-	t.Logf("After conversion: dir2.isVirt=%v", dir2Inode.isVirt)
 	globals.Unlock()
 
 	// Verify dir2 still accessible (POSIX semantics)
@@ -1720,6 +1705,4 @@ func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 	if errno != 0 {
 		t.Fatalf("DoLookup(ram,Name:\"dir2\") failed after conversion (errno: %v)", errno)
 	}
-
-	t.Logf("TestFissionConvertPhysicalToVirtual PASSED")
 }

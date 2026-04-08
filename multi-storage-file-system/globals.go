@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/NVIDIA/fission/v3"
+	"github.com/cockroachdb/pebble/v2"
 )
 
 var GitTag string // This variable will be populated at build time
@@ -147,6 +148,11 @@ type configStruct struct {
 	dirtyCacheLinesFlushTrigger               uint64                     // JSON/YAML "dirty_cache_lines_flush_trigger"                   default:80 (as a percentage)
 	dirtyCacheLinesMax                        uint64                     // JSON/YAML "dirty_cache_lines_max"                             default:90 (as a percentage)
 	cacheDirPath                              string                     // JSON/YAML "cache_dir_path"                                    default:""
+	metadataCachePagingMode                   string                     // JSON/YAML "metadata_cache_paging_mode"                        default:"pebble"
+	pebbleCacheSize                           uint64                     // JSON/YAML "pebble_cache_size"                                 default:33554432 (32Mi)
+	pebbleL0CompactionFileThreshold           uint64                     // JSON/YAML "pebble_l0_compaction_file_threshold"               default:4
+	pebbleL0StopWritesThreshold               uint64                     // JSON/YAML "pebble_l0_stop_writes_threshold"                   default:12
+	pebbleMemTableSize                        uint64                     // JSON/YAML "pebble_mem_table_size"                             default:8388608 (8Mi)
 	inodeMapKeysPerPageMax                    uint64                     // JSON/YAML "inode_map_keys_per_page_max"                       default:400
 	inodeMapPageEvictLowLimit                 uint64                     // JSON/YAML "inode_map_page_evict_low_limit"                    default:100
 	inodeMapPageEvictHighLimit                uint64                     // JSON/YAML "inode_map_page_evict_high_limit"                   default:104
@@ -328,6 +334,7 @@ type globalsStruct struct {
 	fissionVolume          fission.Volume                                          //
 	lastNonce              uint64                                                  // Used to safely allocate non-repeating values (initialized to FUSERootDirInodeNumber to ensure skipping it)
 	cacheDir               string                                                  //
+	pebbleDB               *pebble.DB                                              // If .config.metadataCachePagingMode == "pebble", the handle to the PebbleDB; otherwise == nil
 	inodeMap               *inodeNumberToInodeStructMapStruct                      // Key: inodeStruct.inodeNumber;                                              Value: *inodeStruct
 	inodeEvictionQueue     *xTimeInodeNumberSetStruct                              // Key: tuple(inodeStruct.xTime,inodeStruct.inodeNumber);                     Value: struct{}
 	physChildDirEntryMap   *parentInodeNumberChildBasenameToChildInodeNumberStruct // Key: tuple(parent's inodeStruct.inodeNumber,child's inodeStruct.basename); Value: child's inodeStruct.inodeNumber

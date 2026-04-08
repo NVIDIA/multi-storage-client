@@ -52,7 +52,6 @@ func TestObservabilityConfigParsing(t *testing.T) {
 	if endpoint, ok := obs.metricsExporter.Options["endpoint"].(string); !ok || endpoint != "otel-collector:4318" {
 		t.Errorf("Expected endpoint 'otel-collector:4318', got '%v'", obs.metricsExporter.Options["endpoint"])
 	}
-	t.Logf("✓ Exporter: type=%s, endpoint=%v", obs.metricsExporter.Type, obs.metricsExporter.Options["endpoint"])
 
 	// Verify metrics reader options
 	if obs.metricsReaderOptions == nil {
@@ -64,7 +63,6 @@ func TestObservabilityConfigParsing(t *testing.T) {
 	if obs.metricsReaderOptions.ExportIntervalMillis != 60000 {
 		t.Errorf("Expected export_interval_millis=60000, got %d", obs.metricsReaderOptions.ExportIntervalMillis)
 	}
-	t.Logf("✓ Reader: collect=%dms, export=%dms", obs.metricsReaderOptions.CollectIntervalMillis, obs.metricsReaderOptions.ExportIntervalMillis)
 
 	// Verify metrics attributes (should have 5 providers)
 	if len(obs.metricsAttributes) != 5 {
@@ -80,7 +78,6 @@ func TestObservabilityConfigParsing(t *testing.T) {
 			t.Errorf("Attribute provider %d: expected type '%s', got '%s'", i, expected, obs.metricsAttributes[i].Type)
 		}
 	}
-	t.Logf("✓ Attributes: %d providers configured (%v)", len(obs.metricsAttributes), expectedTypes)
 }
 
 func TestInternalGoodJSONConfig(t *testing.T) {

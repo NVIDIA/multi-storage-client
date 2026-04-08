@@ -4,13 +4,74 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"runtime/debug"
 	"time"
 
 	"github.com/NVIDIA/sortedmap"
+	"github.com/cockroachdb/pebble/v2"
 )
+
+// `pebbleLogger` is a simple implementation of a `pebble.Logger`.
+type pebbleLogger struct{}
+
+// `Errorf` is the implementation of the Errorf() func for a `pebble.Logger`.
+func (pebbleLogger) Errorf(format string, args ...interface{}) {
+	globals.logger.Printf("[ERROR] [PEBBLE] "+format, args...)
+}
+
+// `Fatalf` is the implementation of the Fatalf() func for a `pebble.Logger`.
+func (pebbleLogger) Fatalf(format string, args ...interface{}) {
+	globals.logger.Fatalf("[FATAL] [PEBBLE] "+format, args...)
+}
+
+// `Infof` is the implementation of the Infof() func for a `pebble.Logger`.
+func (pebbleLogger) Infof(format string, args ...interface{}) {
+	globals.logger.Printf("[INFO] [PEBBLE] "+format, args...)
+}
+
+// `metadataCacheUp` performs any necessary cache setup.
+func metadataCacheUp() (err error) {
+	var (
+		pebbleOpts *pebble.Options
+	)
+
+	switch globals.config.metadataCachePagingMode {
+	case "file":
+		globals.pebbleDB = nil
+	case "pebble":
+		pebbleOpts = &pebble.Options{
+			CacheSize:                 int64(globals.config.pebbleCacheSize),
+			DisableWAL:                true,
+			L0CompactionFileThreshold: int(globals.config.pebbleL0CompactionFileThreshold),
+			L0StopWritesThreshold:     int(globals.config.pebbleL0StopWritesThreshold),
+			Logger:                    pebbleLogger{},
+			MemTableSize:              globals.config.pebbleMemTableSize,
+		}
+		globals.pebbleDB, err = pebble.Open(globals.cacheDir, pebbleOpts)
+		if err != nil {
+			err = fmt.Errorf("pebble.Open(globals.cacheDir[\"%s\"], pebbleOpts) failed: %v", globals.cacheDir, err)
+		}
+	default:
+		err = fmt.Errorf("bad metadata_cache_paging_mode value (\"%s\") - must be either \"file\" or \"pebble\"", globals.config.metadataCachePagingMode)
+	}
+	return
+}
+
+// `metadataCacheDown` performs any necessary cache teardown.
+func metadataCacheDown() (err error) {
+	if globals.pebbleDB == nil {
+		err = nil
+	} else {
+		err = globals.pebbleDB.Close()
+		if err != nil {
+			err = fmt.Errorf("globals.pebbleDB.Close() failed: %v", err)
+		}
+	}
+	return
+}
 
 // `inodeNumberToInodeStructMapStruct` is used to maintain a sortedmap.BPlusTree used
 // to map an inodeStruct.inodeNumber to the corresponding inodeStruct. An instance of
@@ -129,24 +190,10 @@ func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) touch(inod
 		err error
 	)
 
-	ok, err = inodeNumberToInodeStructMap.bpTree.DeleteByKey(inode.inodeNumber)
+	ok, err = inodeNumberToInodeStructMap.bpTree.PatchByKey(inode.inodeNumber, inode)
 	if err != nil {
 		dumpStack()
-		globals.logger.Fatalf("[FATAL] inodeNumberToInodeStructMap.bpTree.DeleteByKey(inode.inodeNumber) failed: %v", err)
-	}
-
-	if !ok {
-		return
-	}
-
-	ok, err = inodeNumberToInodeStructMap.bpTree.Put(inode.inodeNumber, inode)
-	if err != nil {
-		dumpStack()
-		globals.logger.Fatalf("[FATAL] inodeNumberToInodeStructMap.bpTree.Put(inode.inodeNumber, inode) failed: %v", err)
-	}
-	if !ok {
-		dumpStack()
-		globals.logger.Fatalf("[FATAL] inodeNumberToInodeStructMap.bpTree.Put(inode.inodeNumber, inode) returned !ok")
+		globals.logger.Fatalf("[FATAL] inodeNumberToInodeStructMap.bpTree.PatchByKey(inode.inodeNumber, inode) failed: %v", err)
 	}
 
 	inodeNumberToInodeStructMap.flushIfNecessary()
@@ -229,19 +276,19 @@ func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) DumpValue(
 
 // `GetNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for inodeNumberToInodeStructMapStruct.
 func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) GetNode(objectNumber, objectOffset, objectLength uint64) (nodeByteSlice []byte, err error) {
-	nodeByteSlice, err = readNodeFile(objectNumber, objectOffset, objectLength)
+	nodeByteSlice, err = readPage(objectNumber, objectOffset, objectLength)
 	return
 }
 
 // `PutNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for inodeNumberToInodeStructMapStruct.
 func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) PutNode(nodeByteSlice []byte) (objectNumber, objectOffset uint64, err error) {
-	objectNumber, objectOffset, err = writeNodeFile(nodeByteSlice)
+	objectNumber, objectOffset, err = writePage(nodeByteSlice)
 	return
 }
 
 // `DiscardNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for inodeNumberToInodeStructMapStruct.
 func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) DiscardNode(objectNumber, objectOffset, objectLength uint64) (err error) {
-	err = discardNodeFile(objectNumber, objectOffset, objectLength)
+	err = discardPage(objectNumber, objectOffset, objectLength)
 	return
 }
 
@@ -874,19 +921,19 @@ func (xTimeInodeNumberSet *xTimeInodeNumberSetStruct) DumpValue(value sortedmap.
 
 // `GetNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for xTimeInodeNumberSetStruct.
 func (xTimeInodeNumberSet *xTimeInodeNumberSetStruct) GetNode(objectNumber, objectOffset, objectLength uint64) (nodeByteSlice []byte, err error) {
-	nodeByteSlice, err = readNodeFile(objectNumber, objectOffset, objectLength)
+	nodeByteSlice, err = readPage(objectNumber, objectOffset, objectLength)
 	return
 }
 
 // `PutNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for xTimeInodeNumberSetStruct.
 func (xTimeInodeNumberSet *xTimeInodeNumberSetStruct) PutNode(nodeByteSlice []byte) (objectNumber, objectOffset uint64, err error) {
-	objectNumber, objectOffset, err = writeNodeFile(nodeByteSlice)
+	objectNumber, objectOffset, err = writePage(nodeByteSlice)
 	return
 }
 
 // `DiscardNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for xTimeInodeNumberSetStruct.
 func (xTimeInodeNumberSet *xTimeInodeNumberSetStruct) DiscardNode(objectNumber, objectOffset, objectLength uint64) (err error) {
-	err = discardNodeFile(objectNumber, objectOffset, objectLength)
+	err = discardPage(objectNumber, objectOffset, objectLength)
 	return
 }
 
@@ -1215,19 +1262,19 @@ func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBa
 
 // `GetNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for parentInodeNumberChildBasenameToChildInodeNumberStruct.
 func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) GetNode(objectNumber, objectOffset, objectLength uint64) (nodeByteSlice []byte, err error) {
-	nodeByteSlice, err = readNodeFile(objectNumber, objectOffset, objectLength)
+	nodeByteSlice, err = readPage(objectNumber, objectOffset, objectLength)
 	return
 }
 
 // `PutNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for parentInodeNumberChildBasenameToChildInodeNumberStruct.
 func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) PutNode(nodeByteSlice []byte) (objectNumber, objectOffset uint64, err error) {
-	objectNumber, objectOffset, err = writeNodeFile(nodeByteSlice)
+	objectNumber, objectOffset, err = writePage(nodeByteSlice)
 	return
 }
 
 // `DiscardNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for parentInodeNumberChildBasenameToChildInodeNumberStruct.
 func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) DiscardNode(objectNumber, objectOffset, objectLength uint64) (err error) {
-	err = discardNodeFile(objectNumber, objectOffset, objectLength)
+	err = discardPage(objectNumber, objectOffset, objectLength)
 	return
 }
 
@@ -1308,13 +1355,16 @@ func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBa
 	return
 }
 
-// `readNodeFile` provides a generic function to read a node's existing file in its entirety.
-func readNodeFile(nodeFileNumber, mustBeZeroOffset, requiredLength uint64) (nodeByteSlice []byte, err error) {
+// `readPage` provides a generic function to read a metadata cache page.
+func readPage(pageNonce, mustBeZeroOffset, requiredLength uint64) (pageByteSlice []byte, err error) {
 	var (
-		closeErr     error
-		nodeFile     *os.File
-		nodeFileInfo os.FileInfo
-		nodeFilePath string
+		closeErr                      error
+		ioCloser                      io.Closer
+		pageByteSliceReleasedByCloser []byte
+		pageFile                      *os.File
+		pageFileInfo                  os.FileInfo
+		pageFilePath                  string
+		pageNonceAsByteSlice          []byte
 	)
 
 	if mustBeZeroOffset != 0 {
@@ -1322,103 +1372,142 @@ func readNodeFile(nodeFileNumber, mustBeZeroOffset, requiredLength uint64) (node
 		return
 	}
 
-	nodeFilePath = fmt.Sprintf("%s/%016X", globals.cacheDir, nodeFileNumber)
+	if globals.pebbleDB == nil {
+		pageFilePath = fmt.Sprintf("%s/%016X", globals.cacheDir, pageNonce)
 
-	nodeFile, err = os.Open(nodeFilePath)
-	if err != nil {
-		err = fmt.Errorf("os.Open(nodeFilePath[\"%s\"]) failed: %v", nodeFilePath, err)
-		return
-	}
-
-	nodeFileInfo, err = nodeFile.Stat()
-	if err != nil {
-		err = fmt.Errorf("nodeFile[\"%s\"].Stat() failed: %v", nodeFilePath, err)
-		closeErr = nodeFile.Close()
-		if closeErr != nil {
-			err = fmt.Errorf("%s [and nodeFile.Close() failed: %v]", err, closeErr)
+		pageFile, err = os.Open(pageFilePath)
+		if err != nil {
+			err = fmt.Errorf("os.Open(pageFilePath[\"%s\"]) failed: %v", pageFilePath, err)
+			return
 		}
-		return
-	}
 
-	if uint64(nodeFileInfo.Size()) != requiredLength {
-		err = fmt.Errorf("uint64(nodeFileInfo[\"%s\"].Size())[%v] != requiredLength[%v]", nodeFilePath, nodeFileInfo.Size(), requiredLength)
-		closeErr = nodeFile.Close()
-		if closeErr != nil {
-			err = fmt.Errorf("%s [and nodeFile.Close() failed: %v]", err, closeErr)
+		pageFileInfo, err = pageFile.Stat()
+		if err != nil {
+			err = fmt.Errorf("pageFile[\"%s\"].Stat() failed: %v", pageFilePath, err)
+			closeErr = pageFile.Close()
+			if closeErr != nil {
+				err = fmt.Errorf("%s [and pageFile.Close() failed: %v]", err, closeErr)
+			}
+			return
 		}
-		return
-	}
 
-	nodeByteSlice = make([]byte, requiredLength)
-
-	_, err = nodeFile.ReadAt(nodeByteSlice, int64(mustBeZeroOffset))
-	if err != nil {
-		err = fmt.Errorf("nodeFile[\"%s\"].ReadAt(buf, int(mustBeZeroOffset)) failed: %v", nodeFilePath, err)
-		closeErr = nodeFile.Close()
-		if closeErr != nil {
-			err = fmt.Errorf("%s [and nodeFile.Close() failed: %v]", err, closeErr)
+		if uint64(pageFileInfo.Size()) != requiredLength {
+			err = fmt.Errorf("uint64(pageFileInfo[\"%s\"].Size())[%v] != requiredLength[%v]", pageFilePath, pageFileInfo.Size(), requiredLength)
+			closeErr = pageFile.Close()
+			if closeErr != nil {
+				err = fmt.Errorf("%s [and pageFile.Close() failed: %v]", err, closeErr)
+			}
+			return
 		}
-		return
-	}
 
-	err = nodeFile.Close()
-	if err != nil {
-		err = fmt.Errorf("nodeFile[\"%s\"].Close() failed: %v", nodeFilePath, err)
-		return
-	}
+		pageByteSlice = make([]byte, requiredLength)
 
-	return
-}
+		_, err = pageFile.ReadAt(pageByteSlice, int64(mustBeZeroOffset))
+		if err != nil {
+			err = fmt.Errorf("pageFile[\"%s\"].ReadAt(buf, int(mustBeZeroOffset)) failed: %v", pageFilePath, err)
+			closeErr = pageFile.Close()
+			if closeErr != nil {
+				err = fmt.Errorf("%s [and pageFile.Close() failed: %v]", err, closeErr)
+			}
+			return
+		}
 
-// `writeNodeFile` provides a generic function to write a node's new file in its entirety.
-func writeNodeFile(nodeByteSlice []byte) (nodeFileNumber, nodeFileOffset uint64, err error) {
-	var (
-		closeErr     error
-		nodeFile     *os.File
-		nodeFilePath string
-	)
+		err = pageFile.Close()
+		if err != nil {
+			err = fmt.Errorf("pageFile[\"%s\"].Close() failed: %v", pageFilePath, err)
+			return
+		}
+	} else {
+		pageNonceAsByteSlice = make([]byte, 8)
 
-	nodeFileNumber = fetchNonce()
-	nodeFileOffset = 0
+		binary.BigEndian.PutUint64(pageNonceAsByteSlice, pageNonce)
 
-	nodeFilePath = fmt.Sprintf("%s/%016X", globals.cacheDir, nodeFileNumber)
+		pageByteSliceReleasedByCloser, ioCloser, err = globals.pebbleDB.Get(pageNonceAsByteSlice)
+		if err == nil {
+			pageByteSlice = make([]byte, len(pageByteSliceReleasedByCloser))
 
-	nodeFile, err = os.OpenFile(nodeFilePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			err = fmt.Errorf("os.OpenFile(nodeFilePath[\"%s\"], os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) failed due to pre-existing file", nodeFilePath)
+			copy(pageByteSlice, pageByteSliceReleasedByCloser)
+
+			err = ioCloser.Close()
+			if err != nil {
+				dumpStack()
+				globals.logger.Fatalf("[FATAL] ioCloser.Close() failed: %v", err)
+			}
+
+			if uint64(len(pageByteSlice)) != requiredLength {
+				err = fmt.Errorf("uint64(len(pageByteSlice))[%v] != requiredLength[%v]", uint64(len(pageByteSlice)), requiredLength)
+			}
 		} else {
-			err = fmt.Errorf("os.OpenFile(nodeFilePath[\"%s\"], os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) failed: %v", nodeFilePath, err)
+			err = fmt.Errorf("globals.pebbleDB.Get(pageNonceAsByteSlice) failed: %v", err)
 		}
-		return
-	}
-
-	_, err = nodeFile.Write(nodeByteSlice)
-	if err != nil {
-		err = fmt.Errorf("nodeFile[\"%s\"].Write(nodeByteSlice) failed: %v", nodeFilePath, err)
-		closeErr = nodeFile.Close()
-		if closeErr != nil {
-			err = fmt.Errorf("%s [and nodeFile.Close() failed: %v]", err, closeErr)
-		}
-		return
-	}
-
-	err = nodeFile.Close()
-	if err != nil {
-		err = fmt.Errorf("nodeFile[\"%s\"].Close() failed: %v", nodeFilePath, err)
-		return
 	}
 
 	return
 }
 
-// `discardNodeFile` provides a generic function to discard a node's existing file.
-func discardNodeFile(nodeFileNumber, mustBeZeroOffset, requiredLength uint64) (err error) {
+// `writePage` provides a generic function to write a metadata cache page.
+func writePage(pageByteSlice []byte) (pageNonce, mustBeZeroOffset uint64, err error) {
 	var (
-		closeErr     error
-		nodeFile     *os.File
-		nodeFileInfo os.FileInfo
-		nodeFilePath string
+		closeErr             error
+		pageFile             *os.File
+		pageFilePath         string
+		pageNonceAsByteSlice []byte
+	)
+
+	pageNonce = fetchNonce()
+	mustBeZeroOffset = 0
+
+	if globals.pebbleDB == nil {
+		pageFilePath = fmt.Sprintf("%s/%016X", globals.cacheDir, pageNonce)
+
+		pageFile, err = os.OpenFile(pageFilePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			if errors.Is(err, os.ErrExist) {
+				err = fmt.Errorf("os.OpenFile(pageFilePath[\"%s\"], os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) failed due to pre-existing file", pageFilePath)
+			} else {
+				err = fmt.Errorf("os.OpenFile(pageFilePath[\"%s\"], os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) failed: %v", pageFilePath, err)
+			}
+			return
+		}
+
+		_, err = pageFile.Write(pageByteSlice)
+		if err != nil {
+			err = fmt.Errorf("pageFile[\"%s\"].Write(pageByteSlice) failed: %v", pageFilePath, err)
+			closeErr = pageFile.Close()
+			if closeErr != nil {
+				err = fmt.Errorf("%s [and pageFile.Close() failed: %v]", err, closeErr)
+			}
+			return
+		}
+
+		err = pageFile.Close()
+		if err != nil {
+			err = fmt.Errorf("pageFile[\"%s\"].Close() failed: %v", pageFilePath, err)
+			return
+		}
+	} else {
+		pageNonceAsByteSlice = make([]byte, 8)
+
+		binary.BigEndian.PutUint64(pageNonceAsByteSlice, pageNonce)
+
+		err = globals.pebbleDB.Set(pageNonceAsByteSlice, pageByteSlice, pebble.NoSync)
+		if err != nil {
+			err = fmt.Errorf("globals.pebbleDB.Set(pageNonceAsByteSlice, pageByteSlice, pebble.NoSync) failed: %v", err)
+			return
+		}
+	}
+
+	return
+}
+
+// `discardPage` provides a generic function to discard a metadata cache page.
+func discardPage(pageNonce, mustBeZeroOffset, requiredLength uint64) (err error) {
+	var (
+		closeErr             error
+		pageFile             *os.File
+		pageFileInfo         os.FileInfo
+		pageFilePath         string
+		pageNonceAsByteSlice []byte
 	)
 
 	if mustBeZeroOffset != 0 {
@@ -1426,53 +1515,60 @@ func discardNodeFile(nodeFileNumber, mustBeZeroOffset, requiredLength uint64) (e
 		return
 	}
 
-	nodeFilePath = fmt.Sprintf("%s/%016X", globals.cacheDir, nodeFileNumber)
+	if globals.pebbleDB == nil {
+		pageFilePath = fmt.Sprintf("%s/%016X", globals.cacheDir, pageNonce)
 
-	nodeFile, err = os.Open(nodeFilePath)
-	if err != nil {
-		err = fmt.Errorf("os.Open(nodeFilePath[\"%s\"]) failed: %v", nodeFilePath, err)
-		return
-	}
-
-	nodeFile, err = os.OpenFile(nodeFilePath, os.O_RDWR, 0o600)
-	if err != nil {
-		err = fmt.Errorf("os.OpenFile(nodeFilePath[\"%s\"], os.O_RDWR, 0o600) failed: %v", nodeFilePath, err)
-		return
-	}
-
-	nodeFileInfo, err = nodeFile.Stat()
-	if err != nil {
-		err = fmt.Errorf("nodeFile[\"%s\"].Stat() failed: %v", nodeFilePath, err)
-		closeErr = nodeFile.Close()
-		if closeErr != nil {
-			err = fmt.Errorf("%s [and nodeFile.Close() failed: %v]", err, closeErr)
+		pageFile, err = os.OpenFile(pageFilePath, os.O_RDWR, 0o600)
+		if err != nil {
+			err = fmt.Errorf("os.OpenFile(pageFilePath[\"%s\"], os.O_RDWR, 0o600) failed: %v", pageFilePath, err)
+			return
 		}
-		return
-	}
 
-	if uint64(nodeFileInfo.Size()) != requiredLength {
-		err = fmt.Errorf("uint64(nodeFileInfo[\"%s\"].Size())[%v] != requiredLength[%v]", nodeFilePath, nodeFileInfo.Size(), requiredLength)
-		closeErr = nodeFile.Close()
-		if closeErr != nil {
-			err = fmt.Errorf("%s [and nodeFile.Close() failed: %v]", err, closeErr)
+		pageFileInfo, err = pageFile.Stat()
+		if err != nil {
+			err = fmt.Errorf("pageFile[\"%s\"].Stat() failed: %v", pageFilePath, err)
+			closeErr = pageFile.Close()
+			if closeErr != nil {
+				err = fmt.Errorf("%s [and pageFile.Close() failed: %v]", err, closeErr)
+			}
+			return
 		}
-		return
-	}
 
-	err = os.Remove(nodeFilePath)
-	if err != nil {
-		err = fmt.Errorf("os.Remove(nodeFilePath[\"%s\"], os.O_RDWR, 0o600) failed: %v", nodeFilePath, err)
-		closeErr = nodeFile.Close()
-		if closeErr != nil {
-			err = fmt.Errorf("%s as did nodeFile.Close(): %v", err, closeErr)
+		if uint64(pageFileInfo.Size()) != requiredLength {
+			err = fmt.Errorf("uint64(pageFileInfo[\"%s\"].Size())[%v] != requiredLength[%v]", pageFilePath, pageFileInfo.Size(), requiredLength)
+			closeErr = pageFile.Close()
+			if closeErr != nil {
+				err = fmt.Errorf("%s [and pageFile.Close() failed: %v]", err, closeErr)
+			}
+			return
 		}
-		return
-	}
 
-	err = nodeFile.Close()
-	if err != nil {
-		err = fmt.Errorf("nodeFile[\"%s\"].Close() failed: %v", nodeFilePath, err)
-		return
+		err = os.Remove(pageFilePath)
+		if err != nil {
+			err = fmt.Errorf("os.Remove(pageFilePath[\"%s\"], os.O_RDWR, 0o600) failed: %v", pageFilePath, err)
+			closeErr = pageFile.Close()
+			if closeErr != nil {
+				err = fmt.Errorf("%s as did pageFile.Close(): %v", err, closeErr)
+			}
+			return
+		}
+
+		err = pageFile.Close()
+		if err != nil {
+			err = fmt.Errorf("pageFile[\"%s\"].Close() failed: %v", pageFilePath, err)
+			return
+		}
+	} else {
+		pageNonceAsByteSlice = make([]byte, 8)
+
+		binary.BigEndian.PutUint64(pageNonceAsByteSlice, pageNonce)
+
+		err = globals.pebbleDB.Delete(pageNonceAsByteSlice, pebble.NoSync)
+		if err != nil {
+			err = fmt.Errorf("globals.pebbleDB.Delete(pageNonceAsByteSlice, pebble.NoSync) failed: %v", err)
+		}
+
+		// Note that we do not check requiredLength
 	}
 
 	return
