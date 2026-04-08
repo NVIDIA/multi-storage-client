@@ -1860,6 +1860,7 @@ torch = [
     { name = "torch" },
 ]
 vault = [
+    { name = "cryptography" },
     { name = "hvac" },
 ]
 xarray = [
@@ -1893,7 +1894,8 @@ requires-dist = [
     { name = "azure-identity", marker = "extra == 'azure-storage-blob'", specifier = ">=1.25,<2" },
     { name = "azure-storage-blob", marker = "extra == 'azure-storage-blob'", specifier = ">=12.28.0,<13" },
     { name = "boto3", marker = "extra == 'boto3'", specifier = ">=1.36,<2" },
-    { name = "cryptography", marker = "extra == 'cloudfront'", specifier = ">=44,<47" },
+    { name = "cryptography", marker = "extra == 'cloudfront'", specifier = ">=44.0.1,<47" },
+    { name = "cryptography", marker = "extra == 'vault'", specifier = ">=44.0.1,<47" },
     { name = "fastapi", marker = "extra == 'explorer'", specifier = ">=0.128.3,<1" },
     { name = "fastmcp", marker = "extra == 'mcp'", specifier = ">=3,<4" },
     { name = "filelock", specifier = ">=3.20.3,<4" },

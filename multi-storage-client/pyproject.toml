@@ -56,11 +56,12 @@ msal = [
 ]
 
 vault = [
-    "hvac>=2.3,<3"
+    "hvac>=2.3,<3",
+    "cryptography>=44.0.1,<47",
 ]
 
 cloudfront = [
-    "cryptography>=44,<47"
+    "cryptography>=44.0.1,<47"
 ]
 
 # MCP.

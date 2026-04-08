@@ -32,6 +32,11 @@ try:
 except ImportError:
     hvac = None  # type: ignore[assignment]
 
+try:
+    from cryptography import x509
+except ImportError:
+    x509 = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 5
@@ -181,9 +186,12 @@ class VaultCertificateProvider(CertificateProvider):
         Returns True if the cert is expired or unreadable, False if still valid.
         """
         cert_path = self._get_cert_paths().client_certificate_file
+        if x509 is None:
+            raise ImportError(
+                "The 'cryptography' package is required for Vault certificate management. "
+                "Install it with: pip install 'multi-storage-client[vault]'"
+            )
         try:
-            from cryptography import x509
-
             with open(cert_path, "rb") as f:
                 cert = x509.load_pem_x509_certificate(f.read())
             now = datetime.datetime.now(datetime.timezone.utc)
