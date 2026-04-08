@@ -1898,7 +1898,7 @@ requires-dist = [
     { name = "fastmcp", marker = "extra == 'mcp'", specifier = ">=3,<4" },
     { name = "filelock", specifier = ">=3.20.3,<4" },
     { name = "fsspec", marker = "extra == 'fsspec'", specifier = ">=2023.9.0" },
-    { name = "google-cloud-storage", marker = "extra == 'google-cloud-storage'", specifier = ">=3.2,<4" },
+    { name = "google-cloud-storage", marker = "extra == 'google-cloud-storage'", specifier = ">=2.12,<4" },
     { name = "hf-transfer", marker = "extra == 'huggingface'", specifier = ">=0.1.9" },
     { name = "huggingface-hub", marker = "extra == 'huggingface'", specifier = ">=0.34.4,<1" },
     { name = "hvac", marker = "extra == 'vault'", specifier = ">=2.3,<3" },

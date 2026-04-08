@@ -87,7 +87,7 @@ boto3 = [
     "boto3>=1.36,<2"
 ]
 google-cloud-storage = [
-    "google-cloud-storage>=3.2,<4"
+    "google-cloud-storage>=2.12,<4"
 ]
 huggingface = [
     "huggingface_hub>=0.34.4,<1",
