@@ -31,7 +31,7 @@ from .monitors import ErrorMonitorThread, ResultMonitorThread
 from .producer import ProducerThread
 from .progress_bar import ProgressBar
 from .types import OperationType
-from .worker import _sync_worker_process
+from .worker import sync_worker_process
 
 if TYPE_CHECKING:
     from ..client.types import AbstractStorageClient
@@ -241,7 +241,7 @@ class SyncManager:
         if execution_mode == ExecutionMode.LOCAL:
             if num_worker_processes == 1:
                 # Single process does not require multiprocessing.
-                _sync_worker_process(
+                sync_worker_process(
                     self.source_client,
                     self.source_path,
                     self.target_client,
@@ -258,7 +258,7 @@ class SyncManager:
                 processes = []
                 for _ in range(num_worker_processes):
                     process = ctx.Process(
-                        target=_sync_worker_process,
+                        target=sync_worker_process,
                         args=(
                             self.source_client,
                             self.source_path,
@@ -288,11 +288,11 @@ class SyncManager:
 
             import ray
 
-            _sync_worker_process_ray = ray.remote(_sync_worker_process)
+            sync_worker_process_ray = ray.remote(sync_worker_process)
 
             ray.get(
                 [
-                    _sync_worker_process_ray.options(
+                    sync_worker_process_ray.options(
                         num_cpus=num_worker_threads,
                         scheduling_strategy="SPREAD",
                     ).remote(
@@ -436,12 +436,12 @@ class SyncManager:
                 if batch.operation == OperationType.STOP:
                     break
                 if batch.operation == OperationType.ADD:
-                    for item in batch.items:
+                    for item, _ in batch.items:
                         add_file.write(json.dumps(item.to_dict()) + "\n")
                         total_files_added += 1
                         total_bytes_added += item.content_length
                 elif batch.operation == OperationType.DELETE:
-                    for item in batch.items:
+                    for item, _ in batch.items:
                         delete_file.write(json.dumps(item.to_dict()) + "\n")
                         total_files_deleted += 1
                         total_bytes_deleted += item.content_length

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 from typing import IO, Any, NamedTuple, Optional, Tuple, Union
@@ -130,6 +130,10 @@ class ObjectMetadata:
             )
         except KeyError as e:
             raise ValueError("Missing required field.") from e
+
+    def replace(self, **changes: Any) -> ObjectMetadata:
+        """Return a shallow copy of this object with the given fields overridden."""
+        return replace(self, **changes)
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -323,12 +327,19 @@ class StorageProvider(ABC):
         pass
 
     @abstractmethod
-    def download_files(self, remote_paths: list[str], local_paths: list[str], max_workers: int = 16) -> None:
+    def download_files(
+        self,
+        remote_paths: list[str],
+        local_paths: list[str],
+        metadata: Optional[Sequence[Optional[ObjectMetadata]]] = None,
+        max_workers: int = 16,
+    ) -> None:
         """
         Downloads multiple files from the storage provider to the local file system.
 
         :param remote_paths: List of remote paths of files to download.
         :param local_paths: List of local file paths to save the downloaded files to.
+        :param metadata: Optional per-file metadata used to decide between regular and multipart download.
         :param max_workers: Maximum number of concurrent download workers (default: 16).
         :raises ValueError: If remote_paths and local_paths have different lengths.
         """

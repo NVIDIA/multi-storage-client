@@ -521,16 +521,16 @@ def test_batch_flushing_on_size_bucket_change():
 
     assert non_stop_batches[0].operation == OperationType.ADD
     assert len(non_stop_batches[0].items) == 2
-    assert all(item.content_length < 1 * 1024 * 1024 for item in non_stop_batches[0].items)
+    assert all(item.content_length < 1 * 1024 * 1024 for item, _ in non_stop_batches[0].items)
 
     assert non_stop_batches[1].operation == OperationType.ADD
     assert len(non_stop_batches[1].items) == 2
-    assert all(1 * 1024 * 1024 <= item.content_length < 64 * 1024 * 1024 for item in non_stop_batches[1].items)
+    assert all(1 * 1024 * 1024 <= item.content_length < 64 * 1024 * 1024 for item, _ in non_stop_batches[1].items)
 
     assert non_stop_batches[2].operation == OperationType.ADD
     assert len(non_stop_batches[2].items) == 2
-    assert all(64 * 1024 * 1024 <= item.content_length < 1024 * 1024 * 1024 for item in non_stop_batches[2].items)
+    assert all(64 * 1024 * 1024 <= item.content_length < 1024 * 1024 * 1024 for item, _ in non_stop_batches[2].items)
 
     assert non_stop_batches[3].operation == OperationType.ADD
     assert len(non_stop_batches[3].items) == 2
-    assert all(item.content_length >= 1024 * 1024 * 1024 for item in non_stop_batches[3].items)
+    assert all(item.content_length >= 1024 * 1024 * 1024 for item, _ in non_stop_batches[3].items)

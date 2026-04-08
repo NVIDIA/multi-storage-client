@@ -243,12 +243,18 @@ class CompositeStorageClient(AbstractStorageClient):
         child = self._get_child_client(resolved.profile)
         child.download_file(resolved.physical_path, local_path)
 
-    def download_files(self, remote_paths: list[str], local_paths: list[str], max_workers: int = 16) -> None:
+    def download_files(
+        self,
+        remote_paths: list[str],
+        local_paths: list[str],
+        metadata: Optional[Sequence[Optional[ObjectMetadata]]] = None,
+        max_workers: int = 16,
+    ) -> None:
         if len(remote_paths) != len(local_paths):
             raise ValueError("remote_paths and local_paths must have the same length")
 
-        groups: dict[str, tuple[list[str], list[str]]] = {}
-        for remote_path, local_path in zip(remote_paths, local_paths):
+        groups: dict[str, tuple[list[str], list[str], list[Optional[ObjectMetadata]]]] = {}
+        for i, (remote_path, local_path) in enumerate(zip(remote_paths, local_paths)):
             resolved = self._metadata_provider.realpath(remote_path)
             if not resolved.exists:
                 raise FileNotFoundError(f"Path '{remote_path}' not found")
@@ -260,13 +266,17 @@ class CompositeStorageClient(AbstractStorageClient):
                     "Metadata provider must return ResolvedPath with profile set."
                 )
             if profile not in groups:
-                groups[profile] = ([], [])
+                groups[profile] = ([], [], [])
             groups[profile][0].append(resolved.physical_path)
             groups[profile][1].append(local_path)
+            groups[profile][2].append(metadata[i] if metadata is not None else None)
 
-        for profile, (physical_paths, group_local_paths) in groups.items():
+        for profile, (physical_paths, group_local_paths, group_metadata) in groups.items():
             child = self._get_child_client(profile)
-            child.download_files(physical_paths, group_local_paths, max_workers)
+            has_any_metadata = any(m is not None for m in group_metadata)
+            child.download_files(
+                physical_paths, group_local_paths, group_metadata if has_any_metadata else None, max_workers
+            )
 
     def glob(
         self,

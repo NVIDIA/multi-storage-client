@@ -368,7 +368,17 @@ def test_download_files_delegates_to_single(single_backend_config):
 
     client.download_files(["/remote/a"], ["/local/a"], max_workers=8)
 
-    client._delegate.download_files.assert_called_once_with(["/remote/a"], ["/local/a"], 8)
+    client._delegate.download_files.assert_called_once_with(["/remote/a"], ["/local/a"], None, 8)
+
+
+def test_download_files_delegates_metadata_to_single(single_backend_config):
+    client = StorageClient(single_backend_config)
+    client._delegate.download_files = MagicMock()
+
+    meta = [ObjectMetadata(key="/remote/a", content_length=42, last_modified=datetime.now())]
+    client.download_files(["/remote/a"], ["/local/a"], metadata=meta, max_workers=8)
+
+    client._delegate.download_files.assert_called_once_with(["/remote/a"], ["/local/a"], meta, 8)
 
 
 def test_download_files_delegates_to_composite(multi_backend_config):
@@ -377,7 +387,7 @@ def test_download_files_delegates_to_composite(multi_backend_config):
 
     client.download_files(["/remote/a"], ["/local/a"])
 
-    client._delegate.download_files.assert_called_once_with(["/remote/a"], ["/local/a"], 16)
+    client._delegate.download_files.assert_called_once_with(["/remote/a"], ["/local/a"], None, 16)
 
 
 def test_upload_files_delegates_to_single(single_backend_config):
@@ -409,7 +419,7 @@ def test_single_download_files_without_metadata_delegates_to_provider(single_bac
 
     client.download_files(["/a", "/b"], ["/la", "/lb"], max_workers=4)
 
-    single._storage_provider.download_files.assert_called_once_with(["/a", "/b"], ["/la", "/lb"], 4)
+    single._storage_provider.download_files.assert_called_once_with(["/a", "/b"], ["/la", "/lb"], None, 4)
 
 
 def test_single_download_files_with_metadata_resolves_paths(single_backend_config):
@@ -428,7 +438,9 @@ def test_single_download_files_with_metadata_resolves_paths(single_backend_confi
     client.download_files(["logical/a", "logical/b"], ["/la", "/lb"], max_workers=8)
 
     assert metadata_provider.realpath.call_count == 2
-    single._storage_provider.download_files.assert_called_once_with(["physical/a", "physical/b"], ["/la", "/lb"], 8)
+    single._storage_provider.download_files.assert_called_once_with(
+        ["physical/a", "physical/b"], ["/la", "/lb"], None, 8
+    )
 
 
 def test_single_download_files_with_metadata_raises_on_missing_file(single_backend_config):
@@ -454,7 +466,7 @@ def test_single_download_files_empty_lists(single_backend_config):
 
     single._storage_provider.download_files = MagicMock()
     client.download_files([], [])
-    single._storage_provider.download_files.assert_called_once_with([], [], 16)
+    single._storage_provider.download_files.assert_called_once_with([], [], None, 16)
 
 
 def test_single_upload_files_without_metadata_delegates_to_provider(single_backend_config):
@@ -626,8 +638,8 @@ def test_composite_download_files_groups_by_profile(multi_backend_config):
         max_workers=4,
     )
 
-    loc1_client.download_files.assert_called_once_with(["phys/a", "phys/c"], ["/la", "/lc"], 4)
-    loc2_client.download_files.assert_called_once_with(["phys/b"], ["/lb"], 4)
+    loc1_client.download_files.assert_called_once_with(["phys/a", "phys/c"], ["/la", "/lc"], None, 4)
+    loc2_client.download_files.assert_called_once_with(["phys/b"], ["/lb"], None, 4)
 
 
 def test_composite_download_files_raises_on_missing_file(multi_backend_config):

@@ -268,17 +268,24 @@ class StorageClient(AbstractStorageClient):
         """
         return self._delegate.download_file(remote_path, local_path)
 
-    def download_files(self, remote_paths: list[str], local_paths: list[str], max_workers: int = 16) -> None:
+    def download_files(
+        self,
+        remote_paths: list[str],
+        local_paths: list[str],
+        metadata: Optional[Sequence[Optional[ObjectMetadata]]] = None,
+        max_workers: int = 16,
+    ) -> None:
         """
         Download multiple remote files to local paths.
 
         :param remote_paths: List of logical paths of remote files to download.
         :param local_paths: List of local file paths to save the downloaded files to.
+        :param metadata: Optional per-file metadata used to decide between regular and multipart download.
         :param max_workers: Maximum number of concurrent download workers (default: 16).
         :raises ValueError: If remote_paths and local_paths have different lengths.
         :raises FileNotFoundError: If any remote file does not exist.
         """
-        return self._delegate.download_files(remote_paths, local_paths, max_workers)
+        return self._delegate.download_files(remote_paths, local_paths, metadata, max_workers)
 
     def glob(
         self,

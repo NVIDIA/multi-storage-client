@@ -425,12 +425,19 @@ class SingleStorageClient(AbstractStorageClient):
         else:
             self._storage_provider.download_file(remote_path, local_path)
 
-    def download_files(self, remote_paths: list[str], local_paths: list[str], max_workers: int = 16) -> None:
+    def download_files(
+        self,
+        remote_paths: list[str],
+        local_paths: list[str],
+        metadata: Optional[Sequence[Optional[ObjectMetadata]]] = None,
+        max_workers: int = 16,
+    ) -> None:
         """
         Download multiple remote files to local paths.
 
         :param remote_paths: List of logical paths of remote files to download.
         :param local_paths: List of local file paths to save the downloaded files to.
+        :param metadata: Optional per-file metadata used to decide between regular and multipart download.
         :param max_workers: Maximum number of concurrent download workers (default: 16).
         :raises ValueError: If remote_paths and local_paths have different lengths.
         :raises FileNotFoundError: If any remote file does not exist.
@@ -440,12 +447,12 @@ class SingleStorageClient(AbstractStorageClient):
 
         if self._metadata_provider:
             physical_paths = [self._resolve_read_path(rp) for rp in remote_paths]
-            self._storage_provider.download_files(physical_paths, local_paths, max_workers)
+            self._storage_provider.download_files(physical_paths, local_paths, metadata, max_workers)
         elif self._replica_manager:
             for remote_path, local_path in zip(remote_paths, local_paths):
                 self.download_file(remote_path, local_path)
         else:
-            self._storage_provider.download_files(remote_paths, local_paths, max_workers)
+            self._storage_provider.download_files(remote_paths, local_paths, metadata, max_workers)
 
     @retry
     def upload_file(

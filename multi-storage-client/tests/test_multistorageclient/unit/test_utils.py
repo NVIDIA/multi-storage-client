@@ -361,7 +361,7 @@ def test_calculate_worker_processes_and_threads_both_custom(mock_get_cpu_count):
 @patch("multistorageclient.StorageClient")
 def test_calculate_worker_processes_and_threads_use_single_process(target_client, source_client, mock_get_cpu_count):
     with patch.dict(os.environ, {}, clear=True):
-        # Both clients are using the Rust client.
+        # Both clients are using the Rust client — default is 8 (batch APIs handle internal concurrency).
         source_client._is_rust_client_enabled.return_value = True
         target_client._is_rust_client_enabled.return_value = True
 
@@ -370,15 +370,14 @@ def test_calculate_worker_processes_and_threads_use_single_process(target_client
             execution_mode=ExecutionMode.LOCAL, source_client=source_client, target_client=target_client
         )
         assert processes == 1
-        assert threads == 96
+        assert threads == 8
 
-        # Less than 64 CPUs, should use 64 threads and 1 process.
         mock_get_cpu_count.return_value = 8
         processes, threads = calculate_worker_processes_and_threads(
             execution_mode=ExecutionMode.LOCAL, source_client=source_client, target_client=target_client
         )
         assert processes == 1
-        assert threads == 64
+        assert threads == 8
 
         # One client is using the Rust client and the other is using the POSIX file storage provider.
         source_client._is_rust_client_enabled.return_value = True
@@ -390,14 +389,14 @@ def test_calculate_worker_processes_and_threads_use_single_process(target_client
             execution_mode=ExecutionMode.LOCAL, source_client=source_client, target_client=target_client
         )
         assert processes == 1
-        assert threads == 96
-        # Less than 64 CPUs, should use 64 threads and 1 process.
+        assert threads == 8
+
         mock_get_cpu_count.return_value = 8
         processes, threads = calculate_worker_processes_and_threads(
             execution_mode=ExecutionMode.LOCAL, source_client=source_client, target_client=target_client
         )
         assert processes == 1
-        assert threads == 64
+        assert threads == 8
 
         # Both clients are using the POSIX file storage provider.
         source_client._is_rust_client_enabled.return_value = False
@@ -408,6 +407,8 @@ def test_calculate_worker_processes_and_threads_use_single_process(target_client
         processes, threads = calculate_worker_processes_and_threads(
             execution_mode=ExecutionMode.LOCAL, source_client=source_client, target_client=target_client
         )
+        assert processes == 1
+        assert threads == 8
 
 
 def test_ensure_adequate_file_descriptors():
@@ -435,21 +436,20 @@ def test_calculate_worker_processes_and_threads_rust_client(target_client, sourc
     target_client._is_rust_client_enabled.return_value = True
 
     with patch.dict(os.environ, {}, clear=True):
-        # High CPU count - should use 1 process with max(cpu, 64) threads for Rust client
+        # Rust client uses fixed default of 8 (batch APIs handle internal concurrency)
         mock_get_cpu_count.return_value = 96
         processes, threads = calculate_worker_processes_and_threads(
             execution_mode=ExecutionMode.LOCAL, source_client=source_client, target_client=target_client
         )
         assert processes == 1
-        assert threads == 96
+        assert threads == 8
 
-        # Low CPU count - should use 64 threads minimum for Rust client
         mock_get_cpu_count.return_value = 8
         processes, threads = calculate_worker_processes_and_threads(
             execution_mode=ExecutionMode.LOCAL, source_client=source_client, target_client=target_client
         )
         assert processes == 1
-        assert threads == 64
+        assert threads == 8
 
 
 def test_attribute_filter_evaluator_comparison():

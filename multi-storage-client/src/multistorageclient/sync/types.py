@@ -57,15 +57,19 @@ class OperationType(Enum):
 class OperationBatch:
     """A batch of sync operations of the same type.
 
-    This dataclass groups multiple operations of the same type together
-    to reduce queue overhead and enable future bulk transfer optimizations.
+    Each item is a ``(primary_metadata, target_metadata_or_None)`` pair:
+
+    * **ADD** – ``(source_metadata, target_metadata | None)``.
+      *target_metadata* is the existing object at the target when the file
+      needs updating, or ``None`` when the file is new.
+    * **DELETE** – ``(target_metadata, None)``.
+    * **STOP** – empty list (sentinel).
+
     Operations are batched by type (ADD or DELETE) and flushed when:
     - The batch reaches the configured batch_size
     - The operation type changes
     - The producer completes iteration
-
-    The STOP operation type is used as a sentinel and is always sent individually.
     """
 
     operation: OperationType
-    items: list["ObjectMetadata"]
+    items: list[tuple["ObjectMetadata", Optional["ObjectMetadata"]]]

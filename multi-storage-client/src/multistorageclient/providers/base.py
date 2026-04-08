@@ -933,9 +933,18 @@ class BaseStorageProvider(StorageProvider):
             f=lambda: self._download_file(remote_path, f, metadata),
         )
 
-    def download_files(self, remote_paths: list[str], local_paths: list[str], max_workers: int = 16) -> None:
+    def download_files(
+        self,
+        remote_paths: list[str],
+        local_paths: list[str],
+        metadata: Optional[Sequence[Optional[ObjectMetadata]]] = None,
+        max_workers: int = 16,
+    ) -> None:
         if len(remote_paths) != len(local_paths):
             raise ValueError("remote_paths and local_paths must have the same length")
+
+        if metadata is not None and len(metadata) != len(remote_paths):
+            raise ValueError("metadata must have the same length as remote_paths and local_paths")
 
         if max_workers < 1:
             raise ValueError("max_workers must be at least 1")
@@ -943,44 +952,92 @@ class BaseStorageProvider(StorageProvider):
         if not remote_paths:
             return
 
+        resolved_metadata = self._resolve_download_metadata(remote_paths, metadata, max_workers)
+
         rust_client = getattr(self, "_rust_client", None)
         if rust_client is not None:
-            self._download_files_async(rust_client, remote_paths, local_paths, max_workers)
+            self._download_files_async(rust_client, remote_paths, local_paths, resolved_metadata, max_workers)
         else:
-            self._download_files_threaded(remote_paths, local_paths, max_workers)
+            self._download_files_threaded(remote_paths, local_paths, resolved_metadata, max_workers)
 
-    def _download_files_threaded(self, remote_paths: list[str], local_paths: list[str], max_workers: int) -> None:
+    def _resolve_download_metadata(
+        self,
+        remote_paths: list[str],
+        metadata: Optional[Sequence[Optional[ObjectMetadata]]],
+        max_workers: int,
+    ) -> list[ObjectMetadata]:
+        """Ensure every entry has metadata, fetching missing ones concurrently."""
+        resolved: list[ObjectMetadata] = [None] * len(remote_paths)  # type: ignore[list-item]
+        missing_indices: list[int] = []
+
+        for i, remote_path in enumerate(remote_paths):
+            meta = metadata[i] if metadata is not None else None
+            if meta is not None:
+                resolved[i] = meta
+            else:
+                missing_indices.append(i)
+
+        if missing_indices:
+
+            def _fetch(idx: int) -> tuple[int, ObjectMetadata]:
+                full_path = self._prepend_base_path(remote_paths[idx])
+                return idx, self._get_object_metadata(full_path)
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                for idx, fetched in executor.map(lambda i: _fetch(i), missing_indices):
+                    resolved[idx] = fetched
+
+        return resolved
+
+    def _download_files_threaded(
+        self,
+        remote_paths: list[str],
+        local_paths: list[str],
+        metadata: Sequence[ObjectMetadata],
+        max_workers: int,
+    ) -> None:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(self.download_file, rp, lp) for rp, lp in zip(remote_paths, local_paths)]
+            futures = [
+                executor.submit(self.download_file, rp, lp, metadata[i])
+                for i, (rp, lp) in enumerate(zip(remote_paths, local_paths))
+            ]
             for future in as_completed(futures):
                 future.result()
 
     def _download_files_async(
-        self, rust_client: Any, remote_paths: list[str], local_paths: list[str], max_workers: int
+        self,
+        rust_client: Any,
+        remote_paths: list[str],
+        local_paths: list[str],
+        metadata: Sequence[ObjectMetadata],
+        max_workers: int,
     ) -> None:
         if not self._metric_init_event.is_set():
             self._init_metrics()
 
+        multipart_threshold = self._multipart_threshold
+
+        items: list[tuple[str, str, bool]] = []
+        for i, (remote_path, local_path) in enumerate(zip(remote_paths, local_paths)):
+            full_path = self._prepend_base_path(remote_path)
+            _, key = split_path(full_path)
+            if os.path.dirname(local_path):
+                safe_makedirs(os.path.dirname(local_path))
+            use_multipart = metadata[i].content_length > multipart_threshold
+            items.append((key, local_path, use_multipart))
+
         semaphore = asyncio.Semaphore(max_workers)
 
-        async def _download_one(remote_path: str, local_path: str) -> None:
+        async def _download_one(key: str, local_path: str, use_multipart: bool) -> None:
+            error_type: Optional[str] = None
+            data_size: Optional[int] = None
             async with semaphore:
-                full_path = self._prepend_base_path(remote_path)
-                _, key = split_path(full_path)
-
-                if os.path.dirname(local_path):
-                    safe_makedirs(os.path.dirname(local_path))
-
-                metadata = await asyncio.to_thread(self._get_object_metadata, full_path)
-
                 start_time = time.perf_counter()
-                error_type: Optional[str] = None
-                data_size: Optional[int] = None
                 try:
-                    if metadata.content_length <= self._multipart_threshold:
-                        data_size = await rust_client.download(key, local_path)
-                    else:
+                    if use_multipart:
                         data_size = await rust_client.download_multipart_to_file(key, local_path)
+                    else:
+                        data_size = await rust_client.download(key, local_path)
                 except Exception as e:
                     error_type = type(e).__name__
                     raise
@@ -994,11 +1051,13 @@ class BaseStorageProvider(StorageProvider):
                     )
 
         async def _download_all() -> None:
-            tasks = [_download_one(rp, lp) for rp, lp in zip(remote_paths, local_paths)]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            results = await asyncio.gather(
+                *[_download_one(key, lp, mp) for key, lp, mp in items],
+                return_exceptions=True,
+            )
             errors = [r for r in results if isinstance(r, Exception)]
             if errors:
-                logger.error("download_files: %d/%d downloads failed", len(errors), len(tasks))
+                logger.error("download_files: %d/%d downloads failed", len(errors), len(items))
                 raise errors[0]
 
         run_coroutine_sync(_download_all)
@@ -1050,23 +1109,29 @@ class BaseStorageProvider(StorageProvider):
         if not self._metric_init_event.is_set():
             self._init_metrics()
 
+        multipart_threshold = self._multipart_threshold
+
+        # Build (local_path, object_key, use_multipart) tuples so each upload
+        # knows its resolved key and whether it exceeds the multipart threshold.
+        items: list[tuple[str, str, bool]] = []
+        for local_path, remote_path in zip(local_paths, remote_paths):
+            full_path = self._prepend_base_path(remote_path)
+            _, key = split_path(full_path)
+            file_size = os.path.getsize(local_path)
+            items.append((local_path, key, file_size > multipart_threshold))
+
         semaphore = asyncio.Semaphore(max_workers)
 
-        async def _upload_one(local_path: str, remote_path: str) -> None:
+        async def _upload_one(local_path: str, key: str, use_multipart: bool) -> None:
+            error_type: Optional[str] = None
+            data_size: Optional[int] = None
             async with semaphore:
-                full_path = self._prepend_base_path(remote_path)
-                _, key = split_path(full_path)
-
-                file_size = await asyncio.to_thread(os.path.getsize, local_path)
-
                 start_time = time.perf_counter()
-                error_type: Optional[str] = None
-                data_size: Optional[int] = None
                 try:
-                    if file_size <= self._multipart_threshold:
-                        data_size = await rust_client.upload(local_path, key)
-                    else:
+                    if use_multipart:
                         data_size = await rust_client.upload_multipart_from_file(local_path, key)
+                    else:
+                        data_size = await rust_client.upload(local_path, key)
                 except Exception as e:
                     error_type = type(e).__name__
                     raise
@@ -1080,11 +1145,13 @@ class BaseStorageProvider(StorageProvider):
                     )
 
         async def _upload_all() -> None:
-            tasks = [_upload_one(lp, rp) for lp, rp in zip(local_paths, remote_paths)]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            results = await asyncio.gather(
+                *[_upload_one(lp, key, mp) for lp, key, mp in items],
+                return_exceptions=True,
+            )
             errors = [r for r in results if isinstance(r, Exception)]
             if errors:
-                logger.error("upload_files: %d/%d uploads failed", len(errors), len(tasks))
+                logger.error("upload_files: %d/%d uploads failed", len(errors), len(items))
                 raise errors[0]
 
         run_coroutine_sync(_upload_all)

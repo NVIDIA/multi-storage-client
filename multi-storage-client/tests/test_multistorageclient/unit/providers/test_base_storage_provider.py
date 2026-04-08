@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import time
 from collections.abc import Iterator
 from datetime import datetime
@@ -502,6 +503,9 @@ def test_download_files_threaded():
     with pytest.raises(ValueError, match="at least 1"):
         provider.download_files(["a.txt"], ["/tmp/a.txt"], max_workers=0)
 
+    with pytest.raises(ValueError, match="metadata must have the same length"):
+        provider.download_files(["a.txt"], ["/tmp/a.txt"], metadata=[])
+
     provider.download_files([], [])
     provider.download_file.assert_not_called()
 
@@ -510,29 +514,38 @@ def test_download_files_threaded():
     provider.download_files(remote_paths, local_paths, max_workers=4)
 
     assert provider.download_file.call_count == 3
-    called_args = {call.args for call in provider.download_file.call_args_list}
-    assert called_args == {
-        ("file1.txt", "/tmp/file1.txt"),
-        ("file2.txt", "/tmp/file2.txt"),
-        ("file3.txt", "/tmp/file3.txt"),
-    }
+    called_args = sorted([call.args for call in provider.download_file.call_args_list], key=lambda x: x[0])
+    for args in called_args:
+        assert isinstance(args[2], ObjectMetadata)
+
+
+def test_download_files_threaded_with_metadata():
+    """Threaded path: per-file metadata is forwarded; missing entries are resolved."""
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+    provider.download_file = MagicMock()
+
+    remote_paths = ["file1.txt", "file2.txt", "file3.txt"]
+    local_paths = ["/tmp/file1.txt", "/tmp/file2.txt", "/tmp/file3.txt"]
+    meta = [
+        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime.now()),
+        None,
+        ObjectMetadata(key="file3.txt", content_length=999999999, last_modified=datetime.now()),
+    ]
+    provider.download_files(remote_paths, local_paths, metadata=meta, max_workers=4)
+
+    assert provider.download_file.call_count == 3
+    called_args = sorted([call.args for call in provider.download_file.call_args_list], key=lambda x: x[0])
+    assert called_args[0] == ("file1.txt", "/tmp/file1.txt", meta[0])
+    assert isinstance(called_args[1][2], ObjectMetadata)
+    assert called_args[2] == ("file3.txt", "/tmp/file3.txt", meta[2])
 
 
 def test_download_files_async():
-    """Async/Rust path: uses download for small files, download_multipart_to_file for large."""
+    """Async/Rust path: without metadata, fetches metadata and uses threshold to decide."""
     provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
-    provider._multipart_threshold = 100
-
-    small_meta = ObjectMetadata(key="s.txt", content_length=50, type="file", last_modified=datetime.now())
-    large_meta = ObjectMetadata(key="l.txt", content_length=200, type="file", last_modified=datetime.now())
-
-    def fake_get_metadata(path: str, strict: bool = True) -> ObjectMetadata:
-        return large_meta if "large" in path else small_meta
-
-    provider._get_object_metadata = MagicMock(side_effect=fake_get_metadata)
 
     mock_rust_client = MagicMock()
-    mock_rust_client.download = AsyncMock(return_value=50)
+    mock_rust_client.download = AsyncMock(return_value=200)
     mock_rust_client.download_multipart_to_file = AsyncMock(return_value=200)
     provider._rust_client = mock_rust_client
 
@@ -542,19 +555,51 @@ def test_download_files_async():
     with patch("multistorageclient.providers.base.safe_makedirs"):
         provider.download_files(remote_paths, local_paths, max_workers=4)
 
+    assert mock_rust_client.download.await_count == 3
+    called_args = {call.args for call in mock_rust_client.download.call_args_list}
+    assert called_args == {
+        ("small1.txt", "/tmp/small1.txt"),
+        ("small2.txt", "/tmp/small2.txt"),
+        ("large1.txt", "/tmp/large1.txt"),
+    }
+
+
+def test_download_files_async_with_metadata():
+    """Async/Rust path: metadata drives multipart vs regular download based on threshold."""
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+    provider._multipart_threshold = 1000
+
+    mock_rust_client = MagicMock()
+    mock_rust_client.download = AsyncMock(return_value=100)
+    mock_rust_client.download_multipart_to_file = AsyncMock(return_value=5000)
+    provider._rust_client = mock_rust_client
+
+    remote_paths = ["small.txt", "large.txt", "unknown.txt"]
+    local_paths = ["/tmp/small.txt", "/tmp/large.txt", "/tmp/unknown.txt"]
+    meta = [
+        ObjectMetadata(key="small.txt", content_length=500, last_modified=datetime.now()),
+        ObjectMetadata(key="large.txt", content_length=5000, last_modified=datetime.now()),
+        None,
+    ]
+
+    with patch("multistorageclient.providers.base.safe_makedirs"):
+        provider.download_files(remote_paths, local_paths, metadata=meta, max_workers=4)
+
     assert mock_rust_client.download.await_count == 2
+    download_args = {call.args for call in mock_rust_client.download.call_args_list}
+    assert download_args == {
+        ("small.txt", "/tmp/small.txt"),
+        ("unknown.txt", "/tmp/unknown.txt"),
+    }
+
     assert mock_rust_client.download_multipart_to_file.await_count == 1
-    assert mock_rust_client.download_multipart_to_file.call_args.args == ("large1.txt", "/tmp/large1.txt")
+    mock_rust_client.download_multipart_to_file.assert_awaited_with("large.txt", "/tmp/large.txt")
 
 
 @pytest.mark.asyncio
 async def test_download_files_async_inside_running_loop():
     """Async/Rust batch downloads should work when the caller already has a running event loop."""
     provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
-    provider._multipart_threshold = 100
-    provider._get_object_metadata = MagicMock(
-        return_value=ObjectMetadata(key="s.txt", content_length=50, type="file", last_modified=datetime.now())
-    )
 
     mock_rust_client = MagicMock()
     mock_rust_client.download = AsyncMock(return_value=50)
@@ -681,3 +726,70 @@ def test_upload_files_async():
     assert mock_rust_client.upload.await_count == 2
     assert mock_rust_client.upload_multipart_from_file.await_count == 1
     assert mock_rust_client.upload_multipart_from_file.call_args.args == ("/tmp/large1.txt", "large1.txt")
+
+
+def test_upload_files_async_concurrency():
+    """Rust upload concurrency should be capped by max_workers."""
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+    provider._multipart_threshold = 10_000_000
+
+    num_files = 10
+    max_workers = 4
+    active_uploads = 0
+    peak_uploads = 0
+
+    async def slow_upload(local_path, key):
+        nonlocal active_uploads, peak_uploads
+        active_uploads += 1
+        peak_uploads = max(peak_uploads, active_uploads)
+        try:
+            await asyncio.sleep(0.1)
+            return 100
+        finally:
+            active_uploads -= 1
+
+    mock_rust_client = MagicMock()
+    mock_rust_client.upload = AsyncMock(side_effect=slow_upload)
+    provider._rust_client = mock_rust_client
+
+    local_paths = [f"/tmp/file{i}.txt" for i in range(num_files)]
+    remote_paths = [f"file{i}.txt" for i in range(num_files)]
+
+    with patch("multistorageclient.providers.base.os.path.getsize", return_value=100):
+        provider.upload_files(local_paths, remote_paths, max_workers=max_workers)
+
+    assert mock_rust_client.upload.await_count == num_files
+    assert peak_uploads == max_workers
+
+
+def test_download_files_async_concurrency():
+    """Rust download concurrency should be capped by max_workers."""
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+
+    num_files = 10
+    max_workers = 4
+    active_downloads = 0
+    peak_downloads = 0
+
+    async def slow_download(key, local_path):
+        nonlocal active_downloads, peak_downloads
+        active_downloads += 1
+        peak_downloads = max(peak_downloads, active_downloads)
+        try:
+            await asyncio.sleep(0.1)
+            return 100
+        finally:
+            active_downloads -= 1
+
+    mock_rust_client = MagicMock()
+    mock_rust_client.download = AsyncMock(side_effect=slow_download)
+    provider._rust_client = mock_rust_client
+
+    remote_paths = [f"file{i}.txt" for i in range(num_files)]
+    local_paths = [f"/tmp/file{i}.txt" for i in range(num_files)]
+
+    with patch("multistorageclient.providers.base.safe_makedirs"):
+        provider.download_files(remote_paths, local_paths, max_workers=max_workers)
+
+    assert mock_rust_client.download.await_count == num_files
+    assert peak_downloads == max_workers

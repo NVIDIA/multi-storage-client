@@ -106,7 +106,7 @@ class ProducerThread(threading.Thread):
         self.batch_size = batch_size
         self.error = None
         self.total_work_units = 0
-        self._current_batch: list[ObjectMetadata] = []
+        self._current_batch: list[tuple[ObjectMetadata, Optional[ObjectMetadata]]] = []
         self._current_batch_type: Optional[OperationType] = None
         self._current_batch_size_bucket: Optional[SizeBucket] = None
 
@@ -130,7 +130,12 @@ class ProducerThread(threading.Thread):
             self._current_batch_type = None
             self._current_batch_size_bucket = None
 
-    def _enqueue_operation(self, operation: OperationType, metadata: ObjectMetadata) -> None:
+    def _enqueue_operation(
+        self,
+        operation: OperationType,
+        source_metadata: ObjectMetadata,
+        target_metadata: Optional[ObjectMetadata] = None,
+    ) -> None:
         """
         Add an operation to the current batch, flushing if necessary.
 
@@ -139,14 +144,14 @@ class ProducerThread(threading.Thread):
         - File size bucket changes (small vs medium vs large vs very large)
         - Batch size limit is reached
         """
-        size_bucket = self._get_size_bucket(metadata.content_length)
+        size_bucket = self._get_size_bucket(source_metadata.content_length)
 
         if self._current_batch_type != operation or self._current_batch_size_bucket != size_bucket:
             self._flush_batch()
             self._current_batch_type = operation
             self._current_batch_size_bucket = size_bucket
 
-        self._current_batch.append(metadata)
+        self._current_batch.append((source_metadata, target_metadata))
 
         if len(self._current_batch) >= self.batch_size:
             self._flush_batch()
@@ -248,7 +253,7 @@ class ProducerThread(threading.Thread):
                         if not self._match_file_metadata(source_file, target_file):
                             # Check if file should be included based on patterns
                             if not self.pattern_matcher or self.pattern_matcher.should_include_file(source_key):
-                                self._enqueue_operation(OperationType.ADD, source_file)
+                                self._enqueue_operation(OperationType.ADD, source_file, target_file)
                         else:
                             self.progress.update_progress()
 

@@ -15,9 +15,9 @@
 
 import json
 import os
+import queue
 import sys
-import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from unittest import mock
 
@@ -25,18 +25,12 @@ import pytest
 import xattr
 
 import multistorageclient as msc
-from multistorageclient.constants import MEMORY_LOAD_LIMIT
+from multistorageclient.sync import worker as sync_worker_module
+from multistorageclient.sync.types import OperationBatch, OperationType
 from multistorageclient.sync.worker import (
-    FILE_LOCK_SIZE_THRESHOLD,
-    FileLock,
-    _check_posix_paths,
-    _copy_posix_to_posix,
-    _copy_posix_to_remote,
-    _copy_remote_to_posix,
-    _copy_remote_to_remote,
-    _create_exclusive_filelock,
-    _replace_object_metadata_attributes,
-    _update_posix_metadata,
+    check_skip_and_track_with_metadata_provider,
+    check_skip_without_metadata_provider,
+    update_posix_metadata,
 )
 from multistorageclient.types import ObjectMetadata, SyncError
 from test_multistorageclient.unit.utils import config, tempdatastore
@@ -71,8 +65,8 @@ class MockStorageClient:
         return False
 
 
-def test_replace_object_metadata_attributes():
-    """Test metadata replace helper preserves fields and replaces metadata payload."""
+def test_object_metadata_replace():
+    """Test ObjectMetadata.replace preserves fields and overrides specified ones."""
     target_metadata = ObjectMetadata(
         key="target/path/file.txt",
         content_length=4,
@@ -81,7 +75,7 @@ def test_replace_object_metadata_attributes():
         metadata={"existing": "value", "version": "1"},
     )
 
-    replaced = _replace_object_metadata_attributes(target_metadata, {"version": "2", "owner": "ml-team"})
+    replaced = target_metadata.replace(metadata={"version": "2", "owner": "ml-team"})
 
     assert replaced.key == target_metadata.key
     assert replaced.content_length == target_metadata.content_length
@@ -137,12 +131,62 @@ def test_sync_with_worker_error_fail_fast():
                 target_client.sync_from(source_client, source_path, target_path)
 
 
+def test_batch_posix_to_posix():
+    """Test the live POSIX-to-POSIX handler path copies files between POSIX locations."""
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as temp_source,
+        tempdatastore.TemporaryPOSIXDirectory() as temp_target,
+    ):
+        source_client, target_client = _setup_test_clients("source-test", "target-test", temp_source, temp_target)
+
+        source_name = "nested/source.txt"
+        target_name = "subdir/nested/source.txt"
+        content = b"test content"
+        source_client.write(source_name, content)
+
+        batch = OperationBatch(
+            operation=OperationType.ADD,
+            items=[
+                (
+                    ObjectMetadata(
+                        key=source_name,
+                        content_length=len(content),
+                        last_modified=datetime.now(tz=timezone.utc),
+                        metadata=None,
+                    ),
+                    None,
+                )
+            ],
+        )
+        result_queue = queue.Queue()
+        error_queue = queue.Queue()
+
+        handler = sync_worker_module.create_sync_handler(
+            source_client=source_client,
+            source_path="",
+            target_client=target_client,
+            target_path="subdir",
+            preserve_source_attributes=False,
+            result_queue=result_queue,
+            error_queue=error_queue,
+        )
+        assert isinstance(handler, sync_worker_module.PosixToPosixHandler)
+
+        handler.process_add_batch(worker_id="test-worker", batch=batch)
+
+        assert error_queue.empty(), f"Unexpected error: {error_queue.get()}"
+        assert target_client.is_file(target_name)
+        assert target_client.read(target_name) == content
+
+
 @pytest.mark.parametrize(
     argnames=["temp_data_store_type"],
     argvalues=[[tempdatastore.TemporaryAWSS3Bucket]],
 )
-def test_check_posix_paths(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
-    """Test _check_posix_paths correctly identifies POSIX and non-POSIX clients."""
+def test_batch_posix_to_remote(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """Test the live POSIX-to-remote handler path uploads files to remote storage."""
     msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
 
     with (
@@ -151,51 +195,58 @@ def test_check_posix_paths(temp_data_store_type: type[tempdatastore.TemporaryDat
     ):
         posix_client, remote_client = _setup_test_clients("posix-test", "remote-test", temp_posix, temp_remote)
 
-        # Test POSIX client returns physical path
-        posix_file = "test.txt"
-        source_physical, target_physical = _check_posix_paths(posix_client, posix_client, posix_file, posix_file)
-        assert source_physical is not None
-        assert target_physical is not None
-        assert posix_file in source_physical
-        assert posix_file in target_physical
+        files = {
+            "file1.txt": b"content for file 1",
+            "file2.txt": b"content for file 2",
+        }
+        for name, content in files.items():
+            posix_client.write(name, content)
 
-        # Test remote client returns None
-        source_physical, target_physical = _check_posix_paths(remote_client, remote_client, "file.txt", "file.txt")
-        assert source_physical is None
-        assert target_physical is None
+        batch_items = []
+        for name, content in files.items():
+            batch_items.append(
+                (
+                    ObjectMetadata(
+                        key=name,
+                        content_length=len(content),
+                        last_modified=datetime.now(tz=timezone.utc),
+                        metadata={"source": name},
+                    ),
+                    None,
+                )
+            )
 
-        # Test mixed: POSIX source, remote target
-        source_physical, target_physical = _check_posix_paths(posix_client, remote_client, posix_file, "file.txt")
-        assert source_physical is not None
-        assert target_physical is None
+        batch = OperationBatch(operation=OperationType.ADD, items=batch_items)
+        result_queue = queue.Queue()
+        error_queue = queue.Queue()
 
+        handler = sync_worker_module.create_sync_handler(
+            source_client=posix_client,
+            source_path="",
+            target_client=remote_client,
+            target_path="uploaded/",
+            preserve_source_attributes=False,
+            result_queue=result_queue,
+            error_queue=error_queue,
+        )
+        assert isinstance(handler, sync_worker_module.PosixToRemoteHandler)
 
-def test_copy_posix_to_posix():
-    """Test _copy_posix_to_posix correctly copies files between POSIX locations."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        source_file = os.path.join(tmpdir, "source.txt")
-        target_file = os.path.join(tmpdir, "subdir", "target.txt")
+        handler.process_add_batch(worker_id="test-worker", batch=batch)
 
-        # Create source file
-        content = "test content"
-        with open(source_file, "w") as f:
-            f.write(content)
+        assert error_queue.empty(), f"Unexpected error: {error_queue.get()}"
 
-        # Copy file
-        _copy_posix_to_posix(source_file, target_file)
-
-        # Verify target file exists and has correct content
-        assert os.path.exists(target_file)
-        with open(target_file, "r") as f:
-            assert f.read() == content
+        for name, content in files.items():
+            target_key = f"uploaded/{name}"
+            assert remote_client.is_file(target_key)
+            assert remote_client.read(target_key) == content
 
 
 @pytest.mark.parametrize(
     argnames=["temp_data_store_type"],
     argvalues=[[tempdatastore.TemporaryAWSS3Bucket]],
 )
-def test_copy_posix_to_remote(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
-    """Test _copy_posix_to_remote correctly uploads files from POSIX to remote storage."""
+def test_batch_remote_to_posix(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """Test the live remote-to-POSIX handler path downloads files to POSIX storage."""
     msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
 
     with (
@@ -204,62 +255,193 @@ def test_copy_posix_to_remote(temp_data_store_type: type[tempdatastore.Temporary
     ):
         posix_client, remote_client = _setup_test_clients("posix-test", "remote-test", temp_posix, temp_remote)
 
-        # Create source file in POSIX
-        source_file = "source.txt"
-        content = b"test content for upload"
-        posix_client.write(source_file, content)
+        files = {
+            "file1.txt": b"remote content 1",
+            "file2.txt": b"remote content 2",
+        }
+        for name, content in files.items():
+            remote_client.write(name, content)
 
-        source_physical_path = posix_client.get_posix_path(source_file)
-        assert source_physical_path is not None
+        batch_items = []
+        for name, content in files.items():
+            batch_items.append(
+                (
+                    ObjectMetadata(
+                        key=name,
+                        content_length=len(content),
+                        last_modified=datetime.now(tz=timezone.utc),
+                        metadata={"source": name},
+                    ),
+                    None,
+                )
+            )
 
-        # Create metadata
+        batch = OperationBatch(operation=OperationType.ADD, items=batch_items)
+        result_queue = queue.Queue()
+        error_queue = queue.Queue()
+
+        handler = sync_worker_module.create_sync_handler(
+            source_client=remote_client,
+            source_path="",
+            target_client=posix_client,
+            target_path="downloaded/",
+            preserve_source_attributes=False,
+            result_queue=result_queue,
+            error_queue=error_queue,
+        )
+        assert isinstance(handler, sync_worker_module.RemoteToPosixHandler)
+
+        handler.process_add_batch(worker_id="test-worker", batch=batch)
+
+        assert error_queue.empty(), f"Unexpected error: {error_queue.get()}"
+
+        for name, content in files.items():
+            target_key = f"downloaded/{name}"
+            assert posix_client.is_file(target_key)
+            assert posix_client.read(target_key) == content
+
+
+def test_check_skip_without_metadata_provider_skips_up_to_date():
+    """Test check_skip_without_metadata_provider returns True when target is up-to-date."""
+    now = datetime.now(tz=timezone.utc)
+    file_metadata = ObjectMetadata(key="source.txt", content_length=100, last_modified=now)
+    target_metadata = ObjectMetadata(key="target.txt", content_length=100, last_modified=now)
+
+    assert check_skip_without_metadata_provider("target.txt", file_metadata, target_metadata) is True
+
+
+def test_check_skip_without_metadata_provider_does_not_skip_outdated():
+    """Test check_skip_without_metadata_provider returns False when target is outdated (size mismatch)."""
+    now = datetime.now(tz=timezone.utc)
+    file_metadata = ObjectMetadata(key="source.txt", content_length=100, last_modified=now)
+    target_metadata = ObjectMetadata(key="target.txt", content_length=3, last_modified=now)
+
+    assert check_skip_without_metadata_provider("target.txt", file_metadata, target_metadata) is False
+
+
+def test_check_skip_without_metadata_provider_does_not_skip_missing():
+    """Test check_skip_without_metadata_provider returns False when target_metadata is None."""
+    file_metadata = ObjectMetadata(
+        key="source.txt",
+        content_length=10,
+        last_modified=datetime.now(tz=timezone.utc),
+    )
+
+    assert check_skip_without_metadata_provider("nonexistent.txt", file_metadata, None) is False
+
+
+def _make_handler_with_metadata_provider():
+    """Create a PosixToPosixHandler with a mocked metadata-provider-enabled target client."""
+    from multistorageclient.sync.worker import PosixToPosixHandler
+
+    target_client = mock.MagicMock()
+    target_client._metadata_provider = mock.MagicMock()
+    target_client._metadata_provider_lock = None
+
+    handler = PosixToPosixHandler(
+        source_client=mock.MagicMock(),
+        source_path="src/",
+        target_client=target_client,
+        target_path="dst/",
+        preserve_source_attributes=False,
+        result_queue=queue.Queue(),
+        error_queue=queue.Queue(),
+    )
+    return handler
+
+
+def _make_add_batch(n: int):
+    items: list[tuple[ObjectMetadata, Optional[ObjectMetadata]]] = [
+        (
+            ObjectMetadata(
+                key=f"src/file{i}.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)
+            ),
+            None,
+        )
+        for i in range(n)
+    ]
+    return OperationBatch(operation=OperationType.ADD, items=items)
+
+
+def test_filter_with_metadata_provider_mixed_skip_and_transfer():
+    handler = _make_handler_with_metadata_provider()
+    batch = _make_add_batch(6)
+    skip_keys = {"src/file0.txt", "src/file2.txt", "src/file4.txt"}
+
+    def side_effect(_client, _path, fm, _preserve):
+        return fm.key in skip_keys
+
+    with mock.patch.object(sync_worker_module, "check_skip_and_track_with_metadata_provider", side_effect=side_effect):
+        result = handler._filter_with_metadata_provider("w-0", batch)
+
+    assert {fm.key for fm, _ in result} == {"src/file1.txt", "src/file3.txt", "src/file5.txt"}
+
+
+def test_filter_with_metadata_provider_reports_errors():
+    handler = _make_handler_with_metadata_provider()
+    batch = _make_add_batch(4)
+
+    def side_effect(_client, _path, fm, _preserve):
+        if fm.key == "src/file1.txt":
+            raise FileExistsError("overwrites not allowed")
+        return False
+
+    with mock.patch.object(sync_worker_module, "check_skip_and_track_with_metadata_provider", side_effect=side_effect):
+        result = handler._filter_with_metadata_provider("w-0", batch)
+
+    assert len(result) == 3
+    error = handler.error_queue.get()
+    assert "overwrites not allowed" in error.exception_message
+
+
+def test_filter_with_metadata_provider_single_item_no_threadpool():
+    handler = _make_handler_with_metadata_provider()
+    batch = _make_add_batch(1)
+
+    with (
+        mock.patch.object(sync_worker_module, "check_skip_and_track_with_metadata_provider", return_value=False),
+        mock.patch.object(sync_worker_module, "ThreadPoolExecutor") as mock_tpe,
+    ):
+        result = handler._filter_with_metadata_provider("w-0", batch)
+
+    assert len(result) == 1
+    mock_tpe.assert_not_called()
+
+
+def test_check_skip_and_track_with_metadata_provider_skips_up_to_date():
+    """Test check_skip_and_track_with_metadata_provider returns True when target is up-to-date."""
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_posix:
+        config.setup_msc_config(config_dict={"profiles": {"posix-test": temp_posix.profile_config_dict()}})
+        client, _ = msc.resolve_storage_client("msc://posix-test")
+
+        content = b"existing content"
+        client.write("target.txt", content)
+        info = client.info("target.txt")
+
+        resolved = mock.MagicMock()
+        resolved.exists = True
+        resolved.physical_path = "target.txt"
+
+        mp = mock.MagicMock()
+        mp.realpath.return_value = resolved
+        mp.allow_overwrites.return_value = True
+
+        client._metadata_provider = mp
+        client._metadata_provider_lock = None
+
         file_metadata = ObjectMetadata(
-            key=source_file,
-            content_length=len(content),
-            last_modified=datetime.now(),
-            metadata={"custom": "value"},
+            key="source.txt",
+            content_length=info.content_length,
+            last_modified=info.last_modified,
         )
 
-        # Upload to remote storage
-        target_file = "target.txt"
-        _copy_posix_to_remote(remote_client, source_physical_path, target_file, file_metadata)
-
-        # Verify file exists in remote storage with correct content
-        assert remote_client.is_file(target_file)
-        retrieved_content = remote_client.read(target_file)
-        assert retrieved_content == content
-
-
-@pytest.mark.parametrize(
-    argnames=["temp_data_store_type"],
-    argvalues=[[tempdatastore.TemporaryAWSS3Bucket]],
-)
-def test_copy_remote_to_posix(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
-    """Test _copy_remote_to_posix correctly downloads files from remote to POSIX storage."""
-    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
-
-    with (
-        tempdatastore.TemporaryPOSIXDirectory() as temp_posix,
-        temp_data_store_type() as temp_remote,
-    ):
-        posix_client, remote_client = _setup_test_clients("posix-test", "remote-test", temp_posix, temp_remote)
-
-        # Create source file in remote storage
-        source_file = "source.txt"
-        content = b"test content for download"
-        remote_client.write(source_file, content)
-
-        # Download to POSIX
-        target_file = "target.txt"
-        target_physical_path = posix_client.get_posix_path(target_file)
-        assert target_physical_path is not None
-
-        _copy_remote_to_posix(remote_client, source_file, target_physical_path)
-
-        # Verify file exists in POSIX with correct content
-        assert os.path.exists(target_physical_path)
-        with open(target_physical_path, "rb") as f:
-            assert f.read() == content
+        skipped = check_skip_and_track_with_metadata_provider(
+            client, "target.txt", file_metadata, preserve_source_attributes=False
+        )
+        assert skipped is True
+        mp.add_file.assert_called_once()
 
 
 @pytest.mark.parametrize(
@@ -289,16 +471,11 @@ def test_sync_single_file_to_directory(temp_data_store_type: type[tempdatastore.
 
 
 @pytest.mark.parametrize(
-    argnames=["temp_data_store_type", "file_size", "file_type"],
-    argvalues=[
-        [tempdatastore.TemporaryAWSS3Bucket, 100, "small"],  # Small file uses memory
-        [tempdatastore.TemporaryAWSS3Bucket, MEMORY_LOAD_LIMIT + 1000, "large"],  # Large file uses temp file
-    ],
+    argnames=["temp_data_store_type"],
+    argvalues=[[tempdatastore.TemporaryAWSS3Bucket]],
 )
-def test_copy_remote_to_remote(
-    temp_data_store_type: type[tempdatastore.TemporaryDataStore], file_size: int, file_type: str
-):
-    """Test _copy_remote_to_remote handles both small and large files correctly."""
+def test_batch_remote_to_remote(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """Test the live remote-to-remote handler path copies batches between remotes."""
     msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
 
     with (
@@ -307,25 +484,48 @@ def test_copy_remote_to_remote(
     ):
         source_client, target_client = _setup_test_clients("source-test", "target-test", temp_source, temp_target)
 
-        # Create source file
-        source_file = f"{file_type}.txt"
-        content = b"x" * file_size
-        source_client.write(source_file, content)
+        files = {
+            "small.txt": b"small content",
+            "nested/large.txt": b"large content" * 32,
+        }
+        batch_items = []
+        for name, content in files.items():
+            source_client.write(name, content)
+            batch_items.append(
+                (
+                    ObjectMetadata(
+                        key=name,
+                        content_length=len(content),
+                        last_modified=datetime.now(tz=timezone.utc),
+                        metadata={"source": name},
+                    ),
+                    None,
+                )
+            )
 
-        file_metadata = ObjectMetadata(
-            key=source_file,
-            content_length=len(content),
-            last_modified=datetime.now(),
-            metadata={"type": file_type},
+        batch = OperationBatch(operation=OperationType.ADD, items=batch_items)
+        result_queue = queue.Queue()
+        error_queue = queue.Queue()
+
+        handler = sync_worker_module.create_sync_handler(
+            source_client=source_client,
+            source_path="",
+            target_client=target_client,
+            target_path="copied/",
+            preserve_source_attributes=False,
+            result_queue=result_queue,
+            error_queue=error_queue,
         )
+        assert isinstance(handler, sync_worker_module.RemoteToRemoteHandler)
 
-        # Copy to target
-        target_file = "target.txt"
-        _copy_remote_to_remote(source_client, target_client, source_file, target_file, file_metadata)
+        handler.process_add_batch(worker_id="test-worker", batch=batch)
 
-        # Verify file exists with correct content
-        assert target_client.is_file(target_file)
-        assert target_client.read(target_file) == content
+        assert error_queue.empty(), f"Unexpected error: {error_queue.get()}"
+
+        for name, content in files.items():
+            target_key = f"copied/{name}"
+            assert target_client.is_file(target_key)
+            assert target_client.read(target_key) == content
 
 
 @pytest.mark.parametrize(
@@ -333,7 +533,7 @@ def test_copy_remote_to_remote(
     argvalues=[[True], [False]],
 )
 def test_update_posix_metadata(use_metadata_provider: bool):
-    """Test _update_posix_metadata updates metadata via provider or xattr."""
+    """Test update_posix_metadata updates metadata via provider or xattr."""
     msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
 
     with tempdatastore.TemporaryPOSIXDirectory() as temp_posix:
@@ -363,7 +563,7 @@ def test_update_posix_metadata(use_metadata_provider: bool):
         )
 
         # Update metadata
-        _update_posix_metadata(client, target_physical_path, test_file, file_metadata)
+        update_posix_metadata(client, target_physical_path, test_file, file_metadata)
 
         # Verify metadata storage
         if use_metadata_provider:
@@ -384,45 +584,3 @@ def test_update_posix_metadata(use_metadata_provider: bool):
             assert abs(actual_mtime - expected_mtime_timestamp) < 0.001, (
                 f"mtime not updated correctly: {actual_mtime} != {expected_mtime_timestamp}"
             )
-
-
-def test_create_exclusive_filelock():
-    """Test size-based selective file locking behavior.
-
-    Validates that _create_exclusive_filelock:
-    - Creates locks for large files (>= threshold) on POSIX storage
-    - Skips locks for small files (< threshold) on POSIX storage
-    - Never creates locks on non-POSIX storage regardless of size
-    """
-    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
-
-    with (
-        tempdatastore.TemporaryPOSIXDirectory() as posix_store,
-        tempdatastore.TemporaryAWSS3Bucket() as s3_store,
-    ):
-        config.setup_msc_config(
-            config_dict={
-                "profiles": {
-                    "posix_target": posix_store.profile_config_dict(),
-                    "s3_target": s3_store.profile_config_dict(),
-                }
-            }
-        )
-
-        posix_client, _ = msc.resolve_storage_client("msc://posix_target")
-        s3_client, _ = msc.resolve_storage_client("msc://s3_target")
-        target_file_path = "test_file.txt"
-
-        # Test 1: Small file on POSIX - should NOT create lock
-        small_file_size = FILE_LOCK_SIZE_THRESHOLD - 1
-        lock_small = _create_exclusive_filelock(posix_client, target_file_path, small_file_size)
-        assert not isinstance(lock_small, FileLock), "Small files on POSIX should not create locks"
-
-        # Test 2: Large file on POSIX - should create lock
-        large_file_size = FILE_LOCK_SIZE_THRESHOLD * 2
-        lock_large = _create_exclusive_filelock(posix_client, target_file_path, large_file_size)
-        assert isinstance(lock_large, FileLock), "Large files on POSIX should create locks"
-
-        # Test 3: Large file on non-POSIX (S3) - should NOT create lock
-        lock_s3 = _create_exclusive_filelock(s3_client, target_file_path, large_file_size)
-        assert not isinstance(lock_s3, FileLock), "Non-POSIX storage should never create locks"

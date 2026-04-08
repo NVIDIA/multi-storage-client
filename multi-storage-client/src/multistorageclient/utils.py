@@ -437,11 +437,9 @@ def calculate_worker_processes_and_threads(
                 for client in (source_client, target_client)
             ):
                 num_worker_processes = 1
-                num_worker_threads = max(cpu_count, 64)
-                if "MSC_NUM_THREADS_PER_PROCESS" in os.environ:
-                    num_worker_threads = int(os.environ["MSC_NUM_THREADS_PER_PROCESS"])
+                num_worker_threads = int(os.getenv("MSC_NUM_THREADS_PER_PROCESS", "8"))
     elif execution_mode == ExecutionMode.RAY:
-        num_worker_threads = int(os.getenv("MSC_NUM_THREADS_PER_PROCESS", "2"))
+        num_worker_threads = int(os.getenv("MSC_NUM_THREADS_PER_PROCESS", "8"))
 
     return num_worker_processes, num_worker_threads
 

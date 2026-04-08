@@ -13,37 +13,38 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import concurrent.futures
 import contextlib
 import json
 import logging
 import os
 import shutil
 import tempfile
+import threading
 import traceback
+from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Optional, Union, cast
+from typing import TYPE_CHECKING, Optional
 
 import xattr
-from filelock import FileLock
 
-from ..constants import MEMORY_LOAD_LIMIT
-from ..providers.base import BaseStorageProvider
 from ..types import ObjectMetadata
 from ..utils import safe_makedirs
 from .metadata_proxy import QueueBackedMetadataProvider
-from .types import ErrorInfo, EventLike, OperationType, QueueLike
+from .types import ErrorInfo, EventLike, OperationBatch, OperationType, QueueLike
 
 if TYPE_CHECKING:
     from ..client.types import AbstractStorageClient
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_LOCK_TIMEOUT = 600  # 10 minutes
-FILE_LOCK_SIZE_THRESHOLD = 64 * 1024 * 1024  # 64 MB - only lock files larger than this
+
+# ---------------------------------------------------------------------------
+# Public utility functions
+# ---------------------------------------------------------------------------
 
 
-def _build_target_file_path(source_path: str, target_path: str, file_metadata: ObjectMetadata) -> str:
+def build_target_file_path(source_path: str, target_path: str, file_metadata: ObjectMetadata) -> str:
     source_key = file_metadata.key[len(source_path) :].lstrip("/")
 
     # Special case for single file sync: target file path is the target path + the source key.
@@ -56,368 +57,97 @@ def _build_target_file_path(source_path: str, target_path: str, file_metadata: O
     return target_file_path
 
 
-def _replace_object_metadata_attributes(
-    target_metadata: ObjectMetadata,
-    source_metadata: Optional[dict[str, Any]],
-) -> ObjectMetadata:
-    return ObjectMetadata(
-        key=target_metadata.key,
-        content_length=target_metadata.content_length,
-        last_modified=target_metadata.last_modified,
-        type=target_metadata.type,
-        content_type=target_metadata.content_type,
-        etag=target_metadata.etag,
-        storage_class=target_metadata.storage_class,
-        metadata=source_metadata,
-    )
-
-
-def _process_single_sync_operation(
-    worker_id: str,
-    source_client: "AbstractStorageClient",
-    source_path: str,
+def check_skip_and_track_with_metadata_provider(
     target_client: "AbstractStorageClient",
-    target_path: str,
+    target_file_path: str,
     file_metadata: ObjectMetadata,
-    op: OperationType,
     preserve_source_attributes: bool,
-    result_queue: QueueLike,
-    error_queue: QueueLike,
-) -> None:
-    """Process a single sync operation (ADD or DELETE) for one file."""
-    target_file_path = _build_target_file_path(source_path, target_path, file_metadata)
+) -> bool:
+    """Check if target is already up-to-date when a metadata provider is present.
 
+    Resolves the physical path via the metadata provider, fetches target metadata
+    from the storage provider, and tracks the file if up-to-date.
+
+    Returns True (skip) if up-to-date, False if transfer is needed.
+    Raises FileExistsError if the file needs updating but overwrites are disallowed.
+    """
+    if not target_client._storage_provider:
+        raise RuntimeError("Invalid state, no storage provider configured.")
+
+    if not target_client._metadata_provider:
+        raise RuntimeError("Invalid state, no metadata provider configured.")
+
+    target_metadata = None
     try:
-        if op == OperationType.ADD:
-            logger.debug(f"sync {file_metadata.key} -> {target_file_path}")
-            with _create_exclusive_filelock(target_client, target_file_path, file_metadata.content_length):
-                target_metadata = None
-                if not target_client._storage_provider:
-                    raise RuntimeError("Invalid state, no storage provider configured.")
-
-                try:
-                    if target_client._metadata_provider:
-                        resolved = target_client._metadata_provider.realpath(target_file_path)
-                        if resolved.exists:
-                            physical_path = resolved.physical_path
-                        else:
-                            physical_path = target_client._metadata_provider.generate_physical_path(
-                                target_file_path, for_overwrite=False
-                            ).physical_path
-                    else:
-                        physical_path = target_file_path
-
-                    target_metadata = target_client._storage_provider.get_object_metadata(physical_path, strict=False)
-                except FileNotFoundError:
-                    pass
-
-                if target_metadata is not None:
-                    if (
-                        target_metadata.content_length == file_metadata.content_length
-                        and target_metadata.last_modified >= file_metadata.last_modified
-                    ):
-                        logger.debug(f"File {target_file_path} already exists and is up-to-date, skipping copy")
-
-                        if target_client._metadata_provider:
-                            source_attrs = (
-                                (dict(file_metadata.metadata) if file_metadata.metadata else None)
-                                if preserve_source_attributes
-                                else None
-                            )
-                            metadata_for_tracking = (
-                                _replace_object_metadata_attributes(target_metadata, source_attrs)
-                                if preserve_source_attributes
-                                else target_metadata
-                            )
-                            logger.debug(f"Adding existing file {target_file_path} to metadata provider for tracking")
-                            with target_client._metadata_provider_lock or contextlib.nullcontext():
-                                target_client._metadata_provider.add_file(target_file_path, metadata_for_tracking)
-
-                        return
-
-                    if target_client._metadata_provider and not target_client._metadata_provider.allow_overwrites():
-                        raise FileExistsError(
-                            f"Cannot sync '{file_metadata.key}' to '{target_file_path}': "
-                            f"file exists and needs updating, but overwrites are not allowed. "
-                            f"Enable overwrites in metadata provider configuration or remove the existing file."
-                        )
-
-                source_physical_path, target_physical_path = _check_posix_paths(
-                    source_client, target_client, file_metadata.key, target_file_path
-                )
-
-                source_is_posix = source_physical_path is not None
-                target_is_posix = target_physical_path is not None
-
-                if source_is_posix and target_is_posix:
-                    _copy_posix_to_posix(source_physical_path, target_physical_path)
-                    _update_posix_metadata(target_client, target_physical_path, target_file_path, file_metadata)
-                elif source_is_posix and not target_is_posix:
-                    _copy_posix_to_remote(target_client, source_physical_path, target_file_path, file_metadata)
-                elif not source_is_posix and target_is_posix:
-                    _copy_remote_to_posix(source_client, file_metadata.key, target_physical_path)
-                    _update_posix_metadata(target_client, target_physical_path, target_file_path, file_metadata)
-                else:
-                    _copy_remote_to_remote(
-                        source_client, target_client, file_metadata.key, target_file_path, file_metadata
-                    )
-
-            if (
-                target_client._is_posix_file_storage_provider()
-                and file_metadata.content_length >= FILE_LOCK_SIZE_THRESHOLD
-            ):
-                try:
-                    target_lock_file_path = os.path.join(
-                        os.path.dirname(target_file_path), f".{os.path.basename(target_file_path)}.lock"
-                    )
-                    lock_path = cast(BaseStorageProvider, target_client._storage_provider)._prepend_base_path(
-                        target_lock_file_path
-                    )
-                    os.remove(lock_path)
-                except OSError:
-                    pass
-
-            if not target_client._metadata_provider:
-                physical_metadata = ObjectMetadata(
-                    key=target_file_path,
-                    content_length=file_metadata.content_length,
-                    last_modified=file_metadata.last_modified,
-                    metadata=file_metadata.metadata,
-                )
-                result_queue.put((op, target_file_path, physical_metadata))
+        resolved = target_client._metadata_provider.realpath(target_file_path)
+        if resolved.exists:
+            physical_path = resolved.physical_path
         else:
-            raise ValueError(f"Unknown operation: {op}")
-    except Exception as e:
-        if error_queue:
-            error_info = ErrorInfo(
-                worker_id=worker_id,
-                exception_type=type(e).__name__,
-                exception_message=str(e),
-                traceback_str=traceback.format_exc(),
-                file_key=file_metadata.key if file_metadata else None,
-                operation=op.value if op else "unknown",
-            )
-            error_queue.put(error_info)
-        else:
-            logger.error(
-                f"Worker {worker_id}: Exception during {op} on {file_metadata.key}: {e}\n{traceback.format_exc()}"
-            )
-            raise
+            physical_path = target_client._metadata_provider.generate_physical_path(
+                target_file_path, for_overwrite=False
+            ).physical_path
 
+        target_metadata = target_client._storage_provider.get_object_metadata(physical_path, strict=False)
+    except FileNotFoundError:
+        pass
 
-def _sync_worker_process(
-    source_client: "AbstractStorageClient",
-    source_path: str,
-    target_client: "AbstractStorageClient",
-    target_path: str,
-    num_worker_threads: int,
-    preserve_source_attributes: bool,
-    file_queue: QueueLike,
-    result_queue: QueueLike,
-    error_queue: QueueLike,
-    shutdown_event: EventLike,
-):
-    """
-    Worker process that handles file synchronization operations using a thread pool.
+    if target_metadata is None:
+        return False
 
-    This function is designed to run in a separate process as part of a multiprocessing
-    sync operation. It creates a fixed-size thread pool and consumes batches of sync
-    operations from the file_queue. Each individual operation (ADD or DELETE) from a
-    batch is submitted to the thread pool for concurrent execution.
+    if (
+        target_metadata.content_length == file_metadata.content_length
+        and target_metadata.last_modified >= file_metadata.last_modified
+    ):
+        logger.debug(f"File {target_file_path} already exists and is up-to-date, skipping copy")
 
-    The thread pool size is bounded by num_worker_threads, ensuring controlled
-    parallelism. Backpressure is applied by limiting pending futures to twice the
-    number of worker threads, preventing unbounded queue growth while keeping all
-    threads saturated with minimal idle time.
-
-    Exceptions that occur during file operations are caught, packaged as ErrorInfo
-    objects, and sent to the error_queue for centralized error handling. The shutdown_event
-    is checked periodically to enable graceful shutdown when errors occur elsewhere.
-    """
-    worker_id = f"process-{os.getpid()}"
-    max_pending_futures = num_worker_threads * 2
-
-    original_metadata_provider = getattr(target_client, "_metadata_provider", None)
-    if original_metadata_provider:
-        target_client._metadata_provider = QueueBackedMetadataProvider(original_metadata_provider, result_queue)
-
-    try:
-        _sync_worker_loop(
-            worker_id,
-            max_pending_futures,
-            source_client,
-            source_path,
-            target_client,
-            target_path,
-            num_worker_threads,
-            preserve_source_attributes,
-            file_queue,
-            result_queue,
-            error_queue,
-            shutdown_event,
+        source_attrs = (
+            (dict(file_metadata.metadata) if file_metadata.metadata else None) if preserve_source_attributes else None
         )
-    finally:
-        if original_metadata_provider:
-            target_client._metadata_provider = original_metadata_provider
-
-
-def _sync_worker_loop(
-    worker_id: str,
-    max_pending_futures: int,
-    source_client: "AbstractStorageClient",
-    source_path: str,
-    target_client: "AbstractStorageClient",
-    target_path: str,
-    num_worker_threads: int,
-    preserve_source_attributes: bool,
-    file_queue: QueueLike,
-    result_queue: QueueLike,
-    error_queue: QueueLike,
-    shutdown_event: EventLike,
-):
-    with concurrent.futures.ThreadPoolExecutor(max_workers=num_worker_threads) as executor:
-        futures: list[concurrent.futures.Future] = []
-
-        while not shutdown_event.is_set():
-            batch = file_queue.get()
-
-            if batch.operation == OperationType.STOP:
-                break
-
-            if batch.operation == OperationType.DELETE:
-                target_client.delete_many([file_metadata.key for file_metadata in batch.items])
-                for file_metadata in batch.items:
-                    target_file_path = _build_target_file_path(source_path, target_path, file_metadata)
-                    result_queue.put((OperationType.DELETE, target_file_path, file_metadata))
-
-            if batch.operation == OperationType.ADD:
-                for file_metadata in batch.items:
-                    if shutdown_event.is_set():
-                        logger.debug(f"Worker {worker_id}: Shutdown event detected during batch processing, exiting")
-                        break
-
-                    # Backpressure: wait if at capacity before submitting new work
-                    while len(futures) >= max_pending_futures:
-                        _, not_done = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED)
-                        futures = list(not_done)
-
-                    future = executor.submit(
-                        _process_single_sync_operation,
-                        worker_id,
-                        source_client,
-                        source_path,
-                        target_client,
-                        target_path,
-                        file_metadata,
-                        batch.operation,
-                        preserve_source_attributes,
-                        result_queue,
-                        error_queue,
-                    )
-                    futures.append(future)
-        else:
-            logger.debug(f"Worker {worker_id}: Shutdown event detected, exiting")
-
-
-def _create_exclusive_filelock(
-    target_client: "AbstractStorageClient",
-    target_file_path: str,
-    file_size: int,
-) -> Union[FileLock, contextlib.AbstractContextManager]:
-    """Create an exclusive file lock for large files on POSIX file storage providers.
-
-    Acquires exclusive lock to prevent race conditions when multiple worker processes attempt concurrent
-    writes to the same target location on shared filesystems. This can occur when users run multiple sync
-    operations targeting the same filesystem location simultaneously.
-
-    Uses size-based selective locking to balance performance and safety:
-    - Small files (< 64MB): No lock - minimizes overhead for high-volume operations
-    - Large files (≥ 64MB): Exclusive lock - prevents wasteful concurrent writes
-
-    This approach avoids distributed lock overhead on parallel filesystems like Lustre
-    when syncing millions of small files, while still protecting expensive large file transfers.
-    """
-    if target_client._is_posix_file_storage_provider() and file_size >= FILE_LOCK_SIZE_THRESHOLD:
-        target_lock_file_path = os.path.join(
-            os.path.dirname(target_file_path), f".{os.path.basename(target_file_path)}.lock"
+        metadata_for_tracking = (
+            target_metadata.replace(metadata=source_attrs) if preserve_source_attributes else target_metadata
         )
-        lock_path = cast(BaseStorageProvider, target_client._storage_provider)._prepend_base_path(target_lock_file_path)
-        safe_makedirs(os.path.dirname(lock_path))
-        return FileLock(lock_path, timeout=DEFAULT_LOCK_TIMEOUT)
-    else:
-        return contextlib.nullcontext()
+        logger.debug(f"Adding existing file {target_file_path} to metadata provider for tracking")
+        with target_client._metadata_provider_lock or contextlib.nullcontext():
+            target_client._metadata_provider.add_file(target_file_path, metadata_for_tracking)
+
+        return True
+
+    if not target_client._metadata_provider.allow_overwrites():
+        raise FileExistsError(
+            f"Cannot sync '{file_metadata.key}' to '{target_file_path}': "
+            f"file exists and needs updating, but overwrites are not allowed. "
+            f"Enable overwrites in metadata provider configuration or remove the existing file."
+        )
+
+    return False
 
 
-def _check_posix_paths(
-    source_client: "AbstractStorageClient",
-    target_client: "AbstractStorageClient",
-    source_key: str,
-    target_key: str,
-) -> tuple[Optional[str], Optional[str]]:
-    """Check if source and target are POSIX paths and return physical paths if available."""
-    source_physical_path = source_client.get_posix_path(source_key)
-    target_physical_path = target_client.get_posix_path(target_key)
-    return source_physical_path, target_physical_path
-
-
-def _copy_posix_to_posix(
-    source_physical_path: str,
-    target_physical_path: str,
-) -> None:
-    """Copy file from POSIX source to POSIX target using shutil.copy2."""
-    safe_makedirs(os.path.dirname(target_physical_path))
-    shutil.copy2(source_physical_path, target_physical_path)
-
-
-def _copy_posix_to_remote(
-    target_client: "AbstractStorageClient",
-    source_physical_path: str,
+def check_skip_without_metadata_provider(
     target_file_path: str,
     file_metadata: ObjectMetadata,
-) -> None:
-    """Upload file from POSIX source to remote target."""
-    target_client.upload_file(
-        remote_path=target_file_path,
-        local_path=source_physical_path,
-        attributes=file_metadata.metadata,
-    )
+    target_metadata: Optional[ObjectMetadata],
+) -> bool:
+    """Check if target is already up-to-date using metadata from the producer listing.
+
+    No I/O is performed; the comparison uses the *target_metadata* already
+    obtained by the producer during its merge iteration.
+
+    Returns True (skip) if up-to-date, False if transfer is needed.
+    """
+    if target_metadata is None:
+        return False
+
+    if (
+        target_metadata.content_length == file_metadata.content_length
+        and target_metadata.last_modified >= file_metadata.last_modified
+    ):
+        logger.debug(f"File {target_file_path} already exists and is up-to-date, skipping copy")
+        return True
+
+    return False
 
 
-def _copy_remote_to_posix(
-    source_client: "AbstractStorageClient",
-    source_key: str,
-    target_physical_path: str,
-) -> None:
-    """Download file from remote source to POSIX target."""
-    source_client.download_file(remote_path=source_key, local_path=target_physical_path)
-
-
-def _copy_remote_to_remote(
-    source_client: "AbstractStorageClient",
-    target_client: "AbstractStorageClient",
-    source_key: str,
-    target_file_path: str,
-    file_metadata: ObjectMetadata,
-) -> None:
-    """Copy file between two remote storages, using memory or temp file based on size."""
-    if file_metadata.content_length < MEMORY_LOAD_LIMIT:
-        file_content = source_client.read(source_key)
-        target_client.write(target_file_path, file_content, attributes=file_metadata.metadata)
-    else:
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            temp_filename = temp_file.name
-        try:
-            source_client.download_file(remote_path=source_key, local_path=temp_filename)
-            target_client.upload_file(
-                remote_path=target_file_path,
-                local_path=temp_filename,
-                attributes=file_metadata.metadata,
-            )
-        finally:
-            os.remove(temp_filename)
-
-
-def _update_posix_metadata(
+def update_posix_metadata(
     target_client: "AbstractStorageClient",
     target_physical_path: str,
     target_file_path: str,
@@ -452,3 +182,385 @@ def _update_posix_metadata(
             os.utime(target_physical_path, (last_modified, last_modified))
         except OSError as e:
             logger.debug(f"Failed to update (atime, mtime) on {target_physical_path}: {e}")
+
+
+# ---------------------------------------------------------------------------
+# BatchSyncHandler class hierarchy
+# ---------------------------------------------------------------------------
+
+
+class BatchSyncHandler(ABC):
+    """Abstract base for batch sync operations between source and target storage.
+
+    Subclasses implement ``_execute_batch_transfer`` for the specific
+    source/target combination (POSIX-to-POSIX, POSIX-to-remote, etc.).
+    The base class provides the common filtering, delete handling, and
+    error/result reporting logic.
+    """
+
+    def __init__(
+        self,
+        source_client: "AbstractStorageClient",
+        source_path: str,
+        target_client: "AbstractStorageClient",
+        target_path: str,
+        preserve_source_attributes: bool,
+        result_queue: QueueLike,
+        error_queue: QueueLike,
+    ):
+        self.source_client = source_client
+        self.source_path = source_path
+        self.target_client = target_client
+        self.target_path = target_path
+        self.preserve_source_attributes = preserve_source_attributes
+        self.result_queue = result_queue
+        self.error_queue = error_queue
+
+    def process_add_batch(
+        self,
+        worker_id: str,
+        batch: OperationBatch,
+    ) -> None:
+        """Process an ADD batch: filter items via skip/track, then transfer."""
+        transfer_items: list[tuple[ObjectMetadata, str]] = []
+
+        if self.target_client._metadata_provider:
+            transfer_items = self._filter_with_metadata_provider(worker_id, batch)
+        else:
+            for file_metadata, target_metadata in batch.items:
+                target_file_path = build_target_file_path(self.source_path, self.target_path, file_metadata)
+                if check_skip_without_metadata_provider(target_file_path, file_metadata, target_metadata):
+                    continue
+                transfer_items.append((file_metadata, target_file_path))
+
+        if not transfer_items:
+            return
+
+        try:
+            self._execute_batch_transfer(worker_id, transfer_items)
+            for file_metadata, target_file_path in transfer_items:
+                self._report_result(file_metadata, target_file_path)
+        except Exception as e:
+            self._report_error(worker_id, e, transfer_items[0][0].key, batch.operation)
+
+    def _filter_with_metadata_provider(
+        self,
+        worker_id: str,
+        batch: OperationBatch,
+    ) -> list[tuple[ObjectMetadata, str]]:
+        """Check items against the metadata provider concurrently.
+
+        Each item performs I/O (realpath, get_object_metadata) that benefits
+        from parallelism. Thread safety is guaranteed by the existing
+        ``_metadata_provider_lock`` around ``add_file`` calls.
+        """
+        transfer_items: list[tuple[ObjectMetadata, str]] = []
+
+        def _check_item(
+            file_metadata: ObjectMetadata,
+        ) -> tuple[ObjectMetadata, str, bool]:
+            target_file_path = build_target_file_path(self.source_path, self.target_path, file_metadata)
+            skip = check_skip_and_track_with_metadata_provider(
+                self.target_client, target_file_path, file_metadata, self.preserve_source_attributes
+            )
+            return file_metadata, target_file_path, skip
+
+        if len(batch.items) <= 1:
+            for file_metadata, _target_metadata in batch.items:
+                try:
+                    fm, target_file_path, skip = _check_item(file_metadata)
+                    if not skip:
+                        transfer_items.append((fm, target_file_path))
+                except Exception as e:
+                    self._report_error(worker_id, e, file_metadata.key, batch.operation)
+            return transfer_items
+
+        max_workers = min(len(batch.items), 16)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_metadata = {
+                executor.submit(_check_item, file_metadata): file_metadata
+                for file_metadata, _target_metadata in batch.items
+            }
+            for future in as_completed(future_to_metadata):
+                file_metadata = future_to_metadata[future]
+                try:
+                    fm, target_file_path, skip = future.result()
+                    if not skip:
+                        transfer_items.append((fm, target_file_path))
+                except Exception as e:
+                    self._report_error(worker_id, e, file_metadata.key, batch.operation)
+
+        return transfer_items
+
+    def process_delete_batch(self, batch: OperationBatch) -> None:
+        """Process a DELETE batch."""
+        self.target_client.delete_many([file_metadata.key for file_metadata, _ in batch.items])
+        for file_metadata, _ in batch.items:
+            target_file_path = build_target_file_path(self.source_path, self.target_path, file_metadata)
+            self.result_queue.put((OperationType.DELETE, target_file_path, file_metadata))
+
+    def _report_result(self, file_metadata: ObjectMetadata, target_file_path: str) -> None:
+        """Report a successful ADD to result_queue when there is no metadata provider.
+
+        When a metadata provider is present the ``QueueBackedMetadataProvider``
+        (or ``update_posix_metadata``) already enqueues results.
+        """
+        if not self.target_client._metadata_provider:
+            physical_metadata = ObjectMetadata(
+                key=target_file_path,
+                content_length=file_metadata.content_length,
+                last_modified=file_metadata.last_modified,
+                metadata=file_metadata.metadata,
+            )
+            self.result_queue.put((OperationType.ADD, target_file_path, physical_metadata))
+
+    def _report_error(
+        self,
+        worker_id: str,
+        exception: Exception,
+        file_key: Optional[str],
+        operation: OperationType,
+    ) -> None:
+        """Report an error to the error queue."""
+        if self.error_queue:
+            error_info = ErrorInfo(
+                worker_id=worker_id,
+                exception_type=type(exception).__name__,
+                exception_message=str(exception),
+                traceback_str=traceback.format_exc(),
+                file_key=file_key,
+                operation=operation.value if operation else "unknown",
+            )
+            self.error_queue.put(error_info)
+        else:
+            logger.error(
+                f"Worker {worker_id}: Exception during {operation} on {file_key}: {exception}\n{traceback.format_exc()}"
+            )
+            raise
+
+    @abstractmethod
+    def _execute_batch_transfer(
+        self,
+        worker_id: str,
+        transfer_items: list[tuple[ObjectMetadata, str]],
+    ) -> None:
+        """Execute the batch transfer for items that passed filtering."""
+        pass
+
+
+class PosixToPosixHandler(BatchSyncHandler):
+    """Handles sync from POSIX source to POSIX target using shutil.copy2.
+
+    Individual copies are sequential within a batch; the worker-level thread
+    pool provides concurrency across batches.
+    """
+
+    @staticmethod
+    def _copy_to_posix_target(source_physical_path: str, target_physical_path: str) -> None:
+        safe_makedirs(os.path.dirname(target_physical_path))
+        shutil.copy2(source_physical_path, target_physical_path)
+
+    def _execute_batch_transfer(
+        self,
+        worker_id: str,
+        transfer_items: list[tuple[ObjectMetadata, str]],
+    ) -> None:
+        for file_metadata, target_file_path in transfer_items:
+            source_physical_path = self.source_client.get_posix_path(file_metadata.key)
+            target_physical_path = self.target_client.get_posix_path(target_file_path)
+            assert source_physical_path is not None
+            assert target_physical_path is not None
+            self._copy_to_posix_target(source_physical_path, target_physical_path)
+            update_posix_metadata(self.target_client, target_physical_path, target_file_path, file_metadata)
+
+
+class PosixToRemoteHandler(BatchSyncHandler):
+    """Handles sync from POSIX source to remote target using the upload_files batch API."""
+
+    def _execute_batch_transfer(
+        self,
+        worker_id: str,
+        transfer_items: list[tuple[ObjectMetadata, str]],
+    ) -> None:
+        source_local_paths: list[str] = []
+        target_remote_paths: list[str] = []
+        attributes: list[Optional[dict[str, str]]] = []
+
+        for file_metadata, target_file_path in transfer_items:
+            source_physical_path = self.source_client.get_posix_path(file_metadata.key)
+            assert source_physical_path is not None
+            source_local_paths.append(source_physical_path)
+            target_remote_paths.append(target_file_path)
+            attributes.append(file_metadata.metadata)
+
+        self.target_client.upload_files(target_remote_paths, source_local_paths, attributes)
+
+
+class RemoteToPosixHandler(BatchSyncHandler):
+    """Handles sync from remote source to POSIX target using the download_files batch API."""
+
+    def _execute_batch_transfer(
+        self,
+        worker_id: str,
+        transfer_items: list[tuple[ObjectMetadata, str]],
+    ) -> None:
+        source_remote_paths: list[str] = []
+        target_local_paths: list[str] = []
+        source_metadata: list[ObjectMetadata] = []
+        items_with_physical: list[tuple[ObjectMetadata, str, str]] = []
+
+        for file_metadata, target_file_path in transfer_items:
+            target_physical_path = self.target_client.get_posix_path(target_file_path)
+            assert target_physical_path is not None
+            safe_makedirs(os.path.dirname(target_physical_path))
+            source_remote_paths.append(file_metadata.key)
+            target_local_paths.append(target_physical_path)
+            source_metadata.append(file_metadata)
+            items_with_physical.append((file_metadata, target_file_path, target_physical_path))
+
+        self.source_client.download_files(source_remote_paths, target_local_paths, source_metadata)
+
+        for file_metadata, target_file_path, target_physical_path in items_with_physical:
+            update_posix_metadata(self.target_client, target_physical_path, target_file_path, file_metadata)
+
+
+class RemoteToRemoteHandler(BatchSyncHandler):
+    """Handles sync between two remote storages using download_files + upload_files."""
+
+    def _execute_batch_transfer(
+        self,
+        worker_id: str,
+        transfer_items: list[tuple[ObjectMetadata, str]],
+    ) -> None:
+        temp_dir = tempfile.mkdtemp()
+        try:
+            source_remote_paths: list[str] = []
+            target_remote_paths: list[str] = []
+            temp_local_paths: list[str] = []
+            source_metadata: list[ObjectMetadata] = []
+            attributes: list[Optional[dict[str, str]]] = []
+
+            for i, (file_metadata, target_file_path) in enumerate(transfer_items):
+                source_remote_paths.append(file_metadata.key)
+                target_remote_paths.append(target_file_path)
+                temp_local_paths.append(os.path.join(temp_dir, str(i)))
+                source_metadata.append(file_metadata)
+                attributes.append(file_metadata.metadata)
+
+            self.source_client.download_files(source_remote_paths, temp_local_paths, source_metadata)
+            self.target_client.upload_files(target_remote_paths, temp_local_paths, attributes)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
+
+
+def create_sync_handler(
+    source_client: "AbstractStorageClient",
+    source_path: str,
+    target_client: "AbstractStorageClient",
+    target_path: str,
+    preserve_source_attributes: bool,
+    result_queue: QueueLike,
+    error_queue: QueueLike,
+) -> BatchSyncHandler:
+    """Create the appropriate sync handler based on source/target storage types."""
+    source_is_posix = source_client._is_posix_file_storage_provider()
+    target_is_posix = target_client._is_posix_file_storage_provider()
+
+    handler_class: type[BatchSyncHandler]
+    if source_is_posix and target_is_posix:
+        handler_class = PosixToPosixHandler
+    elif source_is_posix:
+        handler_class = PosixToRemoteHandler
+    elif target_is_posix:
+        handler_class = RemoteToPosixHandler
+    else:
+        handler_class = RemoteToRemoteHandler
+
+    return handler_class(
+        source_client,
+        source_path,
+        target_client,
+        target_path,
+        preserve_source_attributes,
+        result_queue,
+        error_queue,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Worker process entry point
+# ---------------------------------------------------------------------------
+
+
+def sync_worker_process(
+    source_client: "AbstractStorageClient",
+    source_path: str,
+    target_client: "AbstractStorageClient",
+    target_path: str,
+    num_worker_threads: int,
+    preserve_source_attributes: bool,
+    file_queue: QueueLike,
+    result_queue: QueueLike,
+    error_queue: QueueLike,
+    shutdown_event: EventLike,
+):
+    """Worker process that handles file synchronization operations.
+
+    Consumes ``OperationBatch`` items from *file_queue* and delegates to the
+    appropriate :class:`BatchSyncHandler` based on source/target storage types.
+    The handler selection (POSIX-to-POSIX, POSIX-to-remote, remote-to-POSIX,
+    remote-to-remote) is done once at startup, and batch APIs
+    (``download_files``, ``upload_files``) are used for efficient bulk
+    transfers.
+
+    Worker threads pull directly from the shared queue for minimal dispatch
+    overhead. A STOP sentinel is re-enqueued so sibling threads can also exit.
+    """
+    worker_id = f"process-{os.getpid()}"
+
+    original_metadata_provider = getattr(target_client, "_metadata_provider", None)
+    if original_metadata_provider:
+        target_client._metadata_provider = QueueBackedMetadataProvider(original_metadata_provider, result_queue)
+
+    try:
+        handler = create_sync_handler(
+            source_client,
+            source_path,
+            target_client,
+            target_path,
+            preserve_source_attributes,
+            result_queue,
+            error_queue,
+        )
+
+        def _worker_loop(thread_id: str) -> None:
+            while not shutdown_event.is_set():
+                batch = file_queue.get()
+
+                if batch.operation == OperationType.STOP:
+                    file_queue.put(batch)
+                    break
+
+                if batch.operation == OperationType.DELETE:
+                    handler.process_delete_batch(batch)
+                elif batch.operation == OperationType.ADD:
+                    handler.process_add_batch(thread_id, batch)
+
+        if num_worker_threads <= 1:
+            _worker_loop(worker_id)
+        else:
+            threads: list[threading.Thread] = []
+            for i in range(num_worker_threads):
+                t = threading.Thread(target=_worker_loop, args=(f"{worker_id}-thread-{i}",), daemon=True)
+                t.start()
+                threads.append(t)
+            for t in threads:
+                t.join()
+    finally:
+        if original_metadata_provider:
+            target_client._metadata_provider = original_metadata_provider
