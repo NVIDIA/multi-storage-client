@@ -129,6 +129,9 @@ func (aisContext *aistoreContextStruct) deleteFile(deleteFileInput *deleteFileIn
 	)
 
 	// If ifMatch is specified, verify ETag first
+	//
+	// Note: This .ifMatch is a non-atomic implementation required since the most recent version of
+	//       the AIStore SDK does not expose DeleteArgs where in the If-Match Header could be inserted.
 	if deleteFileInput.ifMatch != "" {
 		var props *cmn.ObjectProps
 		props, err = api.HeadObject(aisContext.baseParams, aisContext.bck, fullFilePath, api.HeadArgs{
@@ -292,26 +295,16 @@ func (aisContext *aistoreContextStruct) readFile(readFileInput *readFileInputStr
 		rangeEnd     = rangeBegin + globals.config.cacheLineSize - 1
 	)
 
-	// Verify ETag if specified
-	if readFileInput.ifMatch != "" {
-		var props *cmn.ObjectProps
-		props, err = api.HeadObject(aisContext.baseParams, aisContext.bck, fullFilePath, api.HeadArgs{
-			Silent: true,
-		})
-		if err != nil {
-			return
-		}
-		if props.Cksum != nil && props.Cksum.Value() != readFileInput.ifMatch {
-			err = errors.New("eTag mismatch")
-			return
-		}
-	}
-
 	// Create buffer and GetArgs
 	buf := &bytes.Buffer{}
 	getArgs := &api.GetArgs{
 		Writer: buf,
 		Header: http.Header{},
+	}
+
+	// Set if-match header if necessary
+	if readFileInput.ifMatch != "" {
+		getArgs.Header.Set("If-Match", fmt.Sprintf("\"%s\"", readFileInput.ifMatch))
 	}
 
 	// Set range header

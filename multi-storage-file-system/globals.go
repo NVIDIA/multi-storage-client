@@ -142,8 +142,8 @@ type configStruct struct {
 	virtualDirTTL                             time.Duration              // JSON/YAML "virtual_dir_ttl"                                   default:1000000 (in milliseconds)
 	virtualFileTTL                            time.Duration              // JSON/YAML "virtual_file_ttl"                                  default:1000000 (in milliseconds)
 	ttlCheckInterval                          time.Duration              // JSON/YAML "ttl_check_interval"                                default:250 (in milliseconds)
-	cacheLineSize                             uint64                     // JSON/YAML "cache_line_size"                                   default:1048576 (1Mi)
-	cacheLines                                uint64                     // JSON/YAML "cache_lines"                                       default:4096
+	cacheLineSize                             uint64                     // JSON/YAML "cache_line_size"                                   default:10485760 (10Mi)
+	cacheLines                                uint64                     // JSON/YAML "cache_lines"                                       default:128
 	cacheLinesToPrefetch                      uint64                     // JSON/YAML "cache_lines_to_prefetch"                           default:4
 	dirtyCacheLinesFlushTrigger               uint64                     // JSON/YAML "dirty_cache_lines_flush_trigger"                   default:80 (as a percentage)
 	dirtyCacheLinesMax                        uint64                     // JSON/YAML "dirty_cache_lines_max"                             default:90 (as a percentage)

@@ -215,32 +215,7 @@ func (s3Context *s3ContextStruct) deleteFile(deleteFileInput *deleteFileInputStr
 		backend             = s3Context.backend
 		fullFilePath        = backend.prefix + deleteFileInput.filePath
 		s3DeleteObjectInput *s3.DeleteObjectInput
-		s3HeadObjectInput   *s3.HeadObjectInput
-		s3HeadObjectOutput  *s3.HeadObjectOutput
 	)
-
-	// Note: .IfMatch not necessarily supported, so we must (also) do the non-atomic manual ETag comparison check
-
-	s3HeadObjectInput = &s3.HeadObjectInput{
-		Bucket: aws.String(backend.bucketContainerName),
-		Key:    aws.String(fullFilePath),
-	}
-	if deleteFileInput.ifMatch != "" {
-		s3HeadObjectInput.IfMatch = aws.String(deleteFileInput.ifMatch)
-	}
-
-	s3HeadObjectOutput, err = s3Context.s3Client.HeadObject(context.Background(), s3HeadObjectInput)
-	if err != nil {
-		return
-	}
-	if deleteFileInput.ifMatch != "" {
-		if s3HeadObjectOutput.ETag != nil {
-			if deleteFileInput.ifMatch != strings.TrimLeft(strings.TrimRight(*s3HeadObjectOutput.ETag, "\""), "\"") {
-				err = errors.New("eTag mismatch")
-				return
-			}
-		}
-	}
 
 	s3DeleteObjectInput = &s3.DeleteObjectInput{
 		Bucket: aws.String(backend.bucketContainerName),
@@ -380,38 +355,13 @@ func (s3Context *s3ContextStruct) listObjects(listObjectsInput *listObjectsInput
 // An error is returned if either the specified path is not a `file` or non-existent.
 func (s3Context *s3ContextStruct) readFile(readFileInput *readFileInputStruct) (readFileOutput *readFileOutputStruct, err error) {
 	var (
-		backend            = s3Context.backend
-		fullFilePath       = backend.prefix + readFileInput.filePath
-		rangeBegin         = readFileInput.offsetCacheLine * globals.config.cacheLineSize
-		rangeEnd           = rangeBegin + globals.config.cacheLineSize - 1
-		s3GetObjectInput   *s3.GetObjectInput
-		s3GetObjectOutput  *s3.GetObjectOutput
-		s3HeadObjectInput  *s3.HeadObjectInput
-		s3HeadObjectOutput *s3.HeadObjectOutput
+		backend           = s3Context.backend
+		fullFilePath      = backend.prefix + readFileInput.filePath
+		rangeBegin        = readFileInput.offsetCacheLine * globals.config.cacheLineSize
+		rangeEnd          = rangeBegin + globals.config.cacheLineSize - 1
+		s3GetObjectInput  *s3.GetObjectInput
+		s3GetObjectOutput *s3.GetObjectOutput
 	)
-
-	// Note: .IfMatch not necessarily supported, so we must (also) do the non-atomic manual ETag comparison check
-
-	s3HeadObjectInput = &s3.HeadObjectInput{
-		Bucket: aws.String(backend.bucketContainerName),
-		Key:    aws.String(fullFilePath),
-	}
-	if readFileInput.ifMatch != "" {
-		s3HeadObjectInput.IfMatch = aws.String(readFileInput.ifMatch)
-	}
-
-	s3HeadObjectOutput, err = s3Context.s3Client.HeadObject(context.Background(), s3HeadObjectInput)
-	if err != nil {
-		return
-	}
-	if readFileInput.ifMatch != "" {
-		if s3HeadObjectOutput.ETag != nil {
-			if readFileInput.ifMatch != strings.TrimLeft(strings.TrimRight(*s3HeadObjectOutput.ETag, "\""), "\"") {
-				err = errors.New("eTag mismatch")
-				return
-			}
-		}
-	}
 
 	s3GetObjectInput = &s3.GetObjectInput{
 		Bucket: aws.String(backend.bucketContainerName),
@@ -475,8 +425,6 @@ func (s3Context *s3ContextStruct) statFile(statFileInput *statFileInputStruct) (
 		s3HeadObjectOutput *s3.HeadObjectOutput
 	)
 
-	// Note: .IfMatch not necessarily supported, so we must (also) do the non-atomic manual ETag comparison check
-
 	s3HeadObjectInput = &s3.HeadObjectInput{
 		Bucket: aws.String(backend.bucketContainerName),
 		Key:    aws.String(fullFilePath),
@@ -488,14 +436,6 @@ func (s3Context *s3ContextStruct) statFile(statFileInput *statFileInputStruct) (
 	s3HeadObjectOutput, err = s3Context.s3Client.HeadObject(context.Background(), s3HeadObjectInput)
 	if err != nil {
 		return
-	}
-	if statFileInput.ifMatch != "" {
-		if s3HeadObjectOutput.ETag != nil {
-			if statFileInput.ifMatch != strings.TrimLeft(strings.TrimRight(*s3HeadObjectOutput.ETag, "\""), "\"") {
-				err = errors.New("eTag mismatch")
-				return
-			}
-		}
 	}
 
 	statFileOutput = &statFileOutputStruct{

@@ -711,13 +711,13 @@ func checkConfigFile() (err error) {
 		return
 	}
 
-	config.cacheLineSize, ok = parseUint64(configFileMap, "cache_line_size", uint64(1048576))
+	config.cacheLineSize, ok = parseUint64(configFileMap, "cache_line_size", uint64(10485760))
 	if !ok {
 		err = errors.New("bad cache_line_size value")
 		return
 	}
 
-	config.cacheLines, ok = parseUint64(configFileMap, "cache_lines", uint64(4096))
+	config.cacheLines, ok = parseUint64(configFileMap, "cache_lines", uint64(128))
 	if !ok {
 		err = errors.New("bad cache_lines value")
 		return

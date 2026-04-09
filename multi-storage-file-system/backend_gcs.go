@@ -17,6 +17,10 @@ import (
 	"google.golang.org/api/option"
 )
 
+const (
+	generationMetagenerationETagFormat = "%d/%d"
+)
+
 // `gcsContextStruct` holds the GCS-specific backend details.
 type gcsContextStruct struct {
 	backend     *backendStruct
@@ -142,11 +146,26 @@ func (backend *gcsContextStruct) backendCommon() (backendCommon *backendStruct) 
 // If a `subdirectory` or nothing is found at that path, an error will be returned.
 func (gcsContext *gcsContextStruct) deleteFile(deleteFileInput *deleteFileInputStruct) (deleteFileOutput *deleteFileOutputStruct, err error) {
 	var (
-		objectHandle *storage.ObjectHandle
+		generation     int64
+		metageneration int64
+		objectHandle   *storage.ObjectHandle
 	)
 
 	objectHandle = gcsContext.gcsClient.Bucket(gcsContext.backend.bucketContainerName).Object(gcsContext.backend.prefix + deleteFileInput.filePath)
 	objectHandle = objectHandle.Retryer(gcsContext.retryOption)
+
+	if deleteFileInput.ifMatch != "" {
+		generation, metageneration, err = eTagToGenerationMetageneration(deleteFileInput.ifMatch)
+		if err != nil {
+			err = fmt.Errorf("[GCS] eTagToGenerationMetageneration(deleteFileInput.ifMatch) failed: %v", err)
+			return
+		}
+
+		objectHandle = objectHandle.If(storage.Conditions{
+			GenerationMatch:     generation,
+			MetagenerationMatch: metageneration,
+		})
+	}
 
 	err = objectHandle.Delete(context.Background())
 	if err != nil {
@@ -321,7 +340,8 @@ func (gcsContext *gcsContextStruct) listObjects(listObjectsInput *listObjectsInp
 // An error is returned if either the specified path is not a `file` or non-existent.
 func (gcsContext *gcsContextStruct) readFile(readFileInput *readFileInputStruct) (readFileOutput *readFileOutputStruct, err error) {
 	var (
-		attrs             *storage.ObjectAttrs
+		generation        int64
+		metageneration    int64
 		objectHandle      *storage.ObjectHandle
 		rangeReader       *storage.Reader
 		rangeReaderLength uint64
@@ -331,43 +351,26 @@ func (gcsContext *gcsContextStruct) readFile(readFileInput *readFileInputStruct)
 	objectHandle = gcsContext.gcsClient.Bucket(gcsContext.backend.bucketContainerName).Object(gcsContext.backend.prefix + readFileInput.filePath)
 	objectHandle = objectHandle.Retryer(gcsContext.retryOption)
 
-	// Note: .IfMatch not directly supported nor does a NewRangeReader() return eTag, so we must do the non-atomic manual ETag comparison check and fetch
-	//       Guidance is to switch to use attrs.Generation (an int64 value that monitonically increases with each update). As the .ifMatch field is a
-	//       string, an isomorphic map would need to be applied to allow GCS's preference for .Generation to be used be the endpoint-agnostic ETag checks
-	//
-	// [TODO] Once ETags are actually being used to ensure atomicity, switch GCS to report and if-check attrs.Generation.
-
-	attrs, err = objectHandle.Attrs(context.Background())
-	if err != nil {
-		err = fmt.Errorf("[GCS] objectHandle.Attrs() failed: %v", err)
-		return
-	}
-
 	if readFileInput.ifMatch != "" {
-		if attrs.Etag != readFileInput.ifMatch {
-			err = errors.New("eTag mismatch")
+		generation, metageneration, err = eTagToGenerationMetageneration(readFileInput.ifMatch)
+		if err != nil {
+			err = fmt.Errorf("[GCS] eTagToGenerationMetageneration(readFileInput.ifMatch) failed: %v", err)
 			return
 		}
+
+		objectHandle = objectHandle.If(storage.Conditions{
+			GenerationMatch:     generation,
+			MetagenerationMatch: metageneration,
+		})
 	}
 
 	rangeReaderOffset = readFileInput.offsetCacheLine * globals.config.cacheLineSize
 	rangeReaderLength = globals.config.cacheLineSize
 
-	// Note: More non-atomic logic here attempts to avoid reading beyond EOF
-
-	if rangeReaderOffset >= uint64(attrs.Size) {
-		err = errors.New("rangeReaderOffset >= uint64(attrs.Size)")
-		return
-	}
-
-	if (rangeReaderOffset + rangeReaderLength) > uint64(attrs.Size) {
-		rangeReaderLength = uint64(attrs.Size) - rangeReaderOffset
-	}
-
 	rangeReader, err = objectHandle.NewRangeReader(context.Background(), int64(rangeReaderOffset), int64(rangeReaderLength))
 	if err == nil {
 		readFileOutput = &readFileOutputStruct{
-			eTag: attrs.Etag,
+			eTag: generationMetagenerationToETag(rangeReader.Attrs.Generation, rangeReader.Attrs.Metageneration),
 		}
 
 		readFileOutput.buf, err = io.ReadAll(rangeReader)
@@ -424,12 +427,27 @@ func (gcsContext *gcsContextStruct) statDirectory(statDirectoryInput *statDirect
 // An error is returned if either the specified path is not a `file` or non-existent.
 func (gcsContext *gcsContextStruct) statFile(statFileInput *statFileInputStruct) (statFileOutput *statFileOutputStruct, err error) {
 	var (
-		attrs        *storage.ObjectAttrs
-		objectHandle *storage.ObjectHandle
+		attrs          *storage.ObjectAttrs
+		generation     int64
+		metageneration int64
+		objectHandle   *storage.ObjectHandle
 	)
 
 	objectHandle = gcsContext.gcsClient.Bucket(gcsContext.backend.bucketContainerName).Object(gcsContext.backend.prefix + statFileInput.filePath)
 	objectHandle = objectHandle.Retryer(gcsContext.retryOption)
+
+	if statFileInput.ifMatch != "" {
+		generation, metageneration, err = eTagToGenerationMetageneration(statFileInput.ifMatch)
+		if err != nil {
+			err = fmt.Errorf("[GCS] eTagToGenerationMetageneration(statFileInput.ifMatch) failed: %v", err)
+			return
+		}
+
+		objectHandle = objectHandle.If(storage.Conditions{
+			GenerationMatch:     generation,
+			MetagenerationMatch: metageneration,
+		})
+	}
 
 	attrs, err = objectHandle.Attrs(context.Background())
 	if err != nil {
@@ -438,10 +456,22 @@ func (gcsContext *gcsContextStruct) statFile(statFileInput *statFileInputStruct)
 	}
 
 	statFileOutput = &statFileOutputStruct{
-		eTag:  attrs.Etag,
+		eTag:  generationMetagenerationToETag(attrs.Generation, attrs.Metageneration),
 		mTime: attrs.Updated,
 		size:  uint64(attrs.Size),
 	}
 
+	return
+}
+
+// `eTagToGenerationMetageneration` converts an ETag into the equivalent Generation/Metageneration tuple.
+func eTagToGenerationMetageneration(eTag string) (generation, metageneration int64, err error) {
+	_, err = fmt.Sscanf(eTag, generationMetagenerationETagFormat, &generation, &metageneration)
+	return
+}
+
+// `generationMetagenerationToETag` converts a Generation/Metageneration tuple into the equivalent ETag
+func generationMetagenerationToETag(generation, metaGeneration int64) (eTag string) {
+	eTag = fmt.Sprintf(generationMetagenerationETagFormat, generation, metaGeneration)
 	return
 }

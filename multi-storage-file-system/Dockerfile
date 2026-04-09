@@ -50,7 +50,7 @@ RUN    apt-get update \
 RUN echo "user_allow_other" >> /etc/fuse.conf
 
 ARG TARGETARCH
-ARG GolangVersion=1.26.0
+ARG GolangVersion=1.26.2
 WORKDIR /tmp
 RUN GolangBasename="go${GolangVersion}.linux-${TARGETARCH}.tar.gz"; \
     GolangURL="https://golang.org/dl/${GolangBasename}"; \
@@ -116,7 +116,7 @@ FROM buildable AS ais
 
 WORKDIR /
 
-RUN git clone --depth 1 --branch v1.4.3 https://github.com/NVIDIA/aistore.git
+RUN git clone --depth 1 --branch v1.4.4 https://github.com/NVIDIA/aistore.git
 
 WORKDIR /aistore
 
