@@ -1,0 +1,46 @@
+#
+# GitLab CI configuration.
+#
+# https://docs.gitlab.com/ee/ci/yaml
+#
+
+stages:
+  - 💽
+
+default:
+  interruptible: false
+
+#
+# Jobs.
+#
+
+# Properties we can't set with `default`.
+.default:
+  stage: 💽
+
+.child:
+  extends:
+    - .default
+  trigger:
+    forward:
+      pipeline_variables: false
+      yaml_variables: false
+    # TODO: Switch to `mirror` once on GitLab 18.2.
+    strategy: depend
+
+Source:
+  extends:
+    - .child
+  trigger:
+    include: .gitlab/pipelines/.source.yml
+
+Beta:
+  extends:
+    - .child
+  needs:
+    - Source
+  environment:
+    name: Beta
+    action: start
+  trigger:
+    include: .gitlab/pipelines/.beta.yml
