@@ -48,6 +48,13 @@ PROVIDER = "azure"
 AZURE_CONNECTION_STRING_KEY = "connection"
 AZURE_CREDENTIAL_KEY = "azure_credential"
 
+MiB = 1024 * 1024
+
+MULTIPART_THRESHOLD = 64 * MiB
+MULTIPART_CHUNKSIZE = 32 * MiB
+IO_CHUNKSIZE = 32 * MiB
+PYTHON_MAX_CONCURRENCY = 8
+
 DEFAULT_PRESIGN_EXPIRES_IN = 3600
 
 # How long before delegation key expiry we treat the cached key as stale.
@@ -203,7 +210,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
         credentials_provider: Optional[CredentialsProvider] = None,
         config_dict: Optional[dict[str, Any]] = None,
         telemetry_provider: Optional[Callable[[], Telemetry]] = None,
-        **kwargs: dict[str, Any],
+        **kwargs: Any,
     ):
         """
         Initializes the :py:class:`AzureBlobStorageProvider` with the endpoint URL and optional credentials provider.
@@ -213,6 +220,11 @@ class AzureBlobStorageProvider(BaseStorageProvider):
         :param credentials_provider: The provider to retrieve Azure credentials.
         :param config_dict: Resolved MSC config.
         :param telemetry_provider: A function that provides a telemetry instance.
+        :param kwargs: Additional options including:
+            - ``multipart_threshold`` (int): File size threshold (bytes) for switching to parallel chunked transfers. Defaults to 64 MiB.
+            - ``multipart_chunksize`` (int): Block size (bytes) for chunked uploads. Defaults to 32 MiB.
+            - ``io_chunksize`` (int): Chunk size (bytes) for chunked downloads. Defaults to 32 MiB.
+            - ``max_concurrency`` (int): Number of parallel threads for chunked transfers. Defaults to 8.
         """
         super().__init__(
             base_path=base_path,
@@ -228,6 +240,11 @@ class AzureBlobStorageProvider(BaseStorageProvider):
         # Cached delegation key and its expiry for DefaultAzureCredentialsProvider.
         self._delegation_user_key: Optional[Any] = None
         self._delegation_signer_expiry: Optional[datetime] = None
+        self._multipart_threshold = int(kwargs.get("multipart_threshold", MULTIPART_THRESHOLD))
+        self._multipart_chunksize = int(kwargs.get("multipart_chunksize", MULTIPART_CHUNKSIZE))
+        self._io_chunksize = int(kwargs.get("io_chunksize", IO_CHUNKSIZE))
+        self._max_concurrency = int(kwargs.get("max_concurrency", PYTHON_MAX_CONCURRENCY))
+
         # https://github.com/Azure/azure-sdk-for-python/tree/main/sdk/storage/azure-storage-blob#optional-configuration
         client_optional_configuration_keys = {
             "retry_total",
@@ -244,6 +261,14 @@ class AzureBlobStorageProvider(BaseStorageProvider):
             self._client_optional_configuration["connection_timeout"] = DEFAULT_CONNECT_TIMEOUT
         if "read_timeout" not in self._client_optional_configuration:
             self._client_optional_configuration["read_timeout"] = DEFAULT_READ_TIMEOUT
+
+        self._transfer_configuration: dict[str, Any] = {
+            "max_single_put_size": self._multipart_threshold,
+            "max_block_size": self._multipart_chunksize,
+            "max_single_get_size": self._multipart_threshold,
+            "max_chunk_get_size": self._io_chunksize,
+        }
+
         self._blob_service_client = self._create_blob_service_client()
 
     def _create_blob_service_client(self) -> BlobServiceClient:
@@ -252,26 +277,26 @@ class AzureBlobStorageProvider(BaseStorageProvider):
 
         :return: The configured BlobServiceClient.
         """
+        combined_config = {**self._client_optional_configuration, **self._transfer_configuration}
+
         if self._credentials_provider:
             credentials = self._credentials_provider.get_credentials()
 
             if isinstance(self._credentials_provider, StaticAzureCredentialsProvider):
                 return BlobServiceClient.from_connection_string(
-                    credentials.get_custom_field(AZURE_CONNECTION_STRING_KEY), **self._client_optional_configuration
+                    credentials.get_custom_field(AZURE_CONNECTION_STRING_KEY), **combined_config
                 )
             elif isinstance(self._credentials_provider, DefaultAzureCredentialsProvider):
                 return BlobServiceClient(
                     account_url=self._account_url,
                     credential=credentials.get_custom_field(AZURE_CREDENTIAL_KEY),
-                    **self._client_optional_configuration,
+                    **combined_config,
                 )
             else:
                 # Fallback to connection string if no built-in credentials provider is provided
-                return BlobServiceClient.from_connection_string(
-                    credentials.access_key, **self._client_optional_configuration
-                )
+                return BlobServiceClient.from_connection_string(credentials.access_key, **combined_config)
         else:
-            return BlobServiceClient(account_url=self._account_url, **self._client_optional_configuration)
+            return BlobServiceClient(account_url=self._account_url, **combined_config)
 
     def _refresh_blob_service_client_if_needed(self) -> None:
         """
@@ -347,9 +372,10 @@ class AzureBlobStorageProvider(BaseStorageProvider):
         def _invoke_api() -> int:
             blob_client = self._blob_service_client.get_blob_client(container=container_name, blob=blob_name)
 
-            kwargs = {
+            kwargs: dict[str, Any] = {
                 "data": body,
                 "overwrite": True,
+                "max_concurrency": self._max_concurrency,
             }
 
             validated_attributes = validate_attributes(attributes)
@@ -381,7 +407,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
             if byte_range:
                 stream = blob_client.download_blob(offset=byte_range.offset, length=byte_range.size)
             else:
-                stream = blob_client.download_blob()
+                stream = blob_client.download_blob(max_concurrency=self._max_concurrency)
             return stream.readall()
 
         return self._translate_errors(_invoke_api, operation="GET", container=container_name, blob=blob_name)
@@ -650,16 +676,29 @@ class AzureBlobStorageProvider(BaseStorageProvider):
         if isinstance(f, str):
             file_size = os.path.getsize(f)
 
+            if file_size <= self._multipart_threshold:
+
+                def _invoke_api() -> int:
+                    blob_client = self._blob_service_client.get_blob_client(container=container_name, blob=blob_name)
+                    with open(f, "rb") as data:
+                        blob_client.upload_blob(data, overwrite=True, metadata=validated_attributes or {})
+                    return file_size
+
+                return self._translate_errors(_invoke_api, operation="PUT", container=container_name, blob=blob_name)
+
             def _invoke_api() -> int:
                 blob_client = self._blob_service_client.get_blob_client(container=container_name, blob=blob_name)
                 with open(f, "rb") as data:
-                    blob_client.upload_blob(data, overwrite=True, metadata=validated_attributes or {})
-
+                    blob_client.upload_blob(
+                        data,
+                        overwrite=True,
+                        metadata=validated_attributes or {},
+                        max_concurrency=self._max_concurrency,
+                    )
                 return file_size
 
             return self._translate_errors(_invoke_api, operation="PUT", container=container_name, blob=blob_name)
         else:
-            # Convert StringIO to BytesIO before upload
             if isinstance(f, io.StringIO):
                 fp: IO = io.BytesIO(f.getvalue().encode("utf-8"))  # type: ignore
             else:
@@ -669,10 +708,23 @@ class AzureBlobStorageProvider(BaseStorageProvider):
             file_size = fp.tell()
             fp.seek(0)
 
+            if file_size <= self._multipart_threshold:
+
+                def _invoke_api() -> int:
+                    blob_client = self._blob_service_client.get_blob_client(container=container_name, blob=blob_name)
+                    blob_client.upload_blob(fp, overwrite=True, metadata=validated_attributes or {})
+                    return file_size
+
+                return self._translate_errors(_invoke_api, operation="PUT", container=container_name, blob=blob_name)
+
             def _invoke_api() -> int:
                 blob_client = self._blob_service_client.get_blob_client(container=container_name, blob=blob_name)
-                blob_client.upload_blob(fp, overwrite=True, metadata=validated_attributes or {})
-
+                blob_client.upload_blob(
+                    fp,
+                    overwrite=True,
+                    metadata=validated_attributes or {},
+                    max_concurrency=self._max_concurrency,
+                )
                 return file_size
 
             return self._translate_errors(_invoke_api, operation="PUT", container=container_name, blob=blob_name)
@@ -688,27 +740,73 @@ class AzureBlobStorageProvider(BaseStorageProvider):
             if os.path.dirname(f):
                 safe_makedirs(os.path.dirname(f))
 
+            if metadata.content_length <= self._multipart_threshold:
+
+                def _invoke_api() -> int:
+                    blob_client = self._blob_service_client.get_blob_client(container=container_name, blob=blob_name)
+                    temp_file_path: str | None = None
+                    try:
+                        with tempfile.NamedTemporaryFile(
+                            mode="wb", delete=False, dir=os.path.dirname(f), prefix="."
+                        ) as fp:
+                            temp_file_path = fp.name
+                            stream = blob_client.download_blob()
+                            fp.write(stream.readall())
+                        os.rename(src=temp_file_path, dst=f)
+                    except BaseException:
+                        if temp_file_path and os.path.exists(temp_file_path):
+                            os.unlink(temp_file_path)
+                        raise
+                    return metadata.content_length
+
+                return self._translate_errors(_invoke_api, operation="GET", container=container_name, blob=blob_name)
+
             def _invoke_api() -> int:
                 blob_client = self._blob_service_client.get_blob_client(container=container_name, blob=blob_name)
-                with tempfile.NamedTemporaryFile(mode="wb", delete=False, dir=os.path.dirname(f), prefix=".") as fp:
-                    temp_file_path = fp.name
-                    stream = blob_client.download_blob()
-                    fp.write(stream.readall())
-                os.rename(src=temp_file_path, dst=f)
-
+                temp_file_path: str | None = None
+                try:
+                    with tempfile.NamedTemporaryFile(mode="wb", delete=False, dir=os.path.dirname(f), prefix=".") as fp:
+                        temp_file_path = fp.name
+                        stream = blob_client.download_blob(max_concurrency=self._max_concurrency)
+                        stream.readinto(fp)
+                    os.rename(src=temp_file_path, dst=f)
+                except BaseException:
+                    if temp_file_path and os.path.exists(temp_file_path):
+                        os.unlink(temp_file_path)
+                    raise
                 return metadata.content_length
 
             return self._translate_errors(_invoke_api, operation="GET", container=container_name, blob=blob_name)
         else:
+            if metadata.content_length <= self._multipart_threshold:
+
+                def _invoke_api() -> int:
+                    blob_client = self._blob_service_client.get_blob_client(container=container_name, blob=blob_name)
+                    stream = blob_client.download_blob()
+                    if isinstance(f, io.StringIO):
+                        f.write(stream.readall().decode("utf-8"))
+                    else:
+                        f.write(stream.readall())
+                    return metadata.content_length
+
+                return self._translate_errors(_invoke_api, operation="GET", container=container_name, blob=blob_name)
 
             def _invoke_api() -> int:
                 blob_client = self._blob_service_client.get_blob_client(container=container_name, blob=blob_name)
-                stream = blob_client.download_blob()
+                stream = blob_client.download_blob(max_concurrency=self._max_concurrency)
                 if isinstance(f, io.StringIO):
-                    f.write(stream.readall().decode("utf-8"))
+                    temp_file_path: str | None = None
+                    try:
+                        with tempfile.NamedTemporaryFile(mode="wb", delete=False, prefix=".") as tmp:
+                            temp_file_path = tmp.name
+                            stream.readinto(tmp)
+                        with open(temp_file_path, "r") as tmp_read:
+                            f.write(tmp_read.read())
+                    finally:
+                        if temp_file_path and os.path.exists(temp_file_path):
+                            os.unlink(temp_file_path)
                 else:
-                    f.write(stream.readall())
-
+                    stream.readinto(f)
                 return metadata.content_length
 
             return self._translate_errors(_invoke_api, operation="GET", container=container_name, blob=blob_name)

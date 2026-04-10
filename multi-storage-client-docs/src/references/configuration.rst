@@ -390,7 +390,22 @@ Options: See parameters in :py:class:`multistorageclient.providers.azure.AzureBl
          type: azure
          options:
            base_path: my-container
-           account_url: https://my-storage-account.blob.core.windows.net
+           endpoint_url: https://my-storage-account.blob.core.windows.net
+
+.. code-block:: yaml
+   :caption: Example configuration with multipart transfer tuning.
+
+   profiles:
+     my-profile:
+       storage_provider:
+         type: azure
+         options:
+           base_path: my-container
+           endpoint_url: https://my-storage-account.blob.core.windows.net
+           multipart_threshold: 67108864 # 64MiB - files above this use parallel chunked transfers
+           multipart_chunksize: 33554432 # 32MiB - upload block size
+           io_chunksize: 33554432 # 32MiB - download chunk size
+           max_concurrency: 8 # parallel threads for chunked transfers
 
 ``gcs``
 -------
