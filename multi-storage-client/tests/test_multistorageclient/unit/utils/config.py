@@ -13,10 +13,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import atexit
 import json
 import os
 import tempfile
 from typing import Any
+
+_config_files: list[str] = []
+
+
+def _cleanup_config_files() -> None:
+    for path in _config_files:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    _config_files.clear()
+
+
+atexit.register(_cleanup_config_files)
 
 
 def setup_msc_config(config_dict: dict[str, Any]) -> None:
@@ -24,6 +39,7 @@ def setup_msc_config(config_dict: dict[str, Any]) -> None:
     Setup the multi-storage client configuration.
     """
     config_file = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+    _config_files.append(config_file.name)
 
     with open(config_file.name, "w") as f:
         json.dump(config_dict, f)

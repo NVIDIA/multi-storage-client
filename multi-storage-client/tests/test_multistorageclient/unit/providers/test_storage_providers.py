@@ -16,6 +16,7 @@
 import functools
 import io
 import os
+import shutil
 import tempfile
 import urllib.request
 import uuid
@@ -90,11 +91,12 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
             },
         }
         if with_cache:
+            cache_location = tempfile.mkdtemp()
             config_dict["cache"] = {
                 "size": "10M",
                 "cache_line_size": "1M",  # Set explicitly to avoid default 64M exceeding cache size
                 "use_etag": True,
-                "location": tempfile.mkdtemp(),
+                "location": cache_location,
                 "eviction_policy": {
                     "policy": "random",
                 },
@@ -210,11 +212,13 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
             temp_file.write(file_body_bytes)
             temp_file.close()
             storage_client.upload_file(remote_path=file_path, local_path=temp_file.name)
+        os.unlink(temp_file.name)
         wait_for_is_file(storage_client=storage_client, path=file_path, is_file=True)
         with tempfile.NamedTemporaryFile(delete=False) as temp_file:
             temp_file.close()
             storage_client.download_file(remote_path=file_path, local_path=temp_file.name)
             assert os.path.getsize(temp_file.name) == len(file_body_bytes)
+        os.unlink(temp_file.name)
 
         # Delete the file.
         storage_client.delete(path=file_path)
@@ -330,6 +334,9 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
         # Delete the file
         storage_client.delete(path=special_chars_path)
         wait_for_is_file(storage_client=storage_client, path=special_chars_path, is_file=False)
+
+        if with_cache:
+            shutil.rmtree(cache_location, ignore_errors=True)
 
 
 @pytest.mark.parametrize(
@@ -739,11 +746,13 @@ def test_storage_providers_with_rust_client(
             temp_file.write(file_body_bytes)
             temp_file.close()
             storage_client.upload_file(remote_path=file_path, local_path=temp_file.name)
+        os.unlink(temp_file.name)
         assert storage_client.is_file(path=file_path)
         with tempfile.NamedTemporaryFile(delete=False) as temp_file:
             temp_file.close()
             storage_client.download_file(remote_path=file_path, local_path=temp_file.name)
             assert os.path.getsize(temp_file.name) == len(file_body_bytes)
+        os.unlink(temp_file.name)
 
         # Delete the file.
         storage_client.delete(path=file_path)
@@ -758,6 +767,7 @@ def test_storage_providers_with_rust_client(
             temp_file.write(large_file_body_bytes)
             temp_file.close()
             storage_client.upload_file(remote_path=file_path, local_path=temp_file.name)
+        os.unlink(temp_file.name)
         assert storage_client.is_file(path=file_path)
         with tempfile.NamedTemporaryFile(delete=False) as temp_file:
             temp_file.close()
@@ -766,6 +776,7 @@ def test_storage_providers_with_rust_client(
             with open(temp_file.name, "rb") as f:
                 downloaded = f.read()
             assert downloaded == large_file_body_bytes
+        os.unlink(temp_file.name)
 
         # Delete the file.
         storage_client.delete(path=file_path)

@@ -70,18 +70,25 @@ def test_resolve_storage_client(file_storage_config):
     assert p7 == os.path.realpath("workspace/datasets")
 
     # Multithreading test to verify the storage_client instance is the same
+    tempdirs = []
+
     def storage_client_thread(number: int) -> tuple[StorageClient, str]:
         tempdir = tempfile.mkdtemp()
+        tempdirs.append(tempdir)
         storage_client, path = msc.resolve_storage_client(f"{MSC_PROTOCOL}__filesystem__{tempdir}/testfile.bin")
         return storage_client, path
 
     num_threads = 32
-    with ThreadPoolExecutor(max_workers=num_threads) as executor:
-        results = list(executor.map(storage_client_thread, range(num_threads)))
-        assert len(results) > 0
-        storage_client, _ = results[0]
-        for i in range(1, num_threads):
-            assert results[i][0] is storage_client, "All threads should return the same StorageClient instance"
+    try:
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            results = list(executor.map(storage_client_thread, range(num_threads)))
+            assert len(results) > 0
+            storage_client, _ = results[0]
+            for i in range(1, num_threads):
+                assert results[i][0] is storage_client, "All threads should return the same StorageClient instance"
+    finally:
+        for d in tempdirs:
+            os.rmdir(d)
 
 
 def test_resolve_storage_client_with_trailing_question_mark(file_storage_config):
@@ -110,93 +117,90 @@ def test_glob_with_posix_path(file_storage_config):
 
 def test_open_url(file_storage_config):
     body = b"A" * 64 * MB
-    tempdir = tempfile.mkdtemp()
+    with tempfile.TemporaryDirectory() as tempdir:
+        fp = msc.open(f"{MSC_PROTOCOL}__filesystem__{tempdir}/testfile.bin", "wb")
+        fp.write(body)
+        fp.close()
 
-    fp = msc.open(f"{MSC_PROTOCOL}__filesystem__{tempdir}/testfile.bin", "wb")
-    fp.write(body)
-    fp.close()
+        fp = msc.open(f"{MSC_PROTOCOL}__filesystem__{tempdir}/testfile.bin", "rb")
+        content = fp.read()
+        fp.close()
+        assert body == content
 
-    fp = msc.open(f"{MSC_PROTOCOL}__filesystem__{tempdir}/testfile.bin", "rb")
-    content = fp.read()
-    fp.close()
-    assert body == content
-
-    results = msc.glob(f"{MSC_PROTOCOL}__filesystem__{tempdir}/*.bin")
-    assert len(results) == 1
-    assert results[0] == f"{MSC_PROTOCOL}__filesystem__{tempdir}/testfile.bin"
+        results = msc.glob(f"{MSC_PROTOCOL}__filesystem__{tempdir}/*.bin")
+        assert len(results) == 1
+        assert results[0] == f"{MSC_PROTOCOL}__filesystem__{tempdir}/testfile.bin"
 
 
 def test_download_file(file_storage_config):
     body = b"A" * 64 * MB
-    tempdir = tempfile.mkdtemp()
+    with tempfile.TemporaryDirectory() as tempdir:
+        # Write to a test file
+        remote_file_path = f"{MSC_PROTOCOL}__filesystem__{tempdir}/testfile.bin"
+        fp = msc.open(remote_file_path, "wb")
+        fp.write(body)
+        fp.close()
 
-    # Write to a test file
-    remote_file_path = f"{MSC_PROTOCOL}__filesystem__{tempdir}/testfile.bin"
-    fp = msc.open(remote_file_path, "wb")
-    fp.write(body)
-    fp.close()
+        assert msc.is_file(url=remote_file_path)
 
-    assert msc.is_file(url=remote_file_path)
+        with tempfile.TemporaryDirectory() as local_tempdir:
+            local_file_path = f"{local_tempdir}/testfile.bin"
+            msc.download_file(url=remote_file_path, local_path=local_file_path)
 
-    local_tempdir = tempfile.mkdtemp()
-    local_file_path = f"{local_tempdir}/testfile.bin"
-    msc.download_file(url=remote_file_path, local_path=local_file_path)
+            fp = msc.open(f"{MSC_PROTOCOL}__filesystem__{local_file_path}", "rb")
+            content = fp.read()
+            fp.close()
+            assert body == content
 
-    fp = msc.open(f"{MSC_PROTOCOL}__filesystem__{local_file_path}", "rb")
-    content = fp.read()
-    fp.close()
-    assert body == content
-
-    results = msc.glob(f"{MSC_PROTOCOL}__filesystem__{local_tempdir}/*.bin")
-    assert len(results) == 1
-    assert results[0] == f"{MSC_PROTOCOL}__filesystem__{local_tempdir}/testfile.bin"
+            results = msc.glob(f"{MSC_PROTOCOL}__filesystem__{local_tempdir}/*.bin")
+            assert len(results) == 1
+            assert results[0] == f"{MSC_PROTOCOL}__filesystem__{local_tempdir}/testfile.bin"
 
 
 def test_list(file_storage_config):
     # Create test file
     body = b"A" * 64 * MB
-    tempdir = tempfile.mkdtemp()
+    with tempfile.TemporaryDirectory() as tempdir:
+        fp = msc.open(f"{MSC_PROTOCOL}__filesystem__{tempdir}/testfile.bin", "wb")
+        fp.write(body)
+        fp.close()
 
-    fp = msc.open(f"{MSC_PROTOCOL}__filesystem__{tempdir}/testfile.bin", "wb")
-    fp.write(body)
-    fp.close()
+        # Test listing without glob pattern
+        results = list(msc.list(f"{MSC_PROTOCOL}__filesystem__{tempdir}"))
+        assert len(results) == 1
+        assert "testfile.bin" in results[0].key
 
-    # Test listing without glob pattern
-    results = list(msc.list(f"{MSC_PROTOCOL}__filesystem__{tempdir}"))
-    assert len(results) == 1
-    assert "testfile.bin" in results[0].key
+        # Test listing with POSIX file path
+        results = list(msc.list(tempdir))
+        assert len(results) == 1
+        assert "testfile.bin" in results[0].key
+        assert f"{MSC_PROTOCOL}__filesystem__" not in results[0].key
 
-    # Test listing with POSIX file path
-    results = list(msc.list(tempdir))
-    assert len(results) == 1
-    assert "testfile.bin" in results[0].key
-    assert f"{MSC_PROTOCOL}__filesystem__" not in results[0].key
+        # Test listing with include/exclude patterns
+        results = list(msc.list(f"{MSC_PROTOCOL}__filesystem__{tempdir}", patterns=[(PatternType.INCLUDE, "*.bin")]))
+        assert len(results) == 1
+        assert "testfile.bin" in results[0].key
 
-    # Test listing with include/exclude patterns
-    results = list(msc.list(f"{MSC_PROTOCOL}__filesystem__{tempdir}", patterns=[(PatternType.INCLUDE, "*.bin")]))
-    assert len(results) == 1
-    assert "testfile.bin" in results[0].key
-
-    results = list(msc.list(f"{MSC_PROTOCOL}__filesystem__{tempdir}", patterns=[(PatternType.INCLUDE, "*.txt")]))
-    assert len(results) == 0
+        results = list(msc.list(f"{MSC_PROTOCOL}__filesystem__{tempdir}", patterns=[(PatternType.INCLUDE, "*.txt")]))
+        assert len(results) == 0
 
 
 def test_list_follow_symlinks(file_storage_config):
-    tempdir = tempfile.mkdtemp()
-    real_path = os.path.join(tempdir, "real.txt")
-    symlink_path = os.path.join(tempdir, "link.txt")
-    with open(real_path, "w") as f:
-        f.write("content")
-    os.symlink(real_path, symlink_path)
-    url = f"{MSC_PROTOCOL}__filesystem__{tempdir}"
-    with_follow = list(msc.list(url, follow_symlinks=True))
-    without_follow = list(msc.list(url, follow_symlinks=False))
-    keys_with = {os.path.basename(k.key) for k in with_follow}
-    keys_without = {os.path.basename(k.key) for k in without_follow}
-    assert "real.txt" in keys_with
-    assert "link.txt" in keys_with
-    assert "real.txt" in keys_without
-    assert "link.txt" not in keys_without
+    with tempfile.TemporaryDirectory() as tempdir:
+        real_path = os.path.join(tempdir, "real.txt")
+        symlink_path = os.path.join(tempdir, "link.txt")
+        with open(real_path, "w") as f:
+            f.write("content")
+        os.symlink(real_path, symlink_path)
+        url = f"{MSC_PROTOCOL}__filesystem__{tempdir}"
+        with_follow = list(msc.list(url, follow_symlinks=True))
+        without_follow = list(msc.list(url, follow_symlinks=False))
+        keys_with = {os.path.basename(k.key) for k in with_follow}
+        keys_without = {os.path.basename(k.key) for k in without_follow}
+        assert "real.txt" in keys_with
+        assert "link.txt" in keys_with
+        assert "real.txt" in keys_without
+        assert "link.txt" not in keys_without
 
 
 def test_list_recursive(file_storage_config):
@@ -251,39 +255,39 @@ def test_list_recursive_follow_symlinks_and_patterns(file_storage_config):
 
 
 def test_write(file_storage_config):
-    tempdir = tempfile.mkdtemp()
-    filepath = os.path.join(tempdir, "testfile.bin")
+    with tempfile.TemporaryDirectory() as tempdir:
+        filepath = os.path.join(tempdir, "testfile.bin")
 
-    # Test writing bytes
-    body = b"A" * 64 * MB
-    msc.write(f"{MSC_PROTOCOL}__filesystem__{filepath}", body)
+        # Test writing bytes
+        body = b"A" * 64 * MB
+        msc.write(f"{MSC_PROTOCOL}__filesystem__{filepath}", body)
 
-    # Verify content was written correctly
-    with msc.open(f"{MSC_PROTOCOL}__filesystem__{filepath}", "rb") as fp:
-        content = fp.read()
-        assert body == content
+        # Verify content was written correctly
+        with msc.open(f"{MSC_PROTOCOL}__filesystem__{filepath}", "rb") as fp:
+            content = fp.read()
+            assert body == content
 
 
 def test_delete(file_storage_config):
-    tempdir = tempfile.mkdtemp()
-    filepath = os.path.join(tempdir, "testfile.bin")
+    with tempfile.TemporaryDirectory() as tempdir:
+        filepath = os.path.join(tempdir, "testfile.bin")
 
-    # Create test file
-    body = b"A" * 64 * MB
-    with msc.open(f"{MSC_PROTOCOL}__filesystem__{filepath}", "wb") as fp:
-        fp.write(body)
+        # Create test file
+        body = b"A" * 64 * MB
+        with msc.open(f"{MSC_PROTOCOL}__filesystem__{filepath}", "wb") as fp:
+            fp.write(body)
 
-    # Verify file exists
-    with msc.open(f"{MSC_PROTOCOL}__filesystem__{filepath}", "rb") as fp:
-        assert fp.read() == body
-
-    # Delete file
-    msc.delete(f"{MSC_PROTOCOL}__filesystem__{filepath}")
-
-    # Verify file is deleted
-    with pytest.raises(FileNotFoundError):
+        # Verify file exists
         with msc.open(f"{MSC_PROTOCOL}__filesystem__{filepath}", "rb") as fp:
-            fp.read()
+            assert fp.read() == body
+
+        # Delete file
+        msc.delete(f"{MSC_PROTOCOL}__filesystem__{filepath}")
+
+        # Verify file is deleted
+        with pytest.raises(FileNotFoundError):
+            with msc.open(f"{MSC_PROTOCOL}__filesystem__{filepath}", "rb") as fp:
+                fp.read()
 
 
 def test_is_empty(file_storage_config):
@@ -316,6 +320,7 @@ def verify_shortcuts(profile: str, prefix: str):
     fp.write(body)
     fp.close()
     msc.upload_file(f"msc://{profile}/{prefix}/folder/data-11.bin", fp.name)
+    os.unlink(fp.name)
 
     msc.commit_metadata(f"msc://{profile}")
 
@@ -333,6 +338,7 @@ def verify_shortcuts(profile: str, prefix: str):
     filepath = os.path.join(tempfile.gettempdir(), "data-11.bin")
     msc.download_file(f"msc://{profile}/{prefix}/folder/data-11.bin", filepath)
     assert os.path.exists(filepath)
+    os.unlink(filepath)
 
     # numpy
     arr = np.array([1, 2, 3, 4, 5], dtype=np.int32)
@@ -379,20 +385,22 @@ def test_msc_shortcuts(temp_data_store_type: type[tempdatastore.TemporaryDataSto
         profile_config = temp_data_store.profile_config_dict()
         profile_config["caching_enabled"] = True
 
-        config.setup_msc_config(
-            config_dict={
-                "profiles": {
-                    "test": temp_data_store.profile_config_dict(),
-                },
-                "cache": {
-                    "eviction_policy": {
-                        "policy": "fifo",
-                    }
-                },
-            }
-        )
+        with tempfile.TemporaryDirectory() as cache_dir:
+            config.setup_msc_config(
+                config_dict={
+                    "profiles": {
+                        "test": temp_data_store.profile_config_dict(),
+                    },
+                    "cache": {
+                        "location": cache_dir,
+                        "eviction_policy": {
+                            "policy": "fifo",
+                        },
+                    },
+                }
+            )
 
-        verify_shortcuts(profile="test", prefix="files")
+            verify_shortcuts(profile="test", prefix="files")
 
 
 @pytest.mark.parametrize(
@@ -416,20 +424,22 @@ def test_msc_shortcuts_with_s3_manifest(temp_data_store_type: type[tempdatastore
             },
             "caching_enabled": True,
         }
-        config.setup_msc_config(
-            config_dict={
-                "profiles": {
-                    "test": data_with_manifest_profile_config_dict,
-                },
-                "cache": {
-                    "eviction_policy": {
-                        "policy": "fifo",
-                    }
-                },
-            }
-        )
+        with tempfile.TemporaryDirectory() as cache_dir:
+            config.setup_msc_config(
+                config_dict={
+                    "profiles": {
+                        "test": data_with_manifest_profile_config_dict,
+                    },
+                    "cache": {
+                        "location": cache_dir,
+                        "eviction_policy": {
+                            "policy": "fifo",
+                        },
+                    },
+                }
+            )
 
-        verify_shortcuts(profile="test", prefix="files")
+            verify_shortcuts(profile="test", prefix="files")
 
 
 @pytest.mark.parametrize(
@@ -446,20 +456,22 @@ def test_msc_shortcuts_with_empty_base_path(temp_data_store_type: type[tempdatas
         profile_dict = temp_data_store.profile_config_dict()
         profile_dict["storage_provider"]["options"]["base_path"] = ""
         profile_dict["caching_enabled"] = True
-        config.setup_msc_config(
-            config_dict={
-                "profiles": {
-                    "test": profile_dict,
-                },
-                "cache": {
-                    "eviction_policy": {
-                        "policy": "fifo",
-                    }
-                },
-            }
-        )
+        with tempfile.TemporaryDirectory() as cache_dir:
+            config.setup_msc_config(
+                config_dict={
+                    "profiles": {
+                        "test": profile_dict,
+                    },
+                    "cache": {
+                        "location": cache_dir,
+                        "eviction_policy": {
+                            "policy": "fifo",
+                        },
+                    },
+                }
+            )
 
-        verify_shortcuts(profile="test", prefix=f"{temp_data_store._bucket_name}/files")
+            verify_shortcuts(profile="test", prefix=f"{temp_data_store._bucket_name}/files")
 
 
 @pytest.mark.parametrize(
@@ -484,7 +496,7 @@ def test_glob_include_prefix(temp_data_store_type: type[tempdatastore.TemporaryD
         )
 
         body = b"A" * 64 * MB
-        sub_prefix = os.path.basename(tempfile.mkdtemp())
+        sub_prefix = uuid.uuid4().hex
 
         # Write to a test file
         remote_file_path = f"{MSC_PROTOCOL}{profile_name}/{sub_prefix}/testfile.bin"
@@ -501,36 +513,37 @@ def test_glob_include_prefix(temp_data_store_type: type[tempdatastore.TemporaryD
 
 def test_download_and_sync_files(file_storage_config):
     body = b"A" * 4 * MB
-    tempdir = tempfile.mkdtemp()
+    with tempfile.TemporaryDirectory() as tempdir:
+        file_names = ["dir1/testfile1.bin", "dir1/testfile2.bin", "dir2/testfile3.bin"]
 
-    file_names = ["dir1/testfile1.bin", "dir1/testfile2.bin", "dir2/testfile3.bin"]
+        # Write three test files
+        for file_name in file_names:
+            remote_file_path = f"{MSC_PROTOCOL}__filesystem__{tempdir}/{file_name}"
+            with msc.open(remote_file_path, "wb") as fp:
+                fp.write(body)
+            assert msc.is_file(url=remote_file_path)
 
-    # Write three test files
-    for file_name in file_names:
-        remote_file_path = f"{MSC_PROTOCOL}__filesystem__{tempdir}/{file_name}"
-        with msc.open(remote_file_path, "wb") as fp:
-            fp.write(body)
-        assert msc.is_file(url=remote_file_path)
+        # Sync to a different destination directory
+        with tempfile.TemporaryDirectory() as sync_dest_tempdir:
+            msc.sync(
+                source_url=f"{MSC_PROTOCOL}__filesystem__{tempdir}/",
+                target_url=f"{MSC_PROTOCOL}__filesystem__{sync_dest_tempdir}/",
+            )
 
-    # Sync to a different destination directory
-    sync_dest_tempdir = tempfile.mkdtemp()
-    msc.sync(
-        source_url=f"{MSC_PROTOCOL}__filesystem__{tempdir}/",
-        target_url=f"{MSC_PROTOCOL}__filesystem__{sync_dest_tempdir}/",
-    )
+            expected_synced_files = [
+                f"{MSC_PROTOCOL}__filesystem__{sync_dest_tempdir}/{file_name}" for file_name in file_names
+            ]
 
-    expected_synced_files = [f"{MSC_PROTOCOL}__filesystem__{sync_dest_tempdir}/{file_name}" for file_name in file_names]
+            for synced_file in expected_synced_files:
+                with msc.open(synced_file, "rb") as fp:
+                    synced_content = fp.read()
+                assert synced_content == body
 
-    for synced_file in expected_synced_files:
-        with msc.open(synced_file, "rb") as fp:
-            synced_content = fp.read()
-        assert synced_content == body
-
-    # Test, by syncing again and verify the data hasn't changed?
-    msc.sync(
-        source_url=f"{MSC_PROTOCOL}__filesystem__{tempdir}/",
-        target_url=f"{MSC_PROTOCOL}__filesystem__{sync_dest_tempdir}/",
-    )
+            # Test, by syncing again and verify the data hasn't changed?
+            msc.sync(
+                source_url=f"{MSC_PROTOCOL}__filesystem__{tempdir}/",
+                target_url=f"{MSC_PROTOCOL}__filesystem__{sync_dest_tempdir}/",
+            )
 
 
 def test_explicit_path_translation(file_storage_config_with_path_mapping):
@@ -658,66 +671,67 @@ def test_open_with_source_version_check(temp_data_store_type: Type[tempdatastore
         profile_config = temp_data_store.profile_config_dict()
         profile_config["caching_enabled"] = True
 
-        config.setup_msc_config(
-            config_dict={
-                "profiles": {
-                    "test": temp_data_store.profile_config_dict(),
-                },
-                "cache": {
-                    "eviction_policy": {
-                        "policy": "no_eviction",
-                    }
-                },
-            }
-        )
+        with tempfile.TemporaryDirectory() as cache_dir:
+            config.setup_msc_config(
+                config_dict={
+                    "profiles": {
+                        "test": temp_data_store.profile_config_dict(),
+                    },
+                    "cache": {
+                        "location": cache_dir,
+                        "eviction_policy": {
+                            "policy": "no_eviction",
+                        },
+                    },
+                }
+            )
 
-        test_uuid = str(uuid.uuid4())
-        key = f"test-source-version-check-{test_uuid}"
-        content1 = b"test content for cache"
-        content2 = b"modified content for cache"
+            test_uuid = str(uuid.uuid4())
+            key = f"test-source-version-check-{test_uuid}"
+            content1 = b"test content for cache"
+            content2 = b"modified content for cache"
 
-        try:
-            # Write initial content
-            with msc.open(f"{MSC_PROTOCOL}test/{key}", "wb") as f:
-                f.write(content1)
-
-            # Read with ENABLE mode - should get updated content
-            with msc.open(
-                f"{MSC_PROTOCOL}test/{key}",
-                "rb",
-                check_source_version=SourceVersionCheckMode.ENABLE,
-                prefetch_file=True,
-            ) as f:
-                assert f.read() == content1
-
-            # Modify file content
-            with msc.open(f"{MSC_PROTOCOL}test/{key}", "wb") as f:
-                f.write(content2)
-
-            # Read with DISABLE mode - should get old content from cache
-            with msc.open(
-                f"{MSC_PROTOCOL}test/{key}",
-                "rb",
-                check_source_version=SourceVersionCheckMode.DISABLE,
-                prefetch_file=True,
-            ) as f:
-                assert f.read() == content1  # Should read from cache, not see the modification
-
-            # Read with ENABLE mode - should get new content
-            with msc.open(
-                f"{MSC_PROTOCOL}test/{key}",
-                "rb",
-                check_source_version=SourceVersionCheckMode.ENABLE,
-                prefetch_file=True,
-            ) as f:
-                assert f.read() == content2  # Should update cache
-
-        finally:
-            # Clean up
             try:
-                msc.delete(f"{MSC_PROTOCOL}test/{key}")
-            except Exception:
-                pass
+                # Write initial content
+                with msc.open(f"{MSC_PROTOCOL}test/{key}", "wb") as f:
+                    f.write(content1)
+
+                # Read with ENABLE mode - should get updated content
+                with msc.open(
+                    f"{MSC_PROTOCOL}test/{key}",
+                    "rb",
+                    check_source_version=SourceVersionCheckMode.ENABLE,
+                    prefetch_file=True,
+                ) as f:
+                    assert f.read() == content1
+
+                # Modify file content
+                with msc.open(f"{MSC_PROTOCOL}test/{key}", "wb") as f:
+                    f.write(content2)
+
+                # Read with DISABLE mode - should get old content from cache
+                with msc.open(
+                    f"{MSC_PROTOCOL}test/{key}",
+                    "rb",
+                    check_source_version=SourceVersionCheckMode.DISABLE,
+                    prefetch_file=True,
+                ) as f:
+                    assert f.read() == content1  # Should read from cache, not see the modification
+
+                # Read with ENABLE mode - should get new content
+                with msc.open(
+                    f"{MSC_PROTOCOL}test/{key}",
+                    "rb",
+                    check_source_version=SourceVersionCheckMode.ENABLE,
+                    prefetch_file=True,
+                ) as f:
+                    assert f.read() == content2  # Should update cache
+
+            finally:
+                try:
+                    msc.delete(f"{MSC_PROTOCOL}test/{key}")
+                except Exception:
+                    pass
 
 
 @pytest.mark.parametrize(
@@ -733,43 +747,15 @@ def test_open_with_cache_config(temp_data_store_type: Type[tempdatastore.Tempora
         profile_config = temp_data_store.profile_config_dict()
         profile_config["caching_enabled"] = True
 
-        config.setup_msc_config(
-            config_dict={
-                "profiles": {
-                    "test": temp_data_store.profile_config_dict(),
-                },
-                "cache": {
-                    "use_etag": True,
-                    "eviction_policy": {
-                        "policy": "no_eviction",
-                    },
-                },
-            }
-        )
-
-        body = b"A" * 64 * MB
-        test_uuid = str(uuid.uuid4())
-        filepath = f"testfile-{test_uuid}.bin"
-
-        try:
-            # Write and read with INHERIT mode (should use etag)
-            with msc.open(f"{MSC_PROTOCOL}test/{filepath}", "wb") as fp:
-                fp.write(body)
-
-            with msc.open(f"{MSC_PROTOCOL}test/{filepath}", "rb") as fp:
-                assert fp.read() == body
-
-            # Test with cache enabled and use_etag=False
-            profile_config = temp_data_store.profile_config_dict()
-            profile_config["caching_enabled"] = True
-
+        with tempfile.TemporaryDirectory() as cache_dir:
             config.setup_msc_config(
                 config_dict={
                     "profiles": {
                         "test": temp_data_store.profile_config_dict(),
                     },
                     "cache": {
-                        "use_etag": False,
+                        "location": cache_dir,
+                        "use_etag": True,
                         "eviction_policy": {
                             "policy": "no_eviction",
                         },
@@ -777,19 +763,49 @@ def test_open_with_cache_config(temp_data_store_type: Type[tempdatastore.Tempora
                 }
             )
 
-            # Write and read with INHERIT mode (should not use etag)
-            with msc.open(f"{MSC_PROTOCOL}test/{filepath}", "wb") as fp:
-                fp.write(body)
+            body = b"A" * 64 * MB
+            test_uuid = str(uuid.uuid4())
+            filepath = f"testfile-{test_uuid}.bin"
 
-            with msc.open(f"{MSC_PROTOCOL}test/{filepath}", "rb") as fp:
-                assert fp.read() == body
-
-        finally:
-            # Clean up
             try:
-                msc.delete(f"{MSC_PROTOCOL}test/{filepath}")
-            except Exception:
-                pass
+                # Write and read with INHERIT mode (should use etag)
+                with msc.open(f"{MSC_PROTOCOL}test/{filepath}", "wb") as fp:
+                    fp.write(body)
+
+                with msc.open(f"{MSC_PROTOCOL}test/{filepath}", "rb") as fp:
+                    assert fp.read() == body
+
+                # Test with cache enabled and use_etag=False
+                profile_config = temp_data_store.profile_config_dict()
+                profile_config["caching_enabled"] = True
+
+                config.setup_msc_config(
+                    config_dict={
+                        "profiles": {
+                            "test": temp_data_store.profile_config_dict(),
+                        },
+                        "cache": {
+                            "location": cache_dir,
+                            "use_etag": False,
+                            "eviction_policy": {
+                                "policy": "no_eviction",
+                            },
+                        },
+                    }
+                )
+
+                # Write and read with INHERIT mode (should not use etag)
+                with msc.open(f"{MSC_PROTOCOL}test/{filepath}", "wb") as fp:
+                    fp.write(body)
+
+                with msc.open(f"{MSC_PROTOCOL}test/{filepath}", "rb") as fp:
+                    assert fp.read() == body
+
+            finally:
+                try:
+                    msc.delete(f"{MSC_PROTOCOL}test/{filepath}")
+                except Exception:
+                    pass
 
 
 @pytest.mark.parametrize(

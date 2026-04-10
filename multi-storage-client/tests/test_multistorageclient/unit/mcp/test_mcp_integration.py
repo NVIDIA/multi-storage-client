@@ -17,6 +17,7 @@
 """Unit tests for MCP server using temporary fake data stores."""
 
 import json
+import shutil
 import tempfile
 import uuid
 from datetime import datetime
@@ -59,11 +60,13 @@ def mcp_server_parametrized(request):
                 },
             },
         }
+        cache_location = None
         if with_cache:
+            cache_location = tempfile.mkdtemp()
             config_dict["cache"] = {
                 "size": "10M",
                 "use_etag": True,
-                "location": tempfile.mkdtemp(),
+                "location": cache_location,
                 "eviction_policy": {
                     "policy": "random",
                 },
@@ -76,6 +79,8 @@ def mcp_server_parametrized(request):
         yield mcp, profile
 
         msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+        if cache_location:
+            shutil.rmtree(cache_location, ignore_errors=True)
 
 
 @pytest.fixture(
@@ -123,11 +128,13 @@ def mcp_server_with_replicas(request):
                 },
             },
         }
+        cache_location = None
         if with_cache:
+            cache_location = tempfile.mkdtemp()
             config_dict["cache"] = {
                 "size": "10M",
                 "use_etag": True,
-                "location": tempfile.mkdtemp(),
+                "location": cache_location,
                 "eviction_policy": {
                     "policy": "random",
                 },
@@ -140,6 +147,8 @@ def mcp_server_with_replicas(request):
         yield mcp, source_profile, replica_profile_1, replica_profile_2
 
         msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+        if cache_location:
+            shutil.rmtree(cache_location, ignore_errors=True)
 
 
 def create_test_file(profile_name: str, file_path: str, content: bytes) -> str:

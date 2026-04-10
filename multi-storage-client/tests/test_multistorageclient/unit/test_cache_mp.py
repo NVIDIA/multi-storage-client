@@ -31,7 +31,7 @@ def worker_write_read(cache_dir, keys, data, barrier, result_queue):
     Worker function that use CacheManager to write and read data at random order.
     """
     try:
-        cache_config = CacheConfig(size="10M", cache_line_size="64M", check_source_version=False)
+        cache_config = CacheConfig(size="10M", cache_line_size="64M", check_source_version=False, location=cache_dir)
         cache_manager = CacheManager(profile="test", cache_config=cache_config)
 
         # Synchronize all worker processes at this point

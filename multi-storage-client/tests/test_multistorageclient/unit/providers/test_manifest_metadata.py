@@ -148,6 +148,7 @@ def test_manifest_metadata(temp_data_store_type: type[tempdatastore.TemporaryDat
             temp_file.write(file_body_bytes)
             temp_file.close()
             data_with_manifest_storage_client.upload_file(remote_path=file_path, local_path=temp_file.name)
+        os.unlink(temp_file.name)
         assert len(data_with_manifest_storage_client.glob(pattern=file_path)) == 0
         data_with_manifest_storage_client.commit_metadata()
         assert len(data_with_manifest_storage_client.glob(pattern=file_path)) == 1

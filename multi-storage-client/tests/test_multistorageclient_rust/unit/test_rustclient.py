@@ -67,6 +67,7 @@ async def run_rust_client_operations(rust_client: RustClient, storage_client: St
         temp_file.close()
         result = await rust_client.upload(temp_file.name, file_path)
         assert result == len(file_body_bytes)
+    os.unlink(temp_file.name)
 
     # Verify the file was uploaded successfully using multi-storage client
     assert storage_client.is_file(path=file_path)
@@ -75,6 +76,7 @@ async def run_rust_client_operations(rust_client: RustClient, storage_client: St
         storage_client.download_file(remote_path=file_path, local_path=temp_file.name)
         with open(temp_file.name, "rb") as f:
             assert f.read() == file_body_bytes
+    os.unlink(temp_file.name)
 
     # Test upload_multipart_from_file with a large file
     large_file_size = MEMORY_LOAD_LIMIT + 1
@@ -86,6 +88,7 @@ async def run_rust_client_operations(rust_client: RustClient, storage_client: St
         temp_file.close()
         result = await rust_client.upload_multipart_from_file(temp_file.name, large_file_path)
         assert result == large_file_size
+    os.unlink(temp_file.name)
 
     # Verify the large file was uploaded successfully using multi-storage client
     assert storage_client.is_file(path=large_file_path)
@@ -97,6 +100,7 @@ async def run_rust_client_operations(rust_client: RustClient, storage_client: St
         with open(temp_file.name, "rb") as f:
             downloaded = f.read()
         assert downloaded == large_file_body
+    os.unlink(temp_file.name)
 
     # Test download the file
     with tempfile.NamedTemporaryFile(delete=False) as temp_file:
@@ -105,6 +109,7 @@ async def run_rust_client_operations(rust_client: RustClient, storage_client: St
         assert result == len(file_body_bytes)
         with open(temp_file.name, "rb") as f:
             assert f.read() == file_body_bytes
+    os.unlink(temp_file.name)
 
     # Test download_multipart_to_file with a large file
     with tempfile.NamedTemporaryFile(delete=False) as temp_file:
@@ -116,6 +121,7 @@ async def run_rust_client_operations(rust_client: RustClient, storage_client: St
         with open(temp_file.name, "rb") as f:
             downloaded = f.read()
         assert downloaded == large_file_body
+    os.unlink(temp_file.name)
 
     # Delete the file.
     storage_client.delete(path=file_path)
@@ -479,6 +485,7 @@ async def test_rustclient_explicit_multipart_chunksize(temp_data_store_type: Typ
                 temp_file.name, large_file_path, multipart_chunksize=chunk_size, max_concurrency=max_concurrency
             )
             assert result == large_file_size
+        os.unlink(temp_file.name)
 
         # Test download_multipart_to_file with explicit chunk size and concurrency
         with tempfile.NamedTemporaryFile(delete=False) as temp_file:
@@ -492,6 +499,7 @@ async def test_rustclient_explicit_multipart_chunksize(temp_data_store_type: Typ
             with open(temp_file.name, "rb") as f:
                 downloaded = f.read()
             assert downloaded == large_data_bytes
+        os.unlink(temp_file.name)
 
         # Delete the file.
         storage_client.delete(path=large_file_path)

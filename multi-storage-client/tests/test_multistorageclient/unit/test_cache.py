@@ -1166,101 +1166,102 @@ def test_concurrent_chunk_creation_with_locking():
     """
 
     with tempdatastore.TemporaryAWSS3Bucket() as origin_store:
-        # Create configuration with partial file caching enabled
-        config = {
-            "profiles": {
-                "origin": origin_store.profile_config_dict() | {"caching_enabled": True},
-            },
-            "cache": {
-                "size": "10M",
-                "location": tempfile.mkdtemp(),
-                "cache_line_size": "1M",  # 1MB cache lines for testing
-                "check_source_version": True,
-                "eviction_policy": {
-                    "policy": "lru",
-                    "refresh_interval": 300,
+        with tempfile.TemporaryDirectory() as cache_location:
+            # Create configuration with partial file caching enabled
+            config = {
+                "profiles": {
+                    "origin": origin_store.profile_config_dict() | {"caching_enabled": True},
                 },
-            },
-        }
+                "cache": {
+                    "size": "10M",
+                    "location": cache_location,
+                    "cache_line_size": "1M",  # 1MB cache lines for testing
+                    "check_source_version": True,
+                    "eviction_policy": {
+                        "policy": "lru",
+                        "refresh_interval": 300,
+                    },
+                },
+            }
 
-        client = StorageClient(config=StorageClientConfig.from_dict(config, profile="origin"))
+            client = StorageClient(config=StorageClientConfig.from_dict(config, profile="origin"))
 
-        # Create a test file
-        file_path = f"test-data-{uuid.uuid4()}/concurrent_test.bin"
-        test_content = create_test_data(5)  # 5MB file
-        client.write(file_path, test_content)
+            # Create a test file
+            file_path = f"test-data-{uuid.uuid4()}/concurrent_test.bin"
+            test_content = create_test_data(5)  # 5MB file
+            client.write(file_path, test_content)
 
-        # Create two separate clients to test concurrent access
-        client1 = StorageClient(config=StorageClientConfig.from_dict(config, profile="origin"))
-        client2 = StorageClient(config=StorageClientConfig.from_dict(config, profile="origin"))
+            # Create two separate clients to test concurrent access
+            client1 = StorageClient(config=StorageClientConfig.from_dict(config, profile="origin"))
+            client2 = StorageClient(config=StorageClientConfig.from_dict(config, profile="origin"))
 
-        # Ensure the cache directory structure exists and has proper permissions
-        cache_dir = os.path.join(config["cache"]["location"], "origin")
-        os.makedirs(cache_dir, exist_ok=True)
+            # Ensure the cache directory structure exists and has proper permissions
+            cache_dir = os.path.join(config["cache"]["location"], "origin")
+            os.makedirs(cache_dir, exist_ok=True)
 
-        # Test data
-        byte_range = Range(offset=0, size=16 * 1024)  # 16KB starting at beginning
+            # Test data
+            byte_range = Range(offset=0, size=16 * 1024)  # 16KB starting at beginning
 
-        # Shared variables to track thread execution
-        thread_results = []
-        thread_errors = []
+            # Shared variables to track thread execution
+            thread_results = []
+            thread_errors = []
 
-        def read_range_thread(client_id, client):
-            """Thread function that reads a byte range using the client."""
-            try:
-                # Read the byte range - this may trigger chunk creation
-                result = client.read(file_path, byte_range=byte_range)
-                thread_results.append((client_id, len(result), "success"))
+            def read_range_thread(client_id, client):
+                """Thread function that reads a byte range using the client."""
+                try:
+                    # Read the byte range - this may trigger chunk creation
+                    result = client.read(file_path, byte_range=byte_range)
+                    thread_results.append((client_id, len(result), "success"))
 
-            except Exception as e:
-                thread_errors.append((client_id, str(e)))
+                except Exception as e:
+                    thread_errors.append((client_id, str(e)))
 
-        # Create and start two threads simultaneously, each with its own client
-        thread1 = threading.Thread(target=read_range_thread, args=(1, client1))
-        thread2 = threading.Thread(target=read_range_thread, args=(2, client2))
+            # Create and start two threads simultaneously, each with its own client
+            thread1 = threading.Thread(target=read_range_thread, args=(1, client1))
+            thread2 = threading.Thread(target=read_range_thread, args=(2, client2))
 
-        # Start both threads at nearly the same time
-        thread1.start()
-        thread2.start()
+            # Start both threads at nearly the same time
+            thread1.start()
+            thread2.start()
 
-        # Wait for both threads to complete
-        thread1.join()
-        thread2.join()
+            # Wait for both threads to complete
+            thread1.join()
+            thread2.join()
 
-        # Verify both threads succeeded
-        assert len(thread_errors) == 0, f"Threads encountered errors: {thread_errors}"
-        assert len(thread_results) == 2, f"Expected 2 thread results, got {len(thread_results)}"
+            # Verify both threads succeeded
+            assert len(thread_errors) == 0, f"Threads encountered errors: {thread_errors}"
+            assert len(thread_results) == 2, f"Expected 2 thread results, got {len(thread_results)}"
 
-        # Verify both threads got the same result
-        result1 = thread_results[0]
-        result2 = thread_results[1]
-        assert result1[1] == result2[1], f"Thread results differ: {result1} vs {result2}"
-        assert result1[1] == byte_range.size, f"Expected {byte_range.size} bytes, got {result1[1]}"
+            # Verify both threads got the same result
+            result1 = thread_results[0]
+            result2 = thread_results[1]
+            assert result1[1] == result2[1], f"Thread results differ: {result1} vs {result2}"
+            assert result1[1] == byte_range.size, f"Expected {byte_range.size} bytes, got {result1[1]}"
 
-        # Verify chunk files were created and are valid
-        cache_dir = os.path.join(config["cache"]["location"], "origin")
-        file_dir = os.path.join(cache_dir, os.path.dirname(file_path))
-        base_name = os.path.basename(file_path)
+            # Verify chunk files were created and are valid
+            cache_dir = os.path.join(config["cache"]["location"], "origin")
+            file_dir = os.path.join(cache_dir, os.path.dirname(file_path))
+            base_name = os.path.basename(file_path)
 
-        # Check that chunk 0 exists (since we read from offset 0)
-        chunk0_path = os.path.join(file_dir, f".{base_name}#chunk0")
-        assert os.path.exists(chunk0_path), "Chunk 0 should exist after range read"
+            # Check that chunk 0 exists (since we read from offset 0)
+            chunk0_path = os.path.join(file_dir, f".{base_name}#chunk0")
+            assert os.path.exists(chunk0_path), "Chunk 0 should exist after range read"
 
-        # Check that the chunk file is valid (not corrupted)
-        with open(chunk0_path, "rb") as f:
-            chunk_data = f.read()
-        assert len(chunk_data) > 0, "Chunk file should contain data"
+            # Check that the chunk file is valid (not corrupted)
+            with open(chunk0_path, "rb") as f:
+                chunk_data = f.read()
+            assert len(chunk_data) > 0, "Chunk file should contain data"
 
-        etag = xattr.getxattr(chunk0_path, "user.etag").decode("utf-8")
-        assert etag, "Chunk should have etag metadata"
-        chunk_size = int(xattr.getxattr(chunk0_path, "user.cache_line_size").decode("utf-8"))
-        assert chunk_size == 1024 * 1024, f"Expected chunk size 1MB, got {chunk_size}"
+            etag = xattr.getxattr(chunk0_path, "user.etag").decode("utf-8")
+            assert etag, "Chunk should have etag metadata"
+            chunk_size = int(xattr.getxattr(chunk0_path, "user.cache_line_size").decode("utf-8"))
+            assert chunk_size == 1024 * 1024, f"Expected chunk size 1MB, got {chunk_size}"
 
-        # Verify only one chunk0 exists (no duplicates from race conditions)
-        chunk_files = [
-            f for f in os.listdir(file_dir) if f.startswith(f".{base_name}#chunk0") and not f.endswith(".lock")
-        ]
-        assert len(chunk_files) == 1, f"Expected 1 chunk0 file, found {len(chunk_files)}"
+            # Verify only one chunk0 exists (no duplicates from race conditions)
+            chunk_files = [
+                f for f in os.listdir(file_dir) if f.startswith(f".{base_name}#chunk0") and not f.endswith(".lock")
+            ]
+            assert len(chunk_files) == 1, f"Expected 1 chunk0 file, found {len(chunk_files)}"
 
 
 @pytest.mark.parametrize(

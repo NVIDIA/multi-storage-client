@@ -710,6 +710,9 @@ def test_oci_storage_provider_passthrough_options() -> None:
             )
         )
 
+    os.unlink(oci_key_file.name)
+    os.unlink(oci_config_file.name)
+
     # Security token based authentication (workload identity federation).
     with (
         tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as oci_key_file,
@@ -803,6 +806,10 @@ def test_oci_storage_provider_passthrough_options() -> None:
         storage_provider = cast(OracleStorageProvider, storage_client._storage_provider)
         assert isinstance(storage_provider, OracleStorageProvider)
         assert isinstance(storage_provider._oci_client.base_client.signer, SecurityTokenSigner)
+
+    os.unlink(oci_key_file.name)
+    os.unlink(oci_security_token_file.name)
+    os.unlink(oci_config_file.name)
 
 
 def test_s3_storage_provider_passthrough_options() -> None:
@@ -1781,44 +1788,45 @@ def test_caching_enabled_field():
     """Test that caching_enabled field properly controls cache configuration."""
     from multistorageclient.config import StorageClientConfig
 
-    # Test with caching enabled
-    config_dict = {
-        "profiles": {
-            "test-profile": {
-                "storage_provider": {"type": "s3", "options": {"base_path": "test-bucket"}},
-                "caching_enabled": True,
-            }
-        },
-        "cache": {
-            "size": "100M",
-            "location": "/tmp/test_cache",
-        },
-    }
+    with tempfile.TemporaryDirectory() as cache_dir:
+        # Test with caching enabled
+        config_dict = {
+            "profiles": {
+                "test-profile": {
+                    "storage_provider": {"type": "s3", "options": {"base_path": "test-bucket"}},
+                    "caching_enabled": True,
+                }
+            },
+            "cache": {
+                "size": "100M",
+                "location": cache_dir,
+            },
+        }
 
-    config = StorageClientConfig.from_dict(config_dict, profile="test-profile")
-    assert config.cache_config is not None
-    assert config.cache_manager is not None
-    assert config.cache_config.size == "100M"
-    assert config.cache_config.location == "/tmp/test_cache"
+        config = StorageClientConfig.from_dict(config_dict, profile="test-profile")
+        assert config.cache_config is not None
+        assert config.cache_manager is not None
+        assert config.cache_config.size == "100M"
+        assert config.cache_config.location == cache_dir
 
-    # Test with caching disabled
-    config_dict["profiles"]["test-profile"]["caching_enabled"] = False
-    config = StorageClientConfig.from_dict(config_dict, profile="test-profile")
-    assert config.cache_config is None
-    assert config.cache_manager is None
+        # Test with caching disabled
+        config_dict["profiles"]["test-profile"]["caching_enabled"] = False
+        config = StorageClientConfig.from_dict(config_dict, profile="test-profile")
+        assert config.cache_config is None
+        assert config.cache_manager is None
 
-    # Test with caching_enabled omitted (should default to False)
-    del config_dict["profiles"]["test-profile"]["caching_enabled"]
-    config = StorageClientConfig.from_dict(config_dict, profile="test-profile")
-    assert config.cache_config is None
-    assert config.cache_manager is None
+        # Test with caching_enabled omitted (should default to False)
+        del config_dict["profiles"]["test-profile"]["caching_enabled"]
+        config = StorageClientConfig.from_dict(config_dict, profile="test-profile")
+        assert config.cache_config is None
+        assert config.cache_manager is None
 
-    # Test with caching_enabled True but no cache config (should warn)
-    config_dict["profiles"]["test-profile"]["caching_enabled"] = True
-    del config_dict["cache"]
-    config = StorageClientConfig.from_dict(config_dict, profile="test-profile")
-    assert config.cache_config is None
-    assert config.cache_manager is None
+        # Test with caching_enabled True but no cache config (should warn)
+        config_dict["profiles"]["test-profile"]["caching_enabled"] = True
+        del config_dict["cache"]
+        config = StorageClientConfig.from_dict(config_dict, profile="test-profile")
+        assert config.cache_config is None
+        assert config.cache_manager is None
 
 
 def _minimal_cache_profile(cache_section: dict) -> dict:
@@ -1837,66 +1845,74 @@ def _minimal_cache_profile(cache_section: dict) -> dict:
 def test_cache_config_both_flags_precedence() -> None:
     """When both `check_source_version` and `use_etag` are set, the former wins."""
 
-    cfg_dict = _minimal_cache_profile(
-        {
-            "size": "10M",
-            "cache_line_size": "1M",  # Set explicitly to avoid default 64M exceeding cache size
-            "check_source_version": False,
-            "use_etag": True,
-        }
-    )
+    with tempfile.TemporaryDirectory() as cache_dir:
+        cfg_dict = _minimal_cache_profile(
+            {
+                "size": "10M",
+                "cache_line_size": "1M",  # Set explicitly to avoid default 64M exceeding cache size
+                "location": cache_dir,
+                "check_source_version": False,
+                "use_etag": True,
+            }
+        )
 
-    sc_cfg = StorageClientConfig.from_dict(cfg_dict, profile="p")
-    assert sc_cfg.cache_config is not None
-    # Expect False because check_source_version overrides legacy value
-    assert sc_cfg.cache_config.check_source_version is False
+        sc_cfg = StorageClientConfig.from_dict(cfg_dict, profile="p")
+        assert sc_cfg.cache_config is not None
+        # Expect False because check_source_version overrides legacy value
+        assert sc_cfg.cache_config.check_source_version is False
 
 
 def test_cache_config_use_etag() -> None:
     """only use_etag is set, check_source_version is not set"""
 
-    cfg_dict = _minimal_cache_profile(
-        {
-            "size": "10M",
-            "cache_line_size": "1M",  # Set explicitly to avoid default 64M exceeding cache size
-            "use_etag": True,
-        }
-    )
+    with tempfile.TemporaryDirectory() as cache_dir:
+        cfg_dict = _minimal_cache_profile(
+            {
+                "size": "10M",
+                "cache_line_size": "1M",  # Set explicitly to avoid default 64M exceeding cache size
+                "location": cache_dir,
+                "use_etag": True,
+            }
+        )
 
-    sc_cfg = StorageClientConfig.from_dict(cfg_dict, profile="p")
-    assert sc_cfg.cache_config is not None
-    assert sc_cfg.cache_config.check_source_version is True
+        sc_cfg = StorageClientConfig.from_dict(cfg_dict, profile="p")
+        assert sc_cfg.cache_config is not None
+        assert sc_cfg.cache_config.check_source_version is True
 
 
 def test_cache_config_check_source_version() -> None:
     """only check_source_version is set, use_etag is not set, check_source_version is True"""
 
-    cfg_dict = _minimal_cache_profile(
-        {
-            "size": "10M",
-            "cache_line_size": "1M",  # Set explicitly to avoid default 64M exceeding cache size
-            "check_source_version": True,
-        }
-    )
+    with tempfile.TemporaryDirectory() as cache_dir:
+        cfg_dict = _minimal_cache_profile(
+            {
+                "size": "10M",
+                "cache_line_size": "1M",  # Set explicitly to avoid default 64M exceeding cache size
+                "location": cache_dir,
+                "check_source_version": True,
+            }
+        )
 
-    sc_cfg = StorageClientConfig.from_dict(cfg_dict, profile="p")
-    assert sc_cfg.cache_config is not None
-    assert sc_cfg.cache_config.check_source_version is True
+        sc_cfg = StorageClientConfig.from_dict(cfg_dict, profile="p")
+        assert sc_cfg.cache_config is not None
+        assert sc_cfg.cache_config.check_source_version is True
 
 
 def test_cache_config_check_source_version_false() -> None:
     """only check_source_version is set, use_etag is not set, check_source_version is False"""
 
-    cfg_dict = _minimal_cache_profile(
-        {
-            "size": "10M",
-            "cache_line_size": "1M",  # Set explicitly to avoid default 64M exceeding cache size
-            "check_source_version": False,
-        }
-    )
-    sc_cfg = StorageClientConfig.from_dict(cfg_dict, profile="p")
-    assert sc_cfg.cache_config is not None
-    assert sc_cfg.cache_config.check_source_version is False
+    with tempfile.TemporaryDirectory() as cache_dir:
+        cfg_dict = _minimal_cache_profile(
+            {
+                "size": "10M",
+                "cache_line_size": "1M",  # Set explicitly to avoid default 64M exceeding cache size
+                "location": cache_dir,
+                "check_source_version": False,
+            }
+        )
+        sc_cfg = StorageClientConfig.from_dict(cfg_dict, profile="p")
+        assert sc_cfg.cache_config is not None
+        assert sc_cfg.cache_config.check_source_version is False
 
 
 def test_telemetry_init_manual() -> None:
