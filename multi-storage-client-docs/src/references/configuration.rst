@@ -377,6 +377,10 @@ Azure Blob Storage provider.
 
 Options: See parameters in :py:class:`multistorageclient.providers.azure.AzureBlobStorageProvider`.
 
+.. note::
+   Presigned URL generation is supported for Azure Blob Storage via SAS tokens.
+   See :doc:`../user_guide/presigned_urls` for details.
+
 .. code-block:: yaml
    :caption: Example configuration.
 

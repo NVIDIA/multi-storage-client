@@ -13,14 +13,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from multistorageclient import StorageClient, StorageClientConfig
+from multistorageclient.providers.azure import (
+    AzureBlobStorageProvider,
+    AzureURLSigner,
+    DefaultAzureCredentialsProvider,
+    StaticAzureCredentialsProvider,
+    _parse_account_name_from_url,
+    _parse_connection_string,
+)
 from multistorageclient.providers.s3 import S3StorageProvider, S3URLSigner
 from multistorageclient.signers import CloudFrontURLSigner, URLSigner
-from multistorageclient.types import SignerType
+from multistorageclient.types import CredentialsProvider, SignerType
 
 # ---------------------------------------------------------------------------
 # S3URLSigner
@@ -376,3 +385,231 @@ class TestGeneratePresignedUrlShortcut:
         mock_client.generate_presigned_url.assert_called_once_with(
             "prefix/file.bin", method="GET", signer_type=None, signer_options=None
         )
+
+
+# ---------------------------------------------------------------------------
+# Azure helpers
+# ---------------------------------------------------------------------------
+
+
+class TestAzureHelpers:
+    def test_parse_account_name_from_url(self):
+        assert _parse_account_name_from_url("https://myaccount.blob.core.windows.net") == "myaccount"
+
+    def test_parse_account_name_from_invalid_url_raises(self):
+        with pytest.raises(ValueError, match="Invalid Azure account URL"):
+            _parse_account_name_from_url("not-a-valid-url")
+
+    def test_parse_connection_string(self):
+        conn_str = "AccountName=myaccount;AccountKey=mykey==;DefaultEndpointsProtocol=https"
+        parsed = _parse_connection_string(conn_str)
+        assert parsed["AccountName"] == "myaccount"
+        assert parsed["AccountKey"] == "mykey=="
+        assert parsed["DefaultEndpointsProtocol"] == "https"
+
+
+# ---------------------------------------------------------------------------
+# AzureURLSigner
+# ---------------------------------------------------------------------------
+
+
+class TestAzureURLSigner:
+    @patch("multistorageclient.providers.azure.generate_blob_sas", return_value="sv=2021&sig=abc")
+    def test_get_url(self, mock_sas):
+        signer = AzureURLSigner(
+            account_name="myaccount",
+            account_url="https://myaccount.blob.core.windows.net",
+            account_key="mykey==",
+            expires_in=3600,
+        )
+        url = signer.generate_presigned_url("mycontainer/path/to/blob.bin", method="GET")
+
+        assert url == "https://myaccount.blob.core.windows.net/mycontainer/path/to/blob.bin?sv=2021&sig=abc"
+        call_kwargs = mock_sas.call_args.kwargs
+        assert call_kwargs["account_name"] == "myaccount"
+        assert call_kwargs["container_name"] == "mycontainer"
+        assert call_kwargs["blob_name"] == "path/to/blob.bin"
+        assert call_kwargs["account_key"] == "mykey=="
+        perm = call_kwargs["permission"]
+        assert perm.read is True
+        assert perm.write is False
+        assert perm.delete is False
+
+    @patch("multistorageclient.providers.azure.generate_blob_sas", return_value="sv=2021&sig=xyz")
+    def test_put_url(self, mock_sas):
+        signer = AzureURLSigner(
+            account_name="myaccount",
+            account_url="https://myaccount.blob.core.windows.net",
+            account_key="mykey==",
+        )
+        signer.generate_presigned_url("mycontainer/blob.bin", method="PUT")
+
+        perm = mock_sas.call_args.kwargs["permission"]
+        assert perm.write is True
+        assert perm.create is True
+        assert perm.read is False
+        assert perm.delete is False
+
+    @patch("multistorageclient.providers.azure.generate_blob_sas", return_value="token")
+    def test_delete_url(self, mock_sas):
+        signer = AzureURLSigner(
+            account_name="a",
+            account_url="https://a.blob.core.windows.net",
+            account_key="key",
+        )
+        signer.generate_presigned_url("container/blob", method="DELETE")
+        perm = mock_sas.call_args.kwargs["permission"]
+        assert perm.delete is True
+        assert perm.read is False
+        assert perm.write is False
+
+    @patch("multistorageclient.providers.azure.generate_blob_sas", return_value="token")
+    def test_unknown_method_defaults_to_read(self, mock_sas):
+        signer = AzureURLSigner(
+            account_name="a",
+            account_url="https://a.blob.core.windows.net",
+            account_key="key",
+        )
+        signer.generate_presigned_url("container/blob", method="HEAD")
+        perm = mock_sas.call_args.kwargs["permission"]
+        assert perm.read is True
+        assert perm.write is False
+
+    def test_no_credentials_raises(self):
+        with pytest.raises(ValueError, match="account_key or user_delegation_key"):
+            AzureURLSigner(account_name="a", account_url="https://a.blob.core.windows.net")
+
+    @patch("multistorageclient.providers.azure.generate_blob_sas", return_value="token")
+    def test_user_delegation_key_path(self, mock_sas):
+        udk = MagicMock()
+        signer = AzureURLSigner(
+            account_name="myaccount",
+            account_url="https://myaccount.blob.core.windows.net",
+            user_delegation_key=udk,
+        )
+        signer.generate_presigned_url("container/blob.bin")
+
+        call_kwargs = mock_sas.call_args.kwargs
+        assert call_kwargs["user_delegation_key"] is udk
+        assert "account_key" not in call_kwargs
+
+    def test_is_url_signer(self):
+        assert issubclass(AzureURLSigner, URLSigner)
+
+
+# ---------------------------------------------------------------------------
+# AzureBlobStorageProvider._generate_presigned_url
+# ---------------------------------------------------------------------------
+
+
+class TestAzureStorageProviderPresign:
+    @pytest.fixture
+    def static_provider(self):
+        conn_str = "AccountName=myaccount;AccountKey=mykey=="
+        with patch("multistorageclient.providers.azure.AzureBlobStorageProvider._create_blob_service_client"):
+            provider = AzureBlobStorageProvider(
+                endpoint_url="https://myaccount.blob.core.windows.net",
+                credentials_provider=StaticAzureCredentialsProvider(conn_str),
+            )
+        return provider
+
+    @pytest.fixture
+    def default_cred_provider(self):
+        # Patch DefaultAzureCredential so no real auth is attempted and
+        # _create_blob_service_client so no real SDK client is created.
+        with (
+            patch("multistorageclient.providers.azure.DefaultAzureCredential"),
+            patch("multistorageclient.providers.azure.AzureBlobStorageProvider._create_blob_service_client"),
+        ):
+            creds_provider = DefaultAzureCredentialsProvider()
+            provider = AzureBlobStorageProvider(
+                endpoint_url="https://myaccount.blob.core.windows.net",
+                credentials_provider=creds_provider,
+            )
+            # Replace the blob service client with a plain MagicMock for test control.
+            provider._blob_service_client = MagicMock()
+        return provider
+
+    @patch("multistorageclient.providers.azure.generate_blob_sas", return_value="token=abc")
+    def test_account_key_path(self, mock_sas, static_provider):
+        url = static_provider._generate_presigned_url("mycontainer/blob.bin")
+        assert "mycontainer/blob.bin" in url
+        assert "token=abc" in url
+
+    @patch("multistorageclient.providers.azure.generate_blob_sas", return_value="token=abc")
+    def test_account_key_signing_material_is_cached(self, mock_sas, static_provider):
+        static_provider._generate_presigned_url("mycontainer/blob.bin")
+        static_provider._generate_presigned_url("mycontainer/blob2.bin")
+        # Connection string should be parsed once and reused as static signing material.
+        assert mock_sas.call_count == 2
+        assert static_provider._account_key_signing_material == ("myaccount", "mykey==")
+
+    @patch("multistorageclient.providers.azure.generate_blob_sas", return_value="token=udk")
+    def test_delegation_key_path(self, mock_sas, default_cred_provider):
+        udk = MagicMock()
+        default_cred_provider._blob_service_client.get_user_delegation_key.return_value = udk
+
+        url = default_cred_provider._generate_presigned_url("mycontainer/blob.bin")
+        assert "token=udk" in url
+        default_cred_provider._blob_service_client.get_user_delegation_key.assert_called_once()
+        # Delegation key should be requested for the maximum Azure-allowed lifetime (7 days).
+        now = datetime.now(timezone.utc)
+        key_expiry = default_cred_provider._blob_service_client.get_user_delegation_key.call_args.kwargs[
+            "key_expiry_time"
+        ]
+        assert timedelta(days=6, hours=23) <= (key_expiry - now) <= timedelta(days=7, hours=1)
+
+    @patch("multistorageclient.providers.azure.generate_blob_sas", return_value="token=udk")
+    def test_delegation_key_cached_until_near_expiry(self, mock_sas, default_cred_provider):
+        udk = MagicMock()
+        default_cred_provider._blob_service_client.get_user_delegation_key.return_value = udk
+
+        # First call creates the delegation key.
+        default_cred_provider._generate_presigned_url("mycontainer/blob.bin")
+        # Second call within the expiry window reuses it.
+        default_cred_provider._generate_presigned_url("mycontainer/blob2.bin")
+
+        default_cred_provider._blob_service_client.get_user_delegation_key.assert_called_once()
+
+    @patch("multistorageclient.providers.azure.generate_blob_sas", return_value="token=udk")
+    def test_delegation_key_refreshed_when_near_expiry(self, mock_sas, default_cred_provider):
+        udk = MagicMock()
+        default_cred_provider._blob_service_client.get_user_delegation_key.return_value = udk
+
+        # Simulate a cached delegation key that is about to expire (within refresh buffer).
+        default_cred_provider._delegation_user_key = MagicMock()
+        default_cred_provider._delegation_signer_expiry = datetime.now(timezone.utc) + timedelta(minutes=2)
+
+        default_cred_provider._generate_presigned_url("mycontainer/blob.bin")
+
+        # A fresh delegation key must have been fetched.
+        default_cred_provider._blob_service_client.get_user_delegation_key.assert_called_once()
+
+    def test_unsupported_signer_type_raises(self, static_provider):
+        with pytest.raises(ValueError, match="Unsupported signer type"):
+            static_provider._generate_presigned_url("c/b", signer_type=SignerType.CLOUDFRONT)
+
+    def test_unsupported_credentials_raises(self):
+        with patch("multistorageclient.providers.azure.AzureBlobStorageProvider._create_blob_service_client"):
+            provider = AzureBlobStorageProvider(
+                endpoint_url="https://myaccount.blob.core.windows.net",
+                credentials_provider=MagicMock(spec=CredentialsProvider),
+            )
+        # Patch refresh so it doesn't try to rebuild the blob service client.
+        with (
+            patch.object(provider, "_refresh_blob_service_client_if_needed"),
+            pytest.raises(ValueError, match="StaticAzureCredentialsProvider"),
+        ):
+            provider._generate_presigned_url("c/b")
+
+    @patch("multistorageclient.providers.azure.generate_blob_sas", return_value="tok")
+    def test_explicit_azure_signer_type_accepted(self, mock_sas, static_provider):
+        url = static_provider._generate_presigned_url("c/b", signer_type=SignerType.AZURE)
+        assert "tok" in url
+
+    @patch("multistorageclient.providers.azure.generate_blob_sas", return_value="tok")
+    def test_custom_expires_in(self, mock_sas, static_provider):
+        static_provider._generate_presigned_url("c/b", signer_options={"expires_in": 900})
+        expiry = mock_sas.call_args.kwargs["expiry"]
+        now = datetime.now(timezone.utc)
+        assert timedelta(seconds=850) <= (expiry - now) <= timedelta(seconds=950)

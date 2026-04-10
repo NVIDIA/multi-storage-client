@@ -44,6 +44,7 @@ class SignerType(str, Enum):
 
     S3 = "s3"
     CLOUDFRONT = "cloudfront"
+    AZURE = "azure"
 
 
 @dataclass

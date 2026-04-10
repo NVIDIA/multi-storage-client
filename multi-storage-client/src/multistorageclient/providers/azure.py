@@ -17,14 +17,18 @@ import io
 import os
 import tempfile
 from collections.abc import Callable, Iterator
+from datetime import datetime, timedelta, timezone
 from typing import IO, Any, Optional, TypeVar, Union
+from urllib.parse import urlparse
 
 from azure.core import MatchConditions
 from azure.core.exceptions import AzureError, HttpResponseError
 from azure.identity import DefaultAzureCredential
-from azure.storage.blob import BlobPrefix, BlobServiceClient
+from azure.storage.blob import BlobPrefix, BlobServiceClient, generate_blob_sas
+from azure.storage.blob._models import BlobSasPermissions
 
 from ..constants import DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT
+from ..signers.base import URLSigner
 from ..telemetry import Telemetry
 from ..types import (
     AWARE_DATETIME_MIN,
@@ -33,6 +37,7 @@ from ..types import (
     ObjectMetadata,
     PreconditionFailedError,
     Range,
+    SignerType,
 )
 from ..utils import safe_makedirs, split_path, validate_attributes
 from .base import BaseStorageProvider
@@ -42,6 +47,97 @@ _T = TypeVar("_T")
 PROVIDER = "azure"
 AZURE_CONNECTION_STRING_KEY = "connection"
 AZURE_CREDENTIAL_KEY = "azure_credential"
+
+DEFAULT_PRESIGN_EXPIRES_IN = 3600
+
+# How long before delegation key expiry we treat the cached key as stale.
+_DELEGATION_KEY_REFRESH_BUFFER = timedelta(minutes=5)
+
+# Azure's maximum allowed delegation key lifetime is 7 days.
+_DELEGATION_KEY_LIFETIME = timedelta(days=7)
+
+
+def _sas_permissions_for_method(method: str) -> BlobSasPermissions:
+    """Return the minimal :class:`BlobSasPermissions` needed for *method*."""
+    m = method.upper()
+    if m in ("PUT", "POST"):
+        return BlobSasPermissions(write=True, create=True)
+    elif m == "DELETE":
+        return BlobSasPermissions(delete=True)
+    else:
+        # GET, HEAD, and any unrecognised method → read-only
+        return BlobSasPermissions(read=True)
+
+
+def _parse_account_name_from_url(account_url: str) -> str:
+    """Extract the storage account name from an Azure Blob Storage account URL."""
+    hostname = urlparse(account_url).hostname
+    if hostname is None:
+        raise ValueError(f"Invalid Azure account URL: {account_url!r}")
+    return hostname.split(".")[0]
+
+
+def _parse_connection_string(conn_str: str) -> dict[str, str]:
+    """Parse an Azure connection string (``AccountName=foo;AccountKey=bar;...``) into a dict."""
+    return dict(part.split("=", 1) for part in conn_str.split(";") if "=" in part)
+
+
+class AzureURLSigner(URLSigner):
+    """
+    Generates Azure Blob Storage SAS (Shared Access Signature) URLs.
+
+    Supports two signing paths depending on which credential is provided:
+
+    * **Account key** – uses a static storage account key (parsed from a connection string).
+    * **User delegation key** – uses a time-limited key obtained via Azure Identity (e.g. workload
+      identity, managed identity).  Callers are responsible for refreshing the signer when the
+      delegation key approaches expiry; see :py:meth:`AzureBlobStorageProvider._generate_presigned_url`.
+    """
+
+    def __init__(
+        self,
+        account_name: str,
+        account_url: str,
+        *,
+        account_key: Optional[str] = None,
+        user_delegation_key: Optional[Any] = None,
+        expires_in: int = DEFAULT_PRESIGN_EXPIRES_IN,
+    ) -> None:
+        if account_key is None and user_delegation_key is None:
+            raise ValueError("Either account_key or user_delegation_key must be provided.")
+        self._account_name = account_name
+        self._account_url = account_url.rstrip("/")
+        self._account_key = account_key
+        self._user_delegation_key = user_delegation_key
+        self._expires_in = expires_in
+
+    def generate_presigned_url(self, path: str, *, method: str = "GET") -> str:
+        """
+        Generate a SAS URL for the given blob path.
+
+        :param path: Path in the form ``container/blob/name``.
+        :param method: HTTP method requested by the caller.
+        :return: A fully-qualified SAS URL.
+        """
+        container_name, blob_name = split_path(path)
+        expiry = datetime.now(timezone.utc) + timedelta(seconds=self._expires_in)
+
+        sas_kwargs: dict[str, Any] = {
+            "account_name": self._account_name,
+            "container_name": container_name,
+            "blob_name": blob_name,
+            "permission": _sas_permissions_for_method(method),
+            "expiry": expiry,
+        }
+
+        if self._account_key is not None:
+            sas_kwargs["account_key"] = self._account_key
+        else:
+            sas_kwargs["user_delegation_key"] = self._user_delegation_key
+
+        sas_token = generate_blob_sas(**sas_kwargs)
+        blob_url = f"{self._account_url}/{container_name}/{blob_name}"
+        return f"{blob_url}?{sas_token}"
 
 
 class StaticAzureCredentialsProvider(CredentialsProvider):
@@ -127,6 +223,11 @@ class AzureBlobStorageProvider(BaseStorageProvider):
 
         self._account_url = endpoint_url
         self._credentials_provider = credentials_provider
+        # Cache static connection-string signing material used for per-request signers.
+        self._account_key_signing_material: Optional[tuple[str, str]] = None
+        # Cached delegation key and its expiry for DefaultAzureCredentialsProvider.
+        self._delegation_user_key: Optional[Any] = None
+        self._delegation_signer_expiry: Optional[datetime] = None
         # https://github.com/Azure/azure-sdk-for-python/tree/main/sdk/storage/azure-storage-blob#optional-configuration
         client_optional_configuration_keys = {
             "retry_total",
@@ -463,6 +564,78 @@ class AzureBlobStorageProvider(BaseStorageProvider):
                         return
 
         return self._translate_errors(_invoke_api, operation="LIST", container=container_name, blob=prefix)
+
+    def _generate_presigned_url(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        signer_type: Optional[SignerType] = None,
+        signer_options: Optional[dict[str, Any]] = None,
+    ) -> str:
+        """
+        Generate a SAS URL for a blob in Azure Blob Storage.
+
+        :param path: Path in the form ``container/blob/name``.
+        :param method: HTTP method requested by the caller.
+        :param signer_type: Must be ``None`` or :py:attr:`SignerType.AZURE`.
+        :param signer_options: Optional dict; supports ``expires_in`` (int, seconds).
+        :return: A fully-qualified SAS URL.
+        :raises ValueError: If *signer_type* is not ``None`` / ``SignerType.AZURE``, or if the
+            configured credential type does not support SAS generation.
+        """
+        if signer_type is not None and signer_type != SignerType.AZURE:
+            raise ValueError(f"Unsupported signer type for Azure provider: {signer_type!r}")
+
+        options = signer_options or {}
+        expires_in = int(options.get("expires_in", DEFAULT_PRESIGN_EXPIRES_IN))
+
+        self._refresh_blob_service_client_if_needed()
+
+        if isinstance(self._credentials_provider, StaticAzureCredentialsProvider):
+            # Account key path: cache parsed AccountName + AccountKey, then sign per request.
+            if self._account_key_signing_material is None:
+                conn_str = self._credentials_provider.get_credentials().get_custom_field(AZURE_CONNECTION_STRING_KEY)
+                parsed = _parse_connection_string(conn_str)
+                self._account_key_signing_material = (parsed["AccountName"], parsed["AccountKey"])
+            account_name, account_key = self._account_key_signing_material
+            signer = AzureURLSigner(
+                account_name=account_name,
+                account_url=self._account_url,
+                account_key=account_key,
+                expires_in=expires_in,
+            )
+
+        elif isinstance(self._credentials_provider, DefaultAzureCredentialsProvider):
+            # User delegation key path: refresh when the cached key is within the
+            # refresh buffer of its own expiry or has not been fetched yet.
+            now = datetime.now(timezone.utc)
+            if (
+                self._delegation_user_key is None
+                or self._delegation_signer_expiry is None
+                or now >= self._delegation_signer_expiry - _DELEGATION_KEY_REFRESH_BUFFER
+            ):
+                key_expiry = now + _DELEGATION_KEY_LIFETIME
+                self._delegation_user_key = self._blob_service_client.get_user_delegation_key(
+                    key_start_time=now,
+                    key_expiry_time=key_expiry,
+                )
+                self._delegation_signer_expiry = key_expiry
+            signer = AzureURLSigner(
+                account_name=_parse_account_name_from_url(self._account_url),
+                account_url=self._account_url,
+                user_delegation_key=self._delegation_user_key,
+                expires_in=expires_in,
+            )
+
+        else:
+            raise ValueError(
+                "Azure presigned URLs require StaticAzureCredentialsProvider (connection string) or "
+                "DefaultAzureCredentialsProvider (Azure Identity). "
+                f"Got: {type(self._credentials_provider).__name__!r}"
+            )
+
+        return signer.generate_presigned_url(path, method=method)
 
     @property
     def supports_parallel_listing(self) -> bool:

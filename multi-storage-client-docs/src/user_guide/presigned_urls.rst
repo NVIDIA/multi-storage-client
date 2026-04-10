@@ -52,6 +52,9 @@ the storage provider's native signer is used.
    * - ``SignerType.CLOUDFRONT``
      - Generates CloudFront signed URLs using an RSA key pair.
      - ``boto3``, ``cryptography``
+   * - ``SignerType.AZURE``
+     - Generates Azure Blob Storage SAS tokens. Uses account-key signing with ``AzureCredentials`` and user-delegation-key signing with ``DefaultAzureCredentials``.
+     - ``azure-storage-blob``
 
 S3 Native Signing
 =================
@@ -93,18 +96,57 @@ For CloudFront signed URLs (e.g. wildcard-signed URLs for Zarr datasets), pass
        },
    )
 
+Azure SAS Signing
+=================
+
+For Azure Blob Storage, presigned URLs are generated as
+`Shared Access Signature (SAS) <https://learn.microsoft.com/en-us/azure/storage/common/storage-sas-overview>`_
+tokens. Pass ``signer_type=SignerType.AZURE`` (or omit it, since it is the
+default for Azure providers):
+
+.. code-block:: python
+
+   from multistorageclient import SignerType
+
+   url = client.generate_presigned_url(
+       "datasets/model.bin",
+       signer_type=SignerType.AZURE,
+       signer_options={"expires_in": 3600},  # 1 hour (default)
+   )
+
+To generate a URL that allows uploading:
+
+.. code-block:: python
+
+   url = client.generate_presigned_url(
+       "uploads/data.tar",
+       method="PUT",
+       signer_options={"expires_in": 900},  # 15 minutes
+   )
+
+**Signing method** depends on the configured credentials provider:
+
+- ``AzureCredentials`` (connection string / account key) — signs with the
+  storage account key directly.
+- ``DefaultAzureCredentials`` (managed identity, Azure CLI, etc.) — obtains a
+  `user delegation key <https://learn.microsoft.com/en-us/rest/api/storageservices/get-user-delegation-key>`_
+  from Azure AD and uses it to sign the SAS token. The delegation key is cached
+  and refreshed automatically before it expires.
+
 Credential Lifetime and URL Expiration
 =======================================
 
 When the underlying credentials are temporary (STS, IAM roles, EC2 instance
-profiles), the effective URL lifetime is the **shorter** of ``expires_in`` and
-the remaining credential lifetime. For example, if the session token expires in
-10 minutes but ``expires_in`` is set to 3600 (1 hour), the URL will stop
-working after 10 minutes when the token expires. The S3 SDK will **not** warn
-if the credential expires before ``expires_in``.
+profiles, or Azure user delegation keys), the effective URL lifetime is the
+**shorter** of ``expires_in`` and the remaining credential lifetime.  For
+example, if the session token expires in 10 minutes but ``expires_in`` is set
+to 3600 (1 hour), the URL will stop working after 10 minutes when the token
+expires.
 
 For more details, see the
-`AWS presigned URL documentation <https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html>`_.
+`AWS presigned URL documentation <https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html>`_
+or the
+`Azure SAS documentation <https://learn.microsoft.com/en-us/azure/storage/common/storage-sas-overview>`_.
 
 Supported Providers
 ===================
@@ -112,7 +154,8 @@ Supported Providers
 Presigned URL generation is currently supported for:
 
 - **S3** and S3-compatible providers (S3, S8K, GCS via S3, AIStore via S3)
+- **Azure** Blob Storage (via SAS tokens)
 
-Other providers (Azure, GCS native, OCI, POSIX) will raise ``NotImplementedError``.
+Other providers (GCS native, OCI, POSIX) will raise ``NotImplementedError``.
 Support for additional providers can be added by implementing a ``URLSigner``
 subclass in the corresponding provider module.
