@@ -16,11 +16,11 @@ jobs:
   source:
     name: Source
     uses: ./.github/workflows/.source.yml
-  # beta:
-  #   name: Beta
-  #   needs:
-  #     - source
-  #   uses: ./.github/workflows/.beta.yml
+  beta:
+    name: Beta
+    needs:
+      - source
+    uses: ./.github/workflows/.beta.yml
   # production:
   #   name: Production
   #   needs:
