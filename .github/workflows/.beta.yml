@@ -31,6 +31,8 @@ jobs:
       run:
         shell: nix develop ${{ github.workspace }}#"\"${{ matrix.python-binary }}\"" --command bash -e {0}
     steps:
+      # Checkout.
+      - uses: actions/checkout@v6
       # Install Nix + Magic Nix Cache.
       - uses: DeterminateSystems/nix-installer-action@main
         with:
@@ -45,7 +47,6 @@ jobs:
         with:
           enable-cache: true
       # Main.
-      - uses: actions/checkout@v6
       - working-directory: multi-storage-client
         run: |
           just python-binary=${{ matrix.python-binary }} run-e2e-tests
