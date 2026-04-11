@@ -11,6 +11,38 @@ defaults:
   run:
     shell: nix develop --command bash -e {0}
 jobs:
+  nix:
+    name: nix
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      # Install Nix + Magic Nix Cache.
+      - uses: DeterminateSystems/nix-installer-action@main
+        with:
+          summarize: false
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      # Main.
+      - uses: actions/checkout@v6
+      - working-directory: nix
+        run: |
+          just build
+  multi-storage-explorer:
+    name: multi-storage-explorer
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      # Install Nix + Magic Nix Cache.
+      - uses: DeterminateSystems/nix-installer-action@main
+        with:
+          summarize: false
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      # Main.
+      - uses: actions/checkout@v6
+      - working-directory: multi-storage-explorer
+        run: |
+          just build
   multi-storage-client:
     name: multi-storage-client
     permissions:
@@ -28,10 +60,20 @@ jobs:
       run:
         shell: nix develop ${{ github.workspace }}#"\"${{ matrix.python-binary }}\"" --command bash -e {0}
     steps:
+      # Install Nix + Magic Nix Cache.
       - uses: DeterminateSystems/nix-installer-action@main
         with:
           summarize: false
       - uses: DeterminateSystems/magic-nix-cache-action@main
+      # Install uv + enable uv caching.
+      #
+      # The Nix shell provides uv so this is only for uv caching.
+      - uses: astral-sh/setup-uv@v8.0.0
+        env:
+          UV_NO_MODIFY_PATH: true
+        with:
+          enable-cache: true
+      # Main.
       - uses: actions/checkout@v6
       - working-directory: multi-storage-explorer
         run: |
@@ -40,7 +82,7 @@ jobs:
         run: |
           just python-binary=${{ matrix.python-binary }} build
           just python-binary=${{ matrix.python-binary }} run-minimal-verification
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ github.job }} (${{ matrix.python-binary }})
           path: |
@@ -53,49 +95,47 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     steps:
+      # Install Nix + Magic Nix Cache.
       - uses: DeterminateSystems/nix-installer-action@main
         with:
           summarize: false
       - uses: DeterminateSystems/magic-nix-cache-action@main
+      # Install uv + enable uv caching.
+      #
+      # The Nix shell provides uv so this is only for uv caching.
+      - uses: astral-sh/setup-uv@v8.0.0
+        env:
+          UV_NO_MODIFY_PATH: true
+        with:
+          enable-cache: true
+      # Main.
       - uses: actions/checkout@v6
       - working-directory: multi-storage-client-docs
         run: |
           just build
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ github.job }}
           path: |
             -
             multi-storage-client-docs/dist/
-  multi-storage-explorer:
-    name: multi-storage-explorer
-    permissions:
-      contents: read
-    runs-on: ubuntu-latest
-    steps:
-      - uses: DeterminateSystems/nix-installer-action@main
-        with:
-          summarize: false
-      - uses: DeterminateSystems/magic-nix-cache-action@main
-      - uses: actions/checkout@v4
-      - working-directory: multi-storage-explorer
-        run: |
-          just build
   multi-storage-file-system:
     name: multi-storage-file-system
     permissions:
       contents: read
     runs-on: ubuntu-latest
     steps:
+      # Install Nix + Magic Nix Cache.
       - uses: DeterminateSystems/nix-installer-action@main
         with:
           summarize: false
       - uses: DeterminateSystems/magic-nix-cache-action@main
+      # Main.
       - uses: actions/checkout@v6
       - working-directory: multi-storage-file-system
         run: |
           just build
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ github.job }}
           path: |
@@ -104,17 +144,3 @@ jobs:
             multi-storage-file-system/build/rpm/RPMS/*/*.rpm
             multi-storage-file-system/build/tar/*.tar.*
             multi-storage-file-system/build/zip/*.zip
-  nix:
-    name: nix
-    permissions:
-      contents: read
-    runs-on: ubuntu-latest
-    steps:
-      - uses: DeterminateSystems/nix-installer-action@main
-        with:
-          summarize: false
-      - uses: DeterminateSystems/magic-nix-cache-action@main
-      - uses: actions/checkout@v6
-      - working-directory: nix
-        run: |
-          just build

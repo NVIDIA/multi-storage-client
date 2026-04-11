@@ -31,10 +31,20 @@ jobs:
       run:
         shell: nix develop ${{ github.workspace }}#"\"${{ matrix.python-binary }}\"" --command bash -e {0}
     steps:
+      # Install Nix + Magic Nix Cache.
       - uses: DeterminateSystems/nix-installer-action@main
         with:
           summarize: false
       - uses: DeterminateSystems/magic-nix-cache-action@main
+      # Install uv + enable uv caching.
+      #
+      # The Nix shell provides uv so this is only for uv caching.
+      - uses: astral-sh/setup-uv@v8.0.0
+        env:
+          UV_NO_MODIFY_PATH: true
+        with:
+          enable-cache: true
+      # Main.
       - uses: actions/checkout@v6
       - working-directory: multi-storage-client
         run: |
