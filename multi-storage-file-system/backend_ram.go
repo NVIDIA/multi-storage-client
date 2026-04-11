@@ -233,6 +233,9 @@ func (ramContext *ramContextStruct) listDirectory(listDirectoryInput *listDirect
 	if (ramContext.backend.directoryPageSize != 0) && (numDirFileToReturn > ramContext.backend.directoryPageSize) {
 		numDirFileToReturn = ramContext.backend.directoryPageSize
 	}
+	if numDirFileToReturn > ramContext.backend.backendTypeSpecifics.(*backendConfigRAMStruct).maxListPageSize {
+		numDirFileToReturn = ramContext.backend.backendTypeSpecifics.(*backendConfigRAMStruct).maxListPageSize
+	}
 
 	switch {
 	case numDirFileToReturn < uint64(len(listDirectoryOutput.subdirectory)):
@@ -380,7 +383,7 @@ func (ramContext *ramContextStruct) listObjects(listObjectsInput *listObjectsInp
 		listObjectsOutput.object = listObjectsOutput.object[continuationTokenAsUint64:]
 	}
 
-	// Now apply listObjectsInput.maxItems or ramContext.backend.directoryPageSize if either is non-zero
+	// Now apply listObjectsInput.maxItems or ramContext.backend.directoryPageSize if either is non-zero as well as ramContext.backend.backendTypeSpecifics.(*backendConfigRAMStruct).maxListPageSize
 
 	numObjectToReturn = uint64(len(listObjectsOutput.object))
 
@@ -389,6 +392,9 @@ func (ramContext *ramContextStruct) listObjects(listObjectsInput *listObjectsInp
 	}
 	if (ramContext.backend.directoryPageSize != 0) && (numObjectToReturn > ramContext.backend.directoryPageSize) {
 		numObjectToReturn = ramContext.backend.directoryPageSize
+	}
+	if numObjectToReturn > ramContext.backend.backendTypeSpecifics.(*backendConfigRAMStruct).maxListPageSize {
+		numObjectToReturn = ramContext.backend.backendTypeSpecifics.(*backendConfigRAMStruct).maxListPageSize
 	}
 
 	if numObjectToReturn < uint64(len(listObjectsOutput.object)) {

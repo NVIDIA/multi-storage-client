@@ -13,6 +13,8 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 )
 
+//go:generate go run ./tools/lockgen -dir .
+
 var GitTag string // This variable will be populated at build time
 
 const (
@@ -503,7 +505,7 @@ func checkForFile(filePath string) (ok bool) {
 	return
 }
 
-// `fetchNonce` is called while globals.Lock is held to grep the next
+// `fetchNonce` is called while globals.Lock is held (via globalsLock) to grep the next
 // `number only used once` value. The presumption here is that a
 // simple incrementing uint64 would take many centuries to wrap
 // around to zero that returned values from this func will never

@@ -1,6 +1,6 @@
 quick: build
 
-all: fmt build lint test bench cover assets
+all: generate fmt build lint test bench cover assets
 
 GIT_TAG := $(shell git describe --tags --always --dirty)
 BUILD_LDFLAGS := -ldflags="-X 'main.GitTag=$(GIT_TAG)'"
@@ -21,7 +21,7 @@ PKG_TYPE := $(shell \
 		fi)
 
 
-.PHONY: quick all bench build clean cover fmt lint lint-update msfs-linux-amd64 msfs-linux-arm64 test install uninstall assets deb-packages deb-amd64 deb-arm64 _build-deb clean-deb rpm-packages rpm-amd64 rpm-arm64 _build-rpm clean-rpm
+.PHONY: quick all bench build clean cover fmt generate lint lint-update msfs-linux-amd64 msfs-linux-arm64 test install uninstall assets deb-packages deb-amd64 deb-arm64 _build-deb clean-deb rpm-packages rpm-amd64 rpm-arm64 _build-rpm clean-rpm
 
 bench:
 	go test $(TEST_LDFLAGS) -bench=. -run=^$
@@ -43,10 +43,13 @@ cover:
 	go test $(TEST_LDFLAGS) -cover
 
 fmt:
-	go fmt .
+	go fmt ./...
+
+generate:
+	go generate .
 
 lint:
-	golangci-lint run --config .golangci.yml .
+	golangci-lint run --config .golangci.yml ./...
 
 lint-update:
 	rm -f $(GOPATH)/bin/golangci-lint
@@ -60,6 +63,7 @@ msfs-linux-arm64:
 
 test:
 	go test $(TEST_LDFLAGS)
+	(cd tools/lockgen && go test && cd -)
 
 install:
 	@echo "Installing MSFS"

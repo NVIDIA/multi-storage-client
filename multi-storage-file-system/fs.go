@@ -21,7 +21,7 @@ func initFS() {
 		timeNow          time.Time
 	)
 
-	globals.Lock()
+	globalsLock("fs.go:24:2:initFS")
 
 	globals.backendMap = make(map[uint64]*backendStruct)
 
@@ -105,7 +105,7 @@ func initFS() {
 	globals.fissionMetrics = newFissionMetrics()
 	globals.backendMetrics = newBackendMetrics()
 
-	globals.Unlock()
+	globalsUnlock()
 }
 
 // `drainFS` awaits all backend/asynchronous traffic to complete before
@@ -119,7 +119,7 @@ func drainFS() {
 	globals.inodeEvictorCancelFunc()
 	globals.inodeEvictorWaitGroup.Wait()
 
-	globals.Lock()
+	globalsLock("fs.go:122:2:drainFS")
 
 	for dirName, backend = range globals.config.backends {
 		globals.backendsToUnmount[dirName] = backend
@@ -140,7 +140,7 @@ func drainFS() {
 	}
 	globals.logger.Printf("[INFO] cache dir (\"%s\") removed", globals.cacheDir)
 
-	globals.Unlock()
+	globalsUnlock()
 }
 
 // `processToMountList` creates a backend subdirectory of the FUSE
@@ -155,7 +155,7 @@ func processToMountList() {
 		timeNow time.Time
 	)
 
-	globals.Lock()
+	globalsLock("fs.go:158:2:processToMountList")
 
 	timeNow = time.Now()
 
@@ -225,15 +225,15 @@ func processToMountList() {
 		globals.backendMap[backend.nonce] = backend
 	}
 
-	globals.Unlock()
+	globalsUnlock()
 }
 
 // `processToUnmountList` is called to remove each backend subdirectory of the FUSE
 // file system's root directory found on the globals.backendsToUnmount list.
 func processToUnmountList() {
-	globals.Lock()
+	globalsLock("fs.go:234:2:processToUnmountList")
 	processToUnmountListAlreadyLocked()
-	globals.Unlock()
+	globalsUnlock()
 }
 
 // `processToUnmountListAlreadyLocked` is called while globals.Lock() is held to
@@ -810,7 +810,7 @@ func inodeEvictor() {
 	for {
 		select {
 		case <-ticker.C:
-			globals.Lock()
+			globalsLock("fs.go:813:4:inodeEvictor")
 
 			// Trim globals.cleanCacheLineLRU as possible/necessary
 
@@ -869,7 +869,7 @@ func inodeEvictor() {
 				parentInode.touch(nil)
 			}
 
-			globals.Unlock()
+			globalsUnlock()
 		case <-globals.inodeEvictorContext.Done():
 			ticker.Stop()
 			return
@@ -1080,12 +1080,12 @@ func prefetchDirectory(dirInodeNumber uint64) {
 		startTime               = time.Now()
 	)
 
-	globals.Lock()
+	globalsLock("fs.go:1083:2:prefetchDirectory")
 
 	dirInode, ok = globals.inodeMap.get(dirInodeNumber)
 	if !ok {
 		// For any reason, the directory inode has been evicted and no longer needs to be prefetched [case 1]
-		globals.Unlock()
+		globalsUnlock()
 		return
 	}
 
@@ -1102,19 +1102,19 @@ func prefetchDirectory(dirInodeNumber uint64) {
 			dirPath:           dirInode.objectPath,
 		}
 
-		globals.Unlock()
+		globalsUnlock()
 
 		listDirectoryOutput, err = listDirectoryWrapper(backend.context, listDirectoryInput)
 		if err != nil {
 			globals.logger.Printf("[WARN] listDirectoryWrapper(dirInode.backend.context, listDirectoryInput) failed: %v", err)
 		}
 
-		globals.Lock()
+		globalsLock("fs.go:1112:3:prefetchDirectory")
 
 		dirInode, ok = globals.inodeMap.get(dirInodeNumber)
 		if !ok {
 			// For any reason, the directory inode has been evicted and no longer needs to be prefetched [case 2]
-			globals.Unlock()
+			globalsUnlock()
 			return
 		}
 
@@ -1128,7 +1128,7 @@ func prefetchDirectory(dirInodeNumber uint64) {
 
 		if !ok {
 			// For any reason, the directory inode has been evicted and no longer needs to be prefetched
-			globals.Unlock()
+			globalsUnlock()
 			return
 		}
 
@@ -1136,7 +1136,7 @@ func prefetchDirectory(dirInodeNumber uint64) {
 
 		if err != nil {
 			dirInode.isPrefetchInProgress = false
-			globals.Unlock()
+			globalsUnlock()
 			return
 		}
 
@@ -1160,7 +1160,7 @@ func prefetchDirectory(dirInodeNumber uint64) {
 			latency = time.Since(startTime).Seconds()
 			globals.backendMetrics.DirectoryPrefetchLatencies.Observe(latency)
 			backend.backendMetrics.DirectoryPrefetchLatencies.Observe(latency)
-			globals.Unlock()
+			globalsUnlock()
 			return
 		}
 	}
@@ -1275,7 +1275,7 @@ func dumpFS(w io.Writer) {
 		rootDirInode *inodeStruct
 	)
 
-	globals.Lock()
+	globalsLock("fs.go:1278:2:dumpFS")
 
 	rootDirInode, ok = globals.inodeMap.get(FUSERootDirInodeNumber)
 	if !ok {
@@ -1289,7 +1289,7 @@ func dumpFS(w io.Writer) {
 
 	rootDirInode.dumpFS(w, "", FUSERootDirInodeNumber, "")
 
-	globals.Unlock()
+	globalsUnlock()
 }
 
 // `dumpFS` called on a particular inode recursively dumps a file system element.
@@ -1439,7 +1439,7 @@ func (thisInode *inodeStruct) finishPendingDelete() {
 
 Restart:
 
-	globals.Lock()
+	globalsLock("fs.go:1442:2:(*inodeStruct).finishPendingDelete")
 
 	// Let's just drop cache lines that are either "clean" io "dirty"
 
@@ -1475,7 +1475,7 @@ Restart:
 		}
 		cacheLineWaiter.Add(1)
 		cacheLine.waiters = append(cacheLine.waiters, &cacheLineWaiter)
-		globals.Unlock()
+		globalsUnlock()
 		cacheLineWaiter.Wait()
 		goto Restart
 	}
@@ -1531,5 +1531,5 @@ Restart:
 
 	parentInode.touch(nil)
 
-	globals.Unlock()
+	globalsUnlock()
 }

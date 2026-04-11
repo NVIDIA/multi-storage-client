@@ -169,6 +169,12 @@ func (pseudoContext *pseudoContextStruct) listDirectory(listDirectoryInput *list
 		nextContinuationToken = fmt.Sprintf("%016X", continuationTokenAsUint64+numDirFileToReturn)
 		isTruncated = true
 	}
+	if numDirFileToReturn > pseudoContext.backend.backendTypeSpecifics.(*backendConfigPSEUDOStruct).maxListPageSize {
+		numDirFileToReturn = pseudoContext.backend.backendTypeSpecifics.(*backendConfigPSEUDOStruct).maxListPageSize
+
+		nextContinuationToken = fmt.Sprintf("%016X", continuationTokenAsUint64+numDirFileToReturn)
+		isTruncated = true
+	}
 
 	if continuationTokenAsUint64 < pseudoContext.backendPSEUDO.subdirectoriesAtDepth[depth] {
 		dirIndexStart = continuationTokenAsUint64
@@ -524,6 +530,12 @@ func (pseudoContext *pseudoContextStruct) listObjects(listObjectsInput *listObje
 	}
 	if (pseudoContext.backend.directoryPageSize != 0) && (numObjectToReturn > pseudoContext.backend.directoryPageSize) {
 		numObjectToReturn = pseudoContext.backend.directoryPageSize
+
+		nextContinuationToken = fmt.Sprintf("%016X", continuationTokenAsUint64+numObjectToReturn)
+		isTruncated = true
+	}
+	if numObjectToReturn > pseudoContext.backend.backendTypeSpecifics.(*backendConfigPSEUDOStruct).maxListPageSize {
+		numObjectToReturn = pseudoContext.backend.backendTypeSpecifics.(*backendConfigPSEUDOStruct).maxListPageSize
 
 		nextContinuationToken = fmt.Sprintf("%016X", continuationTokenAsUint64+numObjectToReturn)
 		isTruncated = true

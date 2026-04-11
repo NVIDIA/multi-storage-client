@@ -19,7 +19,7 @@ func (cacheLine *cacheLineStruct) fetch() {
 		readFileOutput *readFileOutputStruct
 	)
 
-	globals.Lock()
+	globalsLock("cache.go:22:2:(*cacheLineStruct).fetch")
 
 	inode, ok = globals.inodeMap.get(cacheLine.inodeNumber)
 	if !ok {
@@ -30,7 +30,7 @@ func (cacheLine *cacheLineStruct) fetch() {
 		_ = globals.inboundCacheLineList.Remove(cacheLine.listElement)
 		cacheLine.listElement = globals.cleanCacheLineLRU.PushBack(cacheLine)
 		cacheLine.notifyWaiters()
-		globals.Unlock()
+		globalsUnlock()
 		return
 	}
 
@@ -46,11 +46,11 @@ func (cacheLine *cacheLineStruct) fetch() {
 		ifMatch:         "",
 	}
 
-	globals.Unlock()
+	globalsUnlock()
 
 	readFileOutput, err = readFileWrapper(backend.context, readFileInput)
 	if err != nil {
-		globals.Lock()
+		globalsLock("cache.go:53:3:(*cacheLineStruct).fetch")
 		globals.logger.Printf("[WARN] [TODO] (*cacheLineStruct) fetch() needs to handle error reading cache line")
 		inode, ok = globals.inodeMap.get(cacheLine.inodeNumber)
 		if ok {
@@ -64,11 +64,11 @@ func (cacheLine *cacheLineStruct) fetch() {
 		_ = globals.inboundCacheLineList.Remove(cacheLine.listElement)
 		cacheLine.listElement = globals.cleanCacheLineLRU.PushBack(cacheLine)
 		cacheLine.notifyWaiters()
-		globals.Unlock()
+		globalsUnlock()
 		return
 	}
 
-	globals.Lock()
+	globalsLock("cache.go:71:2:(*cacheLineStruct).fetch")
 	inode, ok = globals.inodeMap.get(cacheLine.inodeNumber)
 	if ok {
 		inode.inboundCacheLineCount--
@@ -81,7 +81,7 @@ func (cacheLine *cacheLineStruct) fetch() {
 	_ = globals.inboundCacheLineList.Remove(cacheLine.listElement)
 	cacheLine.listElement = globals.cleanCacheLineLRU.PushBack(cacheLine)
 	cacheLine.notifyWaiters()
-	globals.Unlock()
+	globalsUnlock()
 }
 
 // `touch` is called while globals.Lock() is held to update the placement of

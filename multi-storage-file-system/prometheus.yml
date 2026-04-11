@@ -7,16 +7,6 @@ scrape_configs:
       - targets: ['dev:9088']
         labels:
           __metrics_path__: /metrics
-  - job_name: 'ram'
-    static_configs:
-      - targets: ['dev:9088']
-        labels:
-          __metrics_path__: /metrics/ram
-  - job_name: 'minio'
-    static_configs:
-      - targets: ['dev:9088']
-        labels:
-          __metrics_path__: /metrics/minio
   - job_name: 'ais'
     static_configs:
       - targets: ['dev:9088']
@@ -27,3 +17,33 @@ scrape_configs:
       - targets: ['dev:9088']
         labels:
           __metrics_path__: /metrics/aisS3
+  - job_name: 'garage'
+    static_configs:
+      - targets: ['dev:9088']
+        labels:
+          __metrics_path__: /metrics/garage
+  - job_name: 'gcs'
+    static_configs:
+      - targets: ['dev:9088']
+        labels:
+          __metrics_path__: /metrics/gcs
+  - job_name: 'minio'
+    static_configs:
+      - targets: ['dev:9088']
+        labels:
+          __metrics_path__: /metrics/minio
+  - job_name: 'pseudo'
+    static_configs:
+      - targets: ['dev:9088']
+        labels:
+          __metrics_path__: /metrics/pseudo
+  - job_name: 'ram'
+    static_configs:
+      - targets: ['dev:9088']
+        labels:
+          __metrics_path__: /metrics/ram
+  - job_name: 'versity'
+    static_configs:
+      - targets: ['dev:9088']
+        labels:
+          __metrics_path__: /metrics/versity

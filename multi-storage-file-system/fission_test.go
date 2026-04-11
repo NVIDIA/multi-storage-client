@@ -442,9 +442,9 @@ func TestFissionDoGetAttrStatX(t *testing.T) {
 	fissionTestUp(t)
 	defer fissionTestDown(t)
 
-	globals.Lock()
+	globalsLock("fission_test.go:445:2:TestFissionDoGetAttrStatX")
 	unusedInodeNumber = fetchNonce()
-	globals.Unlock()
+	globalsUnlock()
 
 	inHeader = &fission.InHeader{
 		NodeID: unusedInodeNumber,
@@ -622,9 +622,9 @@ func TestFissionDoOpenDirReadDirReadDirPlusReleaseDir(t *testing.T) {
 	fissionTestUp(t)
 	defer fissionTestDown(t)
 
-	globals.Lock()
+	globalsLock("fission_test.go:625:2:TestFissionDoOpenDirReadDirReadDirPlusReleaseDir")
 	unusedInodeNumber = fetchNonce()
-	globals.Unlock()
+	globalsUnlock()
 
 	inHeader = &fission.InHeader{
 		NodeID: unusedInodeNumber,
@@ -1209,25 +1209,25 @@ func TestFissionDoUnlinkRollbackOnBackendFailure(t *testing.T) {
 	fileAIno = lookupOut.EntryOut.NodeID
 
 	// Verify fileA exists in parent's child map
-	globals.Lock()
+	globalsLock("fission_test.go:1212:2:TestFissionDoUnlinkRollbackOnBackendFailure")
 	_, ok = globals.inodeMap.get(ramDirIno)
 	if !ok {
-		globals.Unlock()
+		globalsUnlock()
 		t.Fatalf("ramDir inode not found")
 	}
 	_, ok = globals.inodeMap.get(fileAIno)
 	if !ok {
-		globals.Unlock()
+		globalsUnlock()
 		t.Fatalf("fileA inode not found")
 	}
 
 	// Verify fileA is in parent's physChildInodeMap
 	_, ok = globals.physChildDirEntryMap.getByBasename(ramDirIno, "fileA")
 	if !ok {
-		globals.Unlock()
+		globalsUnlock()
 		t.Fatalf("fileA should be in parent's physChildInodeMap")
 	}
-	globals.Unlock()
+	globalsUnlock()
 
 	// Note: We can't easily simulate backend failure in the RAM backend for this test,
 	// but the rollback logic is present and tested by code inspection.
@@ -1599,17 +1599,17 @@ func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 	dir2Ino = lookupOut.EntryOut.NodeID
 
 	// Verify dir2 is physical
-	globals.Lock()
+	globalsLock("fission_test.go:1602:2:TestFissionConvertPhysicalToVirtual")
 	dir2Inode, ok = globals.inodeMap.get(dir2Ino)
 	if !ok {
-		globals.Unlock()
+		globalsUnlock()
 		t.Fatalf("dir2 inode not found")
 	}
 	if dir2Inode.isVirt {
-		globals.Unlock()
+		globalsUnlock()
 		t.Fatalf("dir2 should be physical initially")
 	}
-	globals.Unlock()
+	globalsUnlock()
 
 	// Create a virtual subdirectory in dir2
 	mkDirIn = &fission.MkDirIn{
@@ -1625,13 +1625,13 @@ func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 	}
 
 	// Verify virtual directory was created
-	globals.Lock()
+	globalsLock("fission_test.go:1628:2:TestFissionConvertPhysicalToVirtual")
 	dir2Inode, ok = globals.inodeMap.get(dir2Ino)
 	if !ok {
-		globals.Unlock()
+		globalsUnlock()
 		t.Fatalf("dir2 inode not found after mkdir")
 	}
-	globals.Unlock()
+	globalsUnlock()
 
 	// Remove the virtual directory (this makes dir2 have one less virtual child)
 	rmDirIn = &fission.RmDirIn{
@@ -1661,10 +1661,10 @@ func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 
 	// For testing, we'll just remove dir4 from dir2's physChildInodeMap manually
 	// since we can't use DoRmDir on a physical directory
-	globals.Lock()
+	globalsLock("fission_test.go:1664:2:TestFissionConvertPhysicalToVirtual")
 	dir2Inode, ok = globals.inodeMap.get(dir2Ino)
 	if !ok {
-		globals.Unlock()
+		globalsUnlock()
 		t.Fatalf("dir2 inode not found")
 	}
 
@@ -1675,12 +1675,12 @@ func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 	physCount = limit - start
 
 	if physCount != 0 {
-		globals.Unlock()
+		globalsUnlock()
 		t.Fatalf("dir2 physChildInodeMap should be empty, got %d", physCount)
 	}
 
 	if dir2Inode.isVirt {
-		globals.Unlock()
+		globalsUnlock()
 		t.Fatalf("dir2 should still be physical before conversion")
 	}
 
@@ -1688,11 +1688,11 @@ func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 	convertDirectoryToVirtual(dir2Inode)
 
 	if !dir2Inode.isVirt {
-		globals.Unlock()
+		globalsUnlock()
 		t.Fatalf("dir2 should be virtual after conversion")
 	}
 
-	globals.Unlock()
+	globalsUnlock()
 
 	// Verify dir2 still accessible (POSIX semantics)
 	inHeader = &fission.InHeader{

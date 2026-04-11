@@ -56,7 +56,7 @@ backends: [
 	b.ResetTimer()
 
 	for range b.N {
-		globals.Lock()
+		globalsLock("bptree_test.go:59:3:BenchmarkBPTreePageInsertion")
 
 		ramInodeNumber, ok = globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, "ram")
 		if !ok {
@@ -96,6 +96,6 @@ backends: [
 			}
 		}
 
-		globals.Unlock()
+		globalsUnlock()
 	}
 }

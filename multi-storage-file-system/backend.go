@@ -256,8 +256,8 @@ func deleteFileWrapper(backendContext backendContextIf, deleteFileInput *deleteF
 
 	latency = time.Since(startTime).Seconds()
 
-	go func(backend *backendStruct, latency float64) {
-		globals.Lock()
+	go func(backend *backendStruct, latency float64, err error) {
+		globalsLock("backend.go:260:3:funcLit@259")
 		if err == nil {
 			globals.backendMetrics.DeleteFileSuccesses.Inc()
 			globals.backendMetrics.DeleteFileSuccessLatencies.Observe(latency)
@@ -271,8 +271,8 @@ func deleteFileWrapper(backendContext backendContextIf, deleteFileInput *deleteF
 			backend.backendMetrics.DeleteFileFailures.Inc()
 			backend.backendMetrics.DeleteFileFailureLatencies.Observe(latency)
 		}
-		globals.Unlock()
-	}(backendCommon, latency)
+		globalsUnlock()
+	}(backendCommon, latency, err)
 
 	recordBackendMetrics(backendCommon.dirName, "deleteFile", startTime, err, 0)
 
@@ -310,8 +310,8 @@ func listDirectoryWrapper(backendContext backendContextIf, listDirectoryInput *l
 
 	latency = time.Since(startTime).Seconds()
 
-	go func(backend *backendStruct, latency float64) {
-		globals.Lock()
+	go func(backend *backendStruct, latency float64, err error) {
+		globalsLock("backend.go:314:3:funcLit@313")
 		if err == nil {
 			globals.backendMetrics.ListDirectorySuccesses.Inc()
 			globals.backendMetrics.ListDirectorySuccessLatencies.Observe(latency)
@@ -325,8 +325,8 @@ func listDirectoryWrapper(backendContext backendContextIf, listDirectoryInput *l
 			backend.backendMetrics.ListDirectoryFailures.Inc()
 			backend.backendMetrics.ListDirectoryFailureLatencies.Observe(latency)
 		}
-		globals.Unlock()
-	}(backendCommon, latency)
+		globalsUnlock()
+	}(backendCommon, latency, err)
 
 	recordBackendMetrics(backendCommon.dirName, "listDirectory", startTime, err, 0)
 
@@ -370,8 +370,8 @@ func listObjectsWrapper(backendContext backendContextIf, listObjectsInput *listO
 
 	latency = time.Since(startTime).Seconds()
 
-	go func(backend *backendStruct, latency float64) {
-		globals.Lock()
+	go func(backend *backendStruct, latency float64, err error) {
+		globalsLock("backend.go:374:3:funcLit@373")
 		if err == nil {
 			globals.backendMetrics.ListObjectsSuccesses.Inc()
 			globals.backendMetrics.ListObjectsSuccessLatencies.Observe(latency)
@@ -385,8 +385,8 @@ func listObjectsWrapper(backendContext backendContextIf, listObjectsInput *listO
 			backend.backendMetrics.ListObjectsFailures.Inc()
 			backend.backendMetrics.ListObjectsFailureLatencies.Observe(latency)
 		}
-		globals.Unlock()
-	}(backendCommon, latency)
+		globalsUnlock()
+	}(backendCommon, latency, err)
 
 	recordBackendMetrics(backendCommon.dirName, "listObjects", startTime, err, 0)
 
@@ -431,8 +431,8 @@ func readFileWrapper(backendContext backendContextIf, readFileInput *readFileInp
 
 	latency = time.Since(startTime).Seconds()
 
-	go func(backend *backendStruct, latency float64) {
-		globals.Lock()
+	go func(backend *backendStruct, latency float64, err error) {
+		globalsLock("backend.go:435:3:funcLit@434")
 		if err == nil {
 			globals.backendMetrics.ReadFileSuccesses.Inc()
 			globals.backendMetrics.ReadFileSuccessLatencies.Observe(latency)
@@ -446,8 +446,8 @@ func readFileWrapper(backendContext backendContextIf, readFileInput *readFileInp
 			backend.backendMetrics.ReadFileFailures.Inc()
 			backend.backendMetrics.ReadFileFailureLatencies.Observe(latency)
 		}
-		globals.Unlock()
-	}(backendCommon, latency)
+		globalsUnlock()
+	}(backendCommon, latency, err)
 
 	if (err == nil) && (readFileOutput != nil) {
 		bytesRead = int64(len(readFileOutput.buf))
@@ -495,8 +495,8 @@ func statDirectoryWrapper(backendContext backendContextIf, statDirectoryInput *s
 
 	latency = time.Since(startTime).Seconds()
 
-	go func(backend *backendStruct, latency float64) {
-		globals.Lock()
+	go func(backend *backendStruct, latency float64, err error) {
+		globalsLock("backend.go:499:3:funcLit@498")
 		if err == nil {
 			globals.backendMetrics.StatDirectorySuccesses.Inc()
 			globals.backendMetrics.StatDirectorySuccessLatencies.Observe(latency)
@@ -510,8 +510,8 @@ func statDirectoryWrapper(backendContext backendContextIf, statDirectoryInput *s
 			backend.backendMetrics.StatDirectoryFailures.Inc()
 			backend.backendMetrics.StatDirectoryFailureLatencies.Observe(latency)
 		}
-		globals.Unlock()
-	}(backendCommon, latency)
+		globalsUnlock()
+	}(backendCommon, latency, err)
 
 	recordBackendMetrics(backendCommon.dirName, "statDirectory", startTime, err, 0)
 
@@ -556,8 +556,8 @@ func statFileWrapper(backendContext backendContextIf, statFileInput *statFileInp
 
 	latency = time.Since(startTime).Seconds()
 
-	go func(backend *backendStruct, latency float64) {
-		globals.Lock()
+	go func(backend *backendStruct, latency float64, err error) {
+		globalsLock("backend.go:560:3:funcLit@559")
 		if err == nil {
 			globals.backendMetrics.StatFileSuccesses.Inc()
 			globals.backendMetrics.StatFileSuccessLatencies.Observe(latency)
@@ -571,8 +571,8 @@ func statFileWrapper(backendContext backendContextIf, statFileInput *statFileInp
 			backend.backendMetrics.StatFileFailures.Inc()
 			backend.backendMetrics.StatFileFailureLatencies.Observe(latency)
 		}
-		globals.Unlock()
-	}(backendCommon, latency)
+		globalsUnlock()
+	}(backendCommon, latency, err)
 
 	if (err == nil) && (statFileOutput != nil) {
 		bytesReported = int64(statFileOutput.size)

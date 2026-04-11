@@ -1339,6 +1339,10 @@ func checkConfigFile() (err error) {
 						err = fmt.Errorf("bad PSEUDO.max_list_page_size at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
 						return
 					}
+					if backendConfigPSEUDOAsStruct.maxListPageSize == 0 {
+						err = fmt.Errorf("bad PSEUDO.max_list_page_size at backends[%v (\"%s\")] - must be > 0", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
 
 					backendConfigPSEUDOAsStruct.minLatencyDeleteFile, ok = parseMilliseconds(backendConfigPSEUDOAsMap, "min_latency_delete_file", time.Duration(0))
 					if !ok {
@@ -1473,6 +1477,10 @@ func checkConfigFile() (err error) {
 					backendConfigRAMAsStruct.maxListPageSize, ok = parseUint64(backendConfigRAMAsMap, "max_list_page_size", defaultRAMMaxListPageSize)
 					if !ok {
 						err = fmt.Errorf("bad RAM.max_list_page_size at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+					if backendConfigRAMAsStruct.maxListPageSize == 0 {
+						err = fmt.Errorf("bad RAM.max_list_page_size at backends[%v (\"%s\")] - must be > 0", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
 						return
 					}
 
