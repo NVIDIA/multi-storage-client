@@ -13,6 +13,8 @@ concurrency:
 jobs:
   source:
     name: Source
+    permissions:
+      contents: read
     uses: ./.github/workflows/.source.yml
   status:
     name: Status

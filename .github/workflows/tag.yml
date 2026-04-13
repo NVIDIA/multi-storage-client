@@ -45,8 +45,8 @@ jobs:
       url: ${{ steps.deploy-pages.outputs.page_url }}
     permissions:
       contents: read
-      pages: write
       id-token: write
+      pages: write
     runs-on: ubuntu-latest
     steps:
       - uses: DeterminateSystems/nix-installer-action@main
