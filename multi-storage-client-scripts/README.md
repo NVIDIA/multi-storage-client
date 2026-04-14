@@ -35,9 +35,9 @@ Key:
 │           └── argparse_extensions
 │               └── ...
 │
-│   # Build recipes.
-├── justfile
-│
 │   # Python package configuration.
-└── pyproject.toml
+├── pyproject.toml
+│
+│   # Build recipes.
+└── justfile
 ```

@@ -45,6 +45,7 @@ jobs:
         env:
           UV_NO_MODIFY_PATH: true
         with:
+          cache-suffix: multi-storage-client
           enable-cache: true
       # Main.
       - working-directory: multi-storage-client

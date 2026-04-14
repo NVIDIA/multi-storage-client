@@ -76,6 +76,7 @@ jobs:
         env:
           UV_NO_MODIFY_PATH: true
         with:
+          cache-suffix: multi-storage-client
           enable-cache: true
       # Main.
       - working-directory: multi-storage-explorer
@@ -112,6 +113,7 @@ jobs:
         env:
           UV_NO_MODIFY_PATH: true
         with:
+          cache-suffix: multi-storage-client-docs
           enable-cache: true
       # Main.
       - working-directory: multi-storage-client-docs
@@ -143,6 +145,7 @@ jobs:
         env:
           UV_NO_MODIFY_PATH: true
         with:
+          cache-suffix: multi-storage-client-scripts
           enable-cache: true
       # Main.
       - working-directory: multi-storage-client-scripts
