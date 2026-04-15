@@ -110,8 +110,8 @@ multi-storage-client:
         - nix/**/*
         - pyproject.toml
         - uv.lock
-        - multi-storage-client/**/*
         - multi-storage-explorer/**/*
+        - multi-storage-client/**/*
     - when: manual
       allow_failure: true
   parallel:

@@ -1,4 +1,5 @@
 {
+  actionlint,
   awscli2,
   azurite,
   bun,
@@ -57,6 +58,7 @@ mkShell {
     nix
     nixfmt
     # Utilities.
+    actionlint
     coreutils
     curl
     gettext

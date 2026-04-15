@@ -38,8 +38,8 @@ class Phase(argparse_extensions.ArgumentEnum):
     Release phase to exit after.
     """
 
-    #: Validate release details.
-    validate = 0
+    #: Check release inputs.
+    check = 0
     #: Publish release.
     publish = 1
 
@@ -76,7 +76,7 @@ argparse_extensions.add_argument_partial(parser=PARSER, arguments_type=Arguments
 def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
     # ----------------------------------------------------------------------------------------------------
     #
-    # Collect release details.
+    # Collect release inputs.
     #
     # ----------------------------------------------------------------------------------------------------
 
@@ -115,7 +115,7 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
 
     # ----------------------------------------------------------------------------------------------------
     #
-    # Validate release details.
+    # Check release inputs.
     #
     # ----------------------------------------------------------------------------------------------------
 
@@ -181,7 +181,7 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
     if len(release_assets) != len({release_asset.name for release_asset in release_assets}):
         raise ValueError("Multiple release assets have the same name!")
 
-    if arguments.phase == Phase.validate:
+    if arguments.phase == Phase.check:
         return 0
 
     # ----------------------------------------------------------------------------------------------------
