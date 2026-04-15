@@ -15,6 +15,7 @@
 
 import io
 import os
+import posixpath
 from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from typing import IO, Any, Optional, TypeVar, Union
@@ -285,6 +286,20 @@ class AIStoreStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="LIST", bucket=bucket, key=prefix)
 
+    def _make_symlink(self, path: str, target: str) -> None:
+        bucket, key = split_path(path)
+        target_bucket, target_key = split_path(target)
+        if bucket != target_bucket:
+            raise ValueError(f"Cannot create cross-bucket symlink: '{bucket}' -> '{target_bucket}'.")
+        relative_target = posixpath.relpath(target_key, posixpath.dirname(key))
+
+        def _invoke_api() -> None:
+            obj = self.client.bucket(bucket, self.provider).object(obj_name=key)
+            obj.put_content(b"")
+            obj.set_custom_props(custom_metadata={"msc-symlink-target": relative_target}, replace_existing=True)
+
+        self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
+
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         bucket, key = split_path(path)
         if path.endswith("/") or (bucket and not key):
@@ -314,12 +329,15 @@ class AIStoreStorageProvider(BaseStorageProvider):
                     else:
                         last_modified = AWARE_DATETIME_MIN
 
+                    user_metadata = props.custom_metadata
+                    symlink_target = user_metadata.get("msc-symlink-target") if user_metadata else None
                     return ObjectMetadata(
                         key=key,
                         content_length=int(props.size),  # pyright: ignore [reportArgumentType]
                         last_modified=last_modified,
                         etag=props.checksum_value,
-                        metadata=props.custom_metadata,
+                        metadata=user_metadata,
+                        symlink_target=symlink_target,
                     )
                 except (AISError, HTTPError) as e:
                     # Check if this might be a virtual directory (prefix with objects under it)

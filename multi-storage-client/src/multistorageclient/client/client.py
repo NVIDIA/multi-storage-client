@@ -416,6 +416,20 @@ class StorageClient(AbstractStorageClient):
         """
         return self._delegate.copy(src_path, dest_path)
 
+    def make_symlink(self, path: str, target: str) -> None:
+        """
+        Creates a symbolic link at ``path`` pointing to ``target``.
+
+        On POSIX backends this creates a native OS symlink with a relative target path.
+        On object-store backends this creates a zero-byte marker object with the target
+        stored in user metadata.
+
+        :param path: The logical path where the symlink will be created.
+        :param target: The logical key that the symlink points to.
+        :raises NotImplementedError: If symlink creation is not supported.
+        """
+        return self._delegate.make_symlink(path, target)
+
     def upload_file(
         self,
         remote_path: str,

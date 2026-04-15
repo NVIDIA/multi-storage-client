@@ -109,6 +109,9 @@ class ObjectMetadata:
 
     metadata: Optional[dict[str, Any]] = field(default=None)
 
+    #: The logical key that this symlink points to. ``None`` for non-symlink entries.
+    symlink_target: Optional[str] = field(default=None)
+
     @staticmethod
     def from_dict(data: dict) -> "ObjectMetadata":
         """
@@ -128,6 +131,7 @@ class ObjectMetadata:
                 etag=data.get("etag"),
                 storage_class=data.get("storage_class"),
                 metadata=data.get("metadata"),
+                symlink_target=data.get("symlink_target"),
             )
         except KeyError as e:
             raise ValueError("Missing required field.") from e
@@ -238,6 +242,20 @@ class StorageProvider(ABC):
         Deletes multiple objects from the storage provider.
 
         :param paths: A list of paths of objects to delete.
+        """
+        pass
+
+    @abstractmethod
+    def make_symlink(self, path: str, target: str) -> None:
+        """
+        Creates a symbolic link at ``path`` pointing to ``target``.
+
+        On POSIX backends this creates a native OS symlink with a relative target path.
+        On object-store backends this creates a zero-byte marker object with the target
+        stored in user metadata (``msc-symlink-target``).
+
+        :param path: The path where the symlink will be created.
+        :param target: The logical key that the symlink points to.
         """
         pass
 

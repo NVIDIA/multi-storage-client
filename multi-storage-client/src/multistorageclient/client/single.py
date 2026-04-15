@@ -544,6 +544,34 @@ class SingleStorageClient(AbstractStorageClient):
         else:
             self._storage_provider.copy_object(src_path, dest_path)
 
+    def make_symlink(self, path: str, target: str) -> None:
+        """
+        Creates a symbolic link at ``path`` pointing to ``target``.
+
+        :param path: The logical path where the symlink will be created.
+        :param target: The logical key that the symlink points to.
+        """
+        if self._metadata_provider:
+            try:
+                self._metadata_provider.get_object_metadata(path)
+                if not self._metadata_provider.allow_overwrites():
+                    raise FileExistsError(
+                        f"The file at path '{path}' already exists; "
+                        f"overwriting is not allowed when using a metadata provider."
+                    )
+            except FileNotFoundError:
+                pass
+            obj_metadata = ObjectMetadata(
+                key=path,
+                content_length=0,
+                last_modified=datetime.now(tz=timezone.utc),
+                symlink_target=target,
+            )
+            with self._metadata_provider_lock or contextlib.nullcontext():
+                self._metadata_provider.add_file(path, obj_metadata)
+        else:
+            self._storage_provider.make_symlink(path, target)
+
     def delete(self, path: str, recursive: bool = False) -> None:
         """
         Deletes an object at the specified path.

@@ -517,6 +517,23 @@ def write(url: str, body: bytes, attributes: Optional[dict[str, str]] = None) ->
     client.write(path=path, body=body, attributes=attributes)
 
 
+def make_symlink(url: str, target_url: str) -> None:
+    """
+    Creates a symbolic link at ``url`` pointing to ``target_url``.
+
+    Both URLs must resolve to the same storage profile.
+
+    :param url: The URL where the symlink will be created.
+    :param target_url: The URL of the target that the symlink points to.
+    :raises ValueError: If the two URLs resolve to different storage profiles.
+    """
+    client, path = resolve_storage_client(url)
+    target_client, target_path = resolve_storage_client(target_url)
+    if client is not target_client:
+        raise ValueError("Cannot create cross-profile symlink: url and target_url must belong to the same profile.")
+    client.make_symlink(path=path, target=target_path)
+
+
 def delete(url: str, recursive: bool = False) -> None:
     """
     Deletes the specified object(s) from the storage provider.

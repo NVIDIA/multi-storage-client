@@ -16,6 +16,7 @@
 import codecs
 import io
 import os
+import posixpath
 import tempfile
 from collections.abc import Callable, Iterator
 from typing import IO, Any, Optional, TypeVar, Union
@@ -611,6 +612,23 @@ class S3StorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="LIST", bucket=bucket, key=key)
 
+    def _make_symlink(self, path: str, target: str) -> None:
+        bucket, key = split_path(path)
+        target_bucket, target_key = split_path(target)
+        if bucket != target_bucket:
+            raise ValueError(f"Cannot create cross-bucket symlink: '{bucket}' -> '{target_bucket}'.")
+        relative_target = posixpath.relpath(target_key, posixpath.dirname(key))
+
+        def _invoke_api() -> None:
+            self._s3_client.put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=b"",
+                Metadata={"msc-symlink-target": relative_target},
+            )
+
+        self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
+
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         bucket, key = split_path(path)
         if path.endswith("/") or (bucket and not key):
@@ -630,6 +648,8 @@ class S3StorageProvider(BaseStorageProvider):
 
             def _invoke_api() -> ObjectMetadata:
                 response = self._s3_client.head_object(Bucket=bucket, Key=key)
+                user_metadata = response.get("Metadata")
+                symlink_target = user_metadata.get("msc-symlink-target") if user_metadata else None
 
                 return ObjectMetadata(
                     key=path,
@@ -639,7 +659,8 @@ class S3StorageProvider(BaseStorageProvider):
                     last_modified=response["LastModified"],
                     etag=response["ETag"].strip('"') if "ETag" in response else None,
                     storage_class=response.get("StorageClass"),
-                    metadata=response.get("Metadata"),
+                    metadata=user_metadata,
+                    symlink_target=symlink_target,
                 )
 
             try:

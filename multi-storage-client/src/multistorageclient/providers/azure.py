@@ -15,6 +15,7 @@
 
 import io
 import os
+import posixpath
 import tempfile
 from collections.abc import Callable, Iterator
 from datetime import datetime, timedelta, timezone
@@ -482,6 +483,24 @@ class AzureBlobStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="LIST", container=container_name, blob=prefix)
 
+    def _make_symlink(self, path: str, target: str) -> None:
+        container_name, blob_name = split_path(path)
+        target_container, target_key = split_path(target)
+        if container_name != target_container:
+            raise ValueError(f"Cannot create cross-container symlink: '{container_name}' -> '{target_container}'.")
+        relative_target = posixpath.relpath(target_key, posixpath.dirname(blob_name))
+        self._refresh_blob_service_client_if_needed()
+
+        def _invoke_api() -> None:
+            blob_client = self._blob_service_client.get_blob_client(container=container_name, blob=blob_name)
+            blob_client.upload_blob(
+                data=b"",
+                overwrite=True,
+                metadata={"msc_symlink_target": relative_target},
+            )
+
+        self._translate_errors(_invoke_api, operation="PUT", container=container_name, blob=blob_name)
+
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         container_name, blob_name = split_path(path)
         if path.endswith("/") or (container_name and not blob_name):
@@ -503,13 +522,16 @@ class AzureBlobStorageProvider(BaseStorageProvider):
             def _invoke_api() -> ObjectMetadata:
                 blob_client = self._blob_service_client.get_blob_client(container=container_name, blob=blob_name)
                 properties = blob_client.get_blob_properties()
+                user_metadata = dict(properties.metadata) if properties.metadata else None
+                symlink_target = user_metadata.get("msc_symlink_target") if user_metadata else None
                 return ObjectMetadata(
                     key=path,
                     content_length=properties.size,
                     content_type=properties.content_settings.content_type,
                     last_modified=properties.last_modified,
                     etag=properties.etag.strip('"') if properties.etag else "",
-                    metadata=dict(properties.metadata) if properties.metadata else None,
+                    metadata=user_metadata,
+                    symlink_target=symlink_target,
                 )
 
             try:

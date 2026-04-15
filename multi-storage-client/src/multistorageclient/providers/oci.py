@@ -15,6 +15,7 @@
 
 import io
 import os
+import posixpath
 import tempfile
 from collections.abc import Callable, Iterator
 from typing import IO, Any, Optional, TypeVar, Union
@@ -298,6 +299,25 @@ class OracleStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="LIST", bucket=bucket, key=key)
 
+    def _make_symlink(self, path: str, target: str) -> None:
+        bucket, key = split_path(path)
+        target_bucket, target_key = split_path(target)
+        if bucket != target_bucket:
+            raise ValueError(f"Cannot create cross-bucket symlink: '{bucket}' -> '{target_bucket}'.")
+        relative_target = posixpath.relpath(target_key, posixpath.dirname(key))
+        self._refresh_oci_client_if_needed()
+
+        def _invoke_api() -> None:
+            self._oci_client.put_object(
+                namespace_name=self._namespace,
+                bucket_name=bucket,
+                object_name=key,
+                put_object_body=b"",
+                opc_meta={"msc-symlink-target": relative_target},
+            )
+
+        self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
+
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         bucket, key = split_path(path)
         if path.endswith("/") or (bucket and not key):
@@ -330,13 +350,16 @@ class OracleStorageProvider(BaseStorageProvider):
                             metadata_key = metadata_key[len("opc-meta-") :]
                             attributes[metadata_key] = metadata_val
 
+                user_metadata = attributes if attributes else None
+                symlink_target = user_metadata.get("msc-symlink-target") if user_metadata else None
                 return ObjectMetadata(
                     key=path,
                     content_length=int(response.headers["Content-Length"]),  # pyright: ignore [reportOptionalMemberAccess]
                     content_type=response.headers.get("Content-Type", None),  # pyright: ignore [reportOptionalMemberAccess]
                     last_modified=dateutil_parser(response.headers["last-modified"]),  # pyright: ignore [reportOptionalMemberAccess]
                     etag=response.headers.get("etag", None),  # pyright: ignore [reportOptionalMemberAccess]
-                    metadata=attributes if attributes else None,
+                    metadata=user_metadata,
+                    symlink_target=symlink_target,
                 )
 
             try:

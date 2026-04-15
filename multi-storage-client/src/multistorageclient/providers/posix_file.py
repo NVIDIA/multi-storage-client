@@ -187,21 +187,31 @@ class PosixFileStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="DELETE", path=path)
 
+    def _make_symlink(self, path: str, target: str) -> None:
+        def _invoke_api() -> None:
+            safe_makedirs(os.path.dirname(path))
+            relative_target = os.path.relpath(target, os.path.dirname(path))
+            if os.path.lexists(path):
+                os.remove(path)
+            os.symlink(relative_target, path)
+
+        self._translate_errors(_invoke_api, operation="SYMLINK", path=path)
+
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         is_dir = os.path.isdir(path)
         if is_dir:
             path = self._append_delimiter(path)
 
         def _invoke_api() -> ObjectMetadata:
-            # Get basic file attributes
             metadata_dict = {}
             try:
                 json_bytes = xattr.getxattr(path, "user.json")
                 metadata_dict = json.loads(json_bytes.decode("utf-8"))
             except (OSError, IOError, KeyError, json.JSONDecodeError, AttributeError) as e:
-                # Silently ignore if xattr doesn't exist, can't be read, or is corrupted
                 logger.debug(f"Failed to read extended attributes from {path}: {e}")
                 pass
+
+            symlink_target = os.readlink(path) if os.path.islink(path) else None
 
             return ObjectMetadata(
                 key=path,
@@ -209,6 +219,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
                 content_length=0 if is_dir else os.path.getsize(path),
                 last_modified=datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc),
                 metadata=metadata_dict if metadata_dict else None,
+                symlink_target=symlink_target,
             )
 
         return self._translate_errors(_invoke_api, operation="HEAD", path=path)

@@ -319,6 +319,21 @@ class AbstractStorageClient(ABC):
         pass
 
     @abstractmethod
+    def make_symlink(self, path: str, target: str) -> None:
+        """
+        Creates a symbolic link at ``path`` pointing to ``target``.
+
+        On POSIX backends this creates a native OS symlink with a relative target path.
+        On object-store backends this creates a zero-byte marker object with the target
+        stored in user metadata.
+
+        :param path: The logical path where the symlink will be created.
+        :param target: The logical key that the symlink points to.
+        :raises NotImplementedError: If symlink creation is not supported.
+        """
+        pass
+
+    @abstractmethod
     def upload_file(
         self,
         remote_path: str,

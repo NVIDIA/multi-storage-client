@@ -629,6 +629,23 @@ class BaseStorageProvider(StorageProvider):
             f=lambda: self._delete_objects(paths),
         )
 
+    def make_symlink(self, path: str, target: str) -> None:
+        """
+        Creates a symbolic link at ``path`` pointing to ``target``.
+
+        Prepends :attr:`base_path` to both arguments, emits write metrics,
+        and delegates to :meth:`_make_symlink`.
+
+        :param path: Logical path where the symlink will be created.
+        :param target: Logical path that the symlink points to.
+        """
+        path = self._prepend_base_path(path)
+        target = self._prepend_base_path(target)
+        self._emit_metrics(
+            operation=BaseStorageProvider._Operation.WRITE,
+            f=lambda: self._make_symlink(path, target),
+        )
+
     def generate_presigned_url(
         self,
         path: str,
@@ -1215,6 +1232,16 @@ class BaseStorageProvider(StorageProvider):
         :raises FileNotFoundError: If the object does not exist.
         :raises RuntimeError: If deletion fails.
         :raises PreconditionFailedError: If the if_match condition is not met.
+        """
+        pass
+
+    @abstractmethod
+    def _make_symlink(self, path: str, target: str) -> None:
+        """
+        Creates a symbolic link at ``path`` pointing to ``target``.
+
+        :param path: Full physical path for the symlink.
+        :param target: Full physical path that the symlink points to.
         """
         pass
 

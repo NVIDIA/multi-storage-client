@@ -79,6 +79,76 @@ def test_list_objects_with_ascending_order():
         assert file_keys == glob_file_keys, "Files not sorted"
 
 
+def test_make_symlink_creates_relative_symlink():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        target_path = os.path.join(temp_dir, "dir1", "target.txt")
+        os.makedirs(os.path.dirname(target_path))
+        with open(target_path, "w") as f:
+            f.write("target content")
+
+        provider = PosixFileStorageProvider(base_path=temp_dir)
+        provider.make_symlink("link.txt", "dir1/target.txt")
+
+        link_path = os.path.join(temp_dir, "link.txt")
+        assert os.path.islink(link_path)
+        assert os.path.isfile(link_path)
+        assert os.readlink(link_path) == os.path.relpath(target_path, temp_dir)
+        with open(link_path) as f:
+            assert f.read() == "target content"
+
+
+def test_make_symlink_creates_parent_directories():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        target_path = os.path.join(temp_dir, "target.txt")
+        with open(target_path, "w") as f:
+            f.write("content")
+
+        provider = PosixFileStorageProvider(base_path=temp_dir)
+        provider.make_symlink("sub/dir/link.txt", "target.txt")
+
+        link_path = os.path.join(temp_dir, "sub", "dir", "link.txt")
+        assert os.path.islink(link_path)
+        assert os.path.isfile(link_path)
+
+
+def test_make_symlink_overwrites_existing():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        target1 = os.path.join(temp_dir, "target1.txt")
+        target2 = os.path.join(temp_dir, "target2.txt")
+        with open(target1, "w") as f:
+            f.write("first")
+        with open(target2, "w") as f:
+            f.write("second")
+
+        provider = PosixFileStorageProvider(base_path=temp_dir)
+
+        provider.make_symlink("link.txt", "target1.txt")
+        link_path = os.path.join(temp_dir, "link.txt")
+        with open(link_path) as f:
+            assert f.read() == "first"
+
+        provider.make_symlink("link.txt", "target2.txt")
+        assert os.path.islink(link_path)
+        with open(link_path) as f:
+            assert f.read() == "second"
+
+
+def test_make_symlink_directory_target():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        target_dir = os.path.join(temp_dir, "dir1")
+        os.makedirs(target_dir)
+        with open(os.path.join(target_dir, "a.txt"), "w") as f:
+            f.write("content")
+
+        provider = PosixFileStorageProvider(base_path=temp_dir)
+        provider.make_symlink("link_dir", "dir1")
+
+        link_path = os.path.join(temp_dir, "link_dir")
+        assert os.path.islink(link_path)
+        assert os.path.isdir(link_path)
+        assert os.path.isfile(os.path.join(link_path, "a.txt"))
+
+
 def test_list_objects_with_paths():
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create a test directory structure

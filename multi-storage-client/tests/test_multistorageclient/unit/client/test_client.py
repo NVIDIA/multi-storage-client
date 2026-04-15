@@ -668,3 +668,47 @@ def test_composite_download_files_raises_on_none_profile(multi_backend_config):
 
     with pytest.raises(ValueError, match="requires profile"):
         client.download_files(["logical/a"], ["/la"])
+
+
+def test_make_symlink_delegates_to_single(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+    assert single._metadata_provider is None
+
+    single._storage_provider.make_symlink = MagicMock()
+
+    client.make_symlink("link.txt", "target.txt")
+
+    single._storage_provider.make_symlink.assert_called_once_with("link.txt", "target.txt")
+
+
+def test_make_symlink_with_metadata_provider(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+
+    metadata_provider = MagicMock()
+    single._metadata_provider = metadata_provider
+    single._metadata_provider_lock = MagicMock()
+    single._storage_provider.make_symlink = MagicMock()
+
+    client.make_symlink("link.txt", "target.txt")
+
+    single._storage_provider.make_symlink.assert_not_called()
+    metadata_provider.add_file.assert_called_once()
+    call_args = metadata_provider.add_file.call_args
+    assert call_args[0][0] == "link.txt"
+    obj_metadata = call_args[0][1]
+    assert obj_metadata.key == "link.txt"
+    assert obj_metadata.symlink_target == "target.txt"
+    assert obj_metadata.content_length == 0
+
+
+def test_composite_make_symlink_raises(multi_backend_config):
+    client = StorageClient(multi_backend_config)
+    composite = client._delegate
+    assert isinstance(composite, CompositeStorageClient)
+
+    with pytest.raises(NotImplementedError):
+        client.make_symlink("link.txt", "target.txt")

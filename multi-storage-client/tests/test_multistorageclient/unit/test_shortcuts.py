@@ -268,6 +268,61 @@ def test_write(file_storage_config):
             assert body == content
 
 
+def test_make_symlink_posix(file_storage_config):
+    with tempfile.TemporaryDirectory() as tempdir:
+        target_path = os.path.join(tempdir, "target.txt")
+        with open(target_path, "w") as f:
+            f.write("symlink target content")
+
+        url = f"{MSC_PROTOCOL}__filesystem__{tempdir}"
+        msc.make_symlink(f"{url}/link.txt", f"{url}/target.txt")
+
+        link_path = os.path.join(tempdir, "link.txt")
+        assert os.path.islink(link_path)
+        assert os.readlink(link_path) == "target.txt"
+        with open(link_path) as f:
+            assert f.read() == "symlink target content"
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryAWSS3Bucket],
+        [tempdatastore.TemporaryPOSIXDirectory],
+    ],
+)
+def test_make_symlink(temp_data_store_type: type[tempdatastore.TemporaryDataStore]) -> None:
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    with temp_data_store_type() as temp_data_store:
+        config.setup_msc_config(
+            config_dict={
+                "profiles": {
+                    "test": temp_data_store.profile_config_dict(),
+                },
+            }
+        )
+
+        test_uuid = str(uuid.uuid4())
+        target_path = f"data-{test_uuid}/target.txt"
+        link_path = f"data-{test_uuid}/link.txt"
+
+        try:
+            msc.write(f"{MSC_PROTOCOL}test/{target_path}", b"symlink target content")
+            msc.make_symlink(f"{MSC_PROTOCOL}test/{link_path}", f"{MSC_PROTOCOL}test/{target_path}")
+
+            assert msc.is_file(f"{MSC_PROTOCOL}test/{link_path}")
+
+            metadata = msc.info(f"{MSC_PROTOCOL}test/{link_path}")
+            assert metadata is not None
+            assert metadata.symlink_target is not None
+        finally:
+            try:
+                msc.delete(f"{MSC_PROTOCOL}test/data-{test_uuid}", recursive=True)
+            except Exception:
+                pass
+
+
 def test_delete(file_storage_config):
     with tempfile.TemporaryDirectory() as tempdir:
         filepath = os.path.join(tempdir, "testfile.bin")

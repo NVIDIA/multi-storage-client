@@ -42,6 +42,9 @@ class MockBaseStorageProvider(BaseStorageProvider):
     def _delete_object(self, path: str, etag: Optional[str] = None) -> None:
         pass
 
+    def _make_symlink(self, path: str, target: str) -> None:
+        pass
+
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         if not path.endswith("txt"):
             return ObjectMetadata(key=path, content_length=0, type="directory", last_modified=datetime.now())
@@ -793,3 +796,34 @@ def test_download_files_async_concurrency():
 
     assert mock_rust_client.download.await_count == num_files
     assert peak_downloads == max_workers
+
+
+def test_object_metadata_symlink_target_field():
+    metadata = ObjectMetadata(
+        key="link.txt",
+        content_length=0,
+        last_modified=datetime.now(),
+        symlink_target="dir/target.txt",
+    )
+    assert metadata.symlink_target == "dir/target.txt"
+
+    data = metadata.to_dict()
+    assert data["symlink_target"] == "dir/target.txt"
+
+    restored = ObjectMetadata.from_dict(data)
+    assert restored.symlink_target == "dir/target.txt"
+
+
+def test_object_metadata_symlink_target_none_by_default():
+    metadata = ObjectMetadata(
+        key="file.txt",
+        content_length=100,
+        last_modified=datetime.now(),
+    )
+    assert metadata.symlink_target is None
+
+    data = metadata.to_dict()
+    assert "symlink_target" not in data
+
+    restored = ObjectMetadata.from_dict(data)
+    assert restored.symlink_target is None

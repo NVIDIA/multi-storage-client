@@ -19,6 +19,7 @@ import io
 import json
 import logging
 import os
+import posixpath
 import tempfile
 from collections.abc import Callable, Iterator
 from typing import IO, Any, Optional, TypeVar, Union
@@ -536,6 +537,22 @@ class GoogleStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="LIST", bucket=bucket, key=key)
 
+    def _make_symlink(self, path: str, target: str) -> None:
+        bucket_name, key = split_path(path)
+        target_bucket, target_key = split_path(target)
+        if bucket_name != target_bucket:
+            raise ValueError(f"Cannot create cross-bucket symlink: '{bucket_name}' -> '{target_bucket}'.")
+        relative_target = posixpath.relpath(target_key, posixpath.dirname(key))
+        self._refresh_gcs_client_if_needed()
+
+        def _invoke_api() -> None:
+            bucket = self._gcs_client.bucket(bucket_name)
+            blob = bucket.blob(key)
+            blob.metadata = {"msc-symlink-target": relative_target}
+            blob.upload_from_string(b"")
+
+        self._translate_errors(_invoke_api, operation="PUT", bucket=bucket_name, key=key)
+
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         bucket, key = split_path(path)
         if path.endswith("/") or (bucket and not key):
@@ -556,13 +573,16 @@ class GoogleStorageProvider(BaseStorageProvider):
                 blob = bucket_obj.get_blob(key)
                 if not blob:
                     raise NotFound(f"Blob {key} not found in bucket {bucket}")
+                user_metadata = dict(blob.metadata) if blob.metadata else None
+                symlink_target = user_metadata.get("msc-symlink-target") if user_metadata else None
                 return ObjectMetadata(
                     key=path,
                     content_length=blob.size or 0,
                     content_type=blob.content_type,
                     last_modified=blob.updated or AWARE_DATETIME_MIN,
                     etag=str(blob.generation),
-                    metadata=dict(blob.metadata) if blob.metadata else None,
+                    metadata=user_metadata,
+                    symlink_target=symlink_target,
                 )
 
             try:

@@ -49,6 +49,9 @@ class OutdatedStorageProvider(BaseStorageProvider):
     def _delete_object(self, path: str, if_match: Optional[str] = None) -> None:
         pass
 
+    def _make_symlink(self, path: str, target: str) -> None:
+        pass
+
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         if not path.endswith("txt"):
             return ObjectMetadata(key=path, content_length=0, type="directory", last_modified=datetime.now())

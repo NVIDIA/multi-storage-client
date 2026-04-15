@@ -536,6 +536,14 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
                 metadata=None,
             )
 
+    def _make_symlink(self, path: str, target: str) -> None:
+        """
+        Not supported. HuggingFace repositories are read-only through this provider.
+
+        :raises NotImplementedError: Always.
+        """
+        raise NotImplementedError("HuggingFace provider does not support symlink creation.")
+
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         """
         Retrieves metadata for an object in the HuggingFace repository.

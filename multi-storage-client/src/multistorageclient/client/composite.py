@@ -364,6 +364,12 @@ class CompositeStorageClient(AbstractStorageClient):
             "CompositeStorageClient is read-only. Copy operations are not implemented for multi-location datasets."
         )
 
+    def make_symlink(self, path: str, target: str) -> None:
+        """Symlink operations not supported in read-only mode."""
+        raise NotImplementedError(
+            "CompositeStorageClient is read-only. Symlink operations are not implemented for multi-location datasets."
+        )
+
     def upload_file(
         self,
         remote_path: str,

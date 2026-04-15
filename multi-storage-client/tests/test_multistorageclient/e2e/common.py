@@ -337,6 +337,15 @@ def verify_storage_provider(storage_client: msc.StorageClient, prefix: str) -> N
         should_wait=len_should_wait(expected_len=0),
     )
 
+    # Test symlinks
+    symlink_path = f"{prefix}/symlink.txt"
+    target_path = f"{prefix}/target.txt"
+    storage_client.write(target_path, b"target content")
+    storage_client.make_symlink(symlink_path, target_path)
+    assert storage_client.is_file(symlink_path)
+    symlink_metadata = storage_client.info(symlink_path)
+    assert symlink_metadata.symlink_target == "target.txt"
+
 
 def verify_attributes(storage_client: msc.StorageClient, prefix: str) -> None:
     """Test attributes functionality - storing custom metadata with msc_ prefix."""
