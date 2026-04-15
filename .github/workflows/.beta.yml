@@ -7,6 +7,9 @@
 name: Beta
 on:
   workflow_call:
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 defaults:
   run:
     shell: nix develop --command bash -e {0}
