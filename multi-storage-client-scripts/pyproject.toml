@@ -11,6 +11,11 @@ requires-python = ">=3.10,<4"
 classifiers = [
     "Private :: Do Not Upload"
 ]
+dependencies = [
+    "multi-storage-client",
+    "dulwich>=1.1.0,<2",
+    "githubkit>=0.15.3,<1"
+]
 
 [project.scripts]
 msc-scripts = "multistorageclient_scripts.cli.__main__:main"

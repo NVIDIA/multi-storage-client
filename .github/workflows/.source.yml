@@ -180,3 +180,39 @@ jobs:
             multi-storage-file-system/build/rpm/RPMS/*/*.rpm
             multi-storage-file-system/build/tar/*.tar.*
             multi-storage-file-system/build/zip/*.zip
+  validate-release:
+    name: Validate Release
+    needs:
+      - nix
+      - multi-storage-explorer
+      - multi-storage-client
+      - multi-storage-client-docs
+      - multi-storage-client-scripts
+      - multi-storage-file-system
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout.
+      - uses: actions/checkout@v6
+      # Install Nix + Magic Nix Cache.
+      - uses: DeterminateSystems/nix-installer-action@main
+        with:
+          summarize: false
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      # Install uv + enable uv caching.
+      #
+      # The Nix shell provides uv so this is only for uv caching.
+      - uses: astral-sh/setup-uv@v8.0.0
+        env:
+          UV_NO_MODIFY_PATH: true
+        with:
+          cache-suffix: multi-storage-client-scripts
+          enable-cache: true
+      # Main.
+      - uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+      - working-directory: multi-storage-client-scripts
+        run: |
+          uv run msc-scripts release --github-token ${{ secrets.GITHUB_TOKEN }} --phase validate

@@ -261,7 +261,9 @@ class CommandFunction(Protocol[T]):
     Command function.
     """
 
-    def __call__(self, arguments: T) -> int: ...
+    ExitCode = Union[str | int | None]
+
+    def __call__(self, arguments: T) -> ExitCode: ...
 
 
 _COMMAND_FUNCTION_ARGUMENT_KEY: str = "argparse_extensions.func"
