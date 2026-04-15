@@ -27,7 +27,6 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
         with:
           summarize: false
-      - uses: DeterminateSystems/magic-nix-cache-action@main
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.ref }}
@@ -52,7 +51,6 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
         with:
           summarize: false
-      - uses: DeterminateSystems/magic-nix-cache-action@main
       - uses: actions/checkout@v6
       # Set locale for Sphinx.
       #
@@ -84,7 +82,6 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
         with:
           summarize: false
-      - uses: DeterminateSystems/magic-nix-cache-action@main
       - uses: actions/checkout@v6
       - working-directory: multi-storage-file-system
         run: |
