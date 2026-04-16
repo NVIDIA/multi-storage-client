@@ -26,6 +26,7 @@ import githubkit
 import githubkit.exception
 import githubkit.response
 import githubkit.versions.latest.models
+import packaging.utils
 
 import multistorageclient_scripts.cli as cli
 import multistorageclient_scripts.utils.argparse_extensions as argparse_extensions
@@ -160,6 +161,13 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
         raise FileNotFoundError(
             f"Missing multi-storage-file-system zips in {str(multi_storage_file_system_artifacts)}!"
         )
+
+    for multi_storage_client_wheel in multi_storage_client_wheels:
+        name, version, _, _ = packaging.utils.parse_wheel_filename(str(multi_storage_client_wheel.name))
+        if name != "multi-storage-client":
+            raise ValueError(f"Mismatched multi-storage-client wheel name at {str(multi_storage_client_wheel)}.")
+        if str(version) != multi_storage_client_version:
+            raise ValueError(f"Mismatched multi-storage-client wheel version at {str(multi_storage_client_wheel)}.")
 
     logger.info(
         "\n".join(
