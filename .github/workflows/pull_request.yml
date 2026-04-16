@@ -13,13 +13,12 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/.source.yml
-  status:
-    name: Status
+  status-check:
+    name: ${{ github.workflow }} Status Check
     needs:
       - source
     if: ${{ always() }}
     permissions:
-      contents: read
       statuses: write
     runs-on: ubuntu-latest
     steps:
