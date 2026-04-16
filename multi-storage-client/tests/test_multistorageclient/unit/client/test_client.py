@@ -22,7 +22,7 @@ import pytest
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.client.composite import CompositeStorageClient
 from multistorageclient.client.single import SingleStorageClient
-from multistorageclient.types import ObjectMetadata, ResolvedPath, ResolvedPathState
+from multistorageclient.types import ObjectMetadata, ResolvedPath, ResolvedPathState, SymlinkHandling
 
 
 @pytest.fixture
@@ -249,6 +249,7 @@ def test_list_recursive_delegates_to_single_client(single_backend_config):
         include_url_prefix=True,
         follow_symlinks=False,
         patterns=None,
+        symlink_handling=SymlinkHandling.FOLLOW,
     )
 
 
@@ -267,8 +268,9 @@ def test_list_recursive_delegates_to_composite_client(multi_backend_config):
         max_workers=32,
         look_ahead=2,
         include_url_prefix=False,
-        follow_symlinks=True,
+        follow_symlinks=None,
         patterns=None,
+        symlink_handling=SymlinkHandling.FOLLOW,
     )
 
 
@@ -289,7 +291,7 @@ def test_single_list_recursive_uses_provider_recursive_listing(single_backend_co
         end_at=None,
         max_workers=32,
         look_ahead=2,
-        follow_symlinks=True,
+        symlink_handling=SymlinkHandling.FOLLOW,
     )
 
 

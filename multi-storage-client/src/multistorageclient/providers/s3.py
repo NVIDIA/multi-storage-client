@@ -44,6 +44,7 @@ from ..types import (
     Range,
     RetryableError,
     SignerType,
+    SymlinkHandling,
 )
 from ..utils import (
     get_available_cpu_count,
@@ -656,7 +657,7 @@ class S3StorageProvider(BaseStorageProvider):
                     type="file",
                     content_length=response["ContentLength"],
                     content_type=response.get("ContentType"),
-                    last_modified=response["LastModified"],
+                    last_modified=response.get("LastModified", AWARE_DATETIME_MIN),
                     etag=response["ETag"].strip('"') if "ETag" in response else None,
                     storage_class=response.get("StorageClass"),
                     metadata=user_metadata,
@@ -685,7 +686,7 @@ class S3StorageProvider(BaseStorageProvider):
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
-        follow_symlinks: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         bucket, prefix = split_path(path)
 
@@ -732,13 +733,21 @@ class S3StorageProvider(BaseStorageProvider):
                                     last_modified=response_object["LastModified"],
                                 )
                         else:
+                            symlink_target = None
+                            if response_object.get("Size", 0) == 0:
+                                try:
+                                    meta = self._get_object_metadata(os.path.join(bucket, key))
+                                    symlink_target = meta.symlink_target
+                                except Exception:
+                                    symlink_target = None
                             yield ObjectMetadata(
                                 key=os.path.join(bucket, key),
                                 type="file",
                                 content_length=response_object["Size"],
                                 last_modified=response_object["LastModified"],
                                 etag=response_object["ETag"].strip('"'),
-                                storage_class=response_object.get("StorageClass"),  # Pass storage_class
+                                storage_class=response_object.get("StorageClass"),
+                                symlink_target=symlink_target,
                             )
                     else:
                         return
@@ -761,7 +770,7 @@ class S3StorageProvider(BaseStorageProvider):
         end_at: Optional[str] = None,
         max_workers: int = 32,
         look_ahead: int = 2,
-        follow_symlinks: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         """
         List all objects recursively using parallel prefix discovery for improved performance.
@@ -771,7 +780,7 @@ class S3StorageProvider(BaseStorageProvider):
 
         Returns files only (no directories), in lexicographic order.
 
-        :param follow_symlinks: Whether to follow symbolic links (POSIX providers only).
+        :param symlink_handling: How to handle symbolic links during listing.
         """
         if (start_after is not None) and (end_at is not None) and not (start_after < end_at):
             raise ValueError(f"start_after ({start_after}) must be before end_at ({end_at})!")
@@ -781,7 +790,7 @@ class S3StorageProvider(BaseStorageProvider):
 
         if self._is_directory_bucket(bucket):
             yield from self.list_objects(
-                path, start_after, end_at, include_directories=False, follow_symlinks=follow_symlinks
+                path, start_after, end_at, include_directories=False, symlink_handling=symlink_handling
             )
             return
 
@@ -792,7 +801,7 @@ class S3StorageProvider(BaseStorageProvider):
             )
         else:
             yield from super().list_objects_recursive(
-                path, start_after, end_at, max_workers, look_ahead, follow_symlinks
+                path, start_after, end_at, max_workers, look_ahead, symlink_handling
             )
 
     def _list_objects_recursive_rust(

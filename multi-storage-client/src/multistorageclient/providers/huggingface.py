@@ -25,7 +25,15 @@ from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError, Repositor
 from huggingface_hub.hf_api import RepoFile, RepoFolder
 
 from ..telemetry import Telemetry
-from ..types import AWARE_DATETIME_MIN, Credentials, CredentialsProvider, ObjectMetadata, Range, RetryableError
+from ..types import (
+    AWARE_DATETIME_MIN,
+    Credentials,
+    CredentialsProvider,
+    ObjectMetadata,
+    Range,
+    RetryableError,
+    SymlinkHandling,
+)
 from ..utils import safe_makedirs
 from .base import BaseStorageProvider
 
@@ -598,7 +606,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
-        follow_symlinks: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         """
         Lists objects in the HuggingFace repository under the specified path.

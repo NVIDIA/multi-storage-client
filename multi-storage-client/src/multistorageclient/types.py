@@ -39,6 +39,35 @@ DEFAULT_RETRY_BACKOFF_MULTIPLIER = 2.0
 AWARE_DATETIME_MIN = datetime.min.replace(tzinfo=timezone.utc)
 
 
+class SymlinkHandling(str, Enum):
+    """Controls how symbolic links are handled during listing and sync operations.
+
+    - ``FOLLOW``: Symlinks are transparent -- directory symlinks are recursed into,
+      file symlinks appear as regular files. This is the default and is backward-compatible.
+    - ``SKIP``: All symlinks are excluded from results.
+    - ``PRESERVE``: Symlinks are detected and yielded as leaf entries with
+      :py:attr:`ObjectMetadata.symlink_target` populated. Directory symlinks are
+      **not** recursed into.
+
+    .. note::
+       This option is only meaningful for POSIX file storage providers, which
+       have native symlink semantics. Cloud storage providers (S3, GCS, Azure,
+       OCI, AIS) ignore this parameter: they always list whatever is in the
+       bucket/prefix and surface MSC's symlink convention (an empty object
+       whose user metadata carries the target path) with
+       :py:attr:`ObjectMetadata.symlink_target` populated -- object storage
+       isn't a filesystem, so there is nothing to "follow" during listing.
+    """
+
+    FOLLOW = "follow"
+    SKIP = "skip"
+    PRESERVE = "preserve"
+
+
+# Maximum number of symlink hops allowed when resolving a symlink chain.
+MAX_SYMLINK_DEPTH = 8
+
+
 class SignerType(str, Enum):
     """Supported signer backends for presigned URL generation."""
 
@@ -280,7 +309,7 @@ class StorageProvider(ABC):
         include_directories: bool = False,
         attribute_filter_expression: Optional[str] = None,
         show_attributes: bool = False,
-        follow_symlinks: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         """
         Lists objects in the storage provider under the specified path.
@@ -291,7 +320,7 @@ class StorageProvider(ABC):
         :param include_directories: Whether to include directories in the result. When ``True``, directories are returned alongside objects.
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
         :param show_attributes: Whether to return attributes in the result.  There will be performance impact if this is True as now we need to get object metadata for each object.
-        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers.
+        :param symlink_handling: How to handle symbolic links during listing.
 
         :return: An iterator over objects metadata under the specified path.
         """
@@ -305,7 +334,7 @@ class StorageProvider(ABC):
         end_at: Optional[str] = None,
         max_workers: int = 32,
         look_ahead: int = 2,
-        follow_symlinks: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         """
         Lists files recursively in the storage provider under the specified path.
@@ -315,7 +344,7 @@ class StorageProvider(ABC):
         :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
         :param max_workers: Maximum concurrent workers for provider-level recursive listing.
         :param look_ahead: Prefixes to buffer per worker for provider-level recursive listing.
-        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers.
+        :param symlink_handling: How to handle symbolic links during listing.
         :return: An iterator over object metadata under the specified path.
         """
         pass

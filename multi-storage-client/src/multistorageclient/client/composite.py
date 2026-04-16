@@ -29,6 +29,7 @@ from ..types import (
     Range,
     SignerType,
     SourceVersionCheckMode,
+    SymlinkHandling,
     SyncResult,
 )
 from ..utils import PatternMatcher, join_paths
@@ -302,10 +303,10 @@ class CompositeStorageClient(AbstractStorageClient):
         max_workers: int = 32,
         look_ahead: int = 2,
         include_url_prefix: bool = False,
-        follow_symlinks: bool = True,
+        follow_symlinks: Optional[bool] = None,
         patterns: Optional[PatternList] = None,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
-
         yield from self.list(
             path=path,
             start_after=start_after,
@@ -314,6 +315,7 @@ class CompositeStorageClient(AbstractStorageClient):
             include_url_prefix=include_url_prefix,
             follow_symlinks=follow_symlinks,
             patterns=patterns,
+            symlink_handling=symlink_handling,
         )
 
     def is_file(self, path: str) -> bool:
@@ -444,8 +446,9 @@ class CompositeStorageClient(AbstractStorageClient):
         include_url_prefix: bool = False,
         attribute_filter_expression: Optional[str] = None,
         show_attributes: bool = False,
-        follow_symlinks: bool = True,
+        follow_symlinks: Optional[bool] = None,
         patterns: Optional[PatternList] = None,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         # Parameter validation - either path or prefix, not both
         if path and prefix:

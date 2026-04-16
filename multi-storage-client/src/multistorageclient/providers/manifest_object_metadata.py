@@ -49,6 +49,7 @@ class ManifestObjectMetadata(ObjectMetadata):
             etag=self.etag,
             metadata=self.metadata,
             type=self.type,
+            symlink_target=self.symlink_target,
         )
 
     @classmethod
@@ -77,5 +78,6 @@ class ManifestObjectMetadata(ObjectMetadata):
             etag=obj_metadata.etag,
             metadata=obj_metadata.metadata,
             type=obj_metadata.type,
+            symlink_target=obj_metadata.symlink_target,
             physical_path=final_physical_path,
         )

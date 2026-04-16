@@ -43,9 +43,10 @@ from ..types import (
     SignerType,
     SourceVersionCheckMode,
     StorageProvider,
+    SymlinkHandling,
     SyncResult,
 )
-from ..utils import NullStorageClient, PatternMatcher, join_paths
+from ..utils import NullStorageClient, PatternMatcher, join_paths, resolve_symlink_handling
 from .types import AbstractStorageClient
 
 logger = logging.getLogger(__name__)
@@ -757,8 +758,9 @@ class SingleStorageClient(AbstractStorageClient):
         max_workers: int = 32,
         look_ahead: int = 2,
         include_url_prefix: bool = False,
-        follow_symlinks: bool = True,
+        follow_symlinks: Optional[bool] = None,
         patterns: Optional[PatternList] = None,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         """
         List files recursively in the storage provider under the specified path.
@@ -770,10 +772,13 @@ class SingleStorageClient(AbstractStorageClient):
         :param max_workers: Maximum concurrent workers for provider-level recursive listing.
         :param look_ahead: Prefixes to buffer per worker for provider-level recursive listing.
         :param include_url_prefix: Whether to include the URL prefix ``msc://profile`` in the result.
-        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers. When ``False``, symlinks are skipped during listing.
+        :param follow_symlinks: **Deprecated.** Use ``symlink_handling`` instead.
         :param patterns: PatternList for include/exclude filtering. If None, all files are included.
+        :param symlink_handling: How to handle symbolic links during listing. Only applicable for POSIX file storage providers.
         :return: An iterator over ObjectMetadata for matching files.
         """
+        symlink_handling = resolve_symlink_handling(follow_symlinks, symlink_handling)
+
         pattern_matcher = PatternMatcher(patterns) if patterns else None
 
         single_file, effective_path = self._resolve_single_file(
@@ -799,7 +804,7 @@ class SingleStorageClient(AbstractStorageClient):
                 end_at=end_at,
                 max_workers=max_workers,
                 look_ahead=look_ahead,
-                follow_symlinks=follow_symlinks,
+                symlink_handling=symlink_handling,
             )
 
         yield from self._filter_and_decorate(objects, include_url_prefix, pattern_matcher)
@@ -1084,8 +1089,9 @@ class SingleStorageClient(AbstractStorageClient):
         include_url_prefix: bool = False,
         attribute_filter_expression: Optional[str] = None,
         show_attributes: bool = False,
-        follow_symlinks: bool = True,
+        follow_symlinks: Optional[bool] = None,
         patterns: Optional[PatternList] = None,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         """
         List objects in the storage provider under the specified path.
@@ -1103,11 +1109,14 @@ class SingleStorageClient(AbstractStorageClient):
         :param include_url_prefix: Whether to include the URL prefix ``msc://profile`` in the result.
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
         :param show_attributes: Whether to return attributes in the result. WARNING: Depending on implementation, there may be a performance impact if this is set to ``True``.
-        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers. When ``False``, symlinks are skipped during listing.
+        :param follow_symlinks: **Deprecated.** Use ``symlink_handling`` instead.
         :param patterns: PatternList for include/exclude filtering. If None, all files are included.
+        :param symlink_handling: How to handle symbolic links during listing. Only applicable for POSIX file storage providers.
         :return: An iterator over ObjectMetadata for matching objects.
         :raises ValueError: If both ``path`` and ``prefix`` parameters are provided (both non-empty).
         """
+        symlink_handling = resolve_symlink_handling(follow_symlinks, symlink_handling)
+
         # Parameter validation - either path or prefix, not both
         if path and prefix:
             raise ValueError(
@@ -1151,7 +1160,7 @@ class SingleStorageClient(AbstractStorageClient):
                 include_directories=include_directories,
                 attribute_filter_expression=attribute_filter_expression,
                 show_attributes=show_attributes,
-                follow_symlinks=follow_symlinks,
+                symlink_handling=symlink_handling,
             )
 
         yield from self._filter_and_decorate(objects, include_url_prefix, pattern_matcher)

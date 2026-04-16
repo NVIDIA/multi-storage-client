@@ -29,6 +29,7 @@ from ..types import (
     SignerType,
     SourceVersionCheckMode,
     StorageProvider,
+    SymlinkHandling,
     SyncResult,
 )
 from .composite import CompositeStorageClient
@@ -311,8 +312,9 @@ class StorageClient(AbstractStorageClient):
         max_workers: int = 32,
         look_ahead: int = 2,
         include_url_prefix: bool = False,
-        follow_symlinks: bool = True,
+        follow_symlinks: Optional[bool] = None,
         patterns: Optional[PatternList] = None,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         """
         List files recursively in the storage provider under the specified path.
@@ -324,8 +326,9 @@ class StorageClient(AbstractStorageClient):
         :param max_workers: Maximum concurrent workers for provider-level recursive listing.
         :param look_ahead: Prefixes to buffer per worker for provider-level recursive listing.
         :param include_url_prefix: Whether to include the URL prefix ``msc://profile`` in the result.
-        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers. When ``False``, symlinks are skipped during listing.
+        :param follow_symlinks: **Deprecated.** Use ``symlink_handling`` instead.
         :param patterns: PatternList for include/exclude filtering. If None, all files are included.
+        :param symlink_handling: How to handle symbolic links during listing. Only applicable for POSIX file storage providers.
         :return: An iterator over ObjectMetadata for matching files.
         """
         return self._delegate.list_recursive(
@@ -337,6 +340,7 @@ class StorageClient(AbstractStorageClient):
             include_url_prefix=include_url_prefix,
             follow_symlinks=follow_symlinks,
             patterns=patterns,
+            symlink_handling=symlink_handling,
         )
 
     def is_file(self, path: str) -> bool:
@@ -589,8 +593,9 @@ class StorageClient(AbstractStorageClient):
         include_url_prefix: bool = False,
         attribute_filter_expression: Optional[str] = None,
         show_attributes: bool = False,
-        follow_symlinks: bool = True,
+        follow_symlinks: Optional[bool] = None,
         patterns: Optional[PatternList] = None,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         """
         List objects in the storage provider under the specified path.
@@ -608,8 +613,9 @@ class StorageClient(AbstractStorageClient):
         :param include_url_prefix: Whether to include the URL prefix ``msc://profile`` in the result.
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
         :param show_attributes: Whether to return attributes in the result. WARNING: Depending on implementation, there may be a performance impact if this is set to ``True``.
-        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers. When ``False``, symlinks are skipped during listing.
+        :param follow_symlinks: **Deprecated.** Use ``symlink_handling`` instead.
         :param patterns: PatternList for include/exclude filtering. If None, all files are included.
+        :param symlink_handling: How to handle symbolic links during listing. Only applicable for POSIX file storage providers.
         :return: An iterator over ObjectMetadata for matching objects.
         :raises ValueError: If both ``path`` and ``prefix`` parameters are provided (both non-empty).
         """
@@ -622,8 +628,9 @@ class StorageClient(AbstractStorageClient):
             include_url_prefix,
             attribute_filter_expression,
             show_attributes,
-            follow_symlinks,
-            patterns,
+            follow_symlinks=follow_symlinks,
+            patterns=patterns,
+            symlink_handling=symlink_handling,
         )
 
     def generate_presigned_url(

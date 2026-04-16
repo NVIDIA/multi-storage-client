@@ -29,12 +29,31 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 from lark import Lark, Transformer
 from wcmatch import glob as wcmatch_glob
 
-from .types import ExecutionMode, ObjectMetadata, PatternList, PatternType
+from .types import ExecutionMode, ObjectMetadata, PatternList, PatternType, SymlinkHandling
 
 if TYPE_CHECKING:
     from .client.types import AbstractStorageClient
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_symlink_handling(follow_symlinks: Optional[bool], symlink_handling: SymlinkHandling) -> SymlinkHandling:
+    """Bridge the deprecated ``follow_symlinks`` flag to :class:`SymlinkHandling`.
+
+    When *follow_symlinks* is ``None`` (the caller did not pass it),
+    *symlink_handling* is returned as-is.  When *follow_symlinks* is explicitly
+    set **and** *symlink_handling* was also changed from the default, the two
+    conflict and a :class:`ValueError` is raised.  Otherwise the boolean is
+    translated: ``True`` → ``FOLLOW``, ``False`` → ``SKIP``.
+
+    This helper exists so every public entry-point that still accepts
+    ``follow_symlinks`` can share the same resolution logic.
+    """
+    if follow_symlinks is None:
+        return symlink_handling
+    if symlink_handling != SymlinkHandling.FOLLOW:
+        raise ValueError("Cannot specify both 'follow_symlinks' and a non-default 'symlink_handling'.")
+    return SymlinkHandling.FOLLOW if follow_symlinks else SymlinkHandling.SKIP
 
 
 def safe_makedirs(path: str, mode: int = 0o777, exist_ok: bool = True) -> None:

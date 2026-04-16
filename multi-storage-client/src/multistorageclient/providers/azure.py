@@ -39,6 +39,7 @@ from ..types import (
     PreconditionFailedError,
     Range,
     SignerType,
+    SymlinkHandling,
 )
 from ..utils import safe_makedirs, split_path, validate_attributes
 from .base import BaseStorageProvider
@@ -556,7 +557,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
-        follow_symlinks: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         container_name, prefix = split_path(path)
 
@@ -572,9 +573,9 @@ class AzureBlobStorageProvider(BaseStorageProvider):
             container_client = self._blob_service_client.get_container_client(container=container_name)
             # Azure has no start key option like other object stores.
             if include_directories:
-                blobs = container_client.walk_blobs(name_starts_with=prefix, delimiter="/")
+                blobs = container_client.walk_blobs(name_starts_with=prefix, delimiter="/", include=["metadata"])
             else:
-                blobs = container_client.list_blobs(name_starts_with=prefix)
+                blobs = container_client.list_blobs(name_starts_with=prefix, include=["metadata"])
             # Azure guarantees lexicographical order.
             for blob in blobs:
                 if isinstance(blob, BlobPrefix):
@@ -601,12 +602,15 @@ class AzureBlobStorageProvider(BaseStorageProvider):
                                     last_modified=blob.last_modified,
                                 )
                         else:
+                            user_metadata = dict(blob.metadata) if blob.metadata else None
+                            symlink_target = user_metadata.get("msc_symlink_target") if user_metadata else None
                             yield ObjectMetadata(
                                 key=os.path.join(container_name, key),
                                 content_length=blob.size,
                                 content_type=blob.content_settings.content_type,
                                 last_modified=blob.last_modified,
                                 etag=blob.etag.strip('"') if blob.etag else "",
+                                symlink_target=symlink_target,
                             )
                     elif end_at is not None and end_at < key:
                         return

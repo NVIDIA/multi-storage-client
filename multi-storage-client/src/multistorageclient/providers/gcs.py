@@ -46,6 +46,7 @@ from ..types import (
     PreconditionFailedError,
     Range,
     RetryableError,
+    SymlinkHandling,
 )
 from ..utils import (
     safe_makedirs,
@@ -607,7 +608,7 @@ class GoogleStorageProvider(BaseStorageProvider):
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
-        follow_symlinks: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         bucket, prefix = split_path(path)
 
@@ -648,12 +649,15 @@ class GoogleStorageProvider(BaseStorageProvider):
                                 last_modified=blob.updated,
                             )
                     else:
+                        user_metadata = blob.metadata
+                        symlink_target = user_metadata.get("msc-symlink-target") if user_metadata else None
                         yield ObjectMetadata(
                             key=os.path.join(bucket, key),
                             content_length=blob.size,
                             content_type=blob.content_type,
                             last_modified=blob.updated,
                             etag=blob.etag,
+                            symlink_target=symlink_target,
                         )
                 elif start_after != key:
                     return

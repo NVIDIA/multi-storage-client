@@ -24,7 +24,7 @@ from .client import StorageClient
 from .config import RESERVED_POSIX_PROFILE_NAME, SUPPORTED_IMPLICIT_PROFILE_PROTOCOLS, StorageClientConfig
 from .file import ObjectFile, PosixFile
 from .telemetry import Telemetry
-from .types import MSC_PROTOCOL, ExecutionMode, ObjectMetadata, PatternList, SignerType, SyncResult
+from .types import MSC_PROTOCOL, ExecutionMode, ObjectMetadata, PatternList, SignerType, SymlinkHandling, SyncResult
 
 _TELEMETRY_PROVIDER: Optional[Callable[[], Telemetry]] = None
 _TELEMETRY_PROVIDER_LOCK = threading.Lock()
@@ -434,8 +434,9 @@ def list(
     include_directories: bool = False,
     attribute_filter_expression: Optional[str] = None,
     show_attributes: bool = False,
-    follow_symlinks: bool = True,
+    follow_symlinks: Optional[bool] = None,
     patterns: Optional[PatternList] = None,
+    symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
 ) -> Iterator[ObjectMetadata]:
     """
     Lists the contents of the specified URL prefix.
@@ -449,8 +450,9 @@ def list(
     :param include_directories: Whether to include directories in the result. When True, directories are returned alongside objects.
     :param attribute_filter_expression: The attribute filter expression to apply to the result.
     :param show_attributes: Whether to return attributes in the result.
-    :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage. When False, symlinks are skipped during listing.
+    :param follow_symlinks: **Deprecated.** Use ``symlink_handling`` instead.
     :param patterns: PatternList for include/exclude filtering. If None, all files are included.
+    :param symlink_handling: How to handle symbolic links. Only applicable for POSIX file storage.
     :return: An iterator of :py:class:`ObjectMetadata` objects representing the files (and optionally directories)
              accessible under the specified URL prefix. The returned keys will always be prefixed with msc://.
     """
@@ -465,6 +467,7 @@ def list(
         show_attributes=show_attributes,
         follow_symlinks=follow_symlinks,
         patterns=patterns,
+        symlink_handling=symlink_handling,
     )
 
 
@@ -474,8 +477,9 @@ def list_recursive(
     end_at: Optional[str] = None,
     max_workers: int = 32,
     look_ahead: int = 2,
-    follow_symlinks: bool = True,
+    follow_symlinks: Optional[bool] = None,
     patterns: Optional[PatternList] = None,
+    symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
 ) -> Iterator[ObjectMetadata]:
     """
     Lists files recursively under the specified URL.
@@ -488,8 +492,9 @@ def list_recursive(
     :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
     :param max_workers: Maximum concurrent workers for provider-level recursive listing.
     :param look_ahead: Prefixes to buffer per worker for provider-level recursive listing.
-    :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage. When False, symlinks are skipped during listing.
+    :param follow_symlinks: **Deprecated.** Use ``symlink_handling`` instead.
     :param patterns: PatternList for include/exclude filtering. If None, all files are included.
+    :param symlink_handling: How to handle symbolic links during listing.
     :return: An iterator of :py:class:`ObjectMetadata` objects representing files accessible under the specified URL path.
              The returned keys use the same URL-prefix behavior as :py:meth:`multistorageclient.list`.
     """
@@ -503,6 +508,7 @@ def list_recursive(
         include_url_prefix=True,
         follow_symlinks=follow_symlinks,
         patterns=patterns,
+        symlink_handling=symlink_handling,
     )
 
 

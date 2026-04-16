@@ -28,7 +28,7 @@ from typing import IO, Any, Optional, TypeVar, Union
 import xattr
 
 from ..telemetry import Telemetry
-from ..types import AWARE_DATETIME_MIN, ObjectMetadata, Range
+from ..types import AWARE_DATETIME_MIN, ObjectMetadata, Range, SymlinkHandling
 from ..utils import (
     create_attribute_filter_evaluator,
     matches_attribute_filter_expression,
@@ -53,6 +53,7 @@ class _EntryType(Enum):
     FILE = 1
     DIRECTORY = 2
     DIRECTORY_TO_EXPLORE = 3
+    SYMLINK = 4
 
 
 def atomic_write(source: Union[str, IO], destination: str, attributes: Optional[dict[str, str]] = None):
@@ -230,7 +231,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
-        follow_symlinks: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         start_after = os.path.relpath(start_after, self._base_path) if start_after else None
         end_at = os.path.relpath(end_at, self._base_path) if end_at else None
@@ -238,15 +239,15 @@ class PosixFileStorageProvider(BaseStorageProvider):
         def _invoke_api() -> Iterator[ObjectMetadata]:
             if os.path.isfile(path):
                 yield ObjectMetadata(
-                    key=os.path.relpath(path, self._base_path),  # relative path to the base path
+                    key=os.path.relpath(path, self._base_path),
                     content_length=os.path.getsize(path),
                     last_modified=datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc),
                 )
             dir_path = path.rstrip("/") + "/"
-            if not os.path.isdir(dir_path):  # expect the input to be a directory
+            if not os.path.isdir(dir_path):
                 return
 
-            yield from self._explore_directory(dir_path, start_after, end_at, include_directories, follow_symlinks)
+            yield from self._explore_directory(dir_path, start_after, end_at, include_directories, symlink_handling)
 
         return self._translate_errors(_invoke_api, operation="LIST", path=path)
 
@@ -256,7 +257,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
         start_after: Optional[str],
         end_at: Optional[str],
         include_directories: bool,
-        follow_symlinks: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         """
         Recursively explore a directory and yield objects in lexicographical order.
@@ -265,26 +266,55 @@ class PosixFileStorageProvider(BaseStorageProvider):
         :param start_after: The key to start after
         :param end_at: The key to end at
         :param include_directories: Whether to include directories in the result
-        :param follow_symlinks: Whether to follow symbolic links. When False, symlinks are skipped.
+        :param symlink_handling: How to handle symbolic links during listing.
         """
         try:
-            # List contents of current directory
             dir_entries = os.listdir(dir_path)
-            dir_entries.sort()  # Sort entries for consistent ordering
+            dir_entries.sort()
 
-            # Collect all entries in this directory
-            entries = []
+            entries: list[tuple[str, str, _EntryType]] = []
+            symlink_info: dict[str, tuple[str, str]] = {}
 
             for entry in dir_entries:
                 full_path = os.path.join(dir_path, entry)
+                is_link = os.path.islink(full_path)
 
-                # Skip symlinks if follow_symlinks is False
-                if not follow_symlinks and os.path.islink(full_path):
+                if is_link and symlink_handling == SymlinkHandling.SKIP:
+                    continue
+
+                if is_link and symlink_handling == SymlinkHandling.PRESERVE:
+                    relative_path = os.path.relpath(full_path, self._base_path)
+
+                    real_target = os.path.realpath(full_path)
+                    if not os.path.exists(real_target):
+                        raise ValueError(
+                            f"Broken symlink '{relative_path}' points to a missing target "
+                            f"({full_path} -> {real_target}). Use symlink_handling=SKIP to ignore."
+                        )
+
+                    try:
+                        target_key = os.path.relpath(real_target, self._base_path)
+                    except ValueError:
+                        target_key = None
+
+                    if target_key is None or target_key.startswith(".."):
+                        raise ValueError(
+                            f"Symlink '{relative_path}' points outside the base directory "
+                            f"({full_path} -> {real_target}). Use symlink_handling=FOLLOW "
+                            f"to dereference or symlink_handling=SKIP to ignore."
+                        )
+
+                    target_type = "directory" if os.path.isdir(full_path) else "file"
+
+                    if (start_after is None or start_after < relative_path) and (
+                        end_at is None or relative_path <= end_at
+                    ):
+                        entries.append((relative_path, full_path, _EntryType.SYMLINK))
+                        symlink_info[relative_path] = (target_key, target_type)
                     continue
 
                 relative_path = os.path.relpath(full_path, self._base_path)
 
-                # Check if this entry is within our range
                 if (start_after is None or start_after < relative_path) and (end_at is None or relative_path <= end_at):
                     if os.path.isfile(full_path):
                         entries.append((relative_path, full_path, _EntryType.FILE))
@@ -292,13 +322,10 @@ class PosixFileStorageProvider(BaseStorageProvider):
                         if include_directories:
                             entries.append((relative_path, full_path, _EntryType.DIRECTORY))
                         else:
-                            # Add directory for recursive exploration
                             entries.append((relative_path, full_path, _EntryType.DIRECTORY_TO_EXPLORE))
 
-            # Sort entries by relative path
             entries.sort(key=lambda x: x[0])
 
-            # Process entries in order
             for relative_path, full_path, entry_type in entries:
                 if entry_type == _EntryType.FILE:
                     yield ObjectMetadata(
@@ -314,9 +341,18 @@ class PosixFileStorageProvider(BaseStorageProvider):
                         last_modified=AWARE_DATETIME_MIN,
                     )
                 elif entry_type == _EntryType.DIRECTORY_TO_EXPLORE:
-                    # Recursively explore this directory
                     yield from self._explore_directory(
-                        full_path, start_after, end_at, include_directories, follow_symlinks
+                        full_path, start_after, end_at, include_directories, symlink_handling
+                    )
+                elif entry_type == _EntryType.SYMLINK:
+                    target_key, target_type = symlink_info[relative_path]
+                    is_dir_target = target_type == "directory"
+                    yield ObjectMetadata(
+                        key=relative_path,
+                        content_length=0 if is_dir_target else os.path.getsize(full_path),
+                        last_modified=datetime.fromtimestamp(os.path.getmtime(full_path), tz=timezone.utc),
+                        type=target_type,
+                        symlink_target=target_key,
                     )
 
         except (OSError, PermissionError) as e:

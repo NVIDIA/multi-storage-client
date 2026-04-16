@@ -18,6 +18,7 @@ import os
 import tempfile
 import time
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -28,7 +29,7 @@ from multistorageclient.providers.manifest_metadata import (
     ManifestMetadataProvider,
 )
 from multistorageclient.providers.manifest_object_metadata import ManifestObjectMetadata
-from multistorageclient.types import ObjectMetadata
+from multistorageclient.types import ObjectMetadata, ResolvedPathState
 
 
 @pytest.mark.parametrize(
@@ -978,3 +979,51 @@ def test_manifest_get_object_metadata_directory_pending(temp_data_store_type: ty
         # With include_pending, the file is pending removal so directory should not exist
         with pytest.raises(FileNotFoundError):
             provider.get_object_metadata("pending_dir", include_pending=True)
+
+
+def _make_manifest_provider(files: dict[str, ManifestObjectMetadata]) -> ManifestMetadataProvider:
+    """Create a ManifestMetadataProvider with pre-populated _files, bypassing storage loading."""
+    mock_storage = MagicMock()
+    mock_storage.is_file.return_value = False
+    mock_storage.glob.return_value = []
+    provider = ManifestMetadataProvider(
+        storage_provider=mock_storage,
+        manifest_path="fake_manifest",
+        writable=False,
+    )
+    provider._files = files
+    return provider
+
+
+def test_realpath_follows_symlink_chain():
+    now = datetime.now(tz=timezone.utc)
+    files = {
+        "link_a": ManifestObjectMetadata(
+            key="link_a", content_length=0, last_modified=now, symlink_target="link_b", physical_path="link_a"
+        ),
+        "link_b": ManifestObjectMetadata(
+            key="link_b", content_length=0, last_modified=now, symlink_target="target.txt", physical_path="link_b"
+        ),
+        "target.txt": ManifestObjectMetadata(
+            key="target.txt", content_length=100, last_modified=now, physical_path="phys/target.txt"
+        ),
+    }
+    provider = _make_manifest_provider(files)
+    resolved = provider.realpath("link_a")
+    assert resolved.physical_path == "phys/target.txt"
+    assert resolved.state == ResolvedPathState.EXISTS
+
+
+def test_realpath_symlink_cycle_raises():
+    now = datetime.now(tz=timezone.utc)
+    files = {
+        "a": ManifestObjectMetadata(
+            key="a", content_length=0, last_modified=now, symlink_target="b", physical_path="a"
+        ),
+        "b": ManifestObjectMetadata(
+            key="b", content_length=0, last_modified=now, symlink_target="a", physical_path="b"
+        ),
+    }
+    provider = _make_manifest_provider(files)
+    with pytest.raises(ValueError, match="cycle"):
+        provider.realpath("a")

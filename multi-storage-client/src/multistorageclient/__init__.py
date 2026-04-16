@@ -48,6 +48,7 @@ from .types import (
     ResolvedPathState,
     SignerType,
     StorageBackend,
+    SymlinkHandling,
     SyncResult,
 )
 
@@ -65,6 +66,7 @@ __all__ = [
     "ProviderBundleV2",
     "SignerType",
     "StorageBackend",
+    "SymlinkHandling",
     "SyncResult",
     "DryrunResult",
     # Shortcuts

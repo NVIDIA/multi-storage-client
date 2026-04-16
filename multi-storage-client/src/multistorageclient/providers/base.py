@@ -18,6 +18,7 @@ import heapq
 import importlib.metadata as importlib_metadata
 import logging
 import os
+import posixpath
 import queue
 import threading
 import time
@@ -33,7 +34,7 @@ import opentelemetry.util.types as api_types
 from ..rust_utils import run_coroutine_sync
 from ..telemetry import Telemetry
 from ..telemetry.attributes.base import AttributesProvider, collect_attributes
-from ..types import ObjectMetadata, Range, SignerType, StorageProvider
+from ..types import MAX_SYMLINK_DEPTH, ObjectMetadata, Range, SignerType, StorageProvider, SymlinkHandling
 from ..utils import (
     create_attribute_filter_evaluator,
     extract_prefix_from_glob,
@@ -587,8 +588,56 @@ class BaseStorageProvider(StorageProvider):
         path = self._prepend_base_path(path)
         return self._emit_metrics(
             operation=BaseStorageProvider._Operation.READ,
-            f=lambda: self._get_object(path, byte_range),
+            f=lambda: self._get_object_following_symlinks(path, byte_range),
         )
+
+    def _get_object_following_symlinks(
+        self,
+        path: str,
+        byte_range: Optional[Range] = None,
+        _depth: int = 0,
+        _visited: Optional[set[str]] = None,
+    ) -> bytes:
+        data = self._get_object(path, byte_range)
+        if data:
+            return data
+
+        metadata = self._get_object_metadata(path)
+        if not metadata.symlink_target:
+            return data
+
+        if _visited is None:
+            _visited = set()
+        if path in _visited:
+            raise ValueError(f"Symlink cycle detected at: {path}")
+        if _depth >= MAX_SYMLINK_DEPTH:
+            raise ValueError(f"Too many levels of symlinks (>{MAX_SYMLINK_DEPTH}): {path}")
+        _visited.add(path)
+
+        resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), metadata.symlink_target))
+        return self._get_object_following_symlinks(resolved, byte_range, _depth + 1, _visited)
+
+    def _resolve_symlink_path(
+        self,
+        path: str,
+        _depth: int = 0,
+        _visited: Optional[set[str]] = None,
+    ) -> str:
+        """Resolve a path through any symlink chain, returning the final physical path."""
+        metadata = self._get_object_metadata(path)
+        if not metadata.symlink_target:
+            return path
+
+        if _visited is None:
+            _visited = set()
+        if path in _visited:
+            raise ValueError(f"Symlink cycle detected at: {path}")
+        if _depth >= MAX_SYMLINK_DEPTH:
+            raise ValueError(f"Too many levels of symlinks (>{MAX_SYMLINK_DEPTH}): {path}")
+        _visited.add(path)
+
+        resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), metadata.symlink_target))
+        return self._resolve_symlink_path(resolved, _depth + 1, _visited)
 
     def copy_object(self, src_path: str, dest_path: str) -> None:
         src_path = self._prepend_base_path(src_path)
@@ -694,7 +743,7 @@ class BaseStorageProvider(StorageProvider):
         include_directories: bool = False,
         attribute_filter_expression: Optional[str] = None,
         show_attributes: bool = False,
-        follow_symlinks: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         """
         Lists objects in the storage provider under the specified path.
@@ -705,17 +754,15 @@ class BaseStorageProvider(StorageProvider):
         :param include_directories: Whether to include directories in the result. When ``True``, directories are returned alongside objects.
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
         :param show_attributes: Whether to return attributes in the result. There will be a performance impact if this is set to ``True`` as object metadata is fetched for each object.
-        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers. When ``False``, symlinks are skipped during listing.
+        :param symlink_handling: How to handle symbolic links during listing.
 
         :return: An iterator over object metadata under the specified path.
         """
         if (start_after is not None) and (end_at is not None) and not (start_after < end_at):
             raise ValueError(f"start_after ({start_after}) must be before end_at ({end_at})!")
 
-        # Prepend the base path to all the paths, the _list_objects method operates on full paths.
         path = self._prepend_base_path(path)
 
-        # Cannot list objects from an empty base path.
         if path.strip() == "":
             raise ValueError(
                 "The base_path cannot be empty when calling list_objects. Please provide a valid base_path in your configuration file."
@@ -724,19 +771,19 @@ class BaseStorageProvider(StorageProvider):
         start_after = self._prepend_base_path(start_after) if start_after else None
         end_at = self._prepend_base_path(end_at) if end_at else None
 
-        # In version 0.33.0, we added the follow_symlinks parameter to the _list_objects method.
-        # Fallback for custom storage providers that haven't been updated yet
+        # Backward compat: fall back when a custom provider doesn't accept symlink_handling yet
         try:
             objects = self._emit_metrics(
                 operation=BaseStorageProvider._Operation.LIST,
                 f=lambda: self._list_objects(
-                    path, start_after, end_at, include_directories, follow_symlinks=follow_symlinks
+                    path, start_after, end_at, include_directories, symlink_handling=symlink_handling
                 ),
             )
         except TypeError as exc:
-            if "follow_symlinks" in str(exc):
+            if "symlink_handling" in str(exc) or "follow_symlinks" in str(exc):
                 logger.debug(
-                    "We added the follow_symlinks parameter to the _list_objects method in version 0.33.0, please update your provider's interface to support it."
+                    "Custom storage provider does not accept symlink_handling in _list_objects. "
+                    "Please update your provider's interface."
                 )
                 objects = self._emit_metrics(
                     operation=BaseStorageProvider._Operation.LIST,
@@ -777,7 +824,7 @@ class BaseStorageProvider(StorageProvider):
         end_at: Optional[str] = None,
         max_workers: int = 32,
         look_ahead: int = 2,
-        follow_symlinks: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         """
         List all objects recursively with parallel prefix discovery.
@@ -790,7 +837,7 @@ class BaseStorageProvider(StorageProvider):
         :param end_at: Stop listing at this key (inclusive).
         :param max_workers: Maximum concurrent listing threads.
         :param look_ahead: Prefixes to buffer ahead per worker (bounds memory, heap algorithm only).
-        :param follow_symlinks: Whether to follow symbolic links (POSIX providers only).
+        :param symlink_handling: How to handle symbolic links during listing.
         :return: Iterator of ObjectMetadata for files under the path.
         """
         if (start_after is not None) and (end_at is not None) and not (start_after < end_at):
@@ -810,7 +857,7 @@ class BaseStorageProvider(StorageProvider):
         objects = self._emit_metrics(
             operation=BaseStorageProvider._Operation.LIST,
             f=lambda: self._list_objects_recursive_impl(
-                path, max_workers, look_ahead, start_after, end_at, follow_symlinks
+                path, max_workers, look_ahead, start_after, end_at, symlink_handling
             ),
         )
 
@@ -834,18 +881,19 @@ class BaseStorageProvider(StorageProvider):
         """
         return False
 
-    def _shallow_list(self, path: str, follow_symlinks: bool) -> tuple[list[str], list[ObjectMetadata]]:
+    def _shallow_list(self, path: str, symlink_handling: SymlinkHandling) -> tuple[list[str], list[ObjectMetadata]]:
         """
         Perform shallow listing and separate into prefixes and objects.
 
         :param path: Full path (including base_path) to list.
+        :param symlink_handling: How to handle symbolic links during listing.
         :return: Tuple of (child_prefixes, objects_at_this_level).
         """
         prefixes: list[str] = []
         objects: list[ObjectMetadata] = []
 
-        for item in self._list_objects(path, include_directories=True, follow_symlinks=follow_symlinks):
-            if item.type == "directory":
+        for item in self._list_objects(path, include_directories=True, symlink_handling=symlink_handling):
+            if item.type == "directory" and item.symlink_target is None:
                 child_prefix = item.key + "/"
                 if child_prefix != path:
                     prefixes.append(child_prefix)
@@ -861,7 +909,7 @@ class BaseStorageProvider(StorageProvider):
         look_ahead: int,
         start_after: Optional[str],
         end_at: Optional[str],
-        follow_symlinks: bool,
+        symlink_handling: SymlinkHandling,
     ) -> Iterator[ObjectMetadata]:
         """
         Internal implementation of recursive listing with bounded parallelism.
@@ -871,11 +919,11 @@ class BaseStorageProvider(StorageProvider):
         """
         if not self.supports_parallel_listing:
             yield from self._list_objects(
-                path, start_after, end_at, include_directories=False, follow_symlinks=follow_symlinks
+                path, start_after, end_at, include_directories=False, symlink_handling=symlink_handling
             )
             return
 
-        prefixes, objects = self._shallow_list(path, follow_symlinks)
+        prefixes, objects = self._shallow_list(path, symlink_handling)
 
         # Prune prefixes entirely beyond end_at to avoid wasted API calls.
         if end_at:
@@ -895,7 +943,7 @@ class BaseStorageProvider(StorageProvider):
         heap.extend(_ListingHeapItem(o.key, False, o) for o in objects)
         heapq.heapify(heap)
 
-        with _PrefixExpander(lambda p: self._shallow_list(p, follow_symlinks), max_workers, look_ahead) as expander:
+        with _PrefixExpander(lambda p: self._shallow_list(p, symlink_handling), max_workers, look_ahead) as expander:
             expander.enqueue(prefixes)
 
             while heap:
@@ -945,6 +993,8 @@ class BaseStorageProvider(StorageProvider):
 
     def download_file(self, remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> None:
         remote_path = self._prepend_base_path(remote_path)
+        if metadata is None or metadata.symlink_target is not None:
+            remote_path = self._resolve_symlink_path(remote_path)
         self._emit_metrics(
             operation=BaseStorageProvider._Operation.READ,
             f=lambda: self._download_file(remote_path, f, metadata),
@@ -1256,7 +1306,7 @@ class BaseStorageProvider(StorageProvider):
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
-        follow_symlinks: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         """
         Lists objects in the storage provider under the specified path.
@@ -1265,7 +1315,7 @@ class BaseStorageProvider(StorageProvider):
         :param start_after: The key to start after.
         :param end_at: The key to end at.
         :param include_directories: Whether to include directories in the result.
-        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers.
+        :param symlink_handling: How to handle symbolic links during listing.
         """
         pass
 

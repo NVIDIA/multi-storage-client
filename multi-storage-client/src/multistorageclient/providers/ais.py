@@ -36,6 +36,7 @@ from ..types import (
     CredentialsProvider,
     ObjectMetadata,
     Range,
+    SymlinkHandling,
 )
 from ..utils import safe_makedirs, split_path, validate_attributes
 from .base import BaseStorageProvider
@@ -366,7 +367,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
-        follow_symlinks: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         bucket, prefix = split_path(path)
 

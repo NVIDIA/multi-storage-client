@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import asyncio
+import tempfile
 import time
 from collections.abc import Iterator
 from datetime import datetime
@@ -24,7 +25,7 @@ import pytest
 
 from multistorageclient.providers.base import BaseStorageProvider
 from multistorageclient.telemetry import Telemetry
-from multistorageclient.types import ObjectMetadata, Range
+from multistorageclient.types import ObjectMetadata, Range, SymlinkHandling
 
 
 class MockBaseStorageProvider(BaseStorageProvider):
@@ -57,15 +58,15 @@ class MockBaseStorageProvider(BaseStorageProvider):
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
-        follow_symlinks: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         return iter([])
 
     def _upload_file(self, remote_path: str, f: Union[str, IO]) -> None:
         pass
 
-    def _download_file(self, remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> None:
-        pass
+    def _download_file(self, remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> int:
+        return 0
 
 
 class FailFastStorageProvider(MockBaseStorageProvider):
@@ -79,7 +80,7 @@ class FailFastStorageProvider(MockBaseStorageProvider):
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
-        follow_symlinks: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         if path.endswith("bad/"):
             raise RuntimeError("should fail fast")
@@ -408,7 +409,7 @@ class MockParallelListingProvider(MockBaseStorageProvider):
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
-        follow_symlinks: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         for obj in self._tree.get(path, []):
             yield obj
@@ -827,3 +828,114 @@ def test_object_metadata_symlink_target_none_by_default():
 
     restored = ObjectMetadata.from_dict(data)
     assert restored.symlink_target is None
+
+
+class SymlinkMockProvider(MockBaseStorageProvider):
+    """A mock that stores objects and metadata for symlink resolution tests."""
+
+    def __init__(self, objects: dict[str, bytes], metadata: dict[str, ObjectMetadata]):
+        super().__init__(base_path="", provider_name="mock")
+        self._objects = objects
+        self._metadata = metadata
+
+    def _get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
+        return self._objects.get(path, b"")
+
+    def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
+        if path in self._metadata:
+            return self._metadata[path]
+        return ObjectMetadata(key=path, content_length=0, last_modified=datetime.now())
+
+    def _download_file(self, remote_path: str, f, metadata=None) -> int:
+        data = self._get_object(remote_path)
+        if isinstance(f, str):
+            import os
+
+            os.makedirs(os.path.dirname(f) or ".", exist_ok=True)
+            with open(f, "wb") as fh:
+                fh.write(data)
+        else:
+            f.write(data)
+        return len(data)
+
+
+def test_get_object_follows_symlink():
+    now = datetime.now()
+    objects = {"target.txt": b"real content"}
+    metadata = {
+        "link.txt": ObjectMetadata(key="link.txt", content_length=0, last_modified=now, symlink_target="target.txt"),
+        "target.txt": ObjectMetadata(key="target.txt", content_length=12, last_modified=now),
+    }
+    provider = SymlinkMockProvider(objects=objects, metadata=metadata)
+    assert provider.get_object("link.txt") == b"real content"
+
+
+def test_get_object_symlink_chain():
+    now = datetime.now()
+    objects = {"final.txt": b"chain result"}
+    metadata = {
+        "link_a": ObjectMetadata(key="link_a", content_length=0, last_modified=now, symlink_target="link_b"),
+        "link_b": ObjectMetadata(key="link_b", content_length=0, last_modified=now, symlink_target="final.txt"),
+        "final.txt": ObjectMetadata(key="final.txt", content_length=12, last_modified=now),
+    }
+    provider = SymlinkMockProvider(objects=objects, metadata=metadata)
+    assert provider.get_object("link_a") == b"chain result"
+
+
+def test_get_object_symlink_cycle_raises():
+    now = datetime.now()
+    objects: dict[str, bytes] = {}
+    metadata = {
+        "a": ObjectMetadata(key="a", content_length=0, last_modified=now, symlink_target="b"),
+        "b": ObjectMetadata(key="b", content_length=0, last_modified=now, symlink_target="a"),
+    }
+    provider = SymlinkMockProvider(objects=objects, metadata=metadata)
+    with pytest.raises(ValueError, match="cycle"):
+        provider.get_object("a")
+
+
+def test_get_object_symlink_depth_limit():
+    now = datetime.now()
+    objects = {"target.txt": b"deep"}
+    metadata: dict[str, ObjectMetadata] = {}
+    for i in range(50):
+        metadata[f"link_{i}"] = ObjectMetadata(
+            key=f"link_{i}", content_length=0, last_modified=now, symlink_target=f"link_{i + 1}"
+        )
+    metadata["link_50"] = ObjectMetadata(
+        key="link_50", content_length=0, last_modified=now, symlink_target="target.txt"
+    )
+    metadata["target.txt"] = ObjectMetadata(key="target.txt", content_length=4, last_modified=now)
+    provider = SymlinkMockProvider(objects=objects, metadata=metadata)
+    with pytest.raises(ValueError, match="Too many levels"):
+        provider.get_object("link_0")
+
+
+def test_get_object_empty_file_not_symlink():
+    now = datetime.now()
+    objects = {"empty.txt": b""}
+    metadata = {
+        "empty.txt": ObjectMetadata(key="empty.txt", content_length=0, last_modified=now),
+    }
+    provider = SymlinkMockProvider(objects=objects, metadata=metadata)
+    assert provider.get_object("empty.txt") == b""
+
+
+def test_download_file_follows_symlink():
+    now = datetime.now()
+    objects = {"target.txt": b"real content"}
+    metadata = {
+        "link.txt": ObjectMetadata(key="link.txt", content_length=0, last_modified=now, symlink_target="target.txt"),
+        "target.txt": ObjectMetadata(key="target.txt", content_length=12, last_modified=now),
+    }
+    provider = SymlinkMockProvider(objects=objects, metadata=metadata)
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        provider.download_file("link.txt", tmp_path)
+        with open(tmp_path, "rb") as f:
+            assert f.read() == b"real content"
+    finally:
+        import os
+
+        os.unlink(tmp_path)

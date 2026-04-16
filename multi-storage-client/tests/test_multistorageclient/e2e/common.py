@@ -338,13 +338,22 @@ def verify_storage_provider(storage_client: msc.StorageClient, prefix: str) -> N
     )
 
     # Test symlinks
-    symlink_path = f"{prefix}/symlink.txt"
-    target_path = f"{prefix}/target.txt"
+    symlink_prefix = f"{prefix}/symlinks"
+    target_path = f"{symlink_prefix}/target.txt"
+    symlink_path = f"{symlink_prefix}/symlink.txt"
     storage_client.write(target_path, b"target content")
     storage_client.make_symlink(symlink_path, target_path)
     assert storage_client.is_file(symlink_path)
-    symlink_metadata = storage_client.info(symlink_path)
-    assert symlink_metadata.symlink_target == "target.txt"
+    assert storage_client.info(path=symlink_path).symlink_target == "target.txt"
+
+    # list() should populate symlink_target on symlink objects
+    objects = list(storage_client.list(prefix=symlink_prefix))
+    objects_by_suffix = {obj.key.split("/")[-1]: obj for obj in objects}
+    assert objects_by_suffix["symlink.txt"].symlink_target == "target.txt"
+    assert objects_by_suffix["target.txt"].symlink_target is None
+
+    # read through a symlink returns the target content
+    assert storage_client.read(symlink_path) == b"target content"
 
 
 def verify_attributes(storage_client: msc.StorageClient, prefix: str) -> None:

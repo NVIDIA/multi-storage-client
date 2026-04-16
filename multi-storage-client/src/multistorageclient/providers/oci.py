@@ -42,6 +42,7 @@ from ..types import (
     PreconditionFailedError,
     Range,
     RetryableError,
+    SymlinkHandling,
 )
 from ..utils import safe_makedirs, split_path, validate_attributes
 from .base import BaseStorageProvider
@@ -384,7 +385,7 @@ class OracleStorageProvider(BaseStorageProvider):
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
-        follow_symlinks: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         bucket, prefix = split_path(path)
         self._refresh_oci_client_if_needed()
@@ -455,12 +456,20 @@ class OracleStorageProvider(BaseStorageProvider):
                                     last_modified=response_object.time_modified,
                                 )
                         else:
+                            symlink_target = None
+                            if response_object.size == 0:
+                                try:
+                                    meta = self._get_object_metadata(os.path.join(bucket, key))
+                                    symlink_target = meta.symlink_target
+                                except Exception:
+                                    symlink_target = None
                             yield ObjectMetadata(
                                 key=os.path.join(bucket, key),
                                 type="file",
                                 content_length=response_object.size,
                                 last_modified=response_object.time_modified,
                                 etag=response_object.etag,
+                                symlink_target=symlink_target,
                             )
                     elif start_after != key:
                         return

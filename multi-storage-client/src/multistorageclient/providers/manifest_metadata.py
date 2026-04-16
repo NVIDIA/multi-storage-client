@@ -18,6 +18,7 @@ from __future__ import annotations  # Enables forward references in type hints
 import json
 import logging
 import os
+import posixpath
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ from typing import Any, Optional, Union
 
 from ..types import (
     AWARE_DATETIME_MIN,
+    MAX_SYMLINK_DEPTH,
     MetadataProvider,
     ObjectMetadata,
     ResolvedPath,
@@ -424,17 +426,28 @@ class ManifestMetadataProvider(MetadataProvider):
         """
         Resolves a logical path to its physical storage path if the object exists.
         Only checks committed files, not pending changes.
+        Follows ``symlink_target`` chains in the manifest with depth limit and cycle detection.
 
         :param logical_path: The user-facing logical path
 
         :return: ResolvedPath with exists=True if found, exists=False otherwise
         """
-        # Only check committed files
-        manifest_obj = self._files.get(logical_path)
-        if manifest_obj:
-            assert manifest_obj.physical_path is not None
-            return ResolvedPath(physical_path=manifest_obj.physical_path, state=ResolvedPathState.EXISTS, profile=None)
-        return ResolvedPath(physical_path=logical_path, state=ResolvedPathState.UNTRACKED, profile=None)
+        visited: set[str] = set()
+        current = logical_path
+        for _ in range(MAX_SYMLINK_DEPTH):
+            manifest_obj = self._files.get(current)
+            if not manifest_obj:
+                return ResolvedPath(physical_path=current, state=ResolvedPathState.UNTRACKED, profile=None)
+            if not manifest_obj.symlink_target:
+                assert manifest_obj.physical_path is not None
+                return ResolvedPath(
+                    physical_path=manifest_obj.physical_path, state=ResolvedPathState.EXISTS, profile=None
+                )
+            if current in visited:
+                raise ValueError(f"Symlink cycle detected at: {current}")
+            visited.add(current)
+            current = posixpath.normpath(posixpath.join(posixpath.dirname(current), manifest_obj.symlink_target))
+        raise ValueError(f"Too many levels of symlinks (>{MAX_SYMLINK_DEPTH}): {logical_path}")
 
     def generate_physical_path(self, logical_path: str, for_overwrite: bool = False) -> ResolvedPath:
         """
