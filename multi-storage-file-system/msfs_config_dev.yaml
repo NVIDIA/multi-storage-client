@@ -66,8 +66,6 @@ backends: [
     bucket_container_name: dev,
     backend_type: PSEUDO,
     PSEUDO: {
-      dir_name_format: "dir.%d",
-      file_name_format: "file.%d",
       file_size: 1048576,
       files_at_depth_0: 8192,
     },
@@ -77,8 +75,6 @@ backends: [
     bucket_container_name: dev,
     backend_type: PSEUDO,
     PSEUDO: {
-      dir_name_format: "dir.%d",
-      file_name_format: "file.%d",
       file_size: 1073741824,
       files_at_depth_0: 80,
     },

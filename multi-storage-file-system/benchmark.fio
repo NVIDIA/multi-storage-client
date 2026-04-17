@@ -1,15 +1,20 @@
-; Lustre vs MSFS FIO Benchmark
+; Lustre vs MSFS FIO Benchmark -- template for run_benchmark.sh
 ;
-; Usage:
-;   fio benchmark.fio --section=<LABEL> --directory=/path/to/files
+; Usage (via wrapper script -- required for multi-thread correctness):
+;   ./run_benchmark.sh <SECTION> <DIRECTORY>
 ;
 ; Two data directories are required:
 ;   Small-file dir (P1.x, P2.x): 8192 files named file.0 .. file.8191, each 1 MiB
-;   Large-file dir (P3.x--P6.x): 80 files named file.0 .. file.79,   each 1 GiB
+;   Large-file dir (P3.x--P6.x):   80 files named file.0 .. file.79,   each 1 GiB
 ;
 ; Examples:
-;   fio benchmark.fio --section=P1.1 --directory=/mnt/pseudo8192x1MiB
-;   fio benchmark.fio --section=P3.4 --directory=/mnt/pseudo80x1GiB
+;   ./run_benchmark.sh P1.1 /mnt/pseudo8192x1MiB
+;   ./run_benchmark.sh P3.4 /mnt/pseudo80x1GiB
+;
+; The wrapper script extracts [global] and the selected section from this
+; file, appends per-file filename= lines, and writes a temporary .fio job
+; file that fio runs directly.  This avoids the single colon-delimited
+; filename= mega-line that overflows fio's internal buffer for 8192 files.
 
 [global]
 ioengine=psync
@@ -19,7 +24,9 @@ loops=1
 thread=1
 file_service_type=roundrobin
 kb_base=1024
-filename_format=file.$filenum
+allow_file_create=0
+fallocate=none
+group_reporting=1
 
 ; ---------------------------------------------------------------------------
 ; P1.x -- 1 MiB files, 4 KiB sequential reads
@@ -28,7 +35,6 @@ filename_format=file.$filenum
 [P1.1]
 ; 8192 x 1 MiB files, 4K seq read, 1 thread
 rw=read
-nrfiles=8192
 numjobs=1
 bs=4Ki
 filesize=1Mi
@@ -38,7 +44,6 @@ io_size=8Gi
 [P1.2]
 ; 8192 x 1 MiB files, 4K seq read, 2 threads
 rw=read
-nrfiles=8192
 numjobs=2
 bs=4Ki
 filesize=1Mi
@@ -48,7 +53,6 @@ io_size=4Gi
 [P1.4]
 ; 8192 x 1 MiB files, 4K seq read, 4 threads
 rw=read
-nrfiles=8192
 numjobs=4
 bs=4Ki
 filesize=1Mi
@@ -58,7 +62,6 @@ io_size=2Gi
 [P1.8]
 ; 8192 x 1 MiB files, 4K seq read, 8 threads
 rw=read
-nrfiles=8192
 numjobs=8
 bs=4Ki
 filesize=1Mi
@@ -72,7 +75,6 @@ io_size=1Gi
 [P2.1]
 ; 8192 x 1 MiB files, 64K seq read, 1 thread
 rw=read
-nrfiles=8192
 numjobs=1
 bs=64Ki
 filesize=1Mi
@@ -82,7 +84,6 @@ io_size=8Gi
 [P2.2]
 ; 8192 x 1 MiB files, 64K seq read, 2 threads
 rw=read
-nrfiles=8192
 numjobs=2
 bs=64Ki
 filesize=1Mi
@@ -92,7 +93,6 @@ io_size=4Gi
 [P2.4]
 ; 8192 x 1 MiB files, 64K seq read, 4 threads
 rw=read
-nrfiles=8192
 numjobs=4
 bs=64Ki
 filesize=1Mi
@@ -102,7 +102,6 @@ io_size=2Gi
 [P2.8]
 ; 8192 x 1 MiB files, 64K seq read, 8 threads
 rw=read
-nrfiles=8192
 numjobs=8
 bs=64Ki
 filesize=1Mi
@@ -116,7 +115,6 @@ io_size=1Gi
 [P3.1]
 ; 80 x 1 GiB files, 4K seq read, 1 thread
 rw=read
-nrfiles=80
 numjobs=1
 bs=4Ki
 filesize=1Gi
@@ -126,7 +124,6 @@ io_size=80Gi
 [P3.2]
 ; 80 x 1 GiB files, 4K seq read, 2 threads
 rw=read
-nrfiles=80
 numjobs=2
 bs=4Ki
 filesize=1Gi
@@ -136,7 +133,6 @@ io_size=40Gi
 [P3.4]
 ; 80 x 1 GiB files, 4K seq read, 4 threads
 rw=read
-nrfiles=80
 numjobs=4
 bs=4Ki
 filesize=1Gi
@@ -146,7 +142,6 @@ io_size=20Gi
 [P3.8]
 ; 80 x 1 GiB files, 4K seq read, 8 threads
 rw=read
-nrfiles=80
 numjobs=8
 bs=4Ki
 filesize=1Gi
@@ -160,7 +155,6 @@ io_size=10Gi
 [P4.1]
 ; 80 x 1 GiB files, 64K seq read, 1 thread
 rw=read
-nrfiles=80
 numjobs=1
 bs=64Ki
 filesize=1Gi
@@ -170,7 +164,6 @@ io_size=80Gi
 [P4.2]
 ; 80 x 1 GiB files, 64K seq read, 2 threads
 rw=read
-nrfiles=80
 numjobs=2
 bs=64Ki
 filesize=1Gi
@@ -180,7 +173,6 @@ io_size=40Gi
 [P4.4]
 ; 80 x 1 GiB files, 64K seq read, 4 threads
 rw=read
-nrfiles=80
 numjobs=4
 bs=64Ki
 filesize=1Gi
@@ -190,7 +182,6 @@ io_size=20Gi
 [P4.8]
 ; 80 x 1 GiB files, 64K seq read, 8 threads
 rw=read
-nrfiles=80
 numjobs=8
 bs=64Ki
 filesize=1Gi
@@ -204,7 +195,6 @@ io_size=10Gi
 [P5.1]
 ; 80 x 1 GiB files, 4K rand read, 1 thread
 rw=randread
-nrfiles=80
 numjobs=1
 bs=4Ki
 filesize=1Gi
@@ -214,7 +204,6 @@ io_size=80Gi
 [P5.2]
 ; 80 x 1 GiB files, 4K rand read, 2 threads
 rw=randread
-nrfiles=80
 numjobs=2
 bs=4Ki
 filesize=1Gi
@@ -224,7 +213,6 @@ io_size=40Gi
 [P5.4]
 ; 80 x 1 GiB files, 4K rand read, 4 threads
 rw=randread
-nrfiles=80
 numjobs=4
 bs=4Ki
 filesize=1Gi
@@ -234,7 +222,6 @@ io_size=20Gi
 [P5.8]
 ; 80 x 1 GiB files, 4K rand read, 8 threads
 rw=randread
-nrfiles=80
 numjobs=8
 bs=4Ki
 filesize=1Gi
@@ -248,7 +235,6 @@ io_size=10Gi
 [P6.1]
 ; 80 x 1 GiB files, 64K rand read, 1 thread
 rw=randread
-nrfiles=80
 numjobs=1
 bs=64Ki
 filesize=1Gi
@@ -258,7 +244,6 @@ io_size=80Gi
 [P6.2]
 ; 80 x 1 GiB files, 64K rand read, 2 threads
 rw=randread
-nrfiles=80
 numjobs=2
 bs=64Ki
 filesize=1Gi
@@ -268,7 +253,6 @@ io_size=40Gi
 [P6.4]
 ; 80 x 1 GiB files, 64K rand read, 4 threads
 rw=randread
-nrfiles=80
 numjobs=4
 bs=64Ki
 filesize=1Gi
@@ -278,7 +262,6 @@ io_size=20Gi
 [P6.8]
 ; 80 x 1 GiB files, 64K rand read, 8 threads
 rw=randread
-nrfiles=80
 numjobs=8
 bs=64Ki
 filesize=1Gi

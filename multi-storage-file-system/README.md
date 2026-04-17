@@ -171,6 +171,8 @@ defaults accepted) as described in the following table:
 | :------------------------- | :------------------- | -----------: | :------------------------------------------------------------------------------------------------------------ |
 | dir_name_format            | string               |   "dir_%08X" | Format specifier for the naming pattern of subdirectories (must lexigraphically sort before file_name_format) |
 | file_name_format           | string               |  "file_%08X" | Format specifier for the naming pattern of files (must lexigraphically sort after dir_name_format)            |
+| dir_starting_number        | decimal              |            0 | Number in dir_name_format of the first subdirectory                                                           |
+| file_starting_number       | decimal              |            0 | Number in file_name_format of the first file                                                                  |
 | file_size                  | decimal              |            0 | Size (in bytes) of each file (content all zeroes)                                                             |
 | files_at_depth_0           | decimal              |            0 | Number of files at depth 0 (i.e. in top-most directory)                                                       |
 | files_at_depth_1           | decimal              |            0 | Number of files at depth 1 (subdirectories_at_depth_0 must be >0)                                             |

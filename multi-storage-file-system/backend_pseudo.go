@@ -199,11 +199,11 @@ func (pseudoContext *pseudoContextStruct) listDirectory(listDirectoryInput *list
 	}
 
 	for dirIndex = dirIndexStart; dirIndex < (dirIndexStart + numDirToReturn); dirIndex++ {
-		listDirectoryOutput.subdirectory = append(listDirectoryOutput.subdirectory, fmt.Sprintf(pseudoContext.backendPSEUDO.dirNameFormat, dirIndex))
+		listDirectoryOutput.subdirectory = append(listDirectoryOutput.subdirectory, fmt.Sprintf(pseudoContext.backendPSEUDO.dirNameFormat, dirIndex+pseudoContext.backendPSEUDO.dirStartingNumber))
 	}
 
 	for fileIndex = fileIndexStart; fileIndex < (fileIndexStart + numFileToReturn); fileIndex++ {
-		fileName = fmt.Sprintf(pseudoContext.backendPSEUDO.fileNameFormat, fileIndex)
+		fileName = fmt.Sprintf(pseudoContext.backendPSEUDO.fileNameFormat, fileIndex+pseudoContext.backendPSEUDO.fileStartingNumber)
 		fullFilePath = []byte(fullDirPath + fileName)
 
 		listDirectoryOutput.file = append(listDirectoryOutput.file, listDirectoryOutputFileStruct{
@@ -224,14 +224,14 @@ func (pseudoContext *pseudoContextStruct) listDirectory(listDirectoryInput *list
 // greater than the exact match for the returned pathElementNumber, comparison will be positive
 // one. In the case where path element is lexigraphically less than what would be the minimum
 // (i.e. zero) pathElementNumber, pathElementNumber will be zero and comparison will be minus one.
-func checkPathElement(pathElementFormat, pathElement string, pathElementNumberLimit uint64) (pathElementNumber uint64, comparison int) {
+func checkPathElement(pathElementFormat, pathElement string, pathElementNumberLimit, startingNumber uint64) (pathElementNumber uint64, comparison int) {
 	var (
 		err            error
 		hi             uint64
 		lo             uint64
 		mid            uint64
-		pathElementMax = fmt.Sprintf(pathElementFormat, pathElementNumberLimit-1)
-		pathElementMin = fmt.Sprintf(pathElementFormat, 0)
+		pathElementMax = fmt.Sprintf(pathElementFormat, startingNumber+pathElementNumberLimit-1)
+		pathElementMin = fmt.Sprintf(pathElementFormat, startingNumber)
 	)
 
 	if pathElement < pathElementMin {
@@ -250,7 +250,8 @@ func checkPathElement(pathElementFormat, pathElement string, pathElementNumberLi
 
 	_, err = fmt.Sscanf(pathElement, pathElementFormat, &pathElementNumber)
 	if (err == nil) && (fmt.Sprintf(pathElementFormat, pathElementNumber) == pathElement) {
-		if pathElementNumber < pathElementNumberLimit {
+		if pathElementNumber >= startingNumber && pathElementNumber < startingNumber+pathElementNumberLimit {
+			pathElementNumber -= startingNumber
 			comparison = 0
 
 			return
@@ -262,8 +263,8 @@ func checkPathElement(pathElementFormat, pathElement string, pathElementNumberLi
 		return
 	}
 
-	lo = uint64(0)
-	hi = pathElementNumberLimit - 1
+	lo = startingNumber
+	hi = startingNumber + pathElementNumberLimit - 1
 
 	for lo < hi {
 		mid = lo + (hi-lo+1)/2
@@ -275,7 +276,7 @@ func checkPathElement(pathElementFormat, pathElement string, pathElementNumberLi
 		}
 	}
 
-	pathElementNumber = lo
+	pathElementNumber = lo - startingNumber
 	comparison = 1
 
 	return
@@ -310,7 +311,7 @@ func (pseudoContext *pseudoContextStruct) listObjectsIndexedObjectPathPrefixPrun
 			continuationTokenAsUint64 -= subdirectoryIndex * subdirectoryObjects
 
 			objectPathPrefixPruned = pseudoContext.listObjectsIndexedObjectPathPrefixPruned(prefixDirPathElements, continuationTokenAsUint64)
-			objectPathPrefixPruned = "/" + fmt.Sprintf(pseudoContext.backendPSEUDO.dirNameFormat, subdirectoryIndex) + objectPathPrefixPruned
+			objectPathPrefixPruned = "/" + fmt.Sprintf(pseudoContext.backendPSEUDO.dirNameFormat, subdirectoryIndex+pseudoContext.backendPSEUDO.dirStartingNumber) + objectPathPrefixPruned
 
 			return
 		}
@@ -318,7 +319,7 @@ func (pseudoContext *pseudoContextStruct) listObjectsIndexedObjectPathPrefixPrun
 		continuationTokenAsUint64 -= subdirectories * subdirectoryObjects
 	}
 
-	objectPathPrefixPruned = "/" + fmt.Sprintf(pseudoContext.backendPSEUDO.fileNameFormat, continuationTokenAsUint64)
+	objectPathPrefixPruned = "/" + fmt.Sprintf(pseudoContext.backendPSEUDO.fileNameFormat, continuationTokenAsUint64+pseudoContext.backendPSEUDO.fileStartingNumber)
 
 	return
 }
@@ -392,7 +393,7 @@ func (pseudoContext *pseudoContextStruct) listObjects(listObjectsInput *listObje
 			startAfterSplitElementDepth = prefixDepth + startAfterSplitElementIndex
 
 			if pseudoContext.backendPSEUDO.subdirectoriesAtDepth[startAfterSplitElementDepth] > 0 {
-				startAfterSplitElementAsUint64, comparison = checkPathElement(pseudoContext.backendPSEUDO.dirNameFormat, startAfterSplitElementAsString, pseudoContext.backendPSEUDO.subdirectoriesAtDepth[startAfterSplitElementDepth])
+				startAfterSplitElementAsUint64, comparison = checkPathElement(pseudoContext.backendPSEUDO.dirNameFormat, startAfterSplitElementAsString, pseudoContext.backendPSEUDO.subdirectoriesAtDepth[startAfterSplitElementDepth], pseudoContext.backendPSEUDO.dirStartingNumber)
 				switch {
 				case comparison == 0:
 					continuationTokenAsUint64 += startAfterSplitElementAsUint64 * pseudoContext.backendPSEUDO.objectsInDirectoryAtDepth[startAfterSplitElementDepth+1]
@@ -409,7 +410,7 @@ func (pseudoContext *pseudoContextStruct) listObjects(listObjectsInput *listObje
 			}
 
 			if checkPathElementForFile && (pseudoContext.backendPSEUDO.filesAtDepth[startAfterSplitElementDepth] > 0) {
-				startAfterSplitElementAsUint64, comparison = checkPathElement(pseudoContext.backendPSEUDO.fileNameFormat, startAfterSplitElementAsString, pseudoContext.backendPSEUDO.filesAtDepth[startAfterSplitElementDepth])
+				startAfterSplitElementAsUint64, comparison = checkPathElement(pseudoContext.backendPSEUDO.fileNameFormat, startAfterSplitElementAsString, pseudoContext.backendPSEUDO.filesAtDepth[startAfterSplitElementDepth], pseudoContext.backendPSEUDO.fileStartingNumber)
 				if comparison == -1 {
 					continuationTokenAsUint64 += startAfterSplitElementAsUint64
 				} else {
@@ -633,6 +634,12 @@ func (pseudoContext *pseudoContextStruct) findFullDirPathElements(fullDirPath st
 			return
 		}
 
+		if fullDirPathSplitElementAsUint64 < pseudoContext.backendPSEUDO.dirStartingNumber {
+			ok = false
+			return
+		}
+		fullDirPathSplitElementAsUint64 -= pseudoContext.backendPSEUDO.dirStartingNumber
+
 		if fullDirPathSplitElementAsUint64 >= pseudoContext.backendPSEUDO.subdirectoriesAtDepth[fullDirPathSplitElementDepth] {
 			ok = false
 			return
@@ -681,6 +688,12 @@ func (pseudoContext *pseudoContextStruct) findFullFilePathElements(fullFilePath 
 			return
 		}
 
+		if fullFilePathSplitElementAsUint64 < pseudoContext.backendPSEUDO.dirStartingNumber {
+			ok = false
+			return
+		}
+		fullFilePathSplitElementAsUint64 -= pseudoContext.backendPSEUDO.dirStartingNumber
+
 		if fullFilePathSplitElementAsUint64 >= pseudoContext.backendPSEUDO.subdirectoriesAtDepth[fullFilePathSplitElementDepth] {
 			ok = false
 			return
@@ -697,6 +710,12 @@ func (pseudoContext *pseudoContextStruct) findFullFilePathElements(fullFilePath 
 		ok = false
 		return
 	}
+
+	if fullFilePathSplitElementAsUint64 < pseudoContext.backendPSEUDO.fileStartingNumber {
+		ok = false
+		return
+	}
+	fullFilePathSplitElementAsUint64 -= pseudoContext.backendPSEUDO.fileStartingNumber
 
 	if fullFilePathSplitElementAsUint64 >= pseudoContext.backendPSEUDO.filesAtDepth[fullFilePathSplitElementDepth] {
 		ok = false

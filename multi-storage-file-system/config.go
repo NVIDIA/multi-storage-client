@@ -1314,6 +1314,18 @@ func checkConfigFile() (err error) {
 						return
 					}
 
+					backendConfigPSEUDOAsStruct.dirStartingNumber, ok = parseUint64(backendConfigPSEUDOAsMap, "dir_starting_number", uint64(0))
+					if !ok {
+						err = fmt.Errorf("bad PSEUDO.dir_starting_number at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigPSEUDOAsStruct.fileStartingNumber, ok = parseUint64(backendConfigPSEUDOAsMap, "file_starting_number", uint64(0))
+					if !ok {
+						err = fmt.Errorf("bad PSEUDO.file_starting_number at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
 					backendConfigPSEUDOAsStruct.fileSize, ok = parseUint64(backendConfigPSEUDOAsMap, "file_size", uint64(0))
 					if !ok {
 						err = fmt.Errorf("bad PSEUDO.file_size at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
@@ -2078,6 +2090,16 @@ func checkConfigFile() (err error) {
 
 					if backendAsStructOld.backendTypeSpecifics.(*backendConfigPSEUDOStruct).fileNameFormat != backendAsStructNew.backendTypeSpecifics.(*backendConfigPSEUDOStruct).fileNameFormat {
 						err = fmt.Errorf("cannot change PSEUDO.file_name_format in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigPSEUDOStruct).dirStartingNumber != backendAsStructNew.backendTypeSpecifics.(*backendConfigPSEUDOStruct).dirStartingNumber {
+						err = fmt.Errorf("cannot change PSEUDO.dir_starting_number in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigPSEUDOStruct).fileStartingNumber != backendAsStructNew.backendTypeSpecifics.(*backendConfigPSEUDOStruct).fileStartingNumber {
+						err = fmt.Errorf("cannot change PSEUDO.file_starting_number in backends[\"%s\"]", dirName)
 						return
 					}
 

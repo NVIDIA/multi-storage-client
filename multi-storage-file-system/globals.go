@@ -49,6 +49,8 @@ type backendConfigPSEUDOStruct struct {
 	// From <config-file>
 	dirNameFormat           string        //       JSON/YAML "dir_name_format"                default:"dir_%08X"
 	fileNameFormat          string        //       JSON/YAML "file_name_format"               default:"file_%08X"
+	dirStartingNumber       uint64        //       JSON/YAML "dir_starting_number"            default:0
+	fileStartingNumber      uint64        //       JSON/YAML "file_starting_number"           default:0
 	fileSize                uint64        //       JSON/YAML "file_size"                      default:0
 	filesAtDepth0           uint64        //       JSON/YAML "files_at_depth_0"               default:0
 	filesAtDepth1           uint64        //       JSON/YAML "files_at_depth_1"               default:0
