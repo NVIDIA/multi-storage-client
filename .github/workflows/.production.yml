@@ -14,95 +14,31 @@ defaults:
   run:
     shell: nix develop --command bash -e {0}
 jobs:
-  get-tag-message:
-    name: Get Tag Message
-    permissions:
-      contents: read
-    outputs:
-      tag-message: ${{ steps.get-tag-message.outputs.tag-message }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: DeterminateSystems/nix-installer-action@main
-        with:
-          summarize: false
-      - uses: DeterminateSystems/magic-nix-cache-action@main
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ github.ref }}
-      - id: get-tag-message
-        run: |
-          git tag --list --format '%(contents)' ${{ github.ref_name }} | cat <(echo -n 'tag-message=') - >> $GITHUB_OUTPUT
-  publish-documentation:
-    name: Publish Documentation
-    needs:
-      - get-tag-message
-    # Only publish for latest releases, not backport releases.
-    if: ${{ needs.get-tag-message.outputs.tag-message == 'latest' }}
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy-pages.outputs.page_url }}
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    runs-on: ubuntu-latest
-    steps:
-      # Assumes the Source child workflow ran before in the same parent workflow.
-      #
-      # All `actions/upload-artifact` paths must include a `-` path to preserve workspace structure.
-      #
-      # https://github.com/actions/upload-artifact/issues/174
-      # - uses: actions/download-artifact@v7
-      #   with:
-      #     merge-multiple: true
-      - uses: DeterminateSystems/nix-installer-action@main
-        with:
-          summarize: false
-      - uses: DeterminateSystems/magic-nix-cache-action@main
-      - uses: actions/checkout@v6
-      # Set locale for Sphinx.
-      #
-      # `locale` comes with most Unix-like operating systems.
-      #
-      # https://github.com/sphinx-doc/sphinx/issues/11739
-      - working-directory: multi-storage-client-docs
-        run: |
-          echo 'All locales:'
-          locale --all-locales
-          echo 'Current locale:'
-          locale
-          LC_ALL=en_US.utf8 just document
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: multi-storage-client-docs/dist
-      - id: deploy-pages
-        uses: actions/deploy-pages@v4
   publish-release:
     name: Publish Release
-    needs:
-      - get-tag-message
+    environment:
+      name: Production
     permissions:
       contents: write
     runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
+      # Checkout.
+      - uses: actions/checkout@v6
+      # Install Nix.
       - uses: DeterminateSystems/nix-installer-action@main
         with:
           summarize: false
-      - uses: DeterminateSystems/magic-nix-cache-action@main
-      - uses: actions/checkout@v6
+      # Main.
+      #
       # Assumes the Source child workflow ran before in the same parent workflow.
       #
       # All `actions/upload-artifact` paths must include a `-` path to preserve workspace structure.
       #
       # https://github.com/actions/upload-artifact/issues/174
-      # - uses: actions/download-artifact@v7
-      #   with:
-      #     merge-multiple: true
-      - working-directory: multi-storage-file-system
+      - uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+      # TODO: Switch to `--phase publish` once everything else is in place.
+      - working-directory: multi-storage-client-scripts
         run: |
-          just package
-      # Skip creation if a release for the tag already exists.
-      - run: |
-          gh release --repo ${{ github.repository }} view ${{ github.ref_name }} || gh release --repo ${{ github.repository }} create ${{ github.ref_name }} --latest=$([[ '${{ needs.get-tag-message.outputs.tag-message }}' == 'latest' ]] && echo true || echo false) --notes-file .release_notes/${{ github.ref_name }}.md --title ${{ github.ref_name }} --verify-tag multi-storage-file-system/build/debian/archives/*.deb multi-storage-file-system/build/rpm/RPMS/*/*.rpm multi-storage-file-system/build/tar/*.tar.* multi-storage-file-system/build/zip/*.zip
+          uv run msc-scripts publish-release --github-token ${{ secrets.GITHUB_TOKEN }} --phase check

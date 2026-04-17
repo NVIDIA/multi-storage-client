@@ -23,12 +23,12 @@ jobs:
       contents: read
       id-token: write
     uses: ./.github/workflows/.beta.yml
-  # production:
-  #   name: Production
-  #   needs:
-  #     - beta
-  #   permissions:
-  #     contents: write
-  #     id-token: write
-  #     pages: write
-  #   uses: ./.github/workflows/.production.yml
+  production:
+    name: Production
+    needs:
+      - beta
+    permissions:
+      contents: write
+      id-token: write
+      pages: write
+    uses: ./.github/workflows/.production.yml

@@ -36,12 +36,12 @@ logger = logging.getLogger(__name__)
 
 class Phase(argparse_extensions.ArgumentEnum):
     """
-    Release phase to exit after.
+    Phase to exit after.
     """
 
-    #: Check release inputs.
+    #: Check inputs.
     check = 0
-    #: Publish release.
+    #: Publish.
     publish = 1
 
 
@@ -59,8 +59,8 @@ class Arguments(argparse_extensions.Arguments):
 
 # TODO: Add `color` and `suggest_on_error` once we're on Python 3.14+.
 PARSER = cli.PARSER.add_subparsers().add_parser(
-    name="release",
-    help="Release helper.",
+    name="publish-release",
+    help="Publish release helper.",
     formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     allow_abbrev=False,
 )
@@ -70,14 +70,14 @@ argparse_extensions.add_argument_partial(parser=PARSER, arguments_type=Arguments
     help="GitHub token. For local runs, log in with the GitHub CLI and pass `$(gh auth token)`."
 )
 argparse_extensions.add_argument_partial(parser=PARSER, arguments_type=Arguments, argument_key="phase")(
-    help="Release phase to exit after."
+    help="Phase to exit after."
 )
 
 
 def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
     # ----------------------------------------------------------------------------------------------------
     #
-    # Collect release inputs.
+    # Collect inputs.
     #
     # ----------------------------------------------------------------------------------------------------
 
@@ -116,7 +116,7 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
 
     # ----------------------------------------------------------------------------------------------------
     #
-    # Check release inputs.
+    # Check inputs.
     #
     # ----------------------------------------------------------------------------------------------------
 
@@ -194,7 +194,7 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
 
     # ----------------------------------------------------------------------------------------------------
     #
-    # Publish release.
+    # Publish.
     #
     # Make this as close to transactional as possible.
     #

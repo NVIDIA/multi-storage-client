@@ -215,8 +215,8 @@ jobs:
             multi-storage-file-system/build/rpm/RPMS/*/*.rpm
             multi-storage-file-system/build/tar/*.tar.*
             multi-storage-file-system/build/zip/*.zip
-  check-release-inputs:
-    name: Check Release Inputs
+  check-publish-release-inputs:
+    name: Check Publish Release Inputs
     needs:
       - nix
       - multi-storage-explorer
@@ -240,4 +240,4 @@ jobs:
           merge-multiple: true
       - working-directory: multi-storage-client-scripts
         run: |
-          uv run msc-scripts release --github-token ${{ secrets.GITHUB_TOKEN }} --phase check
+          uv run msc-scripts publish-release --github-token ${{ secrets.GITHUB_TOKEN }} --phase check
