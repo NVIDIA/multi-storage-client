@@ -167,22 +167,25 @@ configuration (whose name is `PSEUDO`) may be provided if any non-defaults
 are are needed. The PSEUDO-specific settings must be provided (or the
 defaults accepted) as described in the following table:
 
-| Setting                    | Units                | Default      | Description                                                                            |
-| :------------------------- | :------------------- | -----------: | :------------------------------------------------------------------------------------- |
-| files_at_depth_0           | decimal              |            0 | Number of files at depth 0 (i.e. in top-most directory)                                |
-| files_at_depth_1           | decimal              |            0 | Number of files at depth 1 (subdirectories_at_depth_0 must be >0)                      |
-| files_at_depth_2           | decimal              |            0 | Number of files at depth 2 (subdirectories_at_depth_{0\|1} must be >0)                 |
-| files_at_depth_3           | decimal              |            0 | Number of files at depth 3 (subdirectories_at_depth_{0\|1\|2} must be >0)              |
-| max_list_page_size         | decimal              |         1000 | Cap on the number of List{Directory\|Objects} returned subdirectories+files or objects |
-| min_latency_delete_file    | decimal_milliseconds |            0 | Minimum latency for a call to .deleteFile                                              |
-| min_latency_list_directory | decimal_milliseconds |            0 | Minimum latency for a call to .listDirectory                                           |
-| min_latency_list_objects   | decimal_milliseconds |            0 | Minimum latency for a call to .listObjects call                                        |
-| min_latency_read_file      | decimal_milliseconds |            0 | Minimum latency for a call to .readFile call                                           |
-| min_latency_stat_directory | decimal_milliseconds |            0 | Minimum latency for a call to .statDirectory call                                      |
-| min_latency_stat_file      | decimal_milliseconds |            0 | Minimum latency for a call to .statFile call                                           |
-| subdirectories_at_depth_0  | decimal              |            0 | Number of subdirectories at depth 0 (i.e. in top-most directory)                       |
-| subdirectories_at_depth_1  | decimal              |            0 | Number of subdirectories at depth 1 (subdirectories_at_depth_0 must be >0)             |
-| subdirectories_at_depth_2  | decimal              |            0 | Number of subdirectories at depth 2 (subdirectories_at_depth_{0\|1} must be >0)        |
+| Setting                    | Units                | Default      | Description                                                                                                   |
+| :------------------------- | :------------------- | -----------: | :------------------------------------------------------------------------------------------------------------ |
+| dir_name_format            | string               |   "dir_%08X" | Format specifier for the naming pattern of subdirectories (must lexigraphically sort before file_name_format) |
+| file_name_format           | string               |  "file_%08X" | Format specifier for the naming pattern of files (must lexigraphically sort after dir_name_format)            |
+| file_size                  | decimal              |            0 | Size (in bytes) of each file (content all zeroes)                                                             |
+| files_at_depth_0           | decimal              |            0 | Number of files at depth 0 (i.e. in top-most directory)                                                       |
+| files_at_depth_1           | decimal              |            0 | Number of files at depth 1 (subdirectories_at_depth_0 must be >0)                                             |
+| files_at_depth_2           | decimal              |            0 | Number of files at depth 2 (subdirectories_at_depth_{0\|1} must be >0)                                        |
+| files_at_depth_3           | decimal              |            0 | Number of files at depth 3 (subdirectories_at_depth_{0\|1\|2} must be >0)                                     |
+| max_list_page_size         | decimal              |         1000 | Cap on the number of List{Directory\|Objects} returned subdirectories+files or objects                        |
+| min_latency_delete_file    | decimal_milliseconds |            0 | Minimum latency for a call to .deleteFile                                                                     |
+| min_latency_list_directory | decimal_milliseconds |            0 | Minimum latency for a call to .listDirectory                                                                  |
+| min_latency_list_objects   | decimal_milliseconds |            0 | Minimum latency for a call to .listObjects call                                                               |
+| min_latency_read_file      | decimal_milliseconds |            0 | Minimum latency for a call to .readFile call                                                                  |
+| min_latency_stat_directory | decimal_milliseconds |            0 | Minimum latency for a call to .statDirectory call                                                             |
+| min_latency_stat_file      | decimal_milliseconds |            0 | Minimum latency for a call to .statFile call                                                                  |
+| subdirectories_at_depth_0  | decimal              |            0 | Number of subdirectories at depth 0 (i.e. in top-most directory)                                              |
+| subdirectories_at_depth_1  | decimal              |            0 | Number of subdirectories at depth 1 (subdirectories_at_depth_0 must be >0)                                    |
+| subdirectories_at_depth_2  | decimal              |            0 | Number of subdirectories at depth 2 (subdirectories_at_depth_{0\|1} must be >0)                               |
 
 ### RAM Backend Configuration
 

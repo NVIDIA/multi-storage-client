@@ -10,9 +10,6 @@ import (
 )
 
 const (
-	PSEUDOFileNameFormat         = "file_%08X" // Must lexigraphically sort after  PSEUDOSubdirectoryNameFormat and end with a unique "_" character followed by 8 uppercase Hex Digits
-	PSEUDOSubdirectoryNameFormat = "dir_%08X"  // Must lexigraphically sort before PSEUDOFileNameFormat         and end with a unique "_" character followed by 8 uppercase Hex Digits
-
 	PSEUDOFileCRC32ETagFormat = "%08X"
 )
 
@@ -98,13 +95,12 @@ func (pseudoContext *pseudoContextStruct) listDirectory(listDirectoryInput *list
 		depth                     int
 		dirIndex                  uint64
 		dirIndexStart             uint64
-		fileContent               []byte
 		fileIndex                 uint64
 		fileIndexStart            uint64
 		fileName                  string
 		fullDirPath               string
 		fullDirPathElements       []uint64
-		fullFilePath              string
+		fullFilePath              []byte
 		isTruncated               bool
 		nextContinuationToken     string
 		numDirFileToReturn        uint64
@@ -203,19 +199,18 @@ func (pseudoContext *pseudoContextStruct) listDirectory(listDirectoryInput *list
 	}
 
 	for dirIndex = dirIndexStart; dirIndex < (dirIndexStart + numDirToReturn); dirIndex++ {
-		listDirectoryOutput.subdirectory = append(listDirectoryOutput.subdirectory, fmt.Sprintf(PSEUDOSubdirectoryNameFormat, dirIndex))
+		listDirectoryOutput.subdirectory = append(listDirectoryOutput.subdirectory, fmt.Sprintf(pseudoContext.backendPSEUDO.dirNameFormat, dirIndex))
 	}
 
 	for fileIndex = fileIndexStart; fileIndex < (fileIndexStart + numFileToReturn); fileIndex++ {
-		fileName = fmt.Sprintf(PSEUDOFileNameFormat, fileIndex)
-		fullFilePath = fullDirPath + fileName
-		fileContent = []byte(fullFilePath + "\n")
+		fileName = fmt.Sprintf(pseudoContext.backendPSEUDO.fileNameFormat, fileIndex)
+		fullFilePath = []byte(fullDirPath + fileName)
 
 		listDirectoryOutput.file = append(listDirectoryOutput.file, listDirectoryOutputFileStruct{
 			basename: fileName,
-			eTag:     fmt.Sprintf(PSEUDOFileCRC32ETagFormat, crc32.ChecksumIEEE(fileContent)),
+			eTag:     fmt.Sprintf(PSEUDOFileCRC32ETagFormat, crc32.ChecksumIEEE(fullFilePath)),
 			mTime:    time.Now(),
-			size:     uint64(len(fileContent)),
+			size:     pseudoContext.backendPSEUDO.fileSize,
 		})
 	}
 
@@ -225,21 +220,18 @@ func (pseudoContext *pseudoContextStruct) listDirectory(listDirectoryInput *list
 
 // `checkPathElement` checks pathElement against the allowable range [0:pageElementNumberMax]
 // returning the pathElementNumber that is lexigraphically identical or just less than that
-// contained in pageElement. If the match is exact, comparison will be zero. If pathElement is
+// contained in pathElement. If the match is exact, comparison will be zero. If pathElement is
 // greater than the exact match for the returned pathElementNumber, comparison will be positive
 // one. In the case where path element is lexigraphically less than what would be the minimum
 // (i.e. zero) pathElementNumber, pathElementNumber will be zero and comparison will be minus one.
 func checkPathElement(pathElementFormat, pathElement string, pathElementNumberLimit uint64) (pathElementNumber uint64, comparison int) {
 	var (
-		err                          error
-		pad                          string
-		pathElementAsByteSlice       = []byte(pathElement)
-		pathElementByte              byte
-		pathElementFormatAsByteSlice = []byte(pathElementFormat)
-		pathElementIndex             int
-		pathElementMax               = fmt.Sprintf(pathElementFormat, pathElementNumberLimit-1)
-		pathElementMin               = fmt.Sprintf(pathElementFormat, 0)
-		underscoreFound              = false
+		err            error
+		hi             uint64
+		lo             uint64
+		mid            uint64
+		pathElementMax = fmt.Sprintf(pathElementFormat, pathElementNumberLimit-1)
+		pathElementMin = fmt.Sprintf(pathElementFormat, 0)
 	)
 
 	if pathElement < pathElementMin {
@@ -256,112 +248,36 @@ func checkPathElement(pathElementFormat, pathElement string, pathElementNumberLi
 		return
 	}
 
-	for pathElementIndex = range pathElementFormatAsByteSlice {
-		if (len(pathElementAsByteSlice) < (pathElementIndex + 1)) || (pathElementAsByteSlice[pathElementIndex] < pathElementFormatAsByteSlice[pathElementIndex]) {
-			pathElementNumber = 0
-			comparison = -1
+	_, err = fmt.Sscanf(pathElement, pathElementFormat, &pathElementNumber)
+	if (err == nil) && (fmt.Sprintf(pathElementFormat, pathElementNumber) == pathElement) {
+		if pathElementNumber < pathElementNumberLimit {
+			comparison = 0
 
 			return
 		}
 
-		if pathElementAsByteSlice[pathElementIndex] < pathElementFormatAsByteSlice[pathElementIndex] {
-			pathElementNumber = pathElementNumberLimit - 1
-			comparison = 1
+		pathElementNumber = pathElementNumberLimit - 1
+		comparison = 1
 
-			return
-		}
+		return
+	}
 
-		// At this point, the character at position pathElementIndex in both byte slices are equal... so check for the terminating condition
+	lo = uint64(0)
+	hi = pathElementNumberLimit - 1
 
-		if pathElementFormatAsByteSlice[pathElementIndex] == '_' {
-			// Trim prefix from pathElement and exit loop
+	for lo < hi {
+		mid = lo + (hi-lo+1)/2
 
-			underscoreFound = true
-			pathElement = pathElement[pathElementIndex+1:]
-			pathElementAsByteSlice = pathElementAsByteSlice[pathElementIndex+1:]
-
-			break
+		if fmt.Sprintf(pathElementFormat, mid) <= pathElement {
+			lo = mid
+		} else {
+			hi = mid - 1
 		}
 	}
 
-	if !underscoreFound {
-		dumpStack()
-		globals.logger.Fatalf("pathElementFormat:\"%s\" missing \"_\"", pathElementFormat)
-	}
-
-	if len(pathElement) == 8 {
-		// Optimistically, pathElement should now be a 8 uppercase Hex Digit number that might be an exact match
-
-		_, err = fmt.Sscanf(pathElement+"pad", "%08X%s", &pathElementNumber, &pad)
-		if (err == nil) && (pad == "pad") {
-			// We found a valid 8 uppercase Hex Digit number, so we can compute our return values immediately
-
-			if pathElementNumber < pathElementNumberLimit {
-				comparison = 0
-
-				return
-			}
-
-			pathElementNumber = pathElementNumberLimit - 1
-			comparison = 1
-
-			return
-		}
-	}
-
-	// Challenging case, so let's pad pathElement with characters just less than the minimum Hex digit and brute force the parsing
-
-	pathElement += "////////"
-	pathElementAsByteSlice = []byte(pathElement)[:8]
-
-	pathElementNumber = 0
-
-	for pathElementIndex, pathElementByte = range pathElementAsByteSlice {
-		switch {
-		case pathElementByte < '0':
-			if pathElementNumber >= pathElementNumberLimit {
-				pathElementNumber = pathElementNumberLimit - 1
-				comparison = 1
-			} else {
-				comparison = -1
-			}
-			return
-		case pathElementByte <= '9':
-			pathElementNumber += uint64(pathElementByte-'0') * (uint64(0x1) << uint64(4*(7-pathElementIndex)))
-			if pathElementNumber >= pathElementNumberLimit {
-				pathElementNumber = pathElementNumberLimit - 1
-				comparison = 1
-				return
-			}
-		case pathElementByte < 'A':
-			pathElementNumber += uint64(9) * (uint64(0x1) << uint64(4*(7-pathElementIndex)))
-			if pathElementNumber >= pathElementNumberLimit {
-				pathElementNumber = pathElementNumberLimit - 1
-			}
-			comparison = 1
-			return
-		case pathElementByte <= 'F':
-			pathElementNumber += uint64(pathElementByte-'A'+10) * (uint64(0x1) << uint64(4*(7-pathElementIndex)))
-			if pathElementNumber >= pathElementNumberLimit {
-				pathElementNumber = pathElementNumberLimit - 1
-				comparison = 1
-				return
-			}
-		default: // pathElementByte > 'F'
-			pathElementNumber += uint64(15) * (uint64(0x1) << uint64(4*(7-pathElementIndex)))
-			if pathElementNumber >= pathElementNumberLimit {
-				pathElementNumber = pathElementNumberLimit - 1
-			}
-			comparison = 1
-			return
-		}
-	}
-
-	// Since we performed the "exact match" check prior to this troublesome brute force path,
-	// we must have truncated pathElement, so if we reach here, pathElement be greater than
-	// the computed pathElementNumber.
-
+	pathElementNumber = lo
 	comparison = 1
+
 	return
 }
 
@@ -394,7 +310,7 @@ func (pseudoContext *pseudoContextStruct) listObjectsIndexedObjectPathPrefixPrun
 			continuationTokenAsUint64 -= subdirectoryIndex * subdirectoryObjects
 
 			objectPathPrefixPruned = pseudoContext.listObjectsIndexedObjectPathPrefixPruned(prefixDirPathElements, continuationTokenAsUint64)
-			objectPathPrefixPruned = "/" + fmt.Sprintf(PSEUDOSubdirectoryNameFormat, subdirectoryIndex) + objectPathPrefixPruned
+			objectPathPrefixPruned = "/" + fmt.Sprintf(pseudoContext.backendPSEUDO.dirNameFormat, subdirectoryIndex) + objectPathPrefixPruned
 
 			return
 		}
@@ -402,7 +318,7 @@ func (pseudoContext *pseudoContextStruct) listObjectsIndexedObjectPathPrefixPrun
 		continuationTokenAsUint64 -= subdirectories * subdirectoryObjects
 	}
 
-	objectPathPrefixPruned = "/" + fmt.Sprintf(PSEUDOFileNameFormat, continuationTokenAsUint64)
+	objectPathPrefixPruned = "/" + fmt.Sprintf(pseudoContext.backendPSEUDO.fileNameFormat, continuationTokenAsUint64)
 
 	return
 }
@@ -419,7 +335,6 @@ func (pseudoContext *pseudoContextStruct) listObjects(listObjectsInput *listObje
 		isTruncated                    bool
 		nextContinuationToken          string
 		numObjectToReturn              uint64
-		objectContent                  []byte
 		objectPath                     string
 		ok                             bool
 		prefixDepth                    int
@@ -477,7 +392,7 @@ func (pseudoContext *pseudoContextStruct) listObjects(listObjectsInput *listObje
 			startAfterSplitElementDepth = prefixDepth + startAfterSplitElementIndex
 
 			if pseudoContext.backendPSEUDO.subdirectoriesAtDepth[startAfterSplitElementDepth] > 0 {
-				startAfterSplitElementAsUint64, comparison = checkPathElement(PSEUDOSubdirectoryNameFormat, startAfterSplitElementAsString, pseudoContext.backendPSEUDO.subdirectoriesAtDepth[startAfterSplitElementDepth])
+				startAfterSplitElementAsUint64, comparison = checkPathElement(pseudoContext.backendPSEUDO.dirNameFormat, startAfterSplitElementAsString, pseudoContext.backendPSEUDO.subdirectoriesAtDepth[startAfterSplitElementDepth])
 				switch {
 				case comparison == 0:
 					continuationTokenAsUint64 += startAfterSplitElementAsUint64 * pseudoContext.backendPSEUDO.objectsInDirectoryAtDepth[startAfterSplitElementDepth+1]
@@ -494,7 +409,7 @@ func (pseudoContext *pseudoContextStruct) listObjects(listObjectsInput *listObje
 			}
 
 			if checkPathElementForFile && (pseudoContext.backendPSEUDO.filesAtDepth[startAfterSplitElementDepth] > 0) {
-				startAfterSplitElementAsUint64, comparison = checkPathElement(PSEUDOFileNameFormat, startAfterSplitElementAsString, pseudoContext.backendPSEUDO.filesAtDepth[startAfterSplitElementDepth])
+				startAfterSplitElementAsUint64, comparison = checkPathElement(pseudoContext.backendPSEUDO.fileNameFormat, startAfterSplitElementAsString, pseudoContext.backendPSEUDO.filesAtDepth[startAfterSplitElementDepth])
 				if comparison == -1 {
 					continuationTokenAsUint64 += startAfterSplitElementAsUint64
 				} else {
@@ -551,13 +466,12 @@ func (pseudoContext *pseudoContextStruct) listObjects(listObjectsInput *listObje
 
 	for continuationTokenAsUint64 < continuationTokenAsUint64Limit {
 		objectPath = pseudoContext.listObjectsIndexedObjectPathPrefixPruned(prefixDirPathElements, continuationTokenAsUint64)
-		objectContent = []byte(objectPath + "\n")
 
 		listObjectsOutput.object = append(listObjectsOutput.object, listObjectsOutputObjectStruct{
 			path:  objectPath,
-			eTag:  fmt.Sprintf(PSEUDOFileCRC32ETagFormat, crc32.ChecksumIEEE(objectContent)),
+			eTag:  fmt.Sprintf(PSEUDOFileCRC32ETagFormat, crc32.ChecksumIEEE([]byte(objectPath))),
 			mTime: time.Now(),
-			size:  uint64(len(objectContent)),
+			size:  pseudoContext.backendPSEUDO.fileSize,
 		})
 
 		continuationTokenAsUint64++
@@ -571,8 +485,6 @@ func (pseudoContext *pseudoContextStruct) listObjects(listObjectsInput *listObje
 // An error is returned if either the specified path is not a `file` or non-existent.
 func (pseudoContext *pseudoContextStruct) readFile(readFileInput *readFileInputStruct) (readFileOutput *readFileOutputStruct, err error) {
 	var (
-		cacheLine             []byte
-		fileContent           []byte
 		fullFilePath          string
 		limit                 uint64
 		offset                uint64
@@ -592,24 +504,19 @@ func (pseudoContext *pseudoContextStruct) readFile(readFileInput *readFileInputS
 		return
 	}
 
-	fileContent = []byte(fullFilePath + "\n")
-	cacheLine = fileContent
-
 	offset = readFileInput.offsetCacheLine * globals.config.cacheLineSize
 	limit = offset + globals.config.cacheLineSize
 
-	if limit < uint64(len(fileContent)) {
-		cacheLine = cacheLine[:limit]
+	if offset > pseudoContext.backend.backendTypeSpecifics.(*backendConfigPSEUDOStruct).fileSize {
+		offset = pseudoContext.backend.backendTypeSpecifics.(*backendConfigPSEUDOStruct).fileSize
 	}
-	if offset < uint64(len(cacheLine)) {
-		cacheLine = cacheLine[offset:]
-	} else {
-		cacheLine = cacheLine[:0]
+	if limit > pseudoContext.backend.backendTypeSpecifics.(*backendConfigPSEUDOStruct).fileSize {
+		limit = pseudoContext.backend.backendTypeSpecifics.(*backendConfigPSEUDOStruct).fileSize
 	}
 
 	readFileOutput = &readFileOutputStruct{
-		eTag: fmt.Sprintf(PSEUDOFileCRC32ETagFormat, crc32.ChecksumIEEE(fileContent)),
-		buf:  cacheLine,
+		eTag: fmt.Sprintf(PSEUDOFileCRC32ETagFormat, crc32.ChecksumIEEE([]byte(fullFilePath))),
+		buf:  make([]byte, limit-offset),
 	}
 
 	err = nil
@@ -647,7 +554,6 @@ func (pseudoContext *pseudoContextStruct) statDirectory(statDirectoryInput *stat
 // An error is returned if either the specified path is not a `file` or non-existent.
 func (pseudoContext *pseudoContextStruct) statFile(statFileInput *statFileInputStruct) (statFileOutput *statFileOutputStruct, err error) {
 	var (
-		fileContent           []byte
 		fullFilePath          string
 		ok                    bool
 		timeNotToReturnBefore = time.Now().Add(pseudoContext.backendPSEUDO.minLatencyStatFile)
@@ -665,12 +571,10 @@ func (pseudoContext *pseudoContextStruct) statFile(statFileInput *statFileInputS
 		return
 	}
 
-	fileContent = []byte(fullFilePath + "\n")
-
 	statFileOutput = &statFileOutputStruct{
-		eTag:  fmt.Sprintf(PSEUDOFileCRC32ETagFormat, crc32.ChecksumIEEE(fileContent)),
+		eTag:  fmt.Sprintf(PSEUDOFileCRC32ETagFormat, crc32.ChecksumIEEE([]byte(fullFilePath))),
 		mTime: time.Now(),
-		size:  uint64(len(fileContent)),
+		size:  pseudoContext.backendPSEUDO.fileSize,
 	}
 
 	err = nil
@@ -723,7 +627,7 @@ func (pseudoContext *pseudoContextStruct) findFullDirPathElements(fullDirPath st
 	}
 
 	for fullDirPathSplitElementDepth, fullDirPathSplitElementAsString = range fullDirPathSplit[1 : len(fullDirPathSplit)-1] {
-		_, err = fmt.Sscanf(fullDirPathSplitElementAsString, PSEUDOSubdirectoryNameFormat, &fullDirPathSplitElementAsUint64)
+		_, err = fmt.Sscanf(fullDirPathSplitElementAsString, pseudoContext.backendPSEUDO.dirNameFormat, &fullDirPathSplitElementAsUint64)
 		if err != nil {
 			ok = false
 			return
@@ -771,7 +675,7 @@ func (pseudoContext *pseudoContextStruct) findFullFilePathElements(fullFilePath 
 	}
 
 	for fullFilePathSplitElementDepth, fullFilePathSplitElementAsString = range fullFilePathSplit[1 : len(fullFilePathSplit)-1] {
-		_, err = fmt.Sscanf(fullFilePathSplitElementAsString, PSEUDOSubdirectoryNameFormat, &fullFilePathSplitElementAsUint64)
+		_, err = fmt.Sscanf(fullFilePathSplitElementAsString, pseudoContext.backendPSEUDO.dirNameFormat, &fullFilePathSplitElementAsUint64)
 		if err != nil {
 			ok = false
 			return
@@ -788,7 +692,7 @@ func (pseudoContext *pseudoContextStruct) findFullFilePathElements(fullFilePath 
 	fullFilePathSplitElementDepth = len(fullFilePathSplit) - 2
 	fullFilePathSplitElementAsString = fullFilePathSplit[fullFilePathSplitElementDepth+1]
 
-	_, err = fmt.Sscanf(fullFilePathSplitElementAsString, PSEUDOFileNameFormat, &fullFilePathSplitElementAsUint64)
+	_, err = fmt.Sscanf(fullFilePathSplitElementAsString, pseudoContext.backendPSEUDO.fileNameFormat, &fullFilePathSplitElementAsUint64)
 	if err != nil {
 		ok = false
 		return

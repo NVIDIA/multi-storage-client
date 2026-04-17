@@ -131,7 +131,7 @@ func cachePrune() {
 		ok               bool
 	)
 
-	for (uint64(globals.inboundCacheLineList.Len()) + uint64(globals.cleanCacheLineLRU.Len())) >= globals.config.cacheLines {
+	for (uint64(globals.inboundCacheLineList.Len()) + uint64(globals.cleanCacheLineLRU.Len())) > globals.config.cacheLines {
 		listElement = globals.cleanCacheLineLRU.Front()
 		if listElement == nil {
 			return

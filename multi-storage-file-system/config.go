@@ -22,6 +22,9 @@ const (
 	defaultAIStoreProvider                 = "s3"
 	defaultAIStoreTimeout                  = 30000 * time.Millisecond
 
+	defaultPSEUDODirNameFormat  = "dir_%08X"
+	defaultPSEUDOFileNameFormat = "file_%08X"
+
 	defaultGCSSkipTLSCertificateVerify = false
 	defaultGCSRetryBaseDelay           = 10 * time.Millisecond
 	defaultGCSRetryNextDelayMultiplier = float64(2.0)
@@ -1294,6 +1297,29 @@ func checkConfigFile() (err error) {
 
 					backendConfigPSEUDOAsStruct = &backendConfigPSEUDOStruct{}
 
+					backendConfigPSEUDOAsStruct.dirNameFormat, ok = parseString(backendConfigPSEUDOAsMap, "dir_name_format", defaultPSEUDODirNameFormat)
+					if !ok || (fmt.Sprintf(backendConfigPSEUDOAsStruct.dirNameFormat, 0) >= fmt.Sprintf(backendConfigPSEUDOAsStruct.dirNameFormat, 1)) {
+						err = fmt.Errorf("bad PSEUDO.dir_name_format at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigPSEUDOAsStruct.fileNameFormat, ok = parseString(backendConfigPSEUDOAsMap, "file_name_format", defaultPSEUDOFileNameFormat)
+					if !ok || (fmt.Sprintf(backendConfigPSEUDOAsStruct.fileNameFormat, 0) >= fmt.Sprintf(backendConfigPSEUDOAsStruct.fileNameFormat, 1)) {
+						err = fmt.Errorf("bad PSEUDO.file_name_format at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					if fmt.Sprintf(backendConfigPSEUDOAsStruct.dirNameFormat, 0) >= fmt.Sprintf(backendConfigPSEUDOAsStruct.fileNameFormat, 0) {
+						err = fmt.Errorf("bad PSEUDO.{dir|file}_name_format combo (generated dir names must sort before generated file names) at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
+					backendConfigPSEUDOAsStruct.fileSize, ok = parseUint64(backendConfigPSEUDOAsMap, "file_size", uint64(0))
+					if !ok {
+						err = fmt.Errorf("bad PSEUDO.file_size at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
+
 					backendConfigPSEUDOAsStruct.filesAtDepth0, ok = parseUint64(backendConfigPSEUDOAsMap, "files_at_depth_0", uint64(0))
 					if !ok {
 						err = fmt.Errorf("bad PSEUDO.files_at_depth_0 at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
@@ -2045,6 +2071,21 @@ func checkConfigFile() (err error) {
 						return
 					}
 				case "PSEUDO":
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigPSEUDOStruct).dirNameFormat != backendAsStructNew.backendTypeSpecifics.(*backendConfigPSEUDOStruct).dirNameFormat {
+						err = fmt.Errorf("cannot change PSEUDO.dir_name_format in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigPSEUDOStruct).fileNameFormat != backendAsStructNew.backendTypeSpecifics.(*backendConfigPSEUDOStruct).fileNameFormat {
+						err = fmt.Errorf("cannot change PSEUDO.file_name_format in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigPSEUDOStruct).fileSize != backendAsStructNew.backendTypeSpecifics.(*backendConfigPSEUDOStruct).fileSize {
+						err = fmt.Errorf("cannot change PSEUDO.file_size in backends[\"%s\"]", dirName)
+						return
+					}
+
 					if backendAsStructOld.backendTypeSpecifics.(*backendConfigPSEUDOStruct).filesAtDepth0 != backendAsStructNew.backendTypeSpecifics.(*backendConfigPSEUDOStruct).filesAtDepth0 {
 						err = fmt.Errorf("cannot change PSEUDO.files_at_depth_0 in backends[\"%s\"]", dirName)
 						return
