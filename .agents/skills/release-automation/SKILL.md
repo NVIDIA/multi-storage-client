@@ -35,9 +35,9 @@ Guides the agent through preparing a release for the multi-storage-client reposi
 
 - Read `.release_notes/.unreleased.md`.
 - Read git history for changes since the last release: `git log <previous_version>..HEAD --no-merges --format='%h %s%n%b'` (tags are unprefixed, e.g. `0.42.0` not `v0.42.0`). Use this to find and add relevant entries; omit CI/CD, build, and chore-only commits.
-- Create `.release_notes/<new_version>.md` with that content (e.g. `.release_notes/0.44.0.md`). Preserve structure (Breaking Changes, New Features, Bug Fixes, etc.). Split the content into MSC and MSFS sections if necessary.
+- Create `.release_notes/<new_version>.md` with that content (e.g. `.release_notes/0.44.0.md`). Preserve structure (Breaking Changes, New Features, Bug Fixes, etc.). Split into Multi-Storage Client (MSC) and Multi-Storage File System (MSFS) sections when changes span both sub-projects.
 - Skip mentioning any changes that are CI/CD related.
-- Reset `.release_notes/.unreleased.md` to a minimal placeholder (e.g. "<!-- Add items here. -->") so the next release cycle can accumulate items. If the repo convention is to leave .unreleased as-is until the next PR, skip or ask the user.
+- Reset `.release_notes/.unreleased.md` to its template (the section headings under MSC and MSFS with `<!-- Add items here. -->` at the top). If unsure whether the repo convention expects a reset, ask the user before modifying.
 
 ### 4. Verification (recommended)
 

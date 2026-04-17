@@ -19,7 +19,7 @@ The user provides one or more CVE identifiers (e.g. `CVE-2026-27459`).
 
 Copy this checklist and track progress with TodoWrite:
 
-```
+```text
 - [ ] Step 1: Research each CVE
 - [ ] Step 2: Locate affected dependencies
 - [ ] Step 3: Plan fixes (present to user)
@@ -113,7 +113,7 @@ grep -A2 'name = "<package>"' uv.lock
 | Layer | Verification command |
 |-------|---------------------|
 | Go | `cd multi-storage-file-system && go build ./...` |
-| Python | `just run-unit-tests` (or `cd multi-storage-client && uv run pytest`) |
+| Python | `just multi-storage-client/run-unit-tests` (or `cd multi-storage-client && uv run pytest`) |
 | Rust | `cd rust && cargo test` |
 
 Only run verification for layers that were changed.
