@@ -20,7 +20,7 @@ jobs:
       name: Production
     permissions:
       contents: write
-    runs-on: ubuntu-latest
+    runs-on: linux-amd64-cpu16
     steps:
       # Checkout.
       - uses: actions/checkout@v6

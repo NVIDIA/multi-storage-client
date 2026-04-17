@@ -1,0 +1,16 @@
+#
+# actionlint configuration.
+#
+# https://github.com/rhysd/actionlint/blob/main/docs/config.md
+#
+
+self-hosted-runner:
+  labels:
+    - linux-amd64-cpu4
+    - linux-amd64-cpu8
+    - linux-amd64-cpu16
+    - linux-amd64-cpu32
+    - linux-arm64-cpu4
+    - linux-arm64-cpu8
+    - linux-arm64-cpu16
+    - linux-arm64-cpu32

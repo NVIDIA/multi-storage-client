@@ -9,7 +9,7 @@ on:
   workflow_call:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/heads/pull-request/') }}
 defaults:
   run:
     shell: nix develop --command bash -e {0}
@@ -18,7 +18,7 @@ jobs:
     name: nix
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: linux-amd64-cpu16
     steps:
       # Checkout.
       - uses: actions/checkout@v6
@@ -44,7 +44,7 @@ jobs:
     name: multi-storage-explorer
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: linux-amd64-cpu16
     steps:
       # Checkout.
       - uses: actions/checkout@v6
@@ -78,7 +78,7 @@ jobs:
           - python3.12
           - python3.13
       fail-fast: false
-    runs-on: ubuntu-latest
+    runs-on: linux-amd64-cpu16
     defaults:
       run:
         shell: nix develop ${{ github.workspace }}#"\"${{ matrix.python-binary }}\"" --command bash -e {0}
@@ -121,7 +121,7 @@ jobs:
     name: multi-storage-client-docs
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: linux-amd64-cpu16
     steps:
       # Checkout.
       - uses: actions/checkout@v6
@@ -154,7 +154,7 @@ jobs:
     name: multi-storage-client-scripts
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: linux-amd64-cpu16
     steps:
       # Checkout.
       - uses: actions/checkout@v6
@@ -180,7 +180,7 @@ jobs:
     name: multi-storage-file-system
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: linux-amd64-cpu16
     steps:
       # Checkout.
       - uses: actions/checkout@v6
@@ -226,7 +226,7 @@ jobs:
       - multi-storage-file-system
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: linux-amd64-cpu16
     steps:
       # Checkout.
       - uses: actions/checkout@v6
