@@ -29,7 +29,7 @@ jobs:
           - python3.12
           - python3.13
       fail-fast: false
-    runs-on: ubuntu-latest
+    runs-on: linux-amd64-cpu16
     defaults:
       run:
         shell: nix develop ${{ github.workspace }}#"\"${{ matrix.python-binary }}\"" --command bash -e {0}
