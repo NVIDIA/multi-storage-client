@@ -34,6 +34,7 @@ PARSER = argparse.ArgumentParser(
     formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     allow_abbrev=False,
 )
+SUBPARSERS = PARSER.add_subparsers()
 
 
 def func(arguments: Arguments) -> int:
