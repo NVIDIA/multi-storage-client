@@ -196,7 +196,7 @@ class ProducerThread(threading.Thread):
             return
 
         for source_metadata in self.source_client.list(
-            prefix=self.source_path,
+            path=self.source_path,
             show_attributes=self.preserve_source_attributes,
             follow_symlinks=self.follow_symlinks,
         ):
@@ -211,7 +211,7 @@ class ProducerThread(threading.Thread):
             target_show_attributes = bool(
                 self.preserve_source_attributes and getattr(self.target_client, "_metadata_provider", None)
             )
-            target_iter = iter(self.target_client.list(prefix=self.target_path, show_attributes=target_show_attributes))
+            target_iter = iter(self.target_client.list(path=self.target_path, show_attributes=target_show_attributes))
 
             source_file = next(source_iter, None)
             target_file = next(target_iter, None)
