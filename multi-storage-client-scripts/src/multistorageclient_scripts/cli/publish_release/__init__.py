@@ -26,9 +26,8 @@ from typing import Final
 import dulwich.repo
 import githubkit
 import githubkit.exception
-import githubkit.response
-import githubkit.versions.latest.models
 import packaging.utils
+import packaging.version
 
 import multistorageclient_scripts.cli as cli
 import multistorageclient_scripts.utils.argparse_extensions as argparse_extensions
@@ -87,17 +86,22 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
         git_repository = dulwich.repo.Repo(root="..")
         git_commit_revision = git_repository.head().decode()
 
-        multi_storage_client_version = importlib.metadata.version("multi-storage-client")
+        multi_storage_client_version = packaging.version.Version(importlib.metadata.version("multi-storage-client"))
 
-        release_notes = pathlib.Path(f"../.release_notes/{multi_storage_client_version}.md").resolve()
+        release_notes = pathlib.Path(f"../.release_notes/{str(multi_storage_client_version)}.md").resolve()
 
         multi_storage_client_artifacts = pathlib.Path("../multi-storage-client/dist").resolve()
-        multi_storage_client_wheels = [*multi_storage_client_artifacts.glob(f"*{multi_storage_client_version}*.whl")]
+        multi_storage_client_wheels = [
+            *multi_storage_client_artifacts.glob(f"*{str(multi_storage_client_version)}*.whl")
+        ]
 
         multi_storage_client_docs_artifacts = pathlib.Path("../multi-storage-client-docs/dist").resolve()
         multi_storage_client_docs_archive = pathlib.Path(
             shutil.make_archive(
                 base_name=str(pathlib.Path(scratch_directory, "multi-storage-client-docs")),
+                # GitHub Pages wants a ZIP or TAR archive.
+                #
+                # https://docs.github.com/en/rest/pages/pages?apiVersion=2026-03-10#create-a-github-pages-deployment
                 format="zip",
                 root_dir=multi_storage_client_docs_artifacts,
             )
@@ -105,16 +109,16 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
 
         multi_storage_file_system_artifacts = pathlib.Path("../multi-storage-file-system/build").resolve()
         multi_storage_file_system_debs = [
-            *multi_storage_file_system_artifacts.glob(f"debian/archives/*{multi_storage_client_version}*.deb")
+            *multi_storage_file_system_artifacts.glob(f"debian/archives/*{str(multi_storage_client_version)}*.deb")
         ]
         multi_storage_file_system_rpms = [
-            *multi_storage_file_system_artifacts.glob(f"rpm/RPMS/*/*{multi_storage_client_version}*.rpm")
+            *multi_storage_file_system_artifacts.glob(f"rpm/RPMS/*/*{str(multi_storage_client_version)}*.rpm")
         ]
         multi_storage_file_system_tars = [
-            *multi_storage_file_system_artifacts.glob(f"tar/*{multi_storage_client_version}*.tar.*")
+            *multi_storage_file_system_artifacts.glob(f"tar/*{str(multi_storage_client_version)}*.tar.*")
         ]
         multi_storage_file_system_zips = [
-            *multi_storage_file_system_artifacts.glob(f"zip/*{multi_storage_client_version}*.zip")
+            *multi_storage_file_system_artifacts.glob(f"zip/*{str(multi_storage_client_version)}*.zip")
         ]
 
         release_assets = [
@@ -134,7 +138,7 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
 
         logger.info(f"Git commit revision: {git_commit_revision}")
 
-        logger.info(f"multi-storage-client version: {multi_storage_client_version}")
+        logger.info(f"multi-storage-client version: {str(multi_storage_client_version)}")
 
         if not release_notes.exists():
             raise FileNotFoundError(f"Missing release notes at {str(release_notes)}!")
@@ -184,7 +188,7 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
             name, version, _, _ = packaging.utils.parse_wheel_filename(str(multi_storage_client_wheel.name))
             if name != "multi-storage-client":
                 raise ValueError(f"Mismatched multi-storage-client wheel name at {str(multi_storage_client_wheel)}.")
-            if str(version) != multi_storage_client_version:
+            if version != multi_storage_client_version:
                 raise ValueError(f"Mismatched multi-storage-client wheel version at {str(multi_storage_client_wheel)}.")
 
         logger.info(
@@ -222,18 +226,15 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
 
         try:
             # Delete existing draft release + tag (cancel concurrent transaction).
-            get_release_by_tag_response: githubkit.response.Response[githubkit.versions.latest.models.Release] = (
-                github_client.rest.repos.get_release_by_tag(
-                    owner="NVIDIA",
-                    repo="multi-storage-client",
-                    tag=multi_storage_client_version,
-                )
+            get_release_by_tag_response = github_client.rest.repos.get_release_by_tag(
+                owner="NVIDIA",
+                repo="multi-storage-client",
+                tag=str(multi_storage_client_version),
             )
-
             logger.info(
                 "\n".join(
                     [
-                        f"Found existing GitHub release for {multi_storage_client_version}:",
+                        f"Found existing GitHub release for {str(multi_storage_client_version)}:",
                         pprint.pformat(get_release_by_tag_response.parsed_data.model_dump()),
                     ]
                 )
@@ -241,7 +242,7 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
 
             if not get_release_by_tag_response.parsed_data.draft:
                 logger.info(
-                    f"Existing GitHub release for {multi_storage_client_version} is not a draft. Nothing to do."
+                    f"Existing GitHub release for {str(multi_storage_client_version)} is not a draft. Nothing to do."
                 )
                 return 0
 
@@ -250,14 +251,14 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
                 repo="multi-storage-client",
                 release_id=get_release_by_tag_response.parsed_data.id,
             )
-            logger.info(f"Deleted existing draft GitHub release for {multi_storage_client_version}.")
+            logger.info(f"Deleted existing draft GitHub release for {str(multi_storage_client_version)}.")
 
             github_client.rest.git.delete_ref(
                 owner="NVIDIA",
                 repo="multi-storage-client",
                 ref=f"tags/{get_release_by_tag_response.parsed_data.tag_name}",
             )
-            logger.info(f"Deleted existing Git tag for {multi_storage_client_version}.")
+            logger.info(f"Deleted existing Git tag for {str(multi_storage_client_version)}.")
         except githubkit.exception.RequestFailed as e:
             if e.response.status_code != 404:
                 raise
@@ -266,18 +267,21 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
         create_release_response = github_client.rest.repos.create_release(
             owner="NVIDIA",
             repo="multi-storage-client",
-            tag_name=multi_storage_client_version,
+            tag_name=str(multi_storage_client_version),
+            # Always use a commit revision.
+            #
             # GitHub ignores this if the tag already exists instead of returning an error.
             # There isn't an atomic compare-and-swap either.
             target_commitish=git_commit_revision,
-            name=multi_storage_client_version,
+            name=str(multi_storage_client_version),
             body=release_notes.read_text(),
             draft=True,
+            prerelease=multi_storage_client_version.is_prerelease,
         )
         logger.info(
             "\n".join(
                 [
-                    f"Created draft GitHub release for {multi_storage_client_version}:",
+                    f"Created draft GitHub release for {str(multi_storage_client_version)}:",
                     pprint.pformat(create_release_response.parsed_data.model_dump()),
                 ]
             )
@@ -308,6 +312,8 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
             repo="multi-storage-client",
             release_id=create_release_response.parsed_data.id,
             draft=False,
+            # Use GitHub's release creation date and higher semantic version heuristic.
+            make_latest="false" if multi_storage_client_version.is_prerelease else "legacy",
         )
 
         if arguments.phase == Phase.publish:
