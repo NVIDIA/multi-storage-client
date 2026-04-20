@@ -1,0 +1,33 @@
+#
+# GitHub Actions workflow configuration.
+#
+# https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions
+#
+
+name: Release
+# TODO: Enable `release` when ready.
+on:
+  workflow_dispatch:
+    inputs:
+      git_tag:
+        description: Git tag of the GitHub release.
+        required: true
+        type: string
+  # release:
+  #   types:
+  #     - published
+jobs:
+  github-pages:
+    name: GitHub Pages
+    permissions:
+      contents: read
+      id-token: write
+      pages: write
+    uses: ./.github/workflows/.github_pages.yml
+    with:
+      git_tag: |-
+        ${{ case(
+          github.event_name == 'workflow_dispatch', inputs.git_tag,
+          github.event_name == 'release', github.event.release.tag_name,
+          null
+        ) }}

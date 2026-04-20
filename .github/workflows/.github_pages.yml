@@ -1,0 +1,41 @@
+#
+# GitHub Actions workflow configuration.
+#
+# https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions
+#
+
+name: GitHub Pages
+on:
+  workflow_call:
+    inputs:
+      git_tag:
+        description: Git tag of the GitHub release.
+        required: true
+        type: string
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: nix develop --command bash -e {0}
+jobs:
+  publish-documentation:
+    name: Publish Documentation
+    environment:
+      name: github-pages
+    permissions:
+      contents: read
+      id-token: write
+      pages: write
+    runs-on: linux-amd64-cpu16
+    steps:
+      # Checkout.
+      - uses: actions/checkout@v6
+      # Install Nix.
+      - uses: DeterminateSystems/nix-installer-action@main
+        with:
+          summarize: false
+      # Main.
+      - working-directory: multi-storage-client-scripts
+        run: |
+          uv run msc-scripts publish-documentation --github-token ${{ secrets.GITHUB_TOKEN }} --git-tag ${{ inputs.git_tag }} --phase publish

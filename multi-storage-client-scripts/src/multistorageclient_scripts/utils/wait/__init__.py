@@ -14,7 +14,7 @@
 # limitations under the License.
 
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from typing import TypeVar
 
 T = TypeVar("T")
@@ -45,12 +45,3 @@ def wait(
             return value
 
     raise AssertionError(f"Waitable didn't return a desired value within {max_attempts} attempt(s)!")
-
-
-def len_should_wait(expected_len: int) -> Callable[[Iterable], bool]:
-    """
-    Returns a wait condition on the length of an iterable return value.
-
-    For list and glob operations.
-    """
-    return lambda value: len(list(value)) != expected_len

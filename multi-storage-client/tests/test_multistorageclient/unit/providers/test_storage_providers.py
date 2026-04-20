@@ -302,7 +302,7 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
         file_numbers = range(1, 3)
         for i in file_numbers:
             storage_client.write(path=f"{i}{file_extension}", body=file_body_bytes)
-            wait_for_is_file(storage_client=storage_client, path=file_path, is_file=True)
+            wait_for_is_file(storage_client=storage_client, path=f"{i}{file_extension}", is_file=True)
 
         # List the files (paginated).
         for i in file_numbers:
