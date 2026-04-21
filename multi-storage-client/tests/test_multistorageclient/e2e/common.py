@@ -215,7 +215,7 @@ def verify_storage_provider(storage_client: msc.StorageClient, prefix: str) -> N
         # delete directory with recursive flag = True
         storage_client.delete(f"{prefix}/dir1/dir2/", recursive=True)
 
-        wait(waitable=lambda: storage_client.list(prefix), should_wait=len_should_wait(expected_len=1))
+        wait(waitable=lambda: storage_client.list(prefix), should_wait=len_should_wait(expected_len=0))
 
     # test list functionality
     storage_client.write(f"{prefix}/dir1/file1.txt", b"content1")
