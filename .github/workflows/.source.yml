@@ -32,7 +32,7 @@ jobs:
             .cachekeep
       # Install Nix.
       - if: ${{ steps.build-cache.outputs.cache-hit != 'true' }}
-        uses: DeterminateSystems/nix-installer-action@main
+        uses: DeterminateSystems/determinate-nix-action@v3
         with:
           summarize: false
       # Main.
@@ -58,7 +58,7 @@ jobs:
             .cachekeep
       # Install Nix.
       - if: ${{ steps.build-cache.outputs.cache-hit != 'true' }}
-        uses: DeterminateSystems/nix-installer-action@main
+        uses: DeterminateSystems/determinate-nix-action@v3
         with:
           summarize: false
       # Main.
@@ -96,7 +96,7 @@ jobs:
             multi-storage-client/dist/
       # Install Nix.
       - if: ${{ steps.build-cache.outputs.cache-hit != 'true' }}
-        uses: DeterminateSystems/nix-installer-action@main
+        uses: DeterminateSystems/determinate-nix-action@v3
         with:
           summarize: false
       # Main.
@@ -135,7 +135,7 @@ jobs:
             multi-storage-client-docs/dist/
       # Install Nix.
       - if: ${{ steps.build-cache.outputs.cache-hit != 'true' }}
-        uses: DeterminateSystems/nix-installer-action@main
+        uses: DeterminateSystems/determinate-nix-action@v3
         with:
           summarize: false
       # Main.
@@ -168,7 +168,7 @@ jobs:
             .cachekeep
       # Install Nix.
       - if: ${{ steps.build-cache.outputs.cache-hit != 'true' }}
-        uses: DeterminateSystems/nix-installer-action@main
+        uses: DeterminateSystems/determinate-nix-action@v3
         with:
           summarize: false
       # Main.
@@ -197,7 +197,7 @@ jobs:
             multi-storage-file-system/build/zip/*.zip
       # Install Nix.
       - if: ${{ steps.build-cache.outputs.cache-hit != 'true' }}
-        uses: DeterminateSystems/nix-installer-action@main
+        uses: DeterminateSystems/determinate-nix-action@v3
         with:
           summarize: false
       # Main.
@@ -231,7 +231,7 @@ jobs:
       # Checkout.
       - uses: actions/checkout@v6
       # Install Nix.
-      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/determinate-nix-action@v3
         with:
           summarize: false
       # Main.

@@ -32,7 +32,7 @@ jobs:
       # Checkout.
       - uses: actions/checkout@v6
       # Install Nix.
-      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/determinate-nix-action@v3
         with:
           summarize: false
       # Main.

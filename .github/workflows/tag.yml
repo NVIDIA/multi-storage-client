@@ -24,7 +24,7 @@ jobs:
       tag-message: ${{ steps.get-tag-message.outputs.tag-message }}
     runs-on: ubuntu-latest
     steps:
-      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/determinate-nix-action@v3
         with:
           summarize: false
       - uses: actions/checkout@v6
@@ -48,7 +48,7 @@ jobs:
       pages: write
     runs-on: ubuntu-latest
     steps:
-      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/determinate-nix-action@v3
         with:
           summarize: false
       - uses: actions/checkout@v6
@@ -79,7 +79,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/determinate-nix-action@v3
         with:
           summarize: false
       - uses: actions/checkout@v6
