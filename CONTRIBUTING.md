@@ -1,168 +1,63 @@
-# Contributing
+# Contributing to multi-storage-client
 
-Contributions to this project are made under the Developer Certificate of Origin.
+If you are interested in contributing to multi-storage-client, your contributions will fall into three categories:
 
-<details>
-<summary>
-Developer Certificate of Origin
-</summary>
+1. You want to report a bug, feature request, or documentation issue
+   - File an [issue](https://github.com/NVIDIA/multi-storage-client/issues/new/choose) describing what you encountered or what you want to see changed.
+   - Please run and paste the output of the `print_env.sh` script while reporting a bug to gather and report relevant environment details.
+   - The multi-storage-client team will evaluate the issues and triage them, scheduling them for a release. If you believe the issue needs priority attention comment on the issue to notify the team.
+2. You want to propose a new Feature and implement it
+   - Post about your intended feature, and we shall discuss the design and implementation.
+   - Once we agree that the plan looks good, go ahead and implement it, using the [code contributions](#code-contributions) guide below.
+3. You want to implement a feature or bug-fix for an outstanding issue
+   - Follow the [code contributions](#code-contributions) guide below.
+   - If you need more context on a particular issue, please ask and we shall provide.
 
-```text
-Developer Certificate of Origin
-Version 1.1
+## Code contributions
 
-Copyright (C) 2004, 2006 The Linux Foundation and its contributors.
+### Your first issue
 
-Everyone is permitted to copy and distribute verbatim copies of this
-license document, but changing it is not allowed.
+1. Read the project's [README.md](https://github.com/NVIDIA/multi-storage-client/blob/main/README.md) to learn how to setup the development environment.
+2. Find an issue to work on. The best way is to look for the [good first issue](https://github.com/NVIDIA/multi-storage-client/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) or [help wanted](https://github.com/NVIDIA/multi-storage-client/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) labels
+3. Comment on the issue saying you are going to work on it.
+4. Code! Make sure to update unit tests!
+5. When done, [create your pull request](https://github.com/NVIDIA/multi-storage-client/compare).
+6. Verify that CI passes all [status checks](https://help.github.com/articles/about-status-checks), or fix if needed.
+7. Wait for other developers to review your code and update code as needed.
+8. Once reviewed and approved, a multi-storage-client developer will merge your pull request.
 
+Remember, if you are unsure about anything, don't hesitate to comment on issues and ask for clarifications!
 
-Developer's Certificate of Origin 1.1
+### Managing PR labels
 
-By making a contribution to this project, I certify that:
+Each PR must be labeled according to whether it is a "breaking" or "non-breaking" change (using GitHub labels). This is used to highlight changes that users should know about when upgrading.
 
-(a) The contribution was created in whole or in part by me and I
-    have the right to submit it under the open source license
-    indicated in the file; or
+For multi-storage-client, a "breaking" change is one that modifies the public, non-experimental, API in a non-backward-compatible way. Backward-compatible API changes (such as adding a new keyword argument to a function) do not need to be labeled.
 
-(b) The contribution is based upon previous work that, to the best
-    of my knowledge, is covered under an appropriate open source
-    license and I have the right under that license to submit that
-    work with modifications, whether created in whole or in part
-    by me, under the same open source license (unless I am
-    permitted to submit under a different license), as indicated
-    in the file; or
+Additional labels must be applied to indicate whether the change is a feature, improvement, bugfix, or documentation change. See the shared multi-storage-client documentation for these labels: https://github.com/NVIDIA/kb/issues/42.
 
-(c) The contribution was provided directly to me by some other
-    person who certified (a), (b) or (c) and I have not modified
-    it.
+### Seasoned developers
 
-(d) I understand and agree that this project and the contribution
-    are public and that a record of the contribution (including all
-    personal information I submit with it, including my sign-off) is
-    maintained indefinitely and may be redistributed consistent with
-    this project or the open source license(s) involved.
-```
+Once you have gotten your feet wet and are more comfortable with the code, you can look at the prioritized issues of our next release in our issue board.
 
-</details>
+Look at the unassigned issues, and find an issue you are comfortable with contributing to. Start with _Step 3_ from above, commenting on the issue to let others know you are working on it. If you have any questions related to the implementation of the issue, ask them in the issue instead of the PR.
 
-## Layout
+### Branches and Versions
 
-Important landmarks:
+The multi-storage-client repository follows trunk-based development around the `main` branch.
 
-```text
-Key:
-🤖 = Generated
+### Branch naming
 
-.
-│   # Release notes.
-├── .release_notes
-│   └── ...
-│
-│   # Client Python package.
-├── multi-storage-client
-│   └── ...
-│
-│   # Client documentation.
-├── multi-storage-client-docs
-│   └── ...
-│
-│   # Internal helper scripts.
-├── multi-storage-client-scripts
-│   └── ...
-│
-│   # Client web UI.
-├── multi-storage-explorer
-│   └── ...
-│
-│   # File system Go package.
-├── multi-storage-file-system
-│   └── ...
-│
-│   # Nix flake outputs.
-├── nix
-│   └── ...
-│
-│   # GitLab pipeline entrypoint.
-├── .gitlab-ci.yml
-│
-│   # Nix configuration.
-├── flake.nix
-├── flake.lock 🤖
-│
-│   # Python configuration.
-├── pyproject.toml
-├── uv.lock 🤖
-│
-│   # Build recipes.
-└── justfile
-```
+Branches used to create PRs should have a name of the form `<type>-<name>` which conforms to the following conventions:
 
-## Tools
+- Type:
+  - fea - For if the branch is for a new feature(s)
+  - enh - For if the branch is an enhancement of an existing feature(s)
+  - bug - For if the branch is for fixing a bug(s) or regression(s)
+- Name:
+  - A name to convey what is being worked on
+  - Please use dashes or underscores between words as opposed to spaces.
 
-Nix (required) and direnv (optional, but strongly recommended for shell + editor integration) are used for development.
+## Attribution
 
-We rely on many tools which aren't vended as Python packages (e.g. storage emulators, compiler toolchains) but are available as Nix packages. While these can be installed individually, the toolset and exact versions will change over time. This is captured by the Nix shell described by the project's Nix flake.
-
-### Nix
-
-[Nix](https://nixos.org) is a package manager and build system centered around reproducibility.
-
-For us, Nix's most useful feature is its ability to create reproducible + isolated CLI shells on the same machine which use different versions of the same package (e.g. Java 17 and 21). Shell configurations can be encapsulated in Nix files which can be shared across multiple computers.
-
-The best way to install Nix is with the [Determinate Nix Installer](https://github.com/DeterminateSystems/nix-installer) ([guide](https://zero-to-nix.com/start/install)).
-
-Once installed, running `nix develop` in a directory with a `flake.nix` will create a nested Bash shell defined by the flake.
-
-> 🔖
->
-> If you're on a network with lots of GitHub traffic, you may get a rate limiting error. To work around this, you can either switch networks (e.g. turn off VPN) or add a GitHub personal access token (classic) to your [Nix configuration](https://nix.dev/manual/nix/latest/command-ref/conf-file).
->
-> ```text
-> access-tokens = github.com=ghp_{rest of token}
-> ```
-
-### direnv
-
-[direnv](https://direnv.net) is a shell extension which can automatically load and unload environment variables when you enter or leave a specific directory.
-
-It can automatically load and unload a Nix environment when we enter and leave a project directory.
-
-__Unlike `nix develop` which drops you in a nested Bash shell, direnv extracts the environment variables from the nested Bash shell into your current shell (e.g. Bash, Zsh, Fish).__
-
-Follow the [installation instructions on its website](https://direnv.net#basic-installation).
-
-It also has [editor integration](https://github.com/direnv/direnv/wiki#editor-integration). Note that some integrations won't automatically reload the environment after Nix flake changes unlike direnv itself so manual reloads may be needed.
-
-## Developing
-
-Common recipes are provided as Just recipes. To list them, run:
-
-```shell
-just
-```
-
-### Building the Project
-
-To do a full release build, run:
-
-```shell
-just build
-```
-
-If you want to use a specific Python binary such as Python 3.10, run:
-
-```shell
-just python-binary=python3.10 build
-```
-
-## Notes
-
-### Updating Flake Locks
-
-The `flake.lock` file locks the inputs (e.g. the Nixpkgs revision) used to evaluate `flake.nix` files. To update the inputs (e.g. to get newer packages in a later Nixpkgs revision), you'll need to update your `flake.lock` file.
-
-```shell
-# Update flake.lock.
-nix flake update
-```
+Portions adopted from https://github.com/pytorch/pytorch/blob/master/CONTRIBUTING.md

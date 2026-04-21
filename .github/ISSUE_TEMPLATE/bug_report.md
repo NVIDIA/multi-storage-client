@@ -1,30 +1,36 @@
 ---
 name: Bug report
-about: Report a bug to help us improve
-title: ''
-labels: bug
-assignees: ''
+about: Create a bug report
+title: "[BUG]"
+labels: "? - Needs Triage, bug"
+assignees: ""
 ---
 
-## Summary
+## Describe the bug
 
-*A clear and concise description of the bug.*
+A clear and concise description of what the bug is.
 
-## Steps to Reproduce
+## Steps/Code to reproduce bug
 
-*Please list minimal steps and code snippets for us to be able to reproduce the bug.*
+Follow [this guide](https://matthewrocklin.com/blog/work/2018/02/28/minimal-bug-reports) to craft a minimal bug report. This helps us reproduce the issue you're having and resolve the issue more quickly.
 
-## Environment Details
+## Expected behavior
 
-- MultiStorageClient version
-- Operating system and version
-- Python version
+A clear and concise description of what you expected to happen.
 
-## Expected Behaviour
+## Environment details
 
-*A clear and concise description of what you expected to happen.*
+- Environment location:
+  - [Bare-metal, Docker, Cloud(specify cloud provider)]
+- Install method:
+  - [conda, Docker, pip, or from source]
+  - If the install method is Docker, provide `docker pull` & `docker run` commands used
+- Run `print_env.sh` from the project root and paste the results here
 
-## Additional Context
+## Additional context
 
-*Add any other context or screenshots about the bug here.*
+Add any other context about the problem here.
 
+---
+
+By submitting this issue, you agree to follow our [code of conduct](CODE_OF_CONDUCT.md) and our [contributing guidelines](CONTRIBUTING.md).
