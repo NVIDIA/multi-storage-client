@@ -15,7 +15,6 @@
 
 import io
 import os
-import posixpath
 import tempfile
 from collections.abc import Callable, Iterator
 from datetime import datetime, timedelta, timezone
@@ -489,7 +488,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
         target_container, target_key = split_path(target)
         if container_name != target_container:
             raise ValueError(f"Cannot create cross-container symlink: '{container_name}' -> '{target_container}'.")
-        relative_target = posixpath.relpath(target_key, posixpath.dirname(blob_name))
+        relative_target = ObjectMetadata.encode_symlink_target(blob_name, target_key)
         self._refresh_blob_service_client_if_needed()
 
         def _invoke_api() -> None:

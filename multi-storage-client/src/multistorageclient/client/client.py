@@ -491,12 +491,13 @@ class StorageClient(AbstractStorageClient):
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
         patterns: Optional[PatternList] = None,
         preserve_source_attributes: bool = False,
-        follow_symlinks: bool = True,
+        follow_symlinks: Optional[bool] = None,
         source_files: Optional[list[str]] = None,
         ignore_hidden: bool = True,
         commit_metadata: bool = True,
         dryrun: bool = False,
         dryrun_output_path: Optional[str] = None,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> SyncResult:
         """
         Syncs files from the source storage client to "path/".
@@ -518,7 +519,9 @@ class StorageClient(AbstractStorageClient):
                 request for each object to retrieve attributes, which can significantly impact performance on large-scale
                 sync operations. For production use at scale, configure a ``metadata_provider`` in your storage profile.
 
-        :param follow_symlinks: If the source StorageClient is PosixFile, whether to follow symbolic links. Default is ``True``.
+        :param follow_symlinks: **Deprecated.** Use ``symlink_handling`` instead. If the source StorageClient is PosixFile,
+            whether to follow symbolic links. ``True`` maps to :py:attr:`SymlinkHandling.FOLLOW`; ``False`` maps to
+            :py:attr:`SymlinkHandling.SKIP`. Cannot be combined with a non-default ``symlink_handling``.
         :param source_files: Optional list of file paths (relative to source_path) to sync. When provided, only these
             specific files will be synced, skipping enumeration of the source path. Cannot be used together with patterns.
         :param ignore_hidden: Whether to ignore hidden files and directories. Default is ``True``.
@@ -528,7 +531,13 @@ class StorageClient(AbstractStorageClient):
             The returned :py:class:`SyncResult` will include a :py:class:`DryrunResult` with paths to JSONL files.
         :param dryrun_output_path: Directory to write dryrun JSONL files into. If ``None`` (default), a temporary
             directory is created automatically. Ignored when ``dryrun`` is ``False``.
-        :raises ValueError: If both source_files and patterns are provided.
+        :param symlink_handling: How to handle symbolic links during sync.
+            :py:attr:`SymlinkHandling.FOLLOW` (default) dereferences symlinks and copies the target's bytes.
+            :py:attr:`SymlinkHandling.SKIP` excludes symlinks from the sync.
+            :py:attr:`SymlinkHandling.PRESERVE` recreates symlinks on the target via :py:meth:`make_symlink`
+            instead of copying bytes (required for round-trip preservation of symlinks).
+        :raises ValueError: If both source_files and patterns are provided, or if ``follow_symlinks`` is combined
+            with a non-default ``symlink_handling``.
         :raises NotImplementedError: If sync operations are not supported (e.g., CompositeStorageClient as target).
         """
         return self._delegate.sync_from(
@@ -547,6 +556,7 @@ class StorageClient(AbstractStorageClient):
             commit_metadata,
             dryrun,
             dryrun_output_path,
+            symlink_handling,
         )
 
     def sync_replicas(
@@ -559,6 +569,7 @@ class StorageClient(AbstractStorageClient):
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
         patterns: Optional[PatternList] = None,
         ignore_hidden: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> None:
         """
         Sync files from this client to its replica storage clients.
@@ -571,6 +582,11 @@ class StorageClient(AbstractStorageClient):
         :param execution_mode: Execution mode (LOCAL or REMOTE).
         :param patterns: PatternList for include/exclude filtering. If None, all files are included.
         :param ignore_hidden: When set to ``True``, ignore hidden files (starting with '.'). Defaults to ``True``.
+        :param symlink_handling: How to handle symbolic links during sync.
+            :py:attr:`SymlinkHandling.FOLLOW` (default) dereferences symlinks and copies the target's bytes.
+            :py:attr:`SymlinkHandling.SKIP` excludes symlinks from the sync.
+            :py:attr:`SymlinkHandling.PRESERVE` recreates symlinks on each replica via
+            :py:meth:`make_symlink` instead of copying bytes.
         """
         return self._delegate.sync_replicas(
             source_path,
@@ -581,6 +597,7 @@ class StorageClient(AbstractStorageClient):
             execution_mode,
             patterns,
             ignore_hidden,
+            symlink_handling,
         )
 
     def list(

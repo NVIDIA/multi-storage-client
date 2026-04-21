@@ -37,7 +37,9 @@ tests/
 | Task | Command |
 |---|---|
 | Prepare dev environment | `just multi-storage-client/prepare-toolchain` |
-| Run unit tests | `just multi-storage-client/run-unit-tests` |
+| Run unit tests (full suite) | `just multi-storage-client/run-unit-tests` |
+| Start local storage simulators | `just multi-storage-client/start-storage-systems` |
+| Stop local storage simulators | `just multi-storage-client/stop-storage-systems` |
 | Run Rust tests | `cd multi-storage-client/rust && cargo test` |
 | Lint & type check | `just multi-storage-client/analyze` |
 | Build release wheel | `just multi-storage-client/package` |
@@ -48,6 +50,22 @@ tests/
 - Rust inline tests: `rust/src/*.rs` (with `#[cfg(test)]`)
 - Rust binding tests: `tests/test_multistorageclient_rust/`
 - E2E tests: `tests/test_multistorageclient/e2e/` (require cloud credentials, run manually)
+
+### Running a specific unit test
+
+`just multi-storage-client/run-unit-tests` runs the full suite and handles local storage simulators automatically. When running `pytest` directly to target a specific file/test/marker, you must start the simulators yourself if the test uses any non-POSIX `tempdatastore` — i.e. `TemporaryAWSS3Bucket`, `TemporaryAzureBlobStorageContainer`, `TemporaryGoogleCloudStorageBucket`, `TemporaryGoogleCloudStorageS3Bucket`, `TemporarySwiftStackBucket`, `TemporaryAIStoreBucket`, or `TemporaryAIStoreS3Bucket`. These are backed by local simulators (AIStore, Azurite, fake-gcs-server, versitygw) that do NOT autostart from `pytest`.
+
+```shell
+# Simulator-backed tests (any non-POSIX tempdatastore)
+just multi-storage-client/start-storage-systems
+uv run pytest tests/test_multistorageclient/unit/providers/test_symlinks.py -v
+just multi-storage-client/stop-storage-systems
+
+# POSIX-only tests (only `TemporaryPOSIXDirectory` / pure filesystem) — no simulators needed
+uv run pytest tests/test_multistorageclient/unit/providers/test_posix_file.py -v
+```
+
+Rule of thumb: if a test is parametrized over `tempdatastore.Temporary*` types other than `TemporaryPOSIXDirectory`, it needs the simulators running. `stop-storage-systems` after you're done to free ports 10000-10002, 4443, 7070, and 51080-51081.
 
 ## Tooling
 

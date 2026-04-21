@@ -328,6 +328,35 @@ Each JSONL file contains one JSON object per line with ``ObjectMetadata`` fields
     "type": "file"
   }
 
+.. _msc-sync-symlink-handling:
+
+Symlink Handling
+================
+
+The ``--symlink-handling`` option controls how symbolic links in the source are handled during a sync. Three modes are supported:
+
+* ``follow`` (default) — Symlinks are transparently dereferenced and the target's bytes are copied.
+* ``skip`` — Symlinks (both file and directory symlinks) are excluded from the sync.
+* ``preserve`` — Symlinks are recreated on the target instead of being dereferenced. A symlink entry is transferred as a pointer, so no duplicate content is written. Required for round-trip fidelity (e.g., upload to object storage, then download, and recover the original layout including symlinks).
+
+.. code-block:: shell
+  :caption: Preserve symlinks when uploading to object storage
+
+  $ msc sync /path/to/dataset --target-url msc://profile/prefix --symlink-handling preserve
+
+.. code-block:: shell
+  :caption: Exclude all symlinks from the sync
+
+  $ msc sync /path/to/dataset --target-url msc://profile/prefix --symlink-handling skip
+
+.. note::
+
+  Symlink targets pointing outside the source's ``base_path`` are rejected in ``preserve`` mode because the target is not reachable via the storage profile. Use ``follow`` to dereference such symlinks or ``skip`` to ignore them.
+
+  Broken symlinks (missing target) also raise an error in ``preserve`` mode; use ``skip`` to ignore them.
+
+See :doc:`/user_guide/concepts` and the storage provider documentation for the data model details and backend-specific representation of symlinks.
+
 .. _msc-sync-replicas-cli:
 
 Sync Replicas

@@ -16,7 +16,6 @@
 import codecs
 import io
 import os
-import posixpath
 import tempfile
 from collections.abc import Callable, Iterator
 from typing import IO, Any, Optional, TypeVar, Union
@@ -618,7 +617,7 @@ class S3StorageProvider(BaseStorageProvider):
         target_bucket, target_key = split_path(target)
         if bucket != target_bucket:
             raise ValueError(f"Cannot create cross-bucket symlink: '{bucket}' -> '{target_bucket}'.")
-        relative_target = posixpath.relpath(target_key, posixpath.dirname(key))
+        relative_target = ObjectMetadata.encode_symlink_target(key, target_key)
 
         def _invoke_api() -> None:
             self._s3_client.put_object(

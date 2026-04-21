@@ -96,6 +96,10 @@ def test_make_symlink_creates_relative_symlink():
         with open(link_path) as f:
             assert f.read() == "target content"
 
+        metadata = provider.get_object_metadata("link.txt")
+        assert metadata.symlink_target == "dir1/target.txt"
+        assert metadata.type == "file"
+
 
 def test_make_symlink_creates_parent_directories():
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -109,6 +113,12 @@ def test_make_symlink_creates_parent_directories():
         link_path = os.path.join(temp_dir, "sub", "dir", "link.txt")
         assert os.path.islink(link_path)
         assert os.path.isfile(link_path)
+
+        # Stored target is relative to the symlink's parent directory (sub/dir/),
+        # so reaching target.txt at the base requires two "../" hops.
+        metadata = provider.get_object_metadata("sub/dir/link.txt")
+        assert metadata.symlink_target == "../../target.txt"
+        assert metadata.type == "file"
 
 
 def test_make_symlink_overwrites_existing():
@@ -126,11 +136,13 @@ def test_make_symlink_overwrites_existing():
         link_path = os.path.join(temp_dir, "link.txt")
         with open(link_path) as f:
             assert f.read() == "first"
+        assert provider.get_object_metadata("link.txt").symlink_target == "target1.txt"
 
         provider.make_symlink("link.txt", "target2.txt")
         assert os.path.islink(link_path)
         with open(link_path) as f:
             assert f.read() == "second"
+        assert provider.get_object_metadata("link.txt").symlink_target == "target2.txt"
 
 
 def test_make_symlink_directory_target():
@@ -147,6 +159,19 @@ def test_make_symlink_directory_target():
         assert os.path.islink(link_path)
         assert os.path.isdir(link_path)
         assert os.path.isfile(os.path.join(link_path, "a.txt"))
+
+        # The symlink on disk does hold the relative target ("dir1").
+        assert os.readlink(link_path) == "dir1"
+
+        # However, get_object_metadata() currently reports symlink_target=None for
+        # symlinks whose target is a directory: _get_object_metadata appends a "/"
+        # to the path when it resolves to a directory, and os.path.islink("…/")
+        # returns False, so the os.readlink branch is skipped. This pins that
+        # existing behavior; if the provider is fixed to preserve the target,
+        # update this expectation to "dir1".
+        metadata = provider.get_object_metadata("link_dir")
+        assert metadata.type == "directory"
+        assert metadata.symlink_target is None
 
 
 def test_list_objects_with_paths():

@@ -299,6 +299,41 @@ class BatchSyncHandler(ABC):
             target_file_path = build_target_file_path(self.source_path, self.target_path, file_metadata)
             self.result_queue.put((OperationType.DELETE, target_file_path, file_metadata))
 
+    def process_symlink_batch(self, worker_id: str, batch: OperationBatch) -> None:
+        """Process a SYMLINK batch: recreate each symlink on the target via ``make_symlink``.
+
+        No bytes are transferred. The parent-relative ``symlink_target`` is
+        preserved verbatim — it is resolved against the *target-side* symlink
+        key only to obtain the logical key ``make_symlink`` expects; each
+        backend re-encodes it back to the same parent-relative bytes. Results
+        are reported as :py:attr:`OperationType.ADD` so the
+        :class:`ResultMonitorThread` counts them alongside regular file adds.
+        """
+        for file_metadata, _target_metadata in batch.items:
+            try:
+                if file_metadata.symlink_target is None:
+                    raise RuntimeError(f"SYMLINK batch item has no symlink_target: {file_metadata.key}")
+
+                target_file_path = build_target_file_path(self.source_path, self.target_path, file_metadata)
+                translated_target = ObjectMetadata.resolve_symlink_target(
+                    target_file_path, file_metadata.symlink_target
+                )
+
+                self.target_client.make_symlink(target_file_path, translated_target)
+
+                if not self.target_client._metadata_provider:
+                    physical_metadata = ObjectMetadata(
+                        key=target_file_path,
+                        content_length=0,
+                        last_modified=file_metadata.last_modified,
+                        type=file_metadata.type,
+                        metadata=file_metadata.metadata,
+                        symlink_target=file_metadata.symlink_target,
+                    )
+                    self.result_queue.put((OperationType.ADD, target_file_path, physical_metadata))
+            except Exception as e:
+                self._report_error(worker_id, e, file_metadata.key, batch.operation)
+
     def _report_result(self, file_metadata: ObjectMetadata, target_file_path: str) -> None:
         """Report a successful ADD to result_queue when there is no metadata provider.
 
@@ -550,6 +585,8 @@ def sync_worker_process(
                     handler.process_delete_batch(batch)
                 elif batch.operation == OperationType.ADD:
                     handler.process_add_batch(thread_id, batch)
+                elif batch.operation == OperationType.SYMLINK:
+                    handler.process_symlink_batch(thread_id, batch)
 
         if num_worker_threads <= 1:
             _worker_loop(worker_id)

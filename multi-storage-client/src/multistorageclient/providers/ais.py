@@ -15,7 +15,6 @@
 
 import io
 import os
-import posixpath
 from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from typing import IO, Any, Optional, TypeVar, Union
@@ -292,7 +291,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
         target_bucket, target_key = split_path(target)
         if bucket != target_bucket:
             raise ValueError(f"Cannot create cross-bucket symlink: '{bucket}' -> '{target_bucket}'.")
-        relative_target = posixpath.relpath(target_key, posixpath.dirname(key))
+        relative_target = ObjectMetadata.encode_symlink_target(key, target_key)
 
         def _invoke_api() -> None:
             obj = self.client.bucket(bucket, self.provider).object(obj_name=key)

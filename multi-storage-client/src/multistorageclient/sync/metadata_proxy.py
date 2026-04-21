@@ -59,6 +59,7 @@ class QueueBackedMetadataProvider(MetadataProvider):
             etag=getattr(metadata, "etag"),
             storage_class=getattr(metadata, "storage_class"),
             metadata=dict(meta_dict) if meta_dict else None,
+            symlink_target=getattr(metadata, "symlink_target", None),
         )
         self._delegate.add_file(path, metadata)
         self._result_queue.put((OperationType.ADD, path, queued_metadata))

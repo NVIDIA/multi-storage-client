@@ -25,7 +25,7 @@ import time
 from typing import TYPE_CHECKING, Optional
 
 from ..constants import DEFAULT_SYNC_BATCH_SIZE
-from ..types import DryrunResult, ExecutionMode, SyncError, SyncResult
+from ..types import DryrunResult, ExecutionMode, SymlinkHandling, SyncError, SyncResult
 from ..utils import PatternMatcher, calculate_worker_processes_and_threads
 from .monitors import ErrorMonitorThread, ResultMonitorThread
 from .producer import ProducerThread
@@ -85,7 +85,7 @@ class SyncManager:
         delete_unmatched_files: bool = False,
         pattern_matcher: Optional[PatternMatcher] = None,
         preserve_source_attributes: bool = False,
-        follow_symlinks: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
         source_files: Optional[list[str]] = None,
         ignore_hidden: bool = True,
         commit_metadata: bool = True,
@@ -117,7 +117,10 @@ class SyncManager:
                 **Performance Impact**: When enabled without a ``metadata_provider`` configured, this will make a HEAD
                 request for each object to retrieve attributes, which can significantly impact performance on large-scale
                 sync operations. For production use at scale, configure a ``metadata_provider`` in your storage profile.
-        :param follow_symlinks: Whether to follow symbolic links. Only applicable when source is POSIX file storage. When False, symlinks are skipped during sync.
+        :param symlink_handling: How to handle symbolic links during sync. :py:attr:`SymlinkHandling.FOLLOW` (default)
+            dereferences symlinks and copies target bytes. :py:attr:`SymlinkHandling.SKIP` excludes symlinks.
+            :py:attr:`SymlinkHandling.PRESERVE` recreates symlinks on the target via
+            :py:meth:`AbstractStorageClient.make_symlink`.
         :param source_files: Optional list of file paths (relative to source_path) to sync. When provided, only these
             specific files will be synced, skipping enumeration of the source path.
         :param ignore_hidden: Whether to ignore hidden files and directories (starting with dot). Default is True.
@@ -142,7 +145,7 @@ class SyncManager:
                 delete_unmatched_files=delete_unmatched_files,
                 pattern_matcher=pattern_matcher,
                 preserve_source_attributes=preserve_source_attributes,
-                follow_symlinks=follow_symlinks,
+                symlink_handling=symlink_handling,
                 source_files=source_files,
                 ignore_hidden=ignore_hidden,
                 batch_size=batch_size,
@@ -209,7 +212,7 @@ class SyncManager:
             delete_unmatched_files,
             pattern_matcher,
             preserve_source_attributes,
-            follow_symlinks,
+            symlink_handling,
             source_files,
             ignore_hidden,
             batch_size,
@@ -378,7 +381,7 @@ class SyncManager:
         delete_unmatched_files: bool = False,
         pattern_matcher: Optional[PatternMatcher] = None,
         preserve_source_attributes: bool = False,
-        follow_symlinks: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
         source_files: Optional[list[str]] = None,
         ignore_hidden: bool = True,
         batch_size: int = DEFAULT_SYNC_BATCH_SIZE,
@@ -409,7 +412,7 @@ class SyncManager:
             delete_unmatched_files,
             pattern_matcher,
             preserve_source_attributes,
-            follow_symlinks,
+            symlink_handling,
             source_files,
             ignore_hidden,
             batch_size,
@@ -435,7 +438,7 @@ class SyncManager:
                 batch = file_queue.get()
                 if batch.operation == OperationType.STOP:
                     break
-                if batch.operation == OperationType.ADD:
+                if batch.operation == OperationType.ADD or batch.operation == OperationType.SYMLINK:
                     for item, _ in batch.items:
                         add_file.write(json.dumps(item.to_dict()) + "\n")
                         total_files_added += 1

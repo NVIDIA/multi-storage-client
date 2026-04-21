@@ -76,6 +76,13 @@ def test_azure_list_exact_file_no_prefix_match(profile_name):
 
 
 @pytest.mark.parametrize("profile_name", ["test-azure-uswest"])
+def test_azure_sync_from_preserves_symlinks(profile_name):
+    """Test that SymlinkHandling.PRESERVE survives a POSIX -> Azure -> POSIX round trip."""
+    profile = profile_name
+    common.test_sync_from_preserves_symlinks(profile)
+
+
+@pytest.mark.parametrize("profile_name", ["test-azure-uswest"])
 def test_azure_presigned_url(profile_name):
     """Test presigned GET and PUT SAS URLs work end-to-end against Azure Blob Storage.
 

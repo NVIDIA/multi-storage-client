@@ -50,6 +50,7 @@ class OperationType(Enum):
 
     ADD = "add"
     DELETE = "delete"
+    SYMLINK = "symlink"  # Recreate a symbolic link on the target.
     STOP = "stop"  # Signal to stop the thread.
 
 
@@ -63,9 +64,13 @@ class OperationBatch:
       *target_metadata* is the existing object at the target when the file
       needs updating, or ``None`` when the file is new.
     * **DELETE** – ``(target_metadata, None)``.
+    * **SYMLINK** – ``(source_metadata, target_metadata | None)`` with
+      ``source_metadata.symlink_target`` always set. The worker recreates the
+      link on the target via :py:meth:`AbstractStorageClient.make_symlink`
+      instead of copying bytes.
     * **STOP** – empty list (sentinel).
 
-    Operations are batched by type (ADD or DELETE) and flushed when:
+    Operations are batched by type (ADD, DELETE, or SYMLINK) and flushed when:
     - The batch reaches the configured batch_size
     - The operation type changes
     - The producer completes iteration

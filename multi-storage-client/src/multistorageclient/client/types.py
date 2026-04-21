@@ -22,7 +22,7 @@ from collections.abc import Iterator, Sequence
 from typing import IO, TYPE_CHECKING, Any, Optional, Union
 
 from ..constants import MEMORY_LOAD_LIMIT
-from ..types import ExecutionMode, SignerType, SourceVersionCheckMode, SyncResult
+from ..types import ExecutionMode, SignerType, SourceVersionCheckMode, SymlinkHandling, SyncResult
 
 if TYPE_CHECKING:
     from ..cache import CacheManager
@@ -394,12 +394,13 @@ class AbstractStorageClient(ABC):
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
         patterns: Optional[PatternList] = None,
         preserve_source_attributes: bool = False,
-        follow_symlinks: bool = True,
+        follow_symlinks: Optional[bool] = None,
         source_files: Optional[list[str]] = None,
         ignore_hidden: bool = True,
         commit_metadata: bool = True,
         dryrun: bool = False,
         dryrun_output_path: Optional[str] = None,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> SyncResult:
         """
         Syncs files from the source storage client to "path/".
@@ -421,7 +422,9 @@ class AbstractStorageClient(ABC):
                 request for each object to retrieve attributes, which can significantly impact performance on large-scale
                 sync operations. For production use at scale, configure a ``metadata_provider`` in your storage profile.
 
-        :param follow_symlinks: If the source StorageClient is PosixFile, whether to follow symbolic links. Default is ``True``.
+        :param follow_symlinks: **Deprecated.** Use ``symlink_handling`` instead. If the source StorageClient is PosixFile,
+            whether to follow symbolic links. ``True`` maps to :py:attr:`SymlinkHandling.FOLLOW`; ``False`` maps to
+            :py:attr:`SymlinkHandling.SKIP`. Cannot be combined with a non-default ``symlink_handling``.
         :param source_files: Optional list of file paths (relative to source_path) to sync. When provided, only these
             specific files will be synced, skipping enumeration of the source path. Cannot be used together with patterns.
         :param ignore_hidden: Whether to ignore hidden files and directories. Default is ``True``.
@@ -431,7 +434,13 @@ class AbstractStorageClient(ABC):
             The returned :py:class:`SyncResult` will include a :py:class:`DryrunResult` with paths to JSONL files.
         :param dryrun_output_path: Directory to write dryrun JSONL files into. If ``None`` (default), a temporary
             directory is created automatically. Ignored when ``dryrun`` is ``False``.
-        :raises ValueError: If both source_files and patterns are provided.
+        :param symlink_handling: How to handle symbolic links during sync.
+            :py:attr:`SymlinkHandling.FOLLOW` (default) dereferences symlinks and copies the target's bytes.
+            :py:attr:`SymlinkHandling.SKIP` excludes symlinks from the sync.
+            :py:attr:`SymlinkHandling.PRESERVE` recreates symlinks on the target via :py:meth:`make_symlink`
+            instead of copying bytes (required for round-trip preservation of symlinks).
+        :raises ValueError: If both source_files and patterns are provided, or if ``follow_symlinks`` is combined
+            with a non-default ``symlink_handling``.
         :raises NotImplementedError: If sync operations are not supported (e.g., CompositeStorageClient as target).
         """
         pass
@@ -447,6 +456,7 @@ class AbstractStorageClient(ABC):
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
         patterns: Optional[PatternList] = None,
         ignore_hidden: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> None:
         """
         Sync files from this client to its replica storage clients.
@@ -459,6 +469,11 @@ class AbstractStorageClient(ABC):
         :param execution_mode: Execution mode (LOCAL or REMOTE).
         :param patterns: PatternList for include/exclude filtering. If None, all files are included.
         :param ignore_hidden: When set to ``True``, ignore hidden files (starting with '.'). Defaults to ``True``.
+        :param symlink_handling: How to handle symbolic links during sync.
+            :py:attr:`SymlinkHandling.FOLLOW` (default) dereferences symlinks and copies the target's bytes.
+            :py:attr:`SymlinkHandling.SKIP` excludes symlinks from the sync.
+            :py:attr:`SymlinkHandling.PRESERVE` recreates symlinks on each replica via
+            :py:meth:`make_symlink` instead of copying bytes.
         """
         pass
 
@@ -473,8 +488,9 @@ class AbstractStorageClient(ABC):
         include_url_prefix: bool = False,
         attribute_filter_expression: Optional[str] = None,
         show_attributes: bool = False,
-        follow_symlinks: bool = True,
+        follow_symlinks: Optional[bool] = None,
         patterns: Optional[PatternList] = None,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         """
         List objects in the storage provider under the specified path.
@@ -492,8 +508,13 @@ class AbstractStorageClient(ABC):
         :param include_url_prefix: Whether to include the URL prefix ``msc://profile`` in the result.
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
         :param show_attributes: Whether to return attributes in the result. WARNING: Depending on implementation, there may be a performance impact if this is set to ``True``.
-        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers. When ``False``, symlinks are skipped during listing.
+        :param follow_symlinks: [DEPRECATED] Use ``symlink_handling`` instead. Whether to follow symbolic links. Only applicable for POSIX file storage providers. When ``False``, symlinks are skipped during listing.
         :param patterns: PatternList for include/exclude filtering. If None, all files are included.
+        :param symlink_handling: How symbolic links should be handled during listing.
+            ``SymlinkHandling.FOLLOW`` (default) resolves symlinks and returns the target file's
+            metadata. ``SymlinkHandling.SKIP`` omits symlinks entirely. ``SymlinkHandling.PRESERVE``
+            emits symlinks as zero-byte entries with ``symlink_target`` populated so they can be
+            reproduced on a compatible destination.
         :return: An iterator over ObjectMetadata for matching objects.
         :raises ValueError: If both ``path`` and ``prefix`` parameters are provided (both non-empty).
         """

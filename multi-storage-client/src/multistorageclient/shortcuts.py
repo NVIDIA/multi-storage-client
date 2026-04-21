@@ -360,6 +360,7 @@ def sync(
     ignore_hidden: bool = True,
     dryrun: bool = False,
     dryrun_output_path: Optional[str] = None,
+    symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
 ) -> SyncResult:
     """
     Syncs files from the source storage to the target storage.
@@ -381,6 +382,12 @@ def sync(
         The returned :py:class:`SyncResult` will include a :py:class:`DryrunResult` with paths to JSONL files.
     :param dryrun_output_path: Directory to write dryrun JSONL files into. If None (default), a temporary
         directory is created automatically. Ignored when dryrun is False.
+    :param symlink_handling: How to handle symbolic links during sync.
+        :py:attr:`SymlinkHandling.FOLLOW` (default) dereferences symlinks and copies the target's bytes.
+        :py:attr:`SymlinkHandling.SKIP` excludes symlinks from the sync.
+        :py:attr:`SymlinkHandling.PRESERVE` recreates symlinks on the target via
+        :py:meth:`AbstractStorageClient.make_symlink` instead of copying bytes (required for
+        round-trip preservation of symlinks).
     """
     source_client, source_path = resolve_storage_client(source_url)
     target_client, target_path = resolve_storage_client(target_url)
@@ -395,6 +402,7 @@ def sync(
         ignore_hidden=ignore_hidden,
         dryrun=dryrun,
         dryrun_output_path=dryrun_output_path,
+        symlink_handling=symlink_handling,
     )
 
 
@@ -405,6 +413,7 @@ def sync_replicas(
     execution_mode: ExecutionMode = ExecutionMode.LOCAL,
     patterns: Optional[PatternList] = None,
     ignore_hidden: bool = True,
+    symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
 ) -> None:
     """
     Syncs files from the source storage to all the replicas.
@@ -415,6 +424,11 @@ def sync_replicas(
     :param execution_mode: The execution mode to use. Currently supports "local" and "ray".
     :param patterns: PatternList for include/exclude filtering. If None, all files are included.
     :param ignore_hidden: Whether to ignore hidden files and directories (starting with dot). Default is True.
+    :param symlink_handling: How to handle symbolic links during sync.
+        :py:attr:`SymlinkHandling.FOLLOW` (default) dereferences symlinks and copies the target's bytes.
+        :py:attr:`SymlinkHandling.SKIP` excludes symlinks from the sync.
+        :py:attr:`SymlinkHandling.PRESERVE` recreates symlinks on each replica via
+        :py:meth:`AbstractStorageClient.make_symlink` instead of copying bytes.
     """
     source_client, source_path = resolve_storage_client(source_url)
     source_client.sync_replicas(
@@ -424,6 +438,7 @@ def sync_replicas(
         execution_mode=execution_mode,
         patterns=patterns,
         ignore_hidden=ignore_hidden,
+        symlink_handling=symlink_handling,
     )
 
 

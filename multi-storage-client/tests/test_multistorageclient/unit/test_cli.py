@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import json
 import os
 import random
@@ -142,6 +143,114 @@ def test_sync_help_command(run_cli):
     assert "--target-url" in stdout
     assert "--replica-indices" in stdout
     assert "--ray-cluster" in stdout
+    assert "--symlink-handling" in stdout
+    assert "follow" in stdout
+    assert "skip" in stdout
+    assert "preserve" in stdout
+
+
+def test_sync_invalid_symlink_handling(run_cli):
+    stdout, stderr = run_cli(
+        "sync",
+        "/tmp/does-not-matter",
+        "--target-url",
+        "/tmp/also-does-not-matter",
+        "--symlink-handling",
+        "bogus",
+        expected_return_code=2,
+    )
+    assert "--symlink-handling" in stderr
+    assert "invalid choice" in stderr
+
+
+@contextlib.contextmanager
+def _symlink_workdirs():
+    """
+    Create a parent tmpdir (resolved through ``os.path.realpath`` to avoid
+    macOS ``/var -> /private/var`` asymmetry) with ``src/`` and ``dst/``
+    subdirectories. ``src/`` contains ``real.txt`` and ``link.txt`` (a relative
+    symlink to ``real.txt``). Yields ``(source_dir, target_dir)``.
+    """
+    with tempfile.TemporaryDirectory() as parent_raw:
+        parent = os.path.realpath(parent_raw)
+        source_dir = os.path.join(parent, "src")
+        target_dir = os.path.join(parent, "dst")
+        os.makedirs(source_dir)
+        os.makedirs(target_dir)
+        (Path(source_dir) / "real.txt").write_text("real content")
+        os.symlink("real.txt", Path(source_dir) / "link.txt")
+        yield source_dir, target_dir
+
+
+def test_sync_symlink_handling_skip(run_cli):
+    """--symlink-handling skip excludes symlinks from the sync."""
+    with _symlink_workdirs() as (source_dir, target_dir):
+        run_cli(
+            "sync",
+            "--verbose",
+            source_dir,
+            "--target-url",
+            target_dir,
+            "--symlink-handling",
+            "skip",
+        )
+
+        assert (Path(target_dir) / "real.txt").is_file()
+        assert (Path(target_dir) / "real.txt").read_text() == "real content"
+        assert not (Path(target_dir) / "link.txt").exists()
+        assert not (Path(target_dir) / "link.txt").is_symlink()
+
+
+def test_sync_symlink_handling_follow(run_cli):
+    """--symlink-handling follow dereferences symlinks and copies target bytes."""
+    with _symlink_workdirs() as (source_dir, target_dir):
+        run_cli(
+            "sync",
+            "--verbose",
+            source_dir,
+            "--target-url",
+            target_dir,
+            "--symlink-handling",
+            "follow",
+        )
+
+        link_copy = Path(target_dir) / "link.txt"
+        assert link_copy.is_file()
+        assert not link_copy.is_symlink()
+        assert link_copy.read_text() == "real content"
+        assert (Path(target_dir) / "real.txt").read_text() == "real content"
+
+
+def test_sync_symlink_handling_preserve(run_cli):
+    """--symlink-handling preserve recreates symlinks on the target via make_symlink."""
+    with _symlink_workdirs() as (source_dir, target_dir):
+        run_cli(
+            "sync",
+            "--verbose",
+            source_dir,
+            "--target-url",
+            target_dir,
+            "--symlink-handling",
+            "preserve",
+        )
+
+        real_copy = Path(target_dir) / "real.txt"
+        link_copy = Path(target_dir) / "link.txt"
+        assert real_copy.is_file() and not real_copy.is_symlink()
+        assert real_copy.read_text() == "real content"
+        assert link_copy.is_symlink()
+        assert link_copy.read_text() == "real content"
+
+
+def test_sync_default_symlink_handling_matches_follow(run_cli):
+    """Omitting --symlink-handling should behave the same as 'follow'."""
+    with _symlink_workdirs() as (source_dir, target_dir):
+        run_cli("sync", "--verbose", source_dir, "--target-url", target_dir)
+
+        link_copy = Path(target_dir) / "link.txt"
+        assert link_copy.is_file()
+        assert not link_copy.is_symlink()
+        assert link_copy.read_text() == "real content"
 
 
 def test_sync_without_replicas(run_cli):

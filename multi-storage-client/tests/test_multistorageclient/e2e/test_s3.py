@@ -134,6 +134,13 @@ def test_s3_list_exact_file_no_prefix_match(profile_name):
     common.test_list_exact_file_no_prefix_match(profile)
 
 
+@pytest.mark.parametrize("profile_name", ["test-s3-iad"])
+def test_s3_sync_from_preserves_symlinks(profile_name):
+    """Test that SymlinkHandling.PRESERVE survives a POSIX -> S3 -> POSIX round trip."""
+    profile = profile_name
+    common.test_sync_from_preserves_symlinks(profile)
+
+
 @pytest.mark.skip(reason="Temporarily disable due to hangs in CI")
 @pytest.mark.parametrize("profile_name", ["test-s3-iad-with-replica"])
 def test_s3_replica_read_using_msc_open(profile_name):

@@ -191,7 +191,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
     def _make_symlink(self, path: str, target: str) -> None:
         def _invoke_api() -> None:
             safe_makedirs(os.path.dirname(path))
-            relative_target = os.path.relpath(target, os.path.dirname(path))
+            relative_target = ObjectMetadata.encode_symlink_target(path, target)
             if os.path.lexists(path):
                 os.remove(path)
             os.symlink(relative_target, path)
@@ -212,7 +212,12 @@ class PosixFileStorageProvider(BaseStorageProvider):
                 logger.debug(f"Failed to read extended attributes from {path}: {e}")
                 pass
 
-            symlink_target = os.readlink(path) if os.path.islink(path) else None
+            # ``os.readlink`` may return an absolute path; normalise to the
+            # parent-relative form used by every backend.
+            symlink_target: Optional[str] = None
+            if os.path.islink(path):
+                raw = os.readlink(path)
+                symlink_target = ObjectMetadata.encode_symlink_target(path, raw) if os.path.isabs(raw) else raw
 
             return ObjectMetadata(
                 key=path,
@@ -304,13 +309,15 @@ class PosixFileStorageProvider(BaseStorageProvider):
                             f"to dereference or symlink_handling=SKIP to ignore."
                         )
 
+                    relative_target = ObjectMetadata.encode_symlink_target(full_path, real_target)
+
                     target_type = "directory" if os.path.isdir(full_path) else "file"
 
                     if (start_after is None or start_after < relative_path) and (
                         end_at is None or relative_path <= end_at
                     ):
                         entries.append((relative_path, full_path, _EntryType.SYMLINK))
-                        symlink_info[relative_path] = (target_key, target_type)
+                        symlink_info[relative_path] = (relative_target, target_type)
                     continue
 
                 relative_path = os.path.relpath(full_path, self._base_path)
@@ -345,14 +352,13 @@ class PosixFileStorageProvider(BaseStorageProvider):
                         full_path, start_after, end_at, include_directories, symlink_handling
                     )
                 elif entry_type == _EntryType.SYMLINK:
-                    target_key, target_type = symlink_info[relative_path]
-                    is_dir_target = target_type == "directory"
+                    relative_target, target_type = symlink_info[relative_path]
                     yield ObjectMetadata(
                         key=relative_path,
-                        content_length=0 if is_dir_target else os.path.getsize(full_path),
+                        content_length=0,
                         last_modified=datetime.fromtimestamp(os.path.getmtime(full_path), tz=timezone.utc),
                         type=target_type,
-                        symlink_target=target_key,
+                        symlink_target=relative_target,
                     )
 
         except (OSError, PermissionError) as e:

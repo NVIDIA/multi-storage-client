@@ -19,7 +19,6 @@ import io
 import json
 import logging
 import os
-import posixpath
 import tempfile
 from collections.abc import Callable, Iterator
 from typing import IO, Any, Optional, TypeVar, Union
@@ -543,7 +542,7 @@ class GoogleStorageProvider(BaseStorageProvider):
         target_bucket, target_key = split_path(target)
         if bucket_name != target_bucket:
             raise ValueError(f"Cannot create cross-bucket symlink: '{bucket_name}' -> '{target_bucket}'.")
-        relative_target = posixpath.relpath(target_key, posixpath.dirname(key))
+        relative_target = ObjectMetadata.encode_symlink_target(key, target_key)
         self._refresh_gcs_client_if_needed()
 
         def _invoke_api() -> None:

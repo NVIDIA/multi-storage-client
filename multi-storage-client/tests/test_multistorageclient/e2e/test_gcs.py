@@ -66,6 +66,13 @@ def test_gcs_list_exact_file_no_prefix_match(profile_name):
     common.test_list_exact_file_no_prefix_match(profile)
 
 
+@pytest.mark.parametrize("profile_name", ["test-gcs"])
+def test_gcs_sync_from_preserves_symlinks(profile_name):
+    """Test that SymlinkHandling.PRESERVE survives a POSIX -> GCS -> POSIX round trip."""
+    profile = profile_name
+    common.test_sync_from_preserves_symlinks(profile)
+
+
 @pytest.mark.parametrize("profile_name", ["test-gcs-hmac"])
 @pytest.mark.parametrize("config_suffix", ["", "-rust"])
 def test_gcs_hmac_shortcuts(profile_name, config_suffix):

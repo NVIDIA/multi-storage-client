@@ -18,7 +18,6 @@ from __future__ import annotations  # Enables forward references in type hints
 import json
 import logging
 import os
-import posixpath
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -446,7 +445,7 @@ class ManifestMetadataProvider(MetadataProvider):
             if current in visited:
                 raise ValueError(f"Symlink cycle detected at: {current}")
             visited.add(current)
-            current = posixpath.normpath(posixpath.join(posixpath.dirname(current), manifest_obj.symlink_target))
+            current = ObjectMetadata.resolve_symlink_target(current, manifest_obj.symlink_target)
         raise ValueError(f"Too many levels of symlinks (>{MAX_SYMLINK_DEPTH}): {logical_path}")
 
     def generate_physical_path(self, logical_path: str, for_overwrite: bool = False) -> ResolvedPath:

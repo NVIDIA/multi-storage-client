@@ -23,7 +23,7 @@ import pytest
 
 import multistorageclient as msc
 from multistorageclient.providers.huggingface import HuggingFaceStorageProvider
-from multistorageclient.types import MSC_PROTOCOL, ExecutionMode, SourceVersionCheckMode
+from multistorageclient.types import MSC_PROTOCOL, ExecutionMode, SourceVersionCheckMode, SymlinkHandling
 from test_multistorageclient.utils.wait import len_should_wait, wait
 
 logger = logging.getLogger(__name__)
@@ -1200,3 +1200,185 @@ def test_list_exact_file_no_prefix_match(profile: str) -> None:
     finally:
         # Clean up
         _do_cleanup(client, prefix + "/")
+
+
+def test_sync_from_preserves_symlinks(profile: str) -> None:
+    """
+    End-to-end round trip that verifies :py:attr:`SymlinkHandling.PRESERVE`
+    survives a POSIX -> object-store -> POSIX sync sequence against a real
+    cloud storage profile.
+
+    The source POSIX layout (``posix_src/``) matches the standard tree used
+    by the POSIX symlink tests plus one extra symlink inside a subdirectory
+    to exercise non-root key translation::
+
+        posix_src/
+        ├── c.txt                                (regular file)
+        ├── d.txt               -> dir2/b.txt    (file symlink)
+        ├── dir1/
+        │   └── a.txt                            (regular file)
+        ├── dir2/
+        │   └── b.txt                            (regular file)
+        ├── dir3                -> dir1          (directory symlink)
+        └── subdir/
+            ├── file.txt                         (regular file)
+            └── link_to_sibling -> file.txt      (file symlink in subdir)
+
+    Assertions:
+
+    * On the cloud bucket, every symlink key materialises as a zero-byte
+      object whose ``symlink_target`` metadata is the symlink's target
+      expressed relative to the symlink's own directory
+      (``dir2/b.txt``, ``dir1``, and ``file.txt`` respectively). Regular
+      files round-trip unchanged.
+    * On the destination POSIX directory, every symlink reappears as a
+      real native OS symlink (``os.path.islink``) with a relative target
+      (``os.readlink``), and reading through the symlink returns the same
+      bytes as the source file.
+    * Listing the destination with ``SymlinkHandling.PRESERVE`` exposes
+      every symlink with its logical key-relative target populated, while
+      listing with ``SymlinkHandling.FOLLOW`` dereferences them and
+      traverses the directory symlink.
+    """
+    cloud_client, _ = msc.resolve_storage_client(f"msc://{profile}/")
+    cloud_prefix = f"symlink-sync-{uuid.uuid4()}"
+
+    with tempfile.TemporaryDirectory() as src_dir, tempfile.TemporaryDirectory() as dst_dir:
+        src_base = os.path.realpath(src_dir)
+        dst_base = os.path.realpath(dst_dir)
+
+        src_profile = "posix-src"
+        dst_profile = "posix-dst"
+        src_config = {
+            "profiles": {src_profile: {"storage_provider": {"type": "file", "options": {"base_path": src_base}}}}
+        }
+        dst_config = {
+            "profiles": {dst_profile: {"storage_provider": {"type": "file", "options": {"base_path": dst_base}}}}
+        }
+        src_client = msc.StorageClient(
+            config=msc.StorageClientConfig.from_dict(config_dict=src_config, profile=src_profile)
+        )
+        dst_client = msc.StorageClient(
+            config=msc.StorageClientConfig.from_dict(config_dict=dst_config, profile=dst_profile)
+        )
+
+        try:
+            src_client.write(path="c.txt", body=b"c content")
+            src_client.write(path="dir1/a.txt", body=b"a content")
+            src_client.write(path="dir2/b.txt", body=b"b content")
+            src_client.write(path="subdir/file.txt", body=b"subdir file")
+            src_client.make_symlink(path="d.txt", target="dir2/b.txt")
+            src_client.make_symlink(path="dir3", target="dir1")
+            src_client.make_symlink(path="subdir/link_to_sibling", target="subdir/file.txt")
+
+            cloud_client.sync_from(
+                src_client,
+                source_path="",
+                target_path=cloud_prefix,
+                symlink_handling=SymlinkHandling.PRESERVE,
+            )
+
+            cloud_objects_by_key = {entry.key: entry for entry in cloud_client.list(prefix=cloud_prefix)}
+            expected_cloud_keys = {
+                f"{cloud_prefix}/c.txt": (b"c content", None),
+                f"{cloud_prefix}/dir1/a.txt": (b"a content", None),
+                f"{cloud_prefix}/dir2/b.txt": (b"b content", None),
+                f"{cloud_prefix}/subdir/file.txt": (b"subdir file", None),
+                f"{cloud_prefix}/d.txt": (b"", "dir2/b.txt"),
+                f"{cloud_prefix}/dir3": (b"", "dir1"),
+                f"{cloud_prefix}/subdir/link_to_sibling": (b"", "file.txt"),
+            }
+            assert set(cloud_objects_by_key.keys()) == set(expected_cloud_keys.keys())
+            for key, (expected_body, expected_symlink_target) in expected_cloud_keys.items():
+                entry = cloud_objects_by_key[key]
+                info = cloud_client.info(path=key)
+                assert info.symlink_target == expected_symlink_target, (
+                    f"Cloud key {key} has unexpected symlink_target: {info.symlink_target}"
+                )
+                if expected_symlink_target is None:
+                    assert entry.content_length == len(expected_body)
+                    actual_body = cloud_client.read(path=key)
+                    assert actual_body == expected_body, f"Cloud key {key} content mismatch"
+                else:
+                    assert entry.content_length == 0, f"Symlink key {key} should be a zero-byte object"
+
+            dst_client.sync_from(
+                cloud_client,
+                source_path=cloud_prefix,
+                target_path="",
+                symlink_handling=SymlinkHandling.PRESERVE,
+            )
+
+            expected_regular_files = {
+                "c.txt": b"c content",
+                "dir1/a.txt": b"a content",
+                "dir2/b.txt": b"b content",
+                "subdir/file.txt": b"subdir file",
+            }
+            expected_symlinks = {
+                "d.txt": ("dir2/b.txt", "dir2/b.txt", b"b content"),
+                "dir3": ("dir1", "dir1", None),
+                "subdir/link_to_sibling": ("file.txt", "subdir/file.txt", b"subdir file"),
+            }
+
+            for rel_path, expected_content in expected_regular_files.items():
+                physical_path = os.path.join(dst_base, rel_path)
+                assert os.path.isfile(physical_path), f"Missing regular file: {rel_path}"
+                assert not os.path.islink(physical_path), f"Expected non-symlink: {rel_path}"
+                with open(physical_path, "rb") as f:
+                    assert f.read() == expected_content, f"Content mismatch: {rel_path}"
+
+            for rel_path, (
+                expected_readlink,
+                expected_target_logical_key,
+                expected_dereferenced,
+            ) in expected_symlinks.items():
+                physical_path = os.path.join(dst_base, rel_path)
+                assert os.path.islink(physical_path), f"Expected symlink at: {rel_path}"
+                actual_target = os.readlink(physical_path)
+                assert not os.path.isabs(actual_target), f"Symlink {rel_path} must be relative, got {actual_target}"
+                assert actual_target == expected_readlink, (
+                    f"Symlink {rel_path} readlink={actual_target!r}, expected {expected_readlink!r}"
+                )
+                resolved = os.path.normpath(os.path.join(os.path.dirname(physical_path), actual_target))
+                expected_resolved = os.path.normpath(os.path.join(dst_base, expected_target_logical_key))
+                assert resolved == expected_resolved, (
+                    f"Symlink {rel_path} resolves to {resolved}, expected {expected_resolved}"
+                )
+                if expected_dereferenced is not None:
+                    with open(physical_path, "rb") as f:
+                        assert f.read() == expected_dereferenced, (
+                            f"Dereferenced content mismatch for symlink {rel_path}"
+                        )
+
+            dst_objects = list(dst_client.list(path="", symlink_handling=SymlinkHandling.PRESERVE))
+            dst_objects_by_key = {o.key: o for o in dst_objects}
+            assert len(dst_objects) == len(expected_regular_files) + len(expected_symlinks)
+            for rel_path, expected_content in expected_regular_files.items():
+                assert dst_objects_by_key[rel_path].content_length == len(expected_content)
+                assert dst_client.read(path=rel_path) == expected_content
+            for rel_path, (
+                expected_readlink,
+                expected_target_logical_key,
+                expected_dereferenced,
+            ) in expected_symlinks.items():
+                assert dst_objects_by_key[rel_path].content_length == 0
+                assert dst_objects_by_key[rel_path].symlink_target == expected_readlink
+                if expected_dereferenced is not None:
+                    assert dst_client.read(path=rel_path) == expected_dereferenced
+
+            expected_follow_files = {
+                **expected_regular_files,
+                "d.txt": b"b content",
+                "subdir/link_to_sibling": b"subdir file",
+                "dir3/a.txt": b"a content",
+            }
+            dst_objects = list(dst_client.list(path="", symlink_handling=SymlinkHandling.FOLLOW))
+            dst_objects_by_key = {o.key: o for o in dst_objects}
+            assert set(dst_objects_by_key.keys()) == set(expected_follow_files.keys())
+            for rel_path, expected_content in expected_follow_files.items():
+                assert dst_objects_by_key[rel_path].content_length == len(expected_content)
+                assert dst_objects_by_key[rel_path].symlink_target is None
+                assert dst_client.read(path=rel_path) == expected_content
+        finally:
+            delete_files(cloud_client, cloud_prefix)

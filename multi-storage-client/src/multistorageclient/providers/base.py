@@ -18,7 +18,6 @@ import heapq
 import importlib.metadata as importlib_metadata
 import logging
 import os
-import posixpath
 import queue
 import threading
 import time
@@ -614,7 +613,7 @@ class BaseStorageProvider(StorageProvider):
             raise ValueError(f"Too many levels of symlinks (>{MAX_SYMLINK_DEPTH}): {path}")
         _visited.add(path)
 
-        resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), metadata.symlink_target))
+        resolved = ObjectMetadata.resolve_symlink_target(path, metadata.symlink_target)
         return self._get_object_following_symlinks(resolved, byte_range, _depth + 1, _visited)
 
     def _resolve_symlink_path(
@@ -636,7 +635,7 @@ class BaseStorageProvider(StorageProvider):
             raise ValueError(f"Too many levels of symlinks (>{MAX_SYMLINK_DEPTH}): {path}")
         _visited.add(path)
 
-        resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), metadata.symlink_target))
+        resolved = ObjectMetadata.resolve_symlink_target(path, metadata.symlink_target)
         return self._resolve_symlink_path(resolved, _depth + 1, _visited)
 
     def copy_object(self, src_path: str, dest_path: str) -> None:

@@ -15,7 +15,10 @@
 
 import time
 from collections.abc import Callable, Iterable
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
+
+if TYPE_CHECKING:
+    from multistorageclient import StorageClient
 
 T = TypeVar("T")
 
@@ -54,3 +57,19 @@ def len_should_wait(expected_len: int) -> Callable[[Iterable], bool]:
     For list and glob operations.
     """
     return lambda value: len(list(value)) != expected_len
+
+
+def wait_for_is_file(storage_client: "StorageClient", path: str, is_file: bool) -> None:
+    """
+    Wait for :py:meth:`StorageClient.is_file` to return the expected value. For eventually consistent data stores.
+
+    :param storage_client: Storage client to use.
+    :param path: Path to check.
+    :param is_file: Expected value.
+    """
+    wait(
+        waitable=lambda: storage_client.is_file(path=path),
+        should_wait=lambda actual_is_file: actual_is_file != is_file,
+        max_attempts=5,
+        attempt_interval_seconds=1,
+    )

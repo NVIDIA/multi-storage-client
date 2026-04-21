@@ -90,6 +90,17 @@ def test_swift_list_exact_file_no_prefix_match(profile_name):
     condition=os.getenv("GITHUB_ACTIONS") is not None,
     reason="Can't access SwiftStack on GitHub-hosted Actions runners.",
 )
+@pytest.mark.parametrize("profile_name", ["test-swift-pdx"])
+def test_swift_sync_from_preserves_symlinks(profile_name):
+    """Test that SymlinkHandling.PRESERVE survives a POSIX -> S8K -> POSIX round trip."""
+    profile = profile_name
+    common.test_sync_from_preserves_symlinks(profile)
+
+
+@pytest.mark.skipif(
+    condition=os.getenv("GITHUB_ACTIONS") is not None,
+    reason="Can't access SwiftStack on GitHub-hosted Actions runners.",
+)
 def test_swift_content_type_inference():
     """
     Test that WAV files are uploaded with correct content-type when infer_content_type is enabled.

@@ -18,7 +18,7 @@ import sys
 from typing import Optional
 
 import multistorageclient as msc
-from multistorageclient.types import ExecutionMode, PatternList, PatternType
+from multistorageclient.types import ExecutionMode, PatternList, PatternType, SymlinkHandling
 
 from .action import Action
 from .utils import OrderedPatternAction
@@ -72,6 +72,18 @@ class SyncAction(Action):
             "--no-ignore-hidden",
             action="store_true",
             help="Do not ignore hidden files and directories (those starting with a dot). By default, hidden files are ignored.",
+        )
+        parser.add_argument(
+            "--symlink-handling",
+            choices=["follow", "skip", "preserve"],
+            default="follow",
+            help=(
+                "How to handle symbolic links during sync. "
+                "'follow' (default) dereferences symlinks and copies target bytes. "
+                "'skip' excludes symlinks. "
+                "'preserve' recreates symlinks on the target via make_symlink "
+                "(required for round-trip fidelity)."
+            ),
         )
         parser.add_argument(
             "--dryrun",
@@ -134,6 +146,12 @@ class SyncAction(Action):
   # Include hidden files in sync (by default they are ignored)
   msc sync /path/to/dataset --no-ignore-hidden --target-url msc://profile/prefix
 
+  # Preserve symlinks when syncing from a local filesystem (round-trip fidelity)
+  msc sync /path/to/dataset --symlink-handling preserve --target-url msc://profile/prefix
+
+  # Skip symlinks entirely
+  msc sync /path/to/dataset --symlink-handling skip --target-url msc://profile/prefix
+
   # Dryrun: see what would be synced without actually copying/deleting
   msc sync msc://source-profile/data --dryrun --target-url msc://target-profile/data
 
@@ -168,6 +186,8 @@ class SyncAction(Action):
             # Convert --no-ignore-hidden flag to ignore_hidden parameter (inverted logic)
             ignore_hidden = not args.no_ignore_hidden
 
+            symlink_handling = SymlinkHandling(args.symlink_handling)
+
             if args.target_url:
                 result = msc.sync(
                     args.source_url,
@@ -178,6 +198,7 @@ class SyncAction(Action):
                     ignore_hidden=ignore_hidden,
                     dryrun=args.dryrun,
                     dryrun_output_path=args.dryrun_output_path,
+                    symlink_handling=symlink_handling,
                 )
                 if args.dryrun:
                     print(result)
@@ -199,6 +220,7 @@ class SyncAction(Action):
                     execution_mode=execution_mode,
                     patterns=patterns,
                     ignore_hidden=ignore_hidden,
+                    symlink_handling=symlink_handling,
                 )
             if args.verbose:
                 print("Synchronization completed successfully")

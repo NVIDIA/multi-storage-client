@@ -410,12 +410,13 @@ class CompositeStorageClient(AbstractStorageClient):
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
         patterns: Optional[PatternList] = None,
         preserve_source_attributes: bool = False,
-        follow_symlinks: bool = True,
+        follow_symlinks: Optional[bool] = None,
         source_files: Optional[list[str]] = None,
         ignore_hidden: bool = True,
         commit_metadata: bool = True,
         dryrun: bool = False,
         dryrun_output_path: Optional[str] = None,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> SyncResult:
         raise NotImplementedError(
             "CompositeStorageClient cannot be used as sync target (write operation). "
@@ -432,6 +433,7 @@ class CompositeStorageClient(AbstractStorageClient):
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
         patterns: Optional[PatternList] = None,
         ignore_hidden: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> None:
         """No-op for read-only client."""
         pass

@@ -63,3 +63,10 @@ def test_oci_list_exact_file_no_prefix_match(profile_name):
     """Test that listing exact file path doesn't match files with same prefix."""
     profile = profile_name
     common.test_list_exact_file_no_prefix_match(profile)
+
+
+@pytest.mark.parametrize("profile_name", ["test-oci"])
+def test_oci_sync_from_preserves_symlinks(profile_name):
+    """Test that SymlinkHandling.PRESERVE survives a POSIX -> OCI -> POSIX round trip."""
+    profile = profile_name
+    common.test_sync_from_preserves_symlinks(profile)

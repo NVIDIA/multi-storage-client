@@ -20,7 +20,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
 from ..constants import DEFAULT_SYNC_BATCH_SIZE
-from ..types import ObjectMetadata
+from ..types import ObjectMetadata, SymlinkHandling
 from ..utils import PatternMatcher
 from .progress_bar import ProgressBar
 from .types import EventLike, OperationBatch, OperationType, QueueLike
@@ -81,7 +81,7 @@ class ProducerThread(threading.Thread):
         delete_unmatched_files: bool = False,
         pattern_matcher: Optional[PatternMatcher] = None,
         preserve_source_attributes: bool = False,
-        follow_symlinks: bool = True,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
         source_files: Optional[list[str]] = None,
         ignore_hidden: bool = True,
         batch_size: int = DEFAULT_SYNC_BATCH_SIZE,
@@ -100,7 +100,7 @@ class ProducerThread(threading.Thread):
         self.delete_unmatched_files = delete_unmatched_files
         self.pattern_matcher = pattern_matcher
         self.preserve_source_attributes = preserve_source_attributes
-        self.follow_symlinks = follow_symlinks
+        self.symlink_handling = symlink_handling
         self.source_files = source_files
         self.ignore_hidden = ignore_hidden
         self.batch_size = batch_size
@@ -140,11 +140,22 @@ class ProducerThread(threading.Thread):
         Add an operation to the current batch, flushing if necessary.
 
         Batches are flushed when:
-        - Operation type changes (ADD vs DELETE)
+        - Operation type changes (ADD vs DELETE vs SYMLINK)
         - File size bucket changes (small vs medium vs large vs very large)
         - Batch size limit is reached
+
+        When *source_metadata* carries a ``symlink_target`` (PRESERVE mode), the
+        enqueued operation is promoted to :py:attr:`OperationType.SYMLINK` and
+        forced into :py:attr:`SizeBucket.SMALL`. ``make_symlink`` is an ``O(1)``
+        metadata write regardless of the target file's size, so bucketing by
+        ``content_length`` would misleadingly queue a symlink-to-10GB-file
+        behind real byte transfers.
         """
-        size_bucket = self._get_size_bucket(source_metadata.content_length)
+        if operation == OperationType.ADD and source_metadata.symlink_target is not None:
+            operation = OperationType.SYMLINK
+            size_bucket = SizeBucket.SMALL
+        else:
+            size_bucket = self._get_size_bucket(source_metadata.content_length)
 
         if self._current_batch_type != operation or self._current_batch_size_bucket != size_bucket:
             self._flush_batch()
@@ -157,6 +168,13 @@ class ProducerThread(threading.Thread):
             self._flush_batch()
 
     def _match_file_metadata(self, source_info: ObjectMetadata, target_info: ObjectMetadata) -> bool:
+        # Symlink entries need a dedicated comparison because
+        # ``content_length`` alone cannot distinguish two symlinks pointing
+        # at different targets that happen to share the same size. Compare
+        # symlink targets directly instead.
+        if source_info.symlink_target is not None or target_info.symlink_target is not None:
+            return source_info.symlink_target == target_info.symlink_target
+
         # Check file size is the same and the target's last_modified is newer than the source.
         # Compare timestamps at seconds resolution to avoid spurious mismatches from sub-second differences.
         source_sec = source_info.last_modified.replace(microsecond=0)
@@ -198,7 +216,7 @@ class ProducerThread(threading.Thread):
         for source_metadata in self.source_client.list(
             path=self.source_path,
             show_attributes=self.preserve_source_attributes,
-            follow_symlinks=self.follow_symlinks,
+            symlink_handling=self.symlink_handling,
         ):
             if not self.preserve_source_attributes:
                 source_metadata.metadata = None
@@ -211,7 +229,13 @@ class ProducerThread(threading.Thread):
             target_show_attributes = bool(
                 self.preserve_source_attributes and getattr(self.target_client, "_metadata_provider", None)
             )
-            target_iter = iter(self.target_client.list(path=self.target_path, show_attributes=target_show_attributes))
+            target_iter = iter(
+                self.target_client.list(
+                    path=self.target_path,
+                    show_attributes=target_show_attributes,
+                    symlink_handling=self.symlink_handling,
+                )
+            )
 
             source_file = next(source_iter, None)
             target_file = next(target_iter, None)

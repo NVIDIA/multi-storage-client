@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import posixpath
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass, field, replace
@@ -138,7 +139,9 @@ class ObjectMetadata:
 
     metadata: Optional[dict[str, Any]] = field(default=None)
 
-    #: The logical key that this symlink points to. ``None`` for non-symlink entries.
+    #: Symlink target relative to the symlink's own parent directory
+    #: (e.g. ``"../target.txt"``), or ``None`` for non-symlink entries.
+    #: See :meth:`encode_symlink_target` / :meth:`resolve_symlink_target`.
     symlink_target: Optional[str] = field(default=None)
 
     @staticmethod
@@ -173,6 +176,45 @@ class ObjectMetadata:
         data = asdict(self)
         data["last_modified"] = self.last_modified.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         return {k: v for k, v in data.items() if v is not None}
+
+    @staticmethod
+    def encode_symlink_target(symlink_key: str, target: str) -> str:
+        """Encode a logical ``target`` into the canonical
+        :py:attr:`symlink_target` storage form: the target expressed relative
+        to the symlink's own parent directory.
+
+        This is the single format every backend persists — native OS symlinks
+        on POSIX, ``msc-symlink-target`` user metadata on object stores, and
+        manifest entries on metadata-provider-backed stores — so callers
+        holding a logical key can delegate the ``posixpath.relpath`` dance to
+        this helper.
+
+        :param symlink_key: Key/path of the symlink itself.
+        :param target: Target expressed as a logical key in the same frame as
+            ``symlink_key`` (i.e. both rooted at the same base).
+        :return: ``target`` re-expressed relative to
+            ``posixpath.dirname(symlink_key)``. When ``symlink_key`` has no
+            parent, ``target`` is returned unchanged.
+        """
+        parent = posixpath.dirname(symlink_key)
+        return posixpath.relpath(target, parent) if parent else target
+
+    @staticmethod
+    def resolve_symlink_target(symlink_key: str, symlink_target: str) -> str:
+        """Resolve a stored :py:attr:`symlink_target` to the logical key it
+        points to.
+
+        Inverse of :meth:`encode_symlink_target`: joins the parent-relative
+        ``symlink_target`` with the symlink's own parent directory and
+        normalises the result.
+
+        :param symlink_key: Key/path of the symlink itself.
+        :param symlink_target: Value read from
+            :py:attr:`ObjectMetadata.symlink_target`.
+        :return: Logical key the symlink points to, in the same frame as
+            ``symlink_key``.
+        """
+        return posixpath.normpath(posixpath.join(posixpath.dirname(symlink_key), symlink_target))
 
 
 class CredentialsProvider(ABC):
