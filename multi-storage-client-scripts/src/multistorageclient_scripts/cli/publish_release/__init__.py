@@ -61,7 +61,7 @@ class Arguments(argparse_extensions.Arguments):
 # TODO: Add `color` and `suggest_on_error` once we're on Python 3.14+.
 PARSER = cli.SUBPARSERS.add_parser(
     name="publish-release",
-    help="Publish release helper.",
+    help="Publish a release by packaging up the current repository clone. Usually used only in CI/CD to ensure all build artifacts are present.",
     formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     allow_abbrev=False,
 )

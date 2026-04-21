@@ -2078,6 +2078,7 @@ dependencies = [
     { name = "id" },
     { name = "multi-storage-client" },
     { name = "packaging" },
+    { name = "pyartifactory" },
 ]
 
 [package.metadata]
@@ -2087,6 +2088,7 @@ requires-dist = [
     { name = "id", specifier = ">=1.6.1,<2" },
     { name = "multi-storage-client", editable = "multi-storage-client" },
     { name = "packaging", specifier = ">=26.1,<27" },
+    { name = "pyartifactory", specifier = ">=2.11.2,<3" },
 ]
 
 [[package]]
@@ -2821,6 +2823,20 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/0a/f9/4ee798dc902533159250fb4321267730bc0a107d8c6889e07c3add4fe3a5/pyarrow-21.0.0-cp313-cp313t-musllinux_1_2_aarch64.whl", hash = "sha256:fc0d2f88b81dcf3ccf9a6ae17f89183762c8a94a5bdcfa09e05cfe413acf0503", size = 43276625, upload-time = "2025-07-18T00:56:48.002Z" },
     { url = "https://files.pythonhosted.org/packages/5a/da/e02544d6997037a4b0d22d8e5f66bc9315c3671371a8b18c79ade1cefe14/pyarrow-21.0.0-cp313-cp313t-musllinux_1_2_x86_64.whl", hash = "sha256:6299449adf89df38537837487a4f8d3bd91ec94354fdd2a7d30bc11c48ef6e79", size = 44951890, upload-time = "2025-07-18T00:56:52.568Z" },
     { url = "https://files.pythonhosted.org/packages/e5/4e/519c1bc1876625fe6b71e9a28287c43ec2f20f73c658b9ae1d485c0c206e/pyarrow-21.0.0-cp313-cp313t-win_amd64.whl", hash = "sha256:222c39e2c70113543982c6b34f3077962b44fca38c0bd9e68bb6781534425c10", size = 26371006, upload-time = "2025-07-18T00:56:56.379Z" },
+]
+
+[[package]]
+name = "pyartifactory"
+version = "2.11.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic", extra = ["email"] },
+    { name = "requests" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6c/9c/6a4a001a344385576c975d144713e8cc56b42ab16652ccb5dd832c9435ba/pyartifactory-2.11.2.tar.gz", hash = "sha256:5caae343a4eae7d0b1a3f75d8ef2204b51490360ed6bf845128cb5121856a3db", size = 28165, upload-time = "2025-09-23T09:32:47.52Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/57/c1/cbdbe1e868ca7651dccc3271c52d3b86cc749b05901ce5b7f5b94e1c3d87/pyartifactory-2.11.2-py3-none-any.whl", hash = "sha256:5e0185338f797d92830881731ee3f0143d8ab1a876c70ebb5574050e8117d428", size = 31621, upload-time = "2025-09-23T09:32:46.642Z" },
 ]
 
 [[package]]

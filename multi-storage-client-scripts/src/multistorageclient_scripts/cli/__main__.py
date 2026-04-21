@@ -20,6 +20,7 @@ import logging
 import multistorageclient_scripts.cli as cli
 import multistorageclient_scripts.cli.publish_documentation  # noqa: F401
 import multistorageclient_scripts.cli.publish_release  # noqa: F401
+import multistorageclient_scripts.cli.publish_wheels  # noqa: F401
 import multistorageclient_scripts.utils.argparse_extensions as argparse_extensions
 
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)

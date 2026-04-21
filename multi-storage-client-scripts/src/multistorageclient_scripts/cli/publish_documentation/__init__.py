@@ -61,7 +61,7 @@ class Arguments(argparse_extensions.Arguments):
 # TODO: Add `color` and `suggest_on_error` once we're on Python 3.14+.
 PARSER = cli.SUBPARSERS.add_parser(
     name="publish-documentation",
-    help="Publish documentation helper.",
+    help="Publish the documentation for a release.",
     formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     allow_abbrev=False,
 )
@@ -120,14 +120,19 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
     logger.info(
         "\n".join(
             [
-                "Documentation release assets:",
-                pprint.pformat(multi_storage_client_docs_archives),
+                "Release documentation assets:",
+                pprint.pformat(
+                    [
+                        multi_storage_client_docs_archive.model_dump()
+                        for multi_storage_client_docs_archive in multi_storage_client_docs_archives
+                    ]
+                ),
             ]
         )
     )
 
     if len(multi_storage_client_docs_archives) != 1:
-        raise ValueError("Expected 1 documentation release asset!")
+        raise ValueError("Expected 1 release documentation asset!")
 
     if arguments.phase == Phase.check:
         return 0
