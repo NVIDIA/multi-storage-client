@@ -224,8 +224,10 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
 
         github_client = githubkit.GitHub(auth=githubkit.TokenAuthStrategy(token=arguments.github_token))
 
+        # Find existing release + tag (concurrent transaction).
+        #
+        # If either exist, skip publishing.
         try:
-            # Delete existing draft release + tag (cancel concurrent transaction).
             get_release_by_tag_response = github_client.rest.repos.get_release_by_tag(
                 owner="NVIDIA",
                 repo="multi-storage-client",
@@ -240,28 +242,32 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
                 )
             )
 
-            if not get_release_by_tag_response.parsed_data.draft:
-                logger.info(
-                    f"Existing GitHub release for {str(multi_storage_client_version)} is not a draft. Nothing to do."
-                )
-                return 0
-
-            github_client.rest.repos.delete_release(
-                owner="NVIDIA",
-                repo="multi-storage-client",
-                release_id=get_release_by_tag_response.parsed_data.id,
-            )
-            logger.info(f"Deleted existing draft GitHub release for {str(multi_storage_client_version)}.")
-
-            github_client.rest.git.delete_ref(
-                owner="NVIDIA",
-                repo="multi-storage-client",
-                ref=f"tags/{get_release_by_tag_response.parsed_data.tag_name}",
-            )
-            logger.info(f"Deleted existing Git tag for {str(multi_storage_client_version)}.")
+            logger.info(f"Existing GitHub release for {str(multi_storage_client_version)}. Nothing to do.")
+            return 0
         except githubkit.exception.RequestFailed as e:
             if e.response.status_code != 404:
                 raise
+            else:
+                try:
+                    get_ref_response = github_client.rest.git.get_ref(
+                        owner="NVIDIA",
+                        repo="multi-storage-client",
+                        ref=f"tags/{str(multi_storage_client_version)}",
+                    )
+                    logger.info(
+                        "\n".join(
+                            [
+                                f"Found existing Git tag for {str(multi_storage_client_version)}:",
+                                pprint.pformat(get_ref_response.parsed_data.model_dump()),
+                            ]
+                        )
+                    )
+
+                    logger.info(f"Existing Git tag for {str(multi_storage_client_version)}. Nothing to do.")
+                    return 0
+                except githubkit.exception.RequestFailed as e:
+                    if e.response.status_code != 404:
+                        raise
 
         # Create draft release (create transaction).
         create_release_response = github_client.rest.repos.create_release(
@@ -306,15 +312,11 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
                     )
                 )
 
-        # Undraft release (commit transaction).
-        github_client.rest.repos.update_release(
-            owner="NVIDIA",
-            repo="multi-storage-client",
-            release_id=create_release_response.parsed_data.id,
-            draft=False,
-            # Use GitHub's release creation date and higher semantic version heuristic.
-            make_latest="false" if multi_storage_client_version.is_prerelease else "legacy",
-        )
+        # Do not undraft the release (commit transaction).
+        #
+        # Flaky tests can cause CI/CD pipelines to fail the intended release commit.
+        # Since most CI/CD platforms don't block subsequent runs on failure, a subsequent commit may be released instead.
+        logger.info(f"Draft GitHub release for {str(multi_storage_client_version)} is ready for manual undrafting.")
 
         if arguments.phase == Phase.publish:
             return 0
