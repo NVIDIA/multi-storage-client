@@ -92,7 +92,7 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
 
         multi_storage_client_artifacts = pathlib.Path("../multi-storage-client/dist").resolve()
         multi_storage_client_wheels = [
-            *multi_storage_client_artifacts.glob(f"*{str(multi_storage_client_version)}*.whl")
+            *multi_storage_client_artifacts.glob(f"*-{str(multi_storage_client_version)}-*.whl")
         ]
 
         multi_storage_client_docs_artifacts = pathlib.Path("../multi-storage-client-docs/dist").resolve()
@@ -109,26 +109,28 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
 
         multi_storage_file_system_artifacts = pathlib.Path("../multi-storage-file-system/build").resolve()
         multi_storage_file_system_debs = [
-            *multi_storage_file_system_artifacts.glob(f"debian/archives/*{str(multi_storage_client_version)}*.deb")
+            *multi_storage_file_system_artifacts.glob(f"debian/archives/*_{str(multi_storage_client_version)}_*.deb")
         ]
         multi_storage_file_system_rpms = [
-            *multi_storage_file_system_artifacts.glob(f"rpm/RPMS/*/*{str(multi_storage_client_version)}*.rpm")
+            *multi_storage_file_system_artifacts.glob(f"rpm/RPMS/*/*-{str(multi_storage_client_version)}-*.rpm")
         ]
         multi_storage_file_system_tars = [
-            *multi_storage_file_system_artifacts.glob(f"tar/*{str(multi_storage_client_version)}*.tar.*")
+            *multi_storage_file_system_artifacts.glob(f"tar/*-{str(multi_storage_client_version)}-*.tar.*")
         ]
         multi_storage_file_system_zips = [
-            *multi_storage_file_system_artifacts.glob(f"zip/*{str(multi_storage_client_version)}*.zip")
+            *multi_storage_file_system_artifacts.glob(f"zip/*-{str(multi_storage_client_version)}-*.zip")
         ]
 
-        release_assets = [
-            *multi_storage_client_wheels,
-            multi_storage_client_docs_archive,
-            *multi_storage_file_system_debs,
-            *multi_storage_file_system_rpms,
-            *multi_storage_file_system_tars,
-            *multi_storage_file_system_zips,
-        ]
+        release_assets = sorted(
+            [
+                *multi_storage_client_wheels,
+                multi_storage_client_docs_archive,
+                *multi_storage_file_system_debs,
+                *multi_storage_file_system_rpms,
+                *multi_storage_file_system_tars,
+                *multi_storage_file_system_zips,
+            ]
+        )
 
         # ----------------------------------------------------------------------------------------------------
         #
