@@ -172,7 +172,7 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
         owner="NVIDIA",
         repo="multi-storage-client",
         artifact_url=multi_storage_client_docs_archives[0].browser_download_url,
-        environment="github-pages",
+        environment="GitHub Pages",
         # publish-release uses a Git commit revision.
         pages_build_version=get_release_by_tag_response.parsed_data.target_commitish,
         oidc_token=oidc_token,

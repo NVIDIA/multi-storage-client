@@ -22,7 +22,7 @@ jobs:
   publish-documentation:
     name: Publish Documentation
     environment:
-      name: github-pages
+      name: GitHub Pages
     permissions:
       contents: read
       id-token: write
