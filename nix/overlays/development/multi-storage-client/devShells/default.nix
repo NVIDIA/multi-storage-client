@@ -171,6 +171,13 @@ mkShell {
       export VAULT_ADDR=https://prod.vault.nvidia.com
       export VAULT_NAMESPACE=ngc-multi-storage-client
 
+      # GitHub CLI.
+      #
+      # https://cli.github.com/manual/gh_help_environment
+      export GH_NO_UPDATE_NOTIFIER=true
+      export GH_NO_EXTENSION_UPDATE_NOTIFIER=true
+      export GH_TELEMETRY=false
+
       echo "⚗️"
     '';
 }
