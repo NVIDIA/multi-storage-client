@@ -610,6 +610,68 @@ def test_azure_storage_provider_passthrough_options() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    argnames=["value", "expected"],
+    argvalues=[
+        [True, True],
+        [False, False],
+    ],
+)
+def test_azure_validate_content_requires_bool(value: object, expected: bool) -> None:
+    """``validate_content`` accepts native Python booleans."""
+    from multistorageclient.providers.azure import AzureBlobStorageProvider
+
+    profile = "data"
+    storage_client = StorageClient(
+        config=StorageClientConfig.from_dict(
+            config_dict={
+                "profiles": {
+                    profile: {
+                        "storage_provider": {
+                            "type": "azure",
+                            "options": {
+                                "base_path": "bucket",
+                                "endpoint_url": "http://localhost:10000/devstoreaccount1",
+                                "validate_content": value,
+                                "io_chunksize": 4 * 1024 * 1024,
+                            },
+                        }
+                    }
+                }
+            },
+            profile=profile,
+        )
+    )
+    provider = storage_client._storage_provider
+    assert isinstance(provider, AzureBlobStorageProvider)
+    assert provider._validate_content is expected
+
+
+def test_azure_validate_content_invalid_value_raises() -> None:
+    """Non-boolean values must fail loudly rather than relying on truthiness."""
+    profile = "data"
+    with pytest.raises(ValueError, match=r"validate_content.*must be.*bool"):
+        StorageClient(
+            config=StorageClientConfig.from_dict(
+                config_dict={
+                    "profiles": {
+                        profile: {
+                            "storage_provider": {
+                                "type": "azure",
+                                "options": {
+                                    "base_path": "bucket",
+                                    "endpoint_url": "http://localhost:10000/devstoreaccount1",
+                                    "validate_content": "true",
+                                },
+                            }
+                        }
+                    }
+                },
+                profile=profile,
+            )
+        )
+
+
 def test_oci_storage_provider_passthrough_options() -> None:
     # We need to use the `OCI_CONFIG_FILE` environment variable to control
     # where the OCI Python SDK looks for the OCI config file.

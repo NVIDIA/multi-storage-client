@@ -985,3 +985,55 @@ def test_upload_files(temp_data_store_type: type[tempdatastore.TemporaryDataStor
 
         for path in remote_paths:
             storage_client.delete(path=path)
+
+
+@pytest.mark.parametrize(
+    argnames=["io_chunksize", "blob_size"],
+    argvalues=[
+        # io_chunksize == 4 MiB; small blob fits in a single GET.
+        [4 * 1024 * 1024, 1024],
+        # io_chunksize == 4 MiB; blob spans multiple chunks (forces the multi-chunk download path
+        # because ``validate_content=True`` makes the SDK use ``max_chunk_get_size`` for the first GET).
+        [4 * 1024 * 1024, 5 * 1024 * 1024],
+    ],
+    ids=["compatible-small", "compatible-multichunk"],
+)
+def test_azure_validate_content_passthrough(io_chunksize: int, blob_size: int):
+    """
+    With ``validate_content=True`` and ``io_chunksize`` at or below Azure's 4 MiB
+    ``Content-MD5`` range limit, round-trips succeed on both the single-GET and
+    multi-chunk download paths.
+    """
+    with tempdatastore.TemporaryAzureBlobStorageContainer() as temp_data_store:
+        profile = "data"
+        profile_config = temp_data_store.profile_config_dict()
+        options = profile_config["storage_provider"]["options"]
+        options["validate_content"] = True
+        options["io_chunksize"] = io_chunksize
+        profile_config["caching_enabled"] = False
+        config_dict = {"profiles": {profile: profile_config}}
+        storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
+
+        body = os.urandom(blob_size)
+        key = "validate_content_passthrough.bin"
+        storage_client.write(path=key, body=body)
+        assert storage_client.read(path=key) == body
+
+
+def test_azure_validate_content_rejects_incompatible_chunksize():
+    """
+    Combining ``validate_content=True`` with an ``io_chunksize`` above Azure's 4 MiB
+    ``Content-MD5`` range limit must fail at construction time so the user sees the
+    misconfiguration immediately rather than at the first download.
+    """
+    with tempdatastore.TemporaryAzureBlobStorageContainer() as temp_data_store:
+        profile = "data"
+        profile_config = temp_data_store.profile_config_dict()
+        options = profile_config["storage_provider"]["options"]
+        options["validate_content"] = True
+        # Default io_chunksize (32 MiB) is intentionally left in place; it exceeds the 4 MiB limit.
+        profile_config["caching_enabled"] = False
+        config_dict = {"profiles": {profile: profile_config}}
+
+        with pytest.raises(ValueError, match=r"validate_content.*io_chunksize.*4 MiB"):
+            StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))

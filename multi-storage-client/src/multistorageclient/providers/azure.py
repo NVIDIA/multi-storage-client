@@ -56,6 +56,10 @@ MULTIPART_CHUNKSIZE = 32 * MiB
 IO_CHUNKSIZE = 32 * MiB
 PYTHON_MAX_CONCURRENCY = 8
 
+# Azure REST API only returns ``Content-MD5`` for GET ranges up to 4 MiB,
+# so download chunks must stay at or below this limit when ``validate_content`` is enabled.
+AZURE_CONTENT_MD5_RANGE_LIMIT_BYTES = 4 * MiB
+
 DEFAULT_PRESIGN_EXPIRES_IN = 3600
 
 # How long before delegation key expiry we treat the cached key as stale.
@@ -226,6 +230,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
             - ``multipart_chunksize`` (int): Block size (bytes) for chunked uploads. Defaults to 32 MiB.
             - ``io_chunksize`` (int): Chunk size (bytes) for chunked downloads. Defaults to 32 MiB.
             - ``max_concurrency`` (int): Number of parallel threads for chunked transfers. Defaults to 8.
+            - ``validate_content`` (bool): Opt-in client-side MD5 verification. Defaults to False.
         """
         super().__init__(
             base_path=base_path,
@@ -245,6 +250,15 @@ class AzureBlobStorageProvider(BaseStorageProvider):
         self._multipart_chunksize = int(kwargs.get("multipart_chunksize", MULTIPART_CHUNKSIZE))
         self._io_chunksize = int(kwargs.get("io_chunksize", IO_CHUNKSIZE))
         self._max_concurrency = int(kwargs.get("max_concurrency", PYTHON_MAX_CONCURRENCY))
+        self._validate_content = kwargs.get("validate_content", False)
+        if not isinstance(self._validate_content, bool):
+            raise ValueError("Option 'validate_content' must be a boolean.")
+        if self._validate_content and self._io_chunksize > AZURE_CONTENT_MD5_RANGE_LIMIT_BYTES:
+            raise ValueError(
+                "Option 'validate_content=True' requires 'io_chunksize' to be "
+                f"<= {AZURE_CONTENT_MD5_RANGE_LIMIT_BYTES} bytes (4 MiB) because Azure only "
+                f"returns Content-MD5 for GET ranges within that limit. Got io_chunksize={self._io_chunksize}."
+            )
 
         # https://github.com/Azure/azure-sdk-for-python/tree/main/sdk/storage/azure-storage-blob#optional-configuration
         client_optional_configuration_keys = {
@@ -377,6 +391,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
                 "data": body,
                 "overwrite": True,
                 "max_concurrency": self._max_concurrency,
+                "validate_content": self._validate_content,
             }
 
             validated_attributes = validate_attributes(attributes)
@@ -406,9 +421,16 @@ class AzureBlobStorageProvider(BaseStorageProvider):
         def _invoke_api() -> bytes:
             blob_client = self._blob_service_client.get_blob_client(container=container_name, blob=blob_name)
             if byte_range:
-                stream = blob_client.download_blob(offset=byte_range.offset, length=byte_range.size)
+                stream = blob_client.download_blob(
+                    offset=byte_range.offset,
+                    length=byte_range.size,
+                    validate_content=self._validate_content,
+                )
             else:
-                stream = blob_client.download_blob(max_concurrency=self._max_concurrency)
+                stream = blob_client.download_blob(
+                    max_concurrency=self._max_concurrency,
+                    validate_content=self._validate_content,
+                )
             return stream.readall()
 
         return self._translate_errors(_invoke_api, operation="GET", container=container_name, blob=blob_name)
@@ -706,7 +728,12 @@ class AzureBlobStorageProvider(BaseStorageProvider):
                 def _invoke_api() -> int:
                     blob_client = self._blob_service_client.get_blob_client(container=container_name, blob=blob_name)
                     with open(f, "rb") as data:
-                        blob_client.upload_blob(data, overwrite=True, metadata=validated_attributes or {})
+                        blob_client.upload_blob(
+                            data,
+                            overwrite=True,
+                            metadata=validated_attributes or {},
+                            validate_content=self._validate_content,
+                        )
                     return file_size
 
                 return self._translate_errors(_invoke_api, operation="PUT", container=container_name, blob=blob_name)
@@ -719,6 +746,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
                         overwrite=True,
                         metadata=validated_attributes or {},
                         max_concurrency=self._max_concurrency,
+                        validate_content=self._validate_content,
                     )
                 return file_size
 
@@ -737,7 +765,12 @@ class AzureBlobStorageProvider(BaseStorageProvider):
 
                 def _invoke_api() -> int:
                     blob_client = self._blob_service_client.get_blob_client(container=container_name, blob=blob_name)
-                    blob_client.upload_blob(fp, overwrite=True, metadata=validated_attributes or {})
+                    blob_client.upload_blob(
+                        fp,
+                        overwrite=True,
+                        metadata=validated_attributes or {},
+                        validate_content=self._validate_content,
+                    )
                     return file_size
 
                 return self._translate_errors(_invoke_api, operation="PUT", container=container_name, blob=blob_name)
@@ -749,6 +782,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
                     overwrite=True,
                     metadata=validated_attributes or {},
                     max_concurrency=self._max_concurrency,
+                    validate_content=self._validate_content,
                 )
                 return file_size
 
@@ -775,7 +809,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
                             mode="wb", delete=False, dir=os.path.dirname(f), prefix="."
                         ) as fp:
                             temp_file_path = fp.name
-                            stream = blob_client.download_blob()
+                            stream = blob_client.download_blob(validate_content=self._validate_content)
                             fp.write(stream.readall())
                         os.rename(src=temp_file_path, dst=f)
                     except BaseException:
@@ -792,7 +826,10 @@ class AzureBlobStorageProvider(BaseStorageProvider):
                 try:
                     with tempfile.NamedTemporaryFile(mode="wb", delete=False, dir=os.path.dirname(f), prefix=".") as fp:
                         temp_file_path = fp.name
-                        stream = blob_client.download_blob(max_concurrency=self._max_concurrency)
+                        stream = blob_client.download_blob(
+                            max_concurrency=self._max_concurrency,
+                            validate_content=self._validate_content,
+                        )
                         stream.readinto(fp)
                     os.rename(src=temp_file_path, dst=f)
                 except BaseException:
@@ -807,7 +844,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
 
                 def _invoke_api() -> int:
                     blob_client = self._blob_service_client.get_blob_client(container=container_name, blob=blob_name)
-                    stream = blob_client.download_blob()
+                    stream = blob_client.download_blob(validate_content=self._validate_content)
                     if isinstance(f, io.StringIO):
                         f.write(stream.readall().decode("utf-8"))
                     else:
@@ -818,7 +855,10 @@ class AzureBlobStorageProvider(BaseStorageProvider):
 
             def _invoke_api() -> int:
                 blob_client = self._blob_service_client.get_blob_client(container=container_name, blob=blob_name)
-                stream = blob_client.download_blob(max_concurrency=self._max_concurrency)
+                stream = blob_client.download_blob(
+                    max_concurrency=self._max_concurrency,
+                    validate_content=self._validate_content,
+                )
                 if isinstance(f, io.StringIO):
                     temp_file_path: str | None = None
                     try:

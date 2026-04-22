@@ -406,6 +406,19 @@ Options: See parameters in :py:class:`multistorageclient.providers.azure.AzureBl
            multipart_chunksize: 33554432 # 32MiB - upload block size
            io_chunksize: 33554432 # 32MiB - download chunk size
            max_concurrency: 8 # parallel threads for chunked transfers
+           validate_content: false # opt-in client-side MD5 verification. Defaults to false.
+
+.. note::
+
+   When ``validate_content`` is enabled, the Azure SDK computes an MD5 per upload block and verifies
+   the ``Content-MD5`` returned on downloads. Because Azure only returns ``Content-MD5`` for GET
+   ranges up to 4 MiB, every download GET must stay within that limit. To do that:
+
+   * set ``io_chunksize`` to ``4194304`` (4 MiB) or less for chunked downloads;
+   * if caching is enabled for the profile, set ``cache.cache_line_size`` to ``4M`` or less;
+   * keep any explicit ``byte_range`` argument at or below 4 MiB.
+
+   Otherwise reads raise ``RuntimeError``.
 
 ``gcs``
 -------
