@@ -38,6 +38,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+METADATA_LOOKUP_MIN_CONTENT_LENGTH = 16 * 1024 * 1024
 
 # ---------------------------------------------------------------------------
 # Public utility functions
@@ -76,6 +77,13 @@ def check_skip_and_track_with_metadata_provider(
 
     if not target_client._metadata_provider:
         raise RuntimeError("Invalid state, no metadata provider configured.")
+
+    # Small files are not worth the I/O of a metadata lookup
+    if (
+        file_metadata.content_length <= METADATA_LOOKUP_MIN_CONTENT_LENGTH
+        and target_client._metadata_provider.allow_overwrites()
+    ):
+        return False
 
     target_metadata = None
     try:
@@ -118,31 +126,6 @@ def check_skip_and_track_with_metadata_provider(
             f"file exists and needs updating, but overwrites are not allowed. "
             f"Enable overwrites in metadata provider configuration or remove the existing file."
         )
-
-    return False
-
-
-def check_skip_without_metadata_provider(
-    target_file_path: str,
-    file_metadata: ObjectMetadata,
-    target_metadata: Optional[ObjectMetadata],
-) -> bool:
-    """Check if target is already up-to-date using metadata from the producer listing.
-
-    No I/O is performed; the comparison uses the *target_metadata* already
-    obtained by the producer during its merge iteration.
-
-    Returns True (skip) if up-to-date, False if transfer is needed.
-    """
-    if target_metadata is None:
-        return False
-
-    if (
-        target_metadata.content_length == file_metadata.content_length
-        and target_metadata.last_modified >= file_metadata.last_modified
-    ):
-        logger.debug(f"File {target_file_path} already exists and is up-to-date, skipping copy")
-        return True
 
     return False
 
@@ -225,12 +208,11 @@ class BatchSyncHandler(ABC):
         transfer_items: list[tuple[ObjectMetadata, str]] = []
 
         if self.target_client._metadata_provider:
+            # TODO: Avoid the HEAD-before-PUT by using conditional PUT.
             transfer_items = self._filter_with_metadata_provider(worker_id, batch)
         else:
-            for file_metadata, target_metadata in batch.items:
+            for file_metadata, _ in batch.items:
                 target_file_path = build_target_file_path(self.source_path, self.target_path, file_metadata)
-                if check_skip_without_metadata_provider(target_file_path, file_metadata, target_metadata):
-                    continue
                 transfer_items.append((file_metadata, target_file_path))
 
         if not transfer_items:
@@ -264,16 +246,6 @@ class BatchSyncHandler(ABC):
                 self.target_client, target_file_path, file_metadata, self.preserve_source_attributes
             )
             return file_metadata, target_file_path, skip
-
-        if len(batch.items) <= 1:
-            for file_metadata, _target_metadata in batch.items:
-                try:
-                    fm, target_file_path, skip = _check_item(file_metadata)
-                    if not skip:
-                        transfer_items.append((fm, target_file_path))
-                except Exception as e:
-                    self._report_error(worker_id, e, file_metadata.key, batch.operation)
-            return transfer_items
 
         max_workers = min(len(batch.items), 16)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:

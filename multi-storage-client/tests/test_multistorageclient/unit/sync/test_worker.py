@@ -29,7 +29,6 @@ from multistorageclient.sync import worker as sync_worker_module
 from multistorageclient.sync.types import OperationBatch, OperationType
 from multistorageclient.sync.worker import (
     check_skip_and_track_with_metadata_provider,
-    check_skip_without_metadata_provider,
     update_posix_metadata,
 )
 from multistorageclient.types import ObjectMetadata, SyncError
@@ -301,35 +300,6 @@ def test_batch_remote_to_posix(temp_data_store_type: type[tempdatastore.Temporar
             assert posix_client.read(target_key) == content
 
 
-def test_check_skip_without_metadata_provider_skips_up_to_date():
-    """Test check_skip_without_metadata_provider returns True when target is up-to-date."""
-    now = datetime.now(tz=timezone.utc)
-    file_metadata = ObjectMetadata(key="source.txt", content_length=100, last_modified=now)
-    target_metadata = ObjectMetadata(key="target.txt", content_length=100, last_modified=now)
-
-    assert check_skip_without_metadata_provider("target.txt", file_metadata, target_metadata) is True
-
-
-def test_check_skip_without_metadata_provider_does_not_skip_outdated():
-    """Test check_skip_without_metadata_provider returns False when target is outdated (size mismatch)."""
-    now = datetime.now(tz=timezone.utc)
-    file_metadata = ObjectMetadata(key="source.txt", content_length=100, last_modified=now)
-    target_metadata = ObjectMetadata(key="target.txt", content_length=3, last_modified=now)
-
-    assert check_skip_without_metadata_provider("target.txt", file_metadata, target_metadata) is False
-
-
-def test_check_skip_without_metadata_provider_does_not_skip_missing():
-    """Test check_skip_without_metadata_provider returns False when target_metadata is None."""
-    file_metadata = ObjectMetadata(
-        key="source.txt",
-        content_length=10,
-        last_modified=datetime.now(tz=timezone.utc),
-    )
-
-    assert check_skip_without_metadata_provider("nonexistent.txt", file_metadata, None) is False
-
-
 def _make_handler_with_metadata_provider():
     """Create a PosixToPosixHandler with a mocked metadata-provider-enabled target client."""
     from multistorageclient.sync.worker import PosixToPosixHandler
@@ -394,20 +364,6 @@ def test_filter_with_metadata_provider_reports_errors():
     assert "overwrites not allowed" in error.exception_message
 
 
-def test_filter_with_metadata_provider_single_item_no_threadpool():
-    handler = _make_handler_with_metadata_provider()
-    batch = _make_add_batch(1)
-
-    with (
-        mock.patch.object(sync_worker_module, "check_skip_and_track_with_metadata_provider", return_value=False),
-        mock.patch.object(sync_worker_module, "ThreadPoolExecutor") as mock_tpe,
-    ):
-        result = handler._filter_with_metadata_provider("w-0", batch)
-
-    assert len(result) == 1
-    mock_tpe.assert_not_called()
-
-
 def test_check_skip_and_track_with_metadata_provider_skips_up_to_date():
     """Test check_skip_and_track_with_metadata_provider returns True when target is up-to-date."""
     msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
@@ -431,17 +387,27 @@ def test_check_skip_and_track_with_metadata_provider_skips_up_to_date():
         client._metadata_provider = mp
         client._metadata_provider_lock = None
 
-        file_metadata = ObjectMetadata(
+        file_metadata_small = ObjectMetadata(
             key="source.txt",
             content_length=info.content_length,
             last_modified=info.last_modified,
         )
 
-        skipped = check_skip_and_track_with_metadata_provider(
-            client, "target.txt", file_metadata, preserve_source_attributes=False
+        file_metadata_large = ObjectMetadata(
+            key="source.txt",
+            content_length=sync_worker_module.METADATA_LOOKUP_MIN_CONTENT_LENGTH + 1,
+            last_modified=info.last_modified,
         )
-        assert skipped is True
-        mp.add_file.assert_called_once()
+
+        skipped_small = check_skip_and_track_with_metadata_provider(
+            client, "target.txt", file_metadata_small, preserve_source_attributes=False
+        )
+        assert skipped_small is False
+
+        skipped_large = check_skip_and_track_with_metadata_provider(
+            client, "target.txt", file_metadata_large, preserve_source_attributes=False
+        )
+        assert skipped_large is False
 
 
 @pytest.mark.parametrize(
