@@ -17,8 +17,11 @@
 import glob
 import os
 import tempfile
+import uuid
 
 from multistorageclient.providers.posix_file import PosixFileStorageProvider
+from test_multistorageclient.unit.providers.test_parallel_listing import _build_s3_provider
+from test_multistorageclient.unit.utils import tempdatastore
 
 
 def test_list_objects_with_ascending_order():
@@ -219,3 +222,45 @@ def test_list_objects_with_paths():
         # Test with a partial path that doesn't correspond to a complete directory or file
         results = list(provider.list_objects(path="doc"))
         assert len(results) == 0, "Partial path that doesn't exist should return empty results"
+
+
+def test_posix_list_objects_matches_s3_lexicographic_order_when_directory_prefix_collides_with_file():
+    """
+    Directory ``a/`` and file ``a.txt`` at the same level: S3 ``list_objects_v2`` orders keys by
+    raw UTF-8 bytes, so ``a.txt`` (``.``) comes before ``a/b.txt`` (``/``). POSIX must match.
+
+    The test first uploads the same layout to a temporary S3 bucket (versitygw, same as other
+    provider integration tests), lists with ``list_objects``, and uses that order as the
+    reference. It then checks POSIX against that same relative key order.
+
+    Bug: ``_explore_directory`` sorts the bare directory name ``a`` before ``a.txt``, then walks
+    ``a`` first, so POSIX yields ``a/b.txt`` then ``a.txt`` instead of the S3 order.
+    """
+    expected_relative_order = ["a.txt", "a/b.txt"]
+    list_prefix = f"list_order_prefix_collision/{uuid.uuid4().hex}/"
+
+    with tempdatastore.TemporaryAWSS3Bucket(enable_rust_client=False) as bucket:
+        s3 = _build_s3_provider(bucket, enable_rust=False)
+        s3.put_object(list_prefix + "a/b.txt", b"")
+        s3.put_object(list_prefix + "a.txt", b"")
+        s3_relative_keys = [
+            obj.key.removeprefix(list_prefix) for obj in s3.list_objects(path=list_prefix) if obj.type == "file"
+        ]
+
+    assert s3_relative_keys == expected_relative_order, (
+        "S3 list_objects reference (upload nested key first): expect API lexicographic order; "
+        f"got {s3_relative_keys!r}, want {expected_relative_order!r}"
+    )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        os.makedirs(os.path.join(temp_dir, "a"))
+        open(os.path.join(temp_dir, "a", "b.txt"), "w").close()
+        open(os.path.join(temp_dir, "a.txt"), "w").close()
+
+        provider = PosixFileStorageProvider(base_path=temp_dir)
+        posix_keys = [obj.key for obj in provider.list_objects(path="")]
+
+    assert posix_keys == s3_relative_keys, (
+        "POSIX list_objects must match S3 list_objects for the same tree layout (relative keys); "
+        f"posix={posix_keys!r}, s3={s3_relative_keys!r}"
+    )

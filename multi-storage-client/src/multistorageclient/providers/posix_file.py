@@ -331,7 +331,19 @@ class PosixFileStorageProvider(BaseStorageProvider):
                         else:
                             entries.append((relative_path, full_path, _EntryType.DIRECTORY_TO_EXPLORE))
 
-            entries.sort(key=lambda x: x[0])
+            # Sort keys must mirror the keys S3 ``list_objects_v2`` would return so POSIX
+            # listings stay in the same raw-UTF-8-byte order. For directories (expanded or
+            # returned as-is) the emitted keys live under ``<name>/``, so the trailing
+            # delimiter must be part of the sort key. Otherwise the bare name ``a`` sorts
+            # before sibling file ``a.txt`` (since ``""`` < ``".txt"``), but S3 orders the
+            # nested key ``a/b.txt`` *after* ``a.txt`` because ``.`` (0x2E) < ``/`` (0x2F).
+            def _sort_key(entry: tuple[str, str, _EntryType]) -> str:
+                relative, _, entry_type = entry
+                if entry_type in (_EntryType.DIRECTORY, _EntryType.DIRECTORY_TO_EXPLORE):
+                    return relative + "/"
+                return relative
+
+            entries.sort(key=_sort_key)
 
             for relative_path, full_path, entry_type in entries:
                 if entry_type == _EntryType.FILE:
