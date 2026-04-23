@@ -24,6 +24,10 @@ class GoogleS3StorageProvider(S3StorageProvider):
     """
 
     def __init__(self, *args, **kwargs):
+        rust_client_opts = kwargs.get("rust_client") or {}
+        if kwargs.get("checksum_algorithm") is not None or rust_client_opts.get("checksum_algorithm") is not None:
+            raise ValueError("checksum_algorithm is not supported for gcs_s3 provider.")
+
         kwargs["request_checksum_calculation"] = "when_required"
         kwargs["response_checksum_validation"] = "when_required"
 

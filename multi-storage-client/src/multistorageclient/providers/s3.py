@@ -74,6 +74,9 @@ PROVIDER = "s3"
 
 EXPRESS_ONEZONE_STORAGE_CLASS = "EXPRESS_ONEZONE"
 
+# Source: https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html
+SUPPORTED_CHECKSUM_ALGORITHMS = frozenset({"CRC32", "CRC32C", "SHA1", "SHA256", "CRC64NVME"})
+
 
 class StaticS3CredentialsProvider(CredentialsProvider):
     """
@@ -189,6 +192,9 @@ class S3StorageProvider(BaseStorageProvider):
             A dictionary for configuration related to retry behavior.
         :param s3: For :py:class:`botocore.config.Config`.
             A dictionary of S3 specific configurations.
+        :param checksum_algorithm: Upload-only object integrity algorithm.
+            One of ``"CRC32"``, ``"CRC32C"``, ``"SHA1"``, ``"SHA256"``, ``"CRC64NVME"`` (case-insensitive).
+            When ``rust_client`` is enabled, only ``"SHA256"`` is accepted.
         """
         super().__init__(
             base_path=base_path,
@@ -224,6 +230,8 @@ class S3StorageProvider(BaseStorageProvider):
 
         self._signer_cache: dict[tuple, URLSigner] = {}
 
+        self._checksum_algorithm: Optional[str] = self._validate_checksum_algorithm(kwargs.get("checksum_algorithm"))
+
         self._rust_client = None
         if "rust_client" in kwargs:
             # Inherit the rust client options from the kwargs
@@ -238,9 +246,40 @@ class S3StorageProvider(BaseStorageProvider):
                 rust_client_options["read_timeout"] = kwargs["read_timeout"]
             if "connect_timeout" in kwargs:
                 rust_client_options["connect_timeout"] = kwargs["connect_timeout"]
+            if "checksum_algorithm" in kwargs:
+                rust_client_options["checksum_algorithm"] = kwargs["checksum_algorithm"]
             if self._signature_version == "UNSIGNED":
                 rust_client_options["skip_signature"] = True
+
+            # Rust client only supports SHA256 today (object_store limitation).
+            rust_checksum = rust_client_options.get("checksum_algorithm")
+            if rust_checksum is not None:
+                if str(rust_checksum).upper() != "SHA256":
+                    raise ValueError(
+                        f"Rust client only supports checksum_algorithm='SHA256' today "
+                        f"(object_store limitation), got '{rust_checksum!r}'. "
+                        f"Disable rust_client or use SHA256."
+                    )
+                rust_client_options["checksum_algorithm"] = "sha256"
             self._rust_client = self._create_rust_client(rust_client_options)
+
+    @staticmethod
+    def _validate_checksum_algorithm(value: Optional[str]) -> Optional[str]:
+        """
+        Normalizes the optional ``checksum_algorithm`` to uppercase, or returns ``None`` if disabled.
+        """
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value:
+            raise ValueError(
+                f"checksum_algorithm must be one of {sorted(SUPPORTED_CHECKSUM_ALGORITHMS)} or None, got {value!r}."
+            )
+        normalized = value.upper()
+        if normalized not in SUPPORTED_CHECKSUM_ALGORITHMS:
+            raise ValueError(
+                f"Unsupported checksum_algorithm '{value}'. Supported: {sorted(SUPPORTED_CHECKSUM_ALGORITHMS)}."
+            )
+        return normalized
 
     def _is_directory_bucket(self, bucket: str) -> bool:
         """
@@ -505,6 +544,8 @@ class S3StorageProvider(BaseStorageProvider):
             ):
                 run_async_rust_client_method(self._rust_client, "put", key, body)
             else:
+                if self._checksum_algorithm:
+                    kwargs["ChecksumAlgorithm"] = self._checksum_algorithm
                 self._s3_client.put_object(**kwargs)
 
             return len(body)
@@ -886,6 +927,8 @@ class S3StorageProvider(BaseStorageProvider):
                 if self._rust_client and not extra_args:
                     run_async_rust_client_method(self._rust_client, "upload_multipart_from_file", f, key)
                 else:
+                    if self._checksum_algorithm:
+                        extra_args["ChecksumAlgorithm"] = self._checksum_algorithm
                     self._s3_client.upload_file(
                         Filename=f,
                         Bucket=bucket,
@@ -929,6 +972,8 @@ class S3StorageProvider(BaseStorageProvider):
                     data = f.getbuffer()
                     run_async_rust_client_method(self._rust_client, "upload_multipart_from_bytes", key, data)
                 else:
+                    if self._checksum_algorithm:
+                        extra_args["ChecksumAlgorithm"] = self._checksum_algorithm
                     self._s3_client.upload_fileobj(
                         Fileobj=f,
                         Bucket=bucket,

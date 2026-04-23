@@ -58,9 +58,6 @@ class S8KStorageProvider(S3StorageProvider):
         # Extract the infer_content_type option before passing to parent
         self._infer_content_type = kwargs.pop("infer_content_type", False)
 
-        kwargs["request_checksum_calculation"] = "when_required"
-        kwargs["response_checksum_validation"] = "when_required"
-
         # "legacy" retry mode is required for SwiftStack (retry on HTTP 429 errors)
         kwargs["retries"] = kwargs.get("retries", {}) | {"mode": "legacy"}
 

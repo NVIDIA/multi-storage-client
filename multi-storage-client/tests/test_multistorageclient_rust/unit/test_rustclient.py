@@ -199,6 +199,58 @@ async def test_rustclient_basic_operations(temp_data_store_type: Type[tempdatast
     ],
 )
 @pytest.mark.asyncio
+async def test_rustclient_basic_operations_with_sha256_checksum(
+    temp_data_store_type: Type[tempdatastore.TemporaryDataStore],
+):
+    with temp_data_store_type() as temp_data_store:
+        config_dict = temp_data_store.profile_config_dict()
+        credentials_provider = StaticS3CredentialsProvider(
+            access_key=config_dict["credentials_provider"]["options"]["access_key"],
+            secret_key=config_dict["credentials_provider"]["options"]["secret_key"],
+        )
+
+        rust_client = RustClient(
+            provider="s3",
+            configs={
+                "bucket": config_dict["storage_provider"]["options"]["base_path"],
+                "endpoint_url": config_dict["storage_provider"]["options"]["endpoint_url"],
+                "allow_http": config_dict["storage_provider"]["options"]["endpoint_url"].startswith("http://"),
+                "max_concurrency": 16,
+                "multipart_chunksize": 10 * 1024 * 1024,
+                "checksum_algorithm": "sha256",
+            },
+            credentials_provider=credentials_provider,
+        )
+
+        profile = "data"
+        config_dict = {"profiles": {profile: temp_data_store.profile_config_dict()}}
+        storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
+
+        await run_rust_client_operations(rust_client, storage_client)
+
+
+def test_rustclient_invalid_checksum_algorithm_raises():
+    with pytest.raises(ValueError, match="checksum_algorithm"):
+        RustClient(
+            provider="s3",
+            configs={
+                "bucket": "test-bucket",
+                "endpoint_url": "http://localhost:7070",
+                "region_name": "us-east-1",
+                "allow_http": True,
+                "checksum_algorithm": "md5",
+            },
+            credentials_provider=StaticS3CredentialsProvider(access_key="a", secret_key="b"),
+        )
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryAWSS3Bucket],
+    ],
+)
+@pytest.mark.asyncio
 async def test_rustclient_with_refreshable_credentials(temp_data_store_type: Type[tempdatastore.TemporaryDataStore]):
     with temp_data_store_type() as temp_data_store:
         config_dict = temp_data_store.profile_config_dict()

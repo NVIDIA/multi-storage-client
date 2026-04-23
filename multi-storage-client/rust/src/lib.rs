@@ -14,7 +14,7 @@
 // limitations under the License.
 
 use chrono::{DateTime, Utc};
-use object_store::aws::AmazonS3Builder;
+use object_store::aws::{AmazonS3Builder, Checksum};
 use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::RetryConfig;
 use object_store::BackoffConfig;
@@ -30,6 +30,7 @@ use pyo3_bytes::PyBytes;
 use std::collections::{HashMap, VecDeque};
 use std::error::Error as StdError;
 use std::path::Path as StdPath;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::NamedTempFile;
@@ -211,6 +212,22 @@ fn get_timeout_secs(configs: &HashMap<String, ConfigValue>, key: &str, default: 
         .unwrap_or(default)
 }
 
+fn parse_checksum_algorithm(configs: &HashMap<String, ConfigValue>) -> Result<Option<Checksum>, StorageError> {
+    match configs.get("checksum_algorithm") {
+        None => Ok(None),
+        Some(ConfigValue::String(s)) => Checksum::from_str(s).map(Some).map_err(|_| {
+            StorageError::ConfigError(format!(
+                "Unsupported rust_client checksum_algorithm '{}'. object_store currently supports: 'sha256'.",
+                s
+            ))
+        }),
+        Some(other) => Err(StorageError::ConfigError(format!(
+            "rust_client checksum_algorithm must be a string, got {}.",
+            other.to_string()
+        ))),
+    }
+}
+
 fn get_retry_config(retry_config: Option<&RustRetryConfig>) -> RetryConfig {
     if let Some(rust_retry_config) = retry_config {
         let backoff_config = BackoffConfig {
@@ -367,6 +384,11 @@ fn build_s3_store<'a>(
     // Configure retry
     let retry_cfg = get_retry_config(retry_config);
     builder = builder.with_retry(retry_cfg);
+
+    // Configure upload-only object integrity checksum.
+    if let Some(checksum) = parse_checksum_algorithm(configs)? {
+        builder = builder.with_checksum_algorithm(checksum);
+    }
 
     // Configure client options
     let mut client_options = ClientOptions::new();
@@ -1178,6 +1200,40 @@ mod tests {
         let with_spaces = "folder/file (with spaces).txt";
         let path = parse_path(with_spaces).unwrap();
         assert_eq!(path.to_string(), "folder/file (with spaces).txt");
+    }
+
+    #[test]
+    fn test_parse_checksum_algorithm() {
+        let mut configs = HashMap::new();
+
+        // Missing key returns None.
+        assert_eq!(parse_checksum_algorithm(&configs).unwrap(), None);
+
+        // Accepts the canonical "sha256" form; case-folding is delegated to object_store::aws::Checksum::FromStr.
+        configs.insert("checksum_algorithm".to_string(), ConfigValue::String("sha256".to_string()));
+        assert_eq!(parse_checksum_algorithm(&configs).unwrap(), Some(Checksum::SHA256));
+
+        // Rejects unsupported algorithm names with a message naming both the bad input and the supported value.
+        configs.insert("checksum_algorithm".to_string(), ConfigValue::String("md5".to_string()));
+        let err = parse_checksum_algorithm(&configs).unwrap_err();
+        match err {
+            StorageError::ConfigError(msg) => {
+                assert!(msg.contains("md5") && msg.contains("sha256"), "unexpected: {}", msg);
+            }
+            _ => panic!("Expected ConfigError"),
+        }
+
+        // Rejects non-string values so typos in direct RustClient configs don't silently disable integrity.
+        for bad in [ConfigValue::Boolean(true), ConfigValue::Number(256)] {
+            configs.insert("checksum_algorithm".to_string(), bad);
+            let err = parse_checksum_algorithm(&configs).unwrap_err();
+            match err {
+                StorageError::ConfigError(msg) => {
+                    assert!(msg.contains("must be a string"), "unexpected: {}", msg);
+                }
+                _ => panic!("Expected ConfigError"),
+            }
+        }
     }
 
     #[test]

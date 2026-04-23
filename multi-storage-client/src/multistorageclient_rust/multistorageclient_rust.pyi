@@ -42,6 +42,7 @@ class RustClient:
             - multipart_chunksize: Chunk size for multipart operations (default: 32MB)
             - connect_timeout: Connection timeout in seconds (default: 60)
             - read_timeout: Read timeout in seconds (default: 120)
+            - checksum_algorithm: Upload-only object integrity checksum, S3 only (default: None, only "sha256" is supported)
         :param credentials_provider: Credentials provider for the provider (e.g., StaticS3CredentialsProvider).
         :param retry: Retry configuration for the Rust client.
         """
