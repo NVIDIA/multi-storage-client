@@ -244,3 +244,6 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
         return 0
 
     return 0
+
+
+argparse_extensions.set_command_function(parser=PARSER, arguments_type=Arguments, func=func)
