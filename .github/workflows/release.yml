@@ -5,7 +5,6 @@
 #
 
 name: Release
-# TODO: Enable `release` when ready.
 on:
   workflow_dispatch:
     inputs:
@@ -13,9 +12,9 @@ on:
         description: Git tag of the GitHub release.
         required: true
         type: string
-  # release:
-  #   types:
-  #     - published
+  release:
+    types:
+      - published
 jobs:
   github-pages:
     name: GitHub Pages

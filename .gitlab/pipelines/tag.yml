@@ -28,31 +28,12 @@ default:
     # TODO: Switch to `mirror` once on GitLab 18.2.
     strategy: depend
 
-Source:
+PyPI:
   extends:
     - .child
-  trigger:
-    include: .gitlab/pipelines/.source.yml
-
-Beta:
-  extends:
-    - .child
-  needs:
-    - Source
+  resource_group: PyPI
   environment:
-    name: Beta
+    name: PyPI
     action: start
   trigger:
-    include: .gitlab/pipelines/.beta.yml
-
-Production:
-  extends:
-    - .child
-  needs:
-    - Beta
-  resource_group: Production
-  environment:
-    name: Production
-    action: start
-  trigger:
-    include: .gitlab/pipelines/.production.yml
+    include: .gitlab/pipelines/.pypi.yml

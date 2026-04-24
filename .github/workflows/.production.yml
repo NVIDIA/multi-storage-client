@@ -38,7 +38,6 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
-      # TODO: Switch to `--phase publish` once everything else is in place.
       - working-directory: multi-storage-client-scripts
         run: |
-          uv run msc-scripts publish-release --github-token ${{ secrets.GITHUB_TOKEN }} --phase check
+          uv run msc-scripts publish-release --github-token ${{ secrets.GITHUB_TOKEN }} --phase publish
