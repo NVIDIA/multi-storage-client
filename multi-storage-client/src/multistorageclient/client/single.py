@@ -19,6 +19,7 @@ import logging
 import os
 import threading
 from collections.abc import Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import PurePosixPath
@@ -292,7 +293,7 @@ class SingleStorageClient(AbstractStorageClient):
         Fetches metadata from the storage provider, optionally merges custom attributes,
         and registers the file with the metadata provider.
 
-        Caller must hold ``_metadata_provider_lock`` if thread-safety is required.
+        Protects metadata provider mutation with ``_metadata_provider_lock`` when configured.
 
         .. note::
             TODO(NGCDP-3016): Handle eventual consistency of Swiftstack, without wait.
@@ -301,7 +302,32 @@ class SingleStorageClient(AbstractStorageClient):
         obj_metadata = self._storage_provider.get_object_metadata(physical_path)
         if attributes:
             obj_metadata.metadata = (obj_metadata.metadata or {}) | attributes
-        self._metadata_provider.add_file(virtual_path, obj_metadata)
+        with self._metadata_provider_lock or contextlib.nullcontext():
+            self._metadata_provider.add_file(virtual_path, obj_metadata)
+
+    def _register_written_files(
+        self,
+        virtual_paths: Sequence[str],
+        physical_paths: Sequence[str],
+        attributes: Optional[Sequence[Optional[dict[str, str]]]] = None,
+        max_workers: int = 16,
+    ) -> None:
+        """Register multiple written files with the metadata provider concurrently."""
+        if not virtual_paths:
+            return
+
+        def _register_one(index: int, virtual_path: str, physical_path: str) -> None:
+            file_attrs = attributes[index] if attributes is not None else None
+            self._register_written_file(virtual_path, physical_path, file_attrs)
+
+        worker_count = max(1, min(len(virtual_paths), max_workers))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_to_virtual_path = {
+                executor.submit(_register_one, i, virtual_path, physical_path): virtual_path
+                for i, (virtual_path, physical_path) in enumerate(zip(virtual_paths, physical_paths))
+            }
+            for future in as_completed(future_to_virtual_path):
+                future.result()
 
     @retry
     def read(
@@ -471,8 +497,7 @@ class SingleStorageClient(AbstractStorageClient):
         if self._metadata_provider:
             physical_path = self._resolve_write_path(remote_path)
             self._storage_provider.upload_file(physical_path, local_path, attributes=None)
-            with self._metadata_provider_lock or contextlib.nullcontext():
-                self._register_written_file(virtual_path, physical_path, attributes)
+            self._register_written_file(virtual_path, physical_path, attributes)
         else:
             self._storage_provider.upload_file(remote_path, local_path, attributes)
 
@@ -502,10 +527,7 @@ class SingleStorageClient(AbstractStorageClient):
         if self._metadata_provider:
             physical_paths = [self._resolve_write_path(rp) for rp in remote_paths]
             self._storage_provider.upload_files(local_paths, physical_paths, attributes, max_workers)
-            with self._metadata_provider_lock or contextlib.nullcontext():
-                for i, (virtual_path, physical_path) in enumerate(zip(remote_paths, physical_paths)):
-                    file_attrs = attributes[i] if attributes is not None else None
-                    self._register_written_file(virtual_path, physical_path, file_attrs)
+            self._register_written_files(remote_paths, physical_paths, attributes, max_workers)
         else:
             self._storage_provider.upload_files(local_paths, remote_paths, attributes, max_workers)
 
@@ -522,8 +544,7 @@ class SingleStorageClient(AbstractStorageClient):
         if self._metadata_provider:
             physical_path = self._resolve_write_path(path)
             self._storage_provider.put_object(physical_path, body, attributes=None)
-            with self._metadata_provider_lock or contextlib.nullcontext():
-                self._register_written_file(virtual_path, physical_path, attributes)
+            self._register_written_file(virtual_path, physical_path, attributes)
         else:
             self._storage_provider.put_object(path, body, attributes=attributes)
 
@@ -540,8 +561,7 @@ class SingleStorageClient(AbstractStorageClient):
             src_path = self._resolve_read_path(src_path)
             dest_path = self._resolve_write_path(dest_path)
             self._storage_provider.copy_object(src_path, dest_path)
-            with self._metadata_provider_lock or contextlib.nullcontext():
-                self._register_written_file(virtual_dest_path, dest_path)
+            self._register_written_file(virtual_dest_path, dest_path)
         else:
             self._storage_provider.copy_object(src_path, dest_path)
 

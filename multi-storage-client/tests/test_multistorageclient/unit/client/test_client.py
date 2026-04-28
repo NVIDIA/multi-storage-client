@@ -14,8 +14,9 @@
 # limitations under the License.
 
 import pickle
+import threading
 from datetime import datetime, timezone
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 import pytest
 
@@ -569,6 +570,54 @@ def test_single_upload_files_with_metadata_and_attributes(single_backend_config)
     assert added_meta_a.metadata == {"tag": "first"}
     added_meta_b = metadata_provider.add_file.call_args_list[1][0][1]
     assert added_meta_b.metadata == {"existing": "val", "tag": "second"}
+
+
+def test_single_upload_files_registers_metadata_in_parallel(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+
+    metadata_provider = MagicMock()
+    metadata_provider.realpath.side_effect = [
+        ResolvedPath(physical_path="logical/a", state=ResolvedPathState.UNTRACKED),
+        ResolvedPath(physical_path="logical/b", state=ResolvedPathState.UNTRACKED),
+    ]
+    metadata_provider.generate_physical_path.side_effect = [
+        ResolvedPath(physical_path="physical/a", state=ResolvedPathState.UNTRACKED),
+        ResolvedPath(physical_path="physical/b", state=ResolvedPathState.UNTRACKED),
+    ]
+    metadata_provider.allow_overwrites.return_value = False
+    single._metadata_provider = metadata_provider
+    single._metadata_provider_lock = threading.Lock()
+    single._storage_provider.upload_files = MagicMock()
+
+    started_count = 0
+    started_lock = threading.Lock()
+    both_started = threading.Event()
+
+    def get_object_metadata(path: str, strict: bool = True):
+        nonlocal started_count
+        with started_lock:
+            started_count += 1
+            if started_count == 2:
+                both_started.set()
+
+        if not both_started.wait(timeout=1):
+            raise AssertionError("metadata registration did not run in parallel")
+
+        return ObjectMetadata(key=path, content_length=100, last_modified=datetime.now(tz=timezone.utc))
+
+    single._storage_provider.get_object_metadata = get_object_metadata
+
+    client.upload_files(["logical/a", "logical/b"], ["/la", "/lb"], max_workers=2)
+
+    assert metadata_provider.add_file.call_count == 2
+    metadata_provider.add_file.assert_any_call(
+        "logical/a", ObjectMetadata(key="physical/a", content_length=100, last_modified=ANY)
+    )
+    metadata_provider.add_file.assert_any_call(
+        "logical/b", ObjectMetadata(key="physical/b", content_length=100, last_modified=ANY)
+    )
 
 
 def test_single_upload_files_with_metadata_rejects_overwrite(single_backend_config):
