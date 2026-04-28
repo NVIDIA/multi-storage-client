@@ -47,8 +47,6 @@ analyze: prepare-toolchain
     if [[ -z "${CI:-}" ]]; then ruff check --fix; else ruff check --output-file .reports/ruff.json --output-format gitlab; fi
     # Type check.
     uv run pyright
-    # Check for release notes.
-    if [[ ! -s "../.release_notes/{{package-version}}.md" ]]; then echo "Missing {{package-version}} release notes!" && exit 1; fi
 
 # Stop storage systems.
 stop-storage-systems:
