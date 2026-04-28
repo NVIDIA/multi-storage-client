@@ -1,0 +1,100 @@
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: multi-storage-client
+  title: Multi-Storage Client
+  description: Unified storage access across object stores, POSIX filesystems, documentation, and explorer tooling.
+  annotations:
+    github.com/project-slug: NVIDIA/multi-storage-client
+    backstage.io/source-location: url:https://github.com/NVIDIA/multi-storage-client/
+    nvidia.com/nspect-id: NSPECT-XYXH-7R42
+  tags:
+    - storage
+    - cloud-storage
+spec:
+  owner: group:default/multi-storage-client-maintainers
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: multi-storage-client
+  title: Multi-Storage Client
+  description: Unified high-performance client for object and file stores across S3, Azure Blob Storage, GCS, AIStore, OCI Object Storage, POSIX file systems, and more.
+  annotations:
+    github.com/project-slug: NVIDIA/multi-storage-client
+    backstage.io/source-location: url:https://github.com/NVIDIA/multi-storage-client/
+    nvidia.com/nspect-id: NSPECT-XYXH-7R42
+  tags:
+    - python
+    - rust
+    - go
+    - storage
+    - cloud-storage
+  links:
+    - url: https://nvidia.github.io/multi-storage-client/
+      title: Documentation
+      icon: docs
+      type: docs
+    - url: https://github.com/NVIDIA/multi-storage-client
+      title: Source
+      icon: github
+      type: source
+spec:
+  type: library
+  lifecycle: experimental
+  owner: group:default/multi-storage-client-maintainers
+  system: multi-storage-client
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: multi-storage-file-system
+  title: Multi-Storage File System
+  description: Go FUSE filesystem that exposes object storage through POSIX-style file access.
+  annotations:
+    github.com/project-slug: NVIDIA/multi-storage-client
+    backstage.io/source-location: url:https://github.com/NVIDIA/multi-storage-client/tree/main/multi-storage-file-system/
+    nvidia.com/nspect-id: NSPECT-XYXH-7R42
+  tags:
+    - go
+    - fuse
+    - filesystem
+    - storage
+    - cloud-storage
+  links:
+    - url: https://github.com/NVIDIA/multi-storage-client/tree/main/multi-storage-file-system
+      title: Source
+      icon: github
+      type: source
+spec:
+  type: library
+  lifecycle: experimental
+  owner: group:default/multi-storage-client-maintainers
+  system: multi-storage-client
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: multi-storage-explorer
+  title: Multi-Storage Explorer
+  description: Web UI for browsing and interacting with storage through the Multi-Storage Client project.
+  annotations:
+    github.com/project-slug: NVIDIA/multi-storage-client
+    backstage.io/source-location: url:https://github.com/NVIDIA/multi-storage-client/tree/main/multi-storage-explorer/
+    nvidia.com/nspect-id: NSPECT-XYXH-7R42
+  tags:
+    - web
+    - ui
+    - explorer
+    - storage
+    - cloud-storage
+  links:
+    - url: https://github.com/NVIDIA/multi-storage-client/tree/main/multi-storage-explorer
+      title: Source
+      icon: github
+      type: source
+spec:
+  type: website
+  lifecycle: experimental
+  owner: group:default/multi-storage-client-maintainers
+  system: multi-storage-client
