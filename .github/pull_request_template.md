@@ -11,7 +11,7 @@ _{Relates to/Closes} {Task ID}._
     - [ ] Notable changes to the client (i.e. not related to tooling, CI/CD, etc.) from this PR have been added.
 - Release PR
   - CI/CD
-    - [ ] The Beta stage is passing in GitLab CI/CD.
+    - [ ] The default branch pipelines are passing in both GitHub + GitLab (latter for SwiftStack E2E tests).
   - `multi-storage-client/pyproject.toml`
     - [ ] The package version has been bumped.
   - `.release_notes/.unreleased.md`
