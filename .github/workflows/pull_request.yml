@@ -6,6 +6,7 @@
 
 name: Pull Request
 on:
+  merge_group:
   push:
     branches:
       - pull-request/[0-9]+
