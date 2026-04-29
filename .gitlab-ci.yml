@@ -27,7 +27,7 @@ workflow:
       auto_cancel:
         on_new_commit: none
     # Tag push.
-    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_TAG != null && $CI_COMMIT_TAG_MESSAGE =~ /^(latest|backport)$/
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_TAG != null
       when: always
       auto_cancel:
         on_new_commit: none
@@ -48,7 +48,7 @@ include:
   # Tag push.
   - local: .gitlab/pipelines/tag.yml
     rules:
-      - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_TAG != null && $CI_COMMIT_TAG_MESSAGE =~ /^(latest|backport)$/
+      - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_TAG != null
 
 #
 # Jobs.
