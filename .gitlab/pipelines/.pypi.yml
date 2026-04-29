@@ -59,11 +59,6 @@ default:
 Publish Wheels:
   extends:
     - .default
-  rules:
-    # GitHub creates the draft release + tag simultaneously.
-    #
-    # The release may not be published when GitLab pull mirrors the tag.
-    - when: manual
   script:
     - |
       nix develop --command bash -c "
