@@ -633,6 +633,12 @@ func checkConfigFile() (err error) {
 		}
 	}
 
+	config.fuseWorkers, ok = parseUint64(configFileMap, "fuse_workers", uint64(0))
+	if !ok {
+		err = errors.New("bad fuse_workers value")
+		return
+	}
+
 	config.uid, ok = parseUint64(configFileMap, "uid", uint64(os.Geteuid()))
 	if !ok {
 		err = errors.New("bad uid value")
@@ -1723,6 +1729,11 @@ func checkConfigFile() (err error) {
 
 		if globals.config.mountPoint != config.mountPoint {
 			err = errors.New("cannot change mountpoint via SIGHUP")
+			return
+		}
+
+		if globals.config.fuseWorkers != config.fuseWorkers {
+			err = errors.New("cannot change fuse_workers via SIGHUP")
 			return
 		}
 

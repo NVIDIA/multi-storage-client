@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NVIDIA/fission/v3"
+	"github.com/NVIDIA/fission/v4"
 	"github.com/cockroachdb/pebble/v2"
 )
 
@@ -139,6 +139,7 @@ type configStruct struct {
 	msfsVersion                               uint64                     // JSON/YAML "msfs_version"                                      default:0
 	mountName                                 string                     // JSON/YAML "mountname"                                         default:"msfs"
 	mountPoint                                string                     // JSON/YAML "mountpoint"                                        default:"${MSFS_MOUNTPOINT:-/mnt}""
+	fuseWorkers                               uint64                     // JSON/YAML "fuse_workers"                                      default:0
 	uid                                       uint64                     // JSON/YAML "uid"                                               default:<current euid>
 	gid                                       uint64                     // JSON/YAML "gid"                                               default:<current egid>
 	dirPerm                                   uint64                     // JSON/YAML "dir_perm"                                          default:0o555

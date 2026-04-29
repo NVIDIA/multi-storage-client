@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/NVIDIA/fission/v3"
+	"github.com/NVIDIA/fission/v4"
 )
 
 const (
@@ -36,6 +36,7 @@ func fissionTestUp(t *testing.T) {
 		dir4                = newRamDir("dir4")
 		err                 error
 		fileBMD5AsByteSlice [md5.Size]byte
+		fissionVolumeConfig *fission.VolumeConfig
 		ok                  bool
 	)
 
@@ -97,7 +98,21 @@ func fissionTestUp(t *testing.T) {
 	// Note: Since we didn't do performFissionMount() above, we need to perform the fission.NewVolme()
 	//       embedded in that function so that we may test the fission callbacks directly bypassing FUSE.
 
-	globals.fissionVolume = fission.NewVolume(globals.config.mountName, globals.config.mountPoint, fuseSubtype, maxRead, maxWrite, true, globals.config.allowOther, &globals, globals.logger, globals.errChan)
+	fissionVolumeConfig = &fission.VolumeConfig{
+		VolumeName:         globals.config.mountName,
+		MountpointDirPath:  globals.config.mountPoint,
+		FuseSubtype:        fuseSubtype,
+		MaxRead:            maxRead,
+		MaxWrite:           maxWrite,
+		DefaultPermissions: true,
+		AllowOther:         globals.config.allowOther,
+		NumWorkers:         int(globals.config.fuseWorkers),
+		Callbacks:          &globals,
+		Logger:             globals.logger,
+		ErrChan:            globals.errChan,
+	}
+
+	globals.fissionVolume = fission.NewVolume(fissionVolumeConfig)
 
 	backend, ok = globals.config.backends["ram"]
 	if !ok {
@@ -443,7 +458,7 @@ func TestFissionDoGetAttrStatX(t *testing.T) {
 	fissionTestUp(t)
 	defer fissionTestDown(t)
 
-	globalsLock("fission_test.go:446:2:TestFissionDoGetAttrStatX")
+	globalsLock("fission_test.go:461:2:TestFissionDoGetAttrStatX")
 	unusedInodeNumber = fetchNonce()
 	globalsUnlock()
 
@@ -623,7 +638,7 @@ func TestFissionDoOpenDirReadDirReadDirPlusReleaseDir(t *testing.T) {
 	fissionTestUp(t)
 	defer fissionTestDown(t)
 
-	globalsLock("fission_test.go:626:2:TestFissionDoOpenDirReadDirReadDirPlusReleaseDir")
+	globalsLock("fission_test.go:641:2:TestFissionDoOpenDirReadDirReadDirPlusReleaseDir")
 	unusedInodeNumber = fetchNonce()
 	globalsUnlock()
 
@@ -1210,7 +1225,7 @@ func TestFissionDoUnlinkRollbackOnBackendFailure(t *testing.T) {
 	fileAIno = lookupOut.EntryOut.NodeID
 
 	// Verify fileA exists in parent's child map
-	globalsLock("fission_test.go:1213:2:TestFissionDoUnlinkRollbackOnBackendFailure")
+	globalsLock("fission_test.go:1228:2:TestFissionDoUnlinkRollbackOnBackendFailure")
 	_, ok = globals.inodeMap.get(ramDirIno)
 	if !ok {
 		globalsUnlock()
@@ -1600,7 +1615,7 @@ func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 	dir2Ino = lookupOut.EntryOut.NodeID
 
 	// Verify dir2 is physical
-	globalsLock("fission_test.go:1603:2:TestFissionConvertPhysicalToVirtual")
+	globalsLock("fission_test.go:1618:2:TestFissionConvertPhysicalToVirtual")
 	dir2Inode, ok = globals.inodeMap.get(dir2Ino)
 	if !ok {
 		globalsUnlock()
@@ -1626,7 +1641,7 @@ func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 	}
 
 	// Verify virtual directory was created
-	globalsLock("fission_test.go:1629:2:TestFissionConvertPhysicalToVirtual")
+	globalsLock("fission_test.go:1644:2:TestFissionConvertPhysicalToVirtual")
 	dir2Inode, ok = globals.inodeMap.get(dir2Ino)
 	if !ok {
 		globalsUnlock()
@@ -1662,7 +1677,7 @@ func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 
 	// For testing, we'll just remove dir4 from dir2's physChildInodeMap manually
 	// since we can't use DoRmDir on a physical directory
-	globalsLock("fission_test.go:1665:2:TestFissionConvertPhysicalToVirtual")
+	globalsLock("fission_test.go:1680:2:TestFissionConvertPhysicalToVirtual")
 	dir2Inode, ok = globals.inodeMap.get(dir2Ino)
 	if !ok {
 		globalsUnlock()
