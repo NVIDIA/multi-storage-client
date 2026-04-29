@@ -34,5 +34,5 @@ jobs:
               context: context.workflow,
               sha: context.sha,
               state: ${{ toJSON(needs.*.result) }}.every(status => status == 'success') ? 'success' : 'error',
-              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}?pr=${context.ref.match(/^refs\/heads\/pull-request\/(\d+)$/)[1]}`
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
             })
