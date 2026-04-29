@@ -1358,18 +1358,6 @@ wheels = [
 ]
 
 [[package]]
-name = "id"
-version = "1.6.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "urllib3" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/6d/04/c2156091427636080787aac190019dc64096e56a23b7364d3c1764ee3a06/id-1.6.1.tar.gz", hash = "sha256:d0732d624fb46fd4e7bc4e5152f00214450953b9e772c182c1c22964def1a069", size = 18088, upload-time = "2026-02-04T16:19:41.26Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/42/77/de194443bf38daed9452139e960c632b0ef9f9a5dd9ce605fdf18ca9f1b1/id-1.6.1-py3-none-any.whl", hash = "sha256:f5ec41ed2629a508f5d0988eda142e190c9c6da971100612c4de9ad9f9b237ca", size = 14689, upload-time = "2026-02-04T16:19:40.051Z" },
-]
-
-[[package]]
 name = "idna"
 version = "3.11"
 source = { registry = "https://pypi.org/simple" }
@@ -2075,7 +2063,6 @@ source = { editable = "multi-storage-client-scripts" }
 dependencies = [
     { name = "dulwich" },
     { name = "githubkit" },
-    { name = "id" },
     { name = "multi-storage-client" },
     { name = "packaging" },
     { name = "pyartifactory" },
@@ -2085,7 +2072,6 @@ dependencies = [
 requires-dist = [
     { name = "dulwich", specifier = ">=1.1.0,<2" },
     { name = "githubkit", specifier = ">=0.15.3,<1" },
-    { name = "id", specifier = ">=1.6.1,<2" },
     { name = "multi-storage-client", editable = "multi-storage-client" },
     { name = "packaging", specifier = ">=26.1,<27" },
     { name = "pyartifactory", specifier = ">=2.11.2,<3" },

@@ -24,7 +24,8 @@ from types import FrameType
 from typing import Final, Optional
 
 import githubkit
-import id
+import githubkit.versions.latest.models
+import urllib3
 
 import multistorageclient_scripts.cli as cli
 import multistorageclient_scripts.utils.argparse_extensions as argparse_extensions
@@ -50,6 +51,8 @@ class Arguments(argparse_extensions.Arguments):
     Command arguments.
     """
 
+    #: GitHub artifact ID.
+    github_artifact_id: Final[int]
     #: GitHub token.
     github_token: Final[str]
     #: Git tag of the GitHub release.
@@ -67,6 +70,9 @@ PARSER = cli.SUBPARSERS.add_parser(
 )
 
 
+argparse_extensions.add_argument_partial(parser=PARSER, arguments_type=Arguments, argument_key="github_artifact_id")(
+    help="GitHub artifact ID."
+)
 argparse_extensions.add_argument_partial(parser=PARSER, arguments_type=Arguments, argument_key="github_token")(
     help="GitHub token. For local runs, log in with the GitHub CLI and pass `$(gh auth token)`."
 )
@@ -159,28 +165,75 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
         logger.info(f"Existing GitHub release for {arguments.git_tag} is not the latest release. Nothing to do.")
         return 0
 
-    # The `id` Python package can fetch GitHub Actions OIDC tokens with retries.
-    #
     # https://docs.github.com/en/actions/reference/security/oidc#methods-for-requesting-the-oidc-token
     # https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-cloud-providers#using-custom-actions
-    #
-    # Use the default audience claim (GitHub repository owner URL) to match `actions/deploy-pages`.
-    #
-    # https://docs.github.com/en/actions/reference/security/oidc#standard-audience-issuer-and-subject-claims
-    oidc_token = id.detect_credential(
-        audience=f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY_OWNER']}"
+    get_oidc_token_response = urllib3.request(
+        method="GET",
+        url=os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"],
+        headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+        timeout=30,
+        retries=urllib3.Retry(),
     )
+    if get_oidc_token_response.status != 200:
+        raise RuntimeError(
+            "Failed to get GitHub Actions OIDC token!",
+            get_oidc_token_response.status,
+            get_oidc_token_response.data.decode(),
+        )
+    oidc_token = get_oidc_token_response.json().get("value")
     if oidc_token is None:
-        raise ValueError("Failed to get GitHub Actions OIDC token!")
+        raise ValueError("GitHub Actions OIDC token is missing from response!")
+    if not isinstance(oidc_token, str):
+        raise ValueError("GitHub Actions OIDC token is not a string!")
 
-    create_pages_deployment_response = github_client.rest.repos.create_pages_deployment(
-        owner="NVIDIA",
-        repo="multi-storage-client",
-        artifact_url=multi_storage_client_docs_archives[0].browser_download_url,
-        environment="GitHub Pages",
-        # publish-release uses a Git commit revision.
-        pages_build_version=get_release_by_tag_response.parsed_data.target_commitish,
-        oidc_token=oidc_token,
+    # create_pages_deployment_response = github_client.rest.repos.create_pages_deployment(
+    #     owner="NVIDIA",
+    #     repo="multi-storage-client",
+    #     # TODO: Upload the documentation archive release asset as a GitHub Actions artifact in this script.
+    #     #
+    #     # GitHub's artifact upload API isn't documented so we have to rely on `actions/upload-pages-artifact` for now.
+    #     #
+    #     # https://github.com/actions/upload-artifact/issues/180#issuecomment-1086306269
+    #     artifact_id=arguments.github_artifact_id,
+    #     environment="GitHub Pages",
+    #     # This must be a Git commit revision.
+    #     #
+    #     # https://github.com/orgs/community/discussions/170184
+    #     # https://github.com/actions/deploy-pages/issues/383
+    #     #
+    #     # publish-release uses a Git commit revision.
+    #     pages_build_version=get_release_by_tag_response.parsed_data.target_commitish,
+    #     oidc_token=oidc_token,
+    # )
+    create_pages_deployment_response = github_client.request(
+        method="POST",
+        url="/repos/NVIDIA/multi-storage-client/pages/deployments",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2026-03-10",
+        },
+        json={
+            # The `artifact_id` parameter is broken on `github_client.rest.repos.create_pages_deployment()`
+            #
+            # This is because GitHub's API model has type `number` which is turned into a Python `float`.
+            #
+            # When serialized, `.0` is appended to the artifact ID which causes the GitHub Pages deployment to get stuck in `deployment_queued`.
+            #
+            # https://github.com/yanyongyu/githubkit/issues/300
+            "artifact_id": arguments.github_artifact_id,
+            "environment": "GitHub Pages",
+            "pages_build_version": get_release_by_tag_response.parsed_data.target_commitish,
+            "oidc_token": oidc_token,
+        },
+        response_model=githubkit.versions.latest.models.PageDeployment,
+    )
+    logger.info(
+        "\n".join(
+            [
+                "Created a GitHub Pages deployment:",
+                pprint.pformat(create_pages_deployment_response.parsed_data.model_dump()),
+            ]
+        )
     )
 
     def cancel_github_pages_deployment() -> None:
@@ -199,11 +252,16 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
     signal.signal(signalnum=signal.SIGTERM, handler=cancel_github_pages_deployment_signal_handler)
 
     def poll_github_pages_deployment_status():
-        return github_client.rest.repos.get_pages_deployment(
+        get_pages_deployment_response = github_client.rest.repos.get_pages_deployment(
             owner="NVIDIA",
             repo="multi-storage-client",
             pages_deployment_id=create_pages_deployment_response.parsed_data.id,
         )
+        # https://github.com/yanyongyu/githubkit/issues/299
+        logger.info(
+            f"GitHub Pages deployment {create_pages_deployment_response.parsed_data.id} is in {get_pages_deployment_response.json().get('status')} status."
+        )
+        return get_pages_deployment_response
 
     github_pages_deployment_success_statuses = {"succeed"}
     github_pages_deployment_failure_statuses = {
@@ -221,17 +279,19 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
         get_pages_deployment_response = wait(
             waitable=poll_github_pages_deployment_status,
             should_wait=lambda get_pages_deployment_response: (
-                get_pages_deployment_response.parsed_data.status not in github_pages_deployment_end_statuses
+                get_pages_deployment_response.json().get("status") not in github_pages_deployment_end_statuses
             ),
             # 5 seconds * 120 attempts = 600 seconds (10 minutes).
             attempt_interval_seconds=5,
             max_attempts=120,
         )
-        logger.info(f"GitHub Pages deployment {create_pages_deployment_response.parsed_data.id} finished.")
+        logger.info(
+            f"GitHub Pages deployment {create_pages_deployment_response.parsed_data.id} ended in {get_pages_deployment_response.json().get('status')} status."
+        )
 
-        if get_pages_deployment_response.parsed_data.status not in github_pages_deployment_success_statuses:
+        if get_pages_deployment_response.json().get("status") not in github_pages_deployment_success_statuses:
             raise RuntimeError(
-                f"GitHub Pages deployment failed with status {get_pages_deployment_response.parsed_data.status}!"
+                f"GitHub Pages deployment {create_pages_deployment_response.parsed_data.id} failed with status {get_pages_deployment_response.json().get('status')}!"
             )
     except AssertionError:
         logger.error(
