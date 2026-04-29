@@ -68,16 +68,51 @@ trap 'rm -f "$TMPFIO"' EXIT
 awk '/^\[global\]/{found=1} found{if(/^\[/ && !/^\[global\]/) exit; print}' \
     "$FIO_TEMPLATE" > "$TMPFIO"
 
-# Extract the selected [SECTION] block.
-awk -v sec="$SECTION" \
-    'BEGIN{pat="^\\[" sec "\\]"} $0~pat{found=1} found{if(/^\[/ && !($0~pat)) exit; print}' \
-    "$FIO_TEMPLATE" >> "$TMPFIO"
+# Extract the selected [SECTION] body (without the header line).
+SECTION_BODY=$(awk -v sec="$SECTION" \
+    'BEGIN{pat="^\\[" sec "\\]"} $0~pat{found=1; next} found{if(/^\[/) exit; print}' \
+    "$FIO_TEMPLATE")
 
-# Append one filename= line per file so fio knows the exact file set
-# without trying to create/provision anything (the FS is read-only).
-seq 0 $((NFILES - 1)) | awk '{printf "filename=file_%08X\n", $0}' >> "$TMPFIO"
+# Parse numjobs from the section (default 1).
+NUMJOBS=$(printf '%s\n' "$SECTION_BODY" | awk -F= '/^numjobs=/{print $2; exit}')
+NUMJOBS=${NUMJOBS:-1}
 
-echo "=== FIO benchmark: section=${SECTION}  directory=${DIRECTORY}  files=${NFILES} ==="
+# Section parameters with numjobs stripped (we manage it ourselves).
+SECTION_PARAMS=$(printf '%s\n' "$SECTION_BODY" | grep -v '^numjobs=')
+
+if [[ "$NUMJOBS" -le 1 ]]; then
+    # Single job: one section with all filenames.
+    {
+        echo "[${SECTION}]"
+        echo "numjobs=1"
+        printf '%s\n' "$SECTION_PARAMS"
+        seq 0 $((NFILES - 1)) | awk '{printf "filename=file_%08X\n", $0}'
+    } >> "$TMPFIO"
+else
+    # Multiple jobs: partition filenames into NUMJOBS disjoint groups so
+    # no two threads ever touch the same file.
+    FILES_PER_JOB=$((NFILES / NUMJOBS))
+    REMAINDER=$((NFILES % NUMJOBS))
+
+    FILE_START=0
+    for ((j = 0; j < NUMJOBS; j++)); do
+        COUNT=$FILES_PER_JOB
+        if (( j < REMAINDER )); then
+            (( COUNT++ )) || true
+        fi
+        {
+            echo "[${SECTION}_j${j}]"
+            echo "numjobs=1"
+            printf '%s\n' "$SECTION_PARAMS"
+            seq "$FILE_START" $((FILE_START + COUNT - 1)) | \
+                awk '{printf "filename=file_%08X\n", $0}'
+            echo ""
+        } >> "$TMPFIO"
+        FILE_START=$((FILE_START + COUNT))
+    done
+fi
+
+echo "=== FIO benchmark: section=${SECTION}  directory=${DIRECTORY}  files=${NFILES}  jobs=${NUMJOBS} ==="
 echo "=== temp job file: ${TMPFIO} ==="
 
 fio "$TMPFIO" --directory="$DIRECTORY"

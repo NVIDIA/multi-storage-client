@@ -4,7 +4,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/NVIDIA/fission/v3"
+	"github.com/NVIDIA/fission/v4"
 )
 
 const (
