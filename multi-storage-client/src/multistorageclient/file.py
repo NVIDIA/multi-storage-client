@@ -213,7 +213,7 @@ class ObjectFile(IOBase, IO):
         memory_load_limit: int = MEMORY_LOAD_LIMIT,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
         attributes: Optional[dict[str, str]] = None,
-        prefetch_file: bool = True,
+        prefetch_file: Optional[bool] = None,
     ):
         """
         Initialize the ObjectFile instance.
@@ -226,7 +226,7 @@ class ObjectFile(IOBase, IO):
         :param memory_load_limit: Size limit in bytes for loading files into memory. Defaults to 512MB. This parameter is only applicable when the mode is "r" or "rb".
         :param check_source_version: Whether to check the source version of cached objects.
         :param attributes: The attributes to add to the file if a new file is created.
-        :param prefetch_file: If True, downloads the entire file to cache in the background for faster subsequent reads. If False, uses RemoteFileReader for streaming reads without caching. Defaults to True.
+        :param prefetch_file: If True, downloads the entire file to cache in the background for faster subsequent reads. If False, uses RemoteFileReader for streaming reads without caching. If None, inherits from cache configuration.
         """
         if mode not in ("r", "w", "rb", "wb", "a", "ab"):
             raise ValueError(f'Invalid mode "{mode}", only "w", "r", "a", "wb", "rb" and "ab" are supported.')
@@ -242,10 +242,16 @@ class ObjectFile(IOBase, IO):
         self._memory_load_limit = memory_load_limit
         self._open_files = []
         self._check_source_version = check_source_version
-        self._prefetch_file = prefetch_file
 
         if disable_read_cache:
             self._cache_manager = None
+
+        if prefetch_file is not None:
+            self._prefetch_file = prefetch_file
+        elif self._cache_manager:
+            self._prefetch_file = self._cache_manager.prefetch_file()
+        else:
+            self._prefetch_file = True
 
         if self._cache_manager:
             # Use local file as the fileobj
@@ -421,7 +427,12 @@ class ObjectFile(IOBase, IO):
                 f"Failed to open large file {self._remote_path} in text mode; "
                 f'use mode "rb" to open files larger than {self._memory_load_limit}.'
             )
-        self._file = RemoteFileReader(self._remote_path, file_size, self._storage_client)
+        self._file = RemoteFileReader(
+            self._remote_path,
+            file_size,
+            self._storage_client,
+            check_source_version=self._check_source_version,
+        )
         self._download_complete.set()
 
     @property

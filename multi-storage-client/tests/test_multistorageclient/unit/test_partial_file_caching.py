@@ -836,6 +836,60 @@ def test_partial_file_caching_3mb_file_1mb_read():
                 pass
 
 
+def test_open_inherits_prefetch_file_false_from_cache_config():
+    """Test that open() uses partial file caching when cache.prefetch_file is false."""
+    with tempdatastore.TemporaryAWSS3Bucket() as origin_store:
+        with tempfile.TemporaryDirectory() as cache_dir:
+            config = create_partial_caching_config(origin_store, cache_location=cache_dir)
+            config["cache"]["prefetch_file"] = False
+
+            client = StorageClient(StorageClientConfig.from_dict(config, profile="origin"))
+
+            test_content = b"X" * (3 * 1024 * 1024)
+            test_file_path = "config_prefetch_false.bin"
+            client.write(test_file_path, test_content)
+
+            with client.open(test_file_path, "rb") as f:
+                data = f.read(1024 * 1024)
+
+            assert data == test_content[: 1024 * 1024]
+
+            origin_dir = os.path.join(cache_dir, "origin")
+            chunk0_path = os.path.join(origin_dir, f".{test_file_path}#chunk0")
+            full_cache_path = os.path.join(origin_dir, test_file_path)
+
+            assert os.path.exists(chunk0_path), "Chunk 0 should be created when prefetch_file is inherited as false"
+            assert os.path.getsize(chunk0_path) == 1024 * 1024
+            assert not os.path.exists(full_cache_path), "Full file should not be cached for partial open reads"
+
+
+def test_open_explicit_prefetch_file_true_overrides_cache_config():
+    """Test that explicit prefetch_file=True overrides cache.prefetch_file=false."""
+    with tempdatastore.TemporaryAWSS3Bucket() as origin_store:
+        with tempfile.TemporaryDirectory() as cache_dir:
+            config = create_partial_caching_config(origin_store, cache_location=cache_dir)
+            config["cache"]["prefetch_file"] = False
+
+            client = StorageClient(StorageClientConfig.from_dict(config, profile="origin"))
+
+            test_content = b"X" * (3 * 1024 * 1024)
+            test_file_path = "explicit_prefetch_true.bin"
+            client.write(test_file_path, test_content)
+
+            with client.open(test_file_path, "rb", prefetch_file=True) as f:
+                data = f.read(1024 * 1024)
+
+            assert data == test_content[: 1024 * 1024]
+
+            origin_dir = os.path.join(cache_dir, "origin")
+            chunk0_path = os.path.join(origin_dir, f".{test_file_path}#chunk0")
+            full_cache_path = os.path.join(origin_dir, test_file_path)
+
+            assert os.path.exists(full_cache_path), "Full file should be cached when explicitly prefetching"
+            assert os.path.getsize(full_cache_path) == len(test_content)
+            assert not os.path.exists(chunk0_path), "Chunk cache should not be used when explicit prefetch wins"
+
+
 def test_chunk_download_lock_file_cleanup():
     """Test that lock files are automatically cleaned up when FileLock context manager exits.
 

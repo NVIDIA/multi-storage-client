@@ -1158,6 +1158,7 @@ class StorageClientConfigLoader:
                 size=cache_dict.get("size", DEFAULT_CACHE_SIZE),
                 location=cache_dict.get("location", location),
                 check_source_version=check_source_version,
+                prefetch_file=cache_dict.get("prefetch_file", True),
                 eviction_policy=eviction_policy,
                 cache_line_size=cache_dict.get("cache_line_size", DEFAULT_CACHE_LINE_SIZE),
             )

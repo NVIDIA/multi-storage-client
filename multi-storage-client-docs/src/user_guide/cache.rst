@@ -69,6 +69,7 @@ The ``cache_line_size`` parameter controls the size of each chunk. This should b
      location: /path/to/msc_cache
      cache_line_size: 64M    # 64MB chunks
      check_source_version: true
+     prefetch_file: false    # use partial file caching instead of full-file caching
 
 **Usage:**
 
@@ -88,7 +89,7 @@ Partial file caching is automatically enabled when using ``client.read()`` with 
    data = client.read("path/to/large_file.bin", 
                      byte_range=Range(offset=1024*1024, size=512*1024))  # 512KB read from 1MB offset
    
-   # For full file access, use client.open() with prefetch_file parameter
+   # For file-like access, disable prefetch explicitly or set cache.prefetch_file: false
    with client.open("path/to/large_file.bin", prefetch_file=False) as f:
        # This will use partial file caching instead of downloading the entire file
        data = f.read(1024*1024)  # Read 1MB
@@ -130,12 +131,21 @@ When using ``SourceVersionCheckMode.INHERIT`` (the default), the cache configura
 
 **Prefetch File Control:**
 
-The ``prefetch_file`` parameter in ``client.open()`` controls whether the entire file is downloaded upfront or uses partial file caching:
+The ``prefetch_file`` parameter in ``client.open()`` controls whether the entire file is downloaded upfront or uses partial file caching. If omitted, ``client.open()`` inherits ``cache.prefetch_file`` from the configuration, which defaults to ``true``.
+
+.. code-block:: yaml
+   :caption: Configuring open() to use partial file caching by default.
+
+   cache:
+     size: 500G
+     location: /path/to/msc_cache
+     cache_line_size: 64M
+     prefetch_file: false
 
 .. code-block:: python
    :caption: Controlling file prefetch behavior.
 
-   # Download entire file upfront (default behavior)
+   # Download entire file upfront (explicit override)
    with client.open("path/to/large_file.bin", prefetch_file=True) as f:
        data = f.read(1024*1024)  # Fast local read after download
    
@@ -150,6 +160,8 @@ The ``prefetch_file`` parameter in ``client.open()`` controls whether the entire
 * **prefetch_file=True** (default): Use when you expect to read most or all of the file. The entire file is downloaded once, then all subsequent reads are served from local cache at maximum speed.
 
 * **prefetch_file=False**: Use for large files where you only need specific portions, or when you want to start processing data immediately without waiting for the full download. This enables partial file caching with chunk-based downloads.
+
+* **cache.prefetch_file=False**: Use when libraries call ``open()`` on your behalf and cannot pass ``prefetch_file=False``. Explicit ``client.open(..., prefetch_file=True)`` still overrides the config for individual calls.
 
 *************************
 Cache Directory Structure

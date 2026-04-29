@@ -59,6 +59,8 @@ class CacheConfig:
     cache_line_size: str
     #: Use check_source_version(e.g. etag) to update the cached files. Default is True.
     check_source_version: bool = True
+    #: Whether open() prefetches full files by default. False enables partial file caching by default.
+    prefetch_file: bool = True
     #: The location of the cache. Default is tempdir/msc-cache.
     location: Optional[str] = None
     #: Cache eviction policy configuration. Default is LRU with 300s refresh.

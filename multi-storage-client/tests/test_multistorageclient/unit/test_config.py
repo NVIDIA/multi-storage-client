@@ -1082,6 +1082,7 @@ def test_cache_config_defaults():
     # Verify default values
     assert config.cache_config.size == "100M"
     assert config.cache_config.check_source_version is True  # Default value
+    assert config.cache_config.prefetch_file is True  # Default value
     assert config.cache_config.eviction_policy.policy == "fifo"  # Default value
     assert config.cache_config.eviction_policy.refresh_interval == 300  # Default value
 
@@ -1975,6 +1976,41 @@ def test_cache_config_check_source_version_false() -> None:
         sc_cfg = StorageClientConfig.from_dict(cfg_dict, profile="p")
         assert sc_cfg.cache_config is not None
         assert sc_cfg.cache_config.check_source_version is False
+
+
+def test_cache_config_prefetch_file_false() -> None:
+    """cache.prefetch_file can disable full-file prefetch by default."""
+
+    with tempfile.TemporaryDirectory() as cache_dir:
+        cfg_dict = _minimal_cache_profile(
+            {
+                "size": "10M",
+                "cache_line_size": "1M",
+                "location": cache_dir,
+                "prefetch_file": False,
+            }
+        )
+
+        sc_cfg = StorageClientConfig.from_dict(cfg_dict, profile="p")
+        assert sc_cfg.cache_config is not None
+        assert sc_cfg.cache_config.prefetch_file is False
+
+
+def test_cache_config_prefetch_file_must_be_boolean() -> None:
+    """cache.prefetch_file rejects non-boolean values."""
+
+    with tempfile.TemporaryDirectory() as cache_dir:
+        cfg_dict = _minimal_cache_profile(
+            {
+                "size": "10M",
+                "cache_line_size": "1M",
+                "location": cache_dir,
+                "prefetch_file": "false",
+            }
+        )
+
+        with pytest.raises(RuntimeError, match="Failed to validate the config file"):
+            StorageClientConfig.from_dict(cfg_dict, profile="p")
 
 
 def test_telemetry_init_manual() -> None:
