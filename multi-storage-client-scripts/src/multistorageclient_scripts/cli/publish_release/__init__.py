@@ -225,6 +225,11 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
         # ----------------------------------------------------------------------------------------------------
 
         github_client = githubkit.GitHub(auth=githubkit.TokenAuthStrategy(token=arguments.github_token))
+        # https://github.com/yanyongyu/githubkit/issues/150#issuecomment-2407032372
+        github_uploads_client = githubkit.GitHub(
+            auth=githubkit.TokenAuthStrategy(token=arguments.github_token),
+            base_url="https://uploads.github.com/",
+        )
 
         # Find existing release + tag (concurrent transaction).
         #
@@ -298,7 +303,7 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
         # Upload draft release assets.
         for release_asset in release_assets:
             with release_asset.open(mode="rb") as release_asset_stream:
-                upload_release_asset_response = github_client.rest.repos.upload_release_asset(
+                upload_release_asset_response = github_uploads_client.rest.repos.upload_release_asset(
                     owner="NVIDIA",
                     repo="multi-storage-client",
                     release_id=create_release_response.parsed_data.id,
