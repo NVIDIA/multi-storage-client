@@ -17,11 +17,9 @@
 import glob
 import os
 import tempfile
-import uuid
+from unittest.mock import patch
 
 from multistorageclient.providers.posix_file import PosixFileStorageProvider
-from test_multistorageclient.unit.providers.test_parallel_listing import _build_s3_provider
-from test_multistorageclient.unit.utils import tempdatastore
 
 
 def test_list_objects_with_ascending_order():
@@ -224,33 +222,40 @@ def test_list_objects_with_paths():
         assert len(results) == 0, "Partial path that doesn't exist should return empty results"
 
 
+def test_list_objects_recursive_skips_unreadable_directories():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        ok_dir = os.path.join(temp_dir, "ok")
+        os.makedirs(ok_dir)
+        with open(os.path.join(ok_dir, "a.txt"), "w") as f:
+            f.write("content")
+
+        blocked_dir = os.path.join(temp_dir, "blocked")
+        os.makedirs(blocked_dir)
+        with open(os.path.join(blocked_dir, "hidden.txt"), "w") as f:
+            f.write("hidden")
+
+        original_listdir = os.listdir
+
+        def listdir_with_blocked_dir(path):
+            if os.path.realpath(path.rstrip("/")) == os.path.realpath(blocked_dir):
+                raise PermissionError("blocked")
+            return original_listdir(path)
+
+        provider = PosixFileStorageProvider(base_path=temp_dir)
+        with patch("os.listdir", side_effect=listdir_with_blocked_dir):
+            sequential = [obj.key for obj in provider.list_objects(path="")]
+            recursive = [obj.key for obj in provider.list_objects_recursive(path="")]
+
+        assert sequential == ["ok/a.txt"]
+        assert recursive == ["ok/a.txt"]
+
+
 def test_posix_list_objects_matches_s3_lexicographic_order_when_directory_prefix_collides_with_file():
     """
     Directory ``a/`` and file ``a.txt`` at the same level: S3 ``list_objects_v2`` orders keys by
     raw UTF-8 bytes, so ``a.txt`` (``.``) comes before ``a/b.txt`` (``/``). POSIX must match.
-
-    The test first uploads the same layout to a temporary S3 bucket (versitygw, same as other
-    provider integration tests), lists with ``list_objects``, and uses that order as the
-    reference. It then checks POSIX against that same relative key order.
-
-    Bug: ``_explore_directory`` sorts the bare directory name ``a`` before ``a.txt``, then walks
-    ``a`` first, so POSIX yields ``a/b.txt`` then ``a.txt`` instead of the S3 order.
     """
     expected_relative_order = ["a.txt", "a/b.txt"]
-    list_prefix = f"list_order_prefix_collision/{uuid.uuid4().hex}/"
-
-    with tempdatastore.TemporaryAWSS3Bucket(enable_rust_client=False) as bucket:
-        s3 = _build_s3_provider(bucket, enable_rust=False)
-        s3.put_object(list_prefix + "a/b.txt", b"")
-        s3.put_object(list_prefix + "a.txt", b"")
-        s3_relative_keys = [
-            obj.key.removeprefix(list_prefix) for obj in s3.list_objects(path=list_prefix) if obj.type == "file"
-        ]
-
-    assert s3_relative_keys == expected_relative_order, (
-        "S3 list_objects reference (upload nested key first): expect API lexicographic order; "
-        f"got {s3_relative_keys!r}, want {expected_relative_order!r}"
-    )
 
     with tempfile.TemporaryDirectory() as temp_dir:
         os.makedirs(os.path.join(temp_dir, "a"))
@@ -259,8 +264,13 @@ def test_posix_list_objects_matches_s3_lexicographic_order_when_directory_prefix
 
         provider = PosixFileStorageProvider(base_path=temp_dir)
         posix_keys = [obj.key for obj in provider.list_objects(path="")]
+        recursive_keys = [obj.key for obj in provider.list_objects_recursive(path="")]
 
-    assert posix_keys == s3_relative_keys, (
+    assert posix_keys == expected_relative_order, (
         "POSIX list_objects must match S3 list_objects for the same tree layout (relative keys); "
-        f"posix={posix_keys!r}, s3={s3_relative_keys!r}"
+        f"posix={posix_keys!r}, expected={expected_relative_order!r}"
+    )
+    assert recursive_keys == expected_relative_order, (
+        "POSIX list_objects_recursive must match S3 list_objects for the same tree layout (relative keys); "
+        f"posix={recursive_keys!r}, expected={expected_relative_order!r}"
     )
