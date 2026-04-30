@@ -256,6 +256,34 @@ class PosixFileStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="LIST", path=path)
 
+    @property
+    def supports_parallel_listing(self) -> bool:
+        """
+        Whether this provider supports heap-based parallel recursive listing.
+
+        :return: ``True`` for POSIX file storage.
+        """
+        return True
+
+    def _shallow_list(self, path: str, symlink_handling: SymlinkHandling) -> tuple[list[str], list[ObjectMetadata]]:
+        """
+        Adapt POSIX relative listing keys to the full-key contract expected by the recursive listing heap.
+        """
+        prefixes: list[str] = []
+        objects: list[ObjectMetadata] = []
+
+        for item in self._list_objects(path, include_directories=True, symlink_handling=symlink_handling):
+            full_key = self._prepend_base_path(item.key)
+            if item.type == "directory" and item.symlink_target is None:
+                child_prefix = full_key + "/"
+                if child_prefix != path.rstrip("/") + "/":
+                    prefixes.append(child_prefix)
+            else:
+                item.key = full_key
+                objects.append(item)
+
+        return prefixes, objects
+
     def _explore_directory(
         self,
         dir_path: str,

@@ -410,6 +410,43 @@ def test_list_symlinks_from_posix_with_preserve(temp_data_store_type: type[tempd
 
 
 @pytest.mark.parametrize(
+    argnames=["temp_data_store_type", "symlink_handling"],
+    argvalues=[
+        [tempdatastore.TemporaryPOSIXDirectory, SymlinkHandling.FOLLOW],
+        [tempdatastore.TemporaryPOSIXDirectory, SymlinkHandling.SKIP],
+        [tempdatastore.TemporaryPOSIXDirectory, SymlinkHandling.PRESERVE],
+    ],
+)
+def test_list_recursive_symlinks_from_posix_matches_list(
+    temp_data_store_type: type[tempdatastore.TemporaryDataStore],
+    symlink_handling: SymlinkHandling,
+):
+    with temp_data_store_type() as temp_data_store:
+        storage_client = _build_posix_storage_client_with_symlink_tree(temp_data_store)
+
+        list_objects = list(storage_client.list(prefix="", symlink_handling=symlink_handling))
+        recursive_objects = list(storage_client.list_recursive(path="", symlink_handling=symlink_handling))
+
+        assert [(o.key, o.type, o.symlink_target) for o in recursive_objects] == [
+            (o.key, o.type, o.symlink_target) for o in list_objects
+        ]
+
+
+def _build_posix_storage_client_for_preserve_error(
+    temp_data_store: tempdatastore.TemporaryDataStore,
+) -> tuple[StorageClient, str]:
+    profile = "data"
+    profile_config = temp_data_store.profile_config_dict()
+    base_path = os.path.realpath(profile_config["storage_provider"]["options"]["base_path"])
+    profile_config["storage_provider"]["options"]["base_path"] = base_path
+    config_dict = {"profiles": {profile: profile_config}}
+    storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
+
+    storage_client.write(path="c.txt", body=b"c content")
+    return storage_client, base_path
+
+
+@pytest.mark.parametrize(
     argnames=["temp_data_store_type"],
     argvalues=[[tempdatastore.TemporaryPOSIXDirectory]],
 )
@@ -439,14 +476,7 @@ def test_list_symlinks_from_posix_with_preserve_raises_on_external_target(
     external symlinks end up on a real POSIX tree.
     """
     with temp_data_store_type() as temp_data_store:
-        profile = "data"
-        profile_config = temp_data_store.profile_config_dict()
-        base_path = os.path.realpath(profile_config["storage_provider"]["options"]["base_path"])
-        profile_config["storage_provider"]["options"]["base_path"] = base_path
-        config_dict = {"profiles": {profile: profile_config}}
-        storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
-
-        storage_client.write(path="c.txt", body=b"c content")
+        storage_client, base_path = _build_posix_storage_client_for_preserve_error(temp_data_store)
 
         with tempfile.TemporaryDirectory() as outside_dir:
             outside_file = os.path.join(os.path.realpath(outside_dir), "outside.txt")
@@ -457,6 +487,27 @@ def test_list_symlinks_from_posix_with_preserve_raises_on_external_target(
 
             with pytest.raises(ValueError, match="points outside the base directory"):
                 list(storage_client.list(prefix="", symlink_handling=SymlinkHandling.PRESERVE))
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[[tempdatastore.TemporaryPOSIXDirectory]],
+)
+def test_list_recursive_symlinks_from_posix_with_preserve_raises_on_external_target(
+    temp_data_store_type: type[tempdatastore.TemporaryDataStore],
+):
+    with temp_data_store_type() as temp_data_store:
+        storage_client, base_path = _build_posix_storage_client_for_preserve_error(temp_data_store)
+
+        with tempfile.TemporaryDirectory() as outside_dir:
+            outside_file = os.path.join(os.path.realpath(outside_dir), "outside.txt")
+            with open(outside_file, "wb") as f:
+                f.write(b"outside content")
+
+            os.symlink(outside_file, os.path.join(base_path, "escaping"))
+
+            with pytest.raises(ValueError, match="points outside the base directory"):
+                list(storage_client.list_recursive(path="", symlink_handling=SymlinkHandling.PRESERVE))
 
 
 @pytest.mark.parametrize(
@@ -482,19 +533,28 @@ def test_list_symlinks_from_posix_with_preserve_raises_on_broken_target(
         └── dangling   -> missing.txt   (target does not exist)
     """
     with temp_data_store_type() as temp_data_store:
-        profile = "data"
-        profile_config = temp_data_store.profile_config_dict()
-        base_path = os.path.realpath(profile_config["storage_provider"]["options"]["base_path"])
-        profile_config["storage_provider"]["options"]["base_path"] = base_path
-        config_dict = {"profiles": {profile: profile_config}}
-        storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
-
-        storage_client.write(path="c.txt", body=b"c content")
+        storage_client, base_path = _build_posix_storage_client_for_preserve_error(temp_data_store)
 
         os.symlink(os.path.join(base_path, "missing.txt"), os.path.join(base_path, "dangling"))
 
         with pytest.raises(ValueError, match="Broken symlink"):
             list(storage_client.list(prefix="", symlink_handling=SymlinkHandling.PRESERVE))
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[[tempdatastore.TemporaryPOSIXDirectory]],
+)
+def test_list_recursive_symlinks_from_posix_with_preserve_raises_on_broken_target(
+    temp_data_store_type: type[tempdatastore.TemporaryDataStore],
+):
+    with temp_data_store_type() as temp_data_store:
+        storage_client, base_path = _build_posix_storage_client_for_preserve_error(temp_data_store)
+
+        os.symlink(os.path.join(base_path, "missing.txt"), os.path.join(base_path, "dangling"))
+
+        with pytest.raises(ValueError, match="Broken symlink"):
+            list(storage_client.list_recursive(path="", symlink_handling=SymlinkHandling.PRESERVE))
 
 
 @pytest.mark.serial

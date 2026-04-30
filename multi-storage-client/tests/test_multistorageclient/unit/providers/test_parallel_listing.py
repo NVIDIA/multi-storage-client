@@ -138,7 +138,7 @@ def oci_provider():
         yield OracleStorageProvider(namespace="test-ns", base_path="bucket")
 
 
-PARALLEL_PROVIDERS = ["s3_provider", "s3_provider_rust", "gcs_provider", "azure_provider"]
+PARALLEL_PROVIDERS = ["s3_provider", "s3_provider_rust", "gcs_provider", "azure_provider", "posix_provider"]
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -254,7 +254,7 @@ STRUCTURE_CASES = [
         ("gcs_provider", True),
         ("azure_provider", True),
         ("oci_provider", True),
-        ("posix_provider", False),
+        ("posix_provider", True),
     ],
     ids=["s3", "s3_rust", "gcs", "azure", "oci", "posix"],
 )
@@ -351,15 +351,15 @@ def test_invalid_start_after_end_at_raises(s3_provider):
 
 
 # ---------------------------------------------------------------------------
-# Tests: sequential fallback for non-parallel providers
+# Tests: POSIX uses the parallel listing adapter
 # ---------------------------------------------------------------------------
 
 
-def test_sequential_fallback(posix_provider):
-    """Non-parallel providers bypass the heap algorithm and fall back to _list_objects directly."""
+def test_posix_recursive_listing_uses_shallow_list(posix_provider):
+    """POSIX recursive listing should use the heap algorithm's shallow-list adapter."""
     _create_test_files(posix_provider, {"a": ["f1.txt"], "b": ["f2.txt"]})
 
     with patch.object(type(posix_provider), "_shallow_list", wraps=posix_provider._shallow_list) as spy:
         list(posix_provider.list_objects_recursive(path=""))
 
-    spy.assert_not_called()
+    spy.assert_called()
