@@ -1,0 +1,11 @@
+#
+# CodeRabbit configuration.
+#
+# https://docs.coderabbit.ai/reference/configuration
+#
+
+reviews:
+  profile: chill
+  auto_review:
+    enabled: true
+
