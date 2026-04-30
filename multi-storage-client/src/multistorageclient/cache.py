@@ -206,6 +206,10 @@ class CacheManager:
         """Check if etag is used in the cache config."""
         return self._cache_config.check_source_version
 
+    def prefetch_file(self) -> bool:
+        """Return whether open() should prefetch full files by default."""
+        return self._cache_config.prefetch_file
+
     def get_max_cache_size(self) -> int:
         """Return the cache size in bytes from the cache config."""
         return self._max_cache_size

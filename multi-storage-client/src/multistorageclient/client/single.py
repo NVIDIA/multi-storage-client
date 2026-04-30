@@ -840,7 +840,7 @@ class SingleStorageClient(AbstractStorageClient):
         atomic: bool = True,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
         attributes: Optional[dict[str, str]] = None,
-        prefetch_file: bool = True,
+        prefetch_file: Optional[bool] = None,
     ) -> Union[PosixFile, ObjectFile]:
         """
         Open a file for reading or writing.
@@ -859,7 +859,8 @@ class SingleStorageClient(AbstractStorageClient):
         :param attributes: Attributes to add to the file.
             This parameter is only applicable when the mode is "w" or "wb" or "a" or "ab". Defaults to None.
         :param prefetch_file: Whether to prefetch the file content.
-            This parameter is only applicable to ObjectFile when the mode is "r" or "rb". Defaults to True.
+            This parameter is only applicable to ObjectFile when the mode is "r" or "rb".
+            If None, inherits from cache configuration.
         :return: A file-like object (PosixFile or ObjectFile) for the specified path.
         :raises FileNotFoundError: If the file does not exist (read mode).
         """

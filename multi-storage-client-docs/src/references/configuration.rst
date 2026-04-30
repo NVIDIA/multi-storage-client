@@ -970,6 +970,10 @@ Options:
 
   * Use ETag for cache validation, it introduces a small overhead by checking the Etag agains the remote object on every read (optional, default: ``true``)
 
+* ``prefetch_file``
+
+  * Controls the default behavior for ``open()`` when caching is enabled. When ``true``, ``open()`` downloads and caches the full file before reads. When ``false``, binary ``open()`` reads use partial file caching and download chunks on demand. Explicit ``open(..., prefetch_file=...)`` arguments override this config value (optional, default: ``true``)
+
 * ``eviction_policy``: Cache eviction policy configuration (optional, default policy is ``"fifo"``)
 
   * ``policy``: Eviction policy type
@@ -995,6 +999,15 @@ Options:
    cache:
      size: 500G
      location: /path/to/msc_cache
+
+.. code-block:: yaml
+   :caption: Example configuration to make open() use partial file caching by default.
+
+   cache:
+     size: 500G
+     location: /path/to/msc_cache
+     cache_line_size: 64M
+     prefetch_file: false
 
 .. code-block:: yaml
    :caption: Example configuration to configure cache eviction policy.
