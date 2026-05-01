@@ -40,4 +40,4 @@ jobs:
           merge-multiple: true
       - working-directory: multi-storage-client-scripts
         run: |
-          uv run msc-scripts publish-release --github-token ${{ secrets.GITHUB_TOKEN }} --phase publish
+          uv run msc-scripts publish-release --github-token ${{ github.token }} --phase publish

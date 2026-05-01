@@ -19,8 +19,44 @@ defaults:
   run:
     shell: nix develop --command bash -e {0}
 jobs:
+  multi-storage-client-docs:
+    name: multi-storage-client-docs
+    permissions:
+      contents: read
+    outputs:
+      github_artifact_id: ${{ steps.upload-pages-artifact.outputs.artifact_id }}
+    runs-on: linux-amd64-cpu16
+    steps:
+      # Checkout.
+      - uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ inputs.git_tag }}
+      # Build cache.
+      - id: build-cache
+        uses: actions/cache@v5
+        with:
+          key: ${{ github.job }}-${{ hashFiles('flake.lock', 'flake.nix', 'nix/**/*', 'pyproject.toml', 'uv.lock', 'multi-storage-client/**/*', 'multi-storage-client-docs/**/*') }}
+          path: |
+            -
+            multi-storage-client-docs/dist/
+      # Install Nix.
+      - if: ${{ steps.build-cache.outputs.cache-hit != 'true' }}
+        uses: DeterminateSystems/determinate-nix-action@v3
+        with:
+          summarize: false
+      # Main.
+      - if: ${{ steps.build-cache.outputs.cache-hit != 'true' }}
+        working-directory: multi-storage-client-docs
+        run: |
+          just build
+      - id: upload-pages-artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: multi-storage-client-docs/dist/
   publish-documentation:
     name: Publish Documentation
+    needs:
+      - multi-storage-client-docs
     environment:
       name: GitHub Pages
     permissions:
@@ -38,4 +74,4 @@ jobs:
       # Main.
       - working-directory: multi-storage-client-scripts
         run: |
-          uv run msc-scripts publish-documentation --github-token ${{ secrets.GITHUB_TOKEN }} --git-tag ${{ inputs.git_tag }} --phase publish
+          uv run msc-scripts publish-documentation --github-artifact-id ${{ needs.multi-storage-client-docs.outputs.github_artifact_id }} --github-token ${{ github.token }} --git-tag ${{ inputs.git_tag }} --phase publish
