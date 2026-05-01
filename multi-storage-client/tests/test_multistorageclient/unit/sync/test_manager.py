@@ -31,6 +31,9 @@ class MockStorageClient:
     def list(self, **kwargs):
         raise Exception("No Such Method")
 
+    def list_recursive(self, **kwargs):
+        return self.list(**kwargs)
+
     def commit_metadata(self, prefix: Optional[str] = None) -> None:
         pass
 

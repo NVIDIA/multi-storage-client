@@ -217,8 +217,9 @@ class AbstractStorageClient(ABC):
         max_workers: int = 32,
         look_ahead: int = 2,
         include_url_prefix: bool = False,
-        follow_symlinks: bool = True,
+        follow_symlinks: Optional[bool] = None,
         patterns: Optional[PatternList] = None,
+        symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         """
         List files recursively under the specified path.
@@ -229,8 +230,9 @@ class AbstractStorageClient(ABC):
         :param max_workers: Maximum concurrent workers for provider-level recursive listing.
         :param look_ahead: Prefixes to buffer per worker for provider-level recursive listing.
         :param include_url_prefix: Whether to include the URL prefix ``msc://profile`` in the result.
-        :param follow_symlinks: Whether to follow symbolic links. Only applicable for POSIX file storage providers. When ``False``, symlinks are skipped during listing.
+        :param follow_symlinks: **Deprecated.** Use ``symlink_handling`` instead.
         :param patterns: PatternList for include/exclude filtering. If None, all files are included.
+        :param symlink_handling: How to handle symbolic links during listing.
         :return: An iterator over ObjectMetadata for matching files.
         """
         pass

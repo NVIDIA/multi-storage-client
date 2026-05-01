@@ -390,6 +390,9 @@ MSC automatically determines optimal parallelism based on your system's CPU coun
    # Set threads per process (default: max(16, CPU_count/processes))
    $ export MSC_NUM_THREADS_PER_PROCESS=8
 
+   # Disable parallel source/target listing during sync
+   $ export MSC_SYNC_DISABLE_PARALLEL_LISTING=true
+
    # Run sync with custom parallelism
    $ msc sync msc://source-profile/data --target-url msc://target-profile/data
 
