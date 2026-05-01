@@ -8,7 +8,6 @@
   dpkg,
   fake-gcs-server,
   gettext,
-  gh,
   git,
   git-lfs,
   gnused,
@@ -17,7 +16,6 @@
   google-cloud-sdk,
   golangci-lint,
   grafana,
-  jfrog-cli,
   jq,
   just,
   lib,
@@ -30,7 +28,6 @@
   nixfmt,
   nodejs-slim,
   openbao,
-  openssh,
   openssl,
   pyright,
   python310,
@@ -130,12 +127,6 @@ mkShell {
     google-cloud-sdk
     # OpenSSL.
     openssl
-    # JFrog CLI.
-    jfrog-cli
-    # OpenSSH.
-    openssh
-    # GitHub CLI.
-    gh
   ];
 
   shellHook =

@@ -38,4 +38,4 @@ jobs:
       - working-directory: multi-storage-client-scripts
         run: |
           just get-publish-credentials
-          uv run msc-scripts publish-wheels --github-token ${{ secrets.GITHUB_TOKEN }} --kitmaker-token TODO --git-tag ${{ inputs.git_tag }} --phase publish
+          uv run msc-scripts publish-wheels --github-token ${{ github.token }} --kitmaker-token TODO --git-tag ${{ inputs.git_tag }} --phase publish
