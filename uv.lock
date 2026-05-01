@@ -1004,7 +1004,7 @@ wheels = [
 
 [[package]]
 name = "githubkit"
-version = "0.15.3"
+version = "0.15.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -1013,9 +1013,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7f/34/371114facd4562abba2028c411863c33b1efd7958b6d430fc879bb1b574f/githubkit-0.15.3.tar.gz", hash = "sha256:85da32c1ce9a0d09ec70cae320564a6900ca5c3c96483c4cffece5b2140e8e62", size = 5511518, upload-time = "2026-04-11T06:55:10.114Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ff/ac/857b78d82bf95a91413322614d6751db2f55ab214b24239f31729d8821e6/githubkit-0.15.5.tar.gz", hash = "sha256:5ee487b77d3f4332c73fe5dbc69f932d8012ff0bb1aa9c544c238aef74ef1ae0", size = 5550333, upload-time = "2026-05-01T08:57:12.016Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/03/aa/65494bf3fc4a66dd91b1614e4d068dae97addbf3ebab30f6e7f8cc631a3a/githubkit-0.15.3-py3-none-any.whl", hash = "sha256:1711db646d993a7ec533c489f60f32653bccad0c1196a1ce785afedf67c401f0", size = 13511252, upload-time = "2026-04-11T06:55:13.562Z" },
+    { url = "https://files.pythonhosted.org/packages/76/ed/d08de6b425a6cce4554ea70a559e03d545058881b5b1d2d0a193d886d3a8/githubkit-0.15.5-py3-none-any.whl", hash = "sha256:69934fdce7e4f197f24d85ea91d808ef245f4463bb982e4c19ac32d827bc7a40", size = 13436716, upload-time = "2026-05-01T08:57:07.644Z" },
 ]
 
 [[package]]
@@ -2071,7 +2071,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "dulwich", specifier = ">=1.1.0,<2" },
-    { name = "githubkit", specifier = ">=0.15.3,<1" },
+    { name = "githubkit", specifier = ">=0.15.5,<1" },
     { name = "multi-storage-client", editable = "multi-storage-client" },
     { name = "packaging", specifier = ">=26.1,<27" },
     { name = "pyartifactory", specifier = ">=2.11.2,<3" },
