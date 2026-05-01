@@ -187,7 +187,7 @@ class CompositeStorageClient(AbstractStorageClient):
         memory_load_limit: int = MEMORY_LOAD_LIMIT,
         atomic: bool = True,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
-        attributes: Optional[dict[str, str]] = None,
+        attributes: Optional[dict[str, Any]] = None,
         prefetch_file: Optional[bool] = None,
     ) -> Union[PosixFile, ObjectFile]:
         """
@@ -340,7 +340,7 @@ class CompositeStorageClient(AbstractStorageClient):
         self,
         path: str,
         body: bytes,
-        attributes: Optional[dict[str, str]] = None,
+        attributes: Optional[dict[str, Any]] = None,
     ) -> None:
         """Write operations not supported in read-only mode."""
         raise NotImplementedError(
@@ -377,7 +377,7 @@ class CompositeStorageClient(AbstractStorageClient):
         self,
         remote_path: str,
         local_path: Union[str, IO],
-        attributes: Optional[dict[str, str]] = None,
+        attributes: Optional[dict[str, Any]] = None,
     ) -> None:
         """Upload operations not supported in read-only mode."""
         raise NotImplementedError(
@@ -388,7 +388,7 @@ class CompositeStorageClient(AbstractStorageClient):
         self,
         remote_paths: list[str],
         local_paths: list[str],
-        attributes: Optional[Sequence[Optional[dict[str, str]]]] = None,
+        attributes: Optional[Sequence[Optional[dict[str, Any]]]] = None,
         max_workers: int = 16,
     ) -> None:
         """Upload operations not supported in read-only mode."""

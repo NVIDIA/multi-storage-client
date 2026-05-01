@@ -24,7 +24,7 @@ import traceback
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import xattr
 
@@ -391,7 +391,7 @@ class PosixToRemoteHandler(BatchSyncHandler):
     ) -> None:
         source_local_paths: list[str] = []
         target_remote_paths: list[str] = []
-        attributes: list[Optional[dict[str, str]]] = []
+        attributes: list[Optional[dict[str, Any]]] = []
 
         for file_metadata, target_file_path in transfer_items:
             source_physical_path = self.source_client.get_posix_path(file_metadata.key)
@@ -445,7 +445,7 @@ class RemoteToRemoteHandler(BatchSyncHandler):
             target_remote_paths: list[str] = []
             temp_local_paths: list[str] = []
             source_metadata: list[ObjectMetadata] = []
-            attributes: list[Optional[dict[str, str]]] = []
+            attributes: list[Optional[dict[str, Any]]] = []
 
             for i, (file_metadata, target_file_path) in enumerate(transfer_items):
                 source_remote_paths.append(file_metadata.key)

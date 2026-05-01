@@ -16,6 +16,7 @@
 import asyncio
 import heapq
 import importlib.metadata as importlib_metadata
+import json
 import logging
 import os
 import queue
@@ -569,18 +570,37 @@ class BaseStorageProvider(StorageProvider):
     def _prepend_base_path(self, path: str) -> str:
         return os.path.join(self._base_path, path.lstrip("/"))
 
+    @staticmethod
+    def _prepare_provider_attributes(attributes: Optional[dict[str, Any]]) -> Optional[dict[str, str]]:
+        if not attributes:
+            return None
+
+        provider_attributes: dict[str, str] = {}
+        for key, value in attributes.items():
+            if isinstance(value, str):
+                provider_attributes[key] = value
+                continue
+
+            try:
+                provider_attributes[key] = json.dumps(value, separators=(",", ":"), sort_keys=True)
+            except (TypeError, ValueError):
+                provider_attributes[key] = str(value)
+
+        return provider_attributes
+
     def put_object(
         self,
         path: str,
         body: bytes,
         if_match: Optional[str] = None,
         if_none_match: Optional[str] = None,
-        attributes: Optional[dict[str, str]] = None,
+        attributes: Optional[dict[str, Any]] = None,
     ) -> None:
         path = self._prepend_base_path(path)
+        provider_attributes = self._prepare_provider_attributes(attributes)
         self._emit_metrics(
             operation=BaseStorageProvider._Operation.WRITE,
-            f=lambda: self._put_object(path, body, if_match, if_none_match, attributes),
+            f=lambda: self._put_object(path, body, if_match, if_none_match, provider_attributes),
         )
 
     def get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
@@ -983,11 +1003,12 @@ class BaseStorageProvider(StorageProvider):
                                 break
                             yield obj
 
-    def upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, str]] = None) -> None:
+    def upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, Any]] = None) -> None:
         remote_path = self._prepend_base_path(remote_path)
+        provider_attributes = self._prepare_provider_attributes(attributes)
         self._emit_metrics(
             operation=BaseStorageProvider._Operation.WRITE,
-            f=lambda: self._upload_file(remote_path, f, attributes),
+            f=lambda: self._upload_file(remote_path, f, provider_attributes),
         )
 
     def download_file(self, remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> None:
@@ -1132,7 +1153,7 @@ class BaseStorageProvider(StorageProvider):
         self,
         local_paths: list[str],
         remote_paths: list[str],
-        attributes: Optional[Sequence[Optional[dict[str, str]]]] = None,
+        attributes: Optional[Sequence[Optional[dict[str, Any]]]] = None,
         max_workers: int = 16,
     ) -> None:
         if len(local_paths) != len(remote_paths):
@@ -1158,7 +1179,7 @@ class BaseStorageProvider(StorageProvider):
         self,
         local_paths: list[str],
         remote_paths: list[str],
-        attributes: Optional[Sequence[Optional[dict[str, str]]]] = None,
+        attributes: Optional[Sequence[Optional[dict[str, Any]]]] = None,
         max_workers: int = 16,
     ) -> None:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:

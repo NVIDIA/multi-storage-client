@@ -285,7 +285,7 @@ class SingleStorageClient(AbstractStorageClient):
         return self._metadata_provider.generate_physical_path(logical_path, for_overwrite=False).physical_path
 
     def _register_written_file(
-        self, virtual_path: str, physical_path: str, attributes: Optional[dict[str, str]] = None
+        self, virtual_path: str, physical_path: str, attributes: Optional[dict[str, Any]] = None
     ) -> None:
         """
         Register a written file with the metadata provider.
@@ -309,7 +309,7 @@ class SingleStorageClient(AbstractStorageClient):
         self,
         virtual_paths: Sequence[str],
         physical_paths: Sequence[str],
-        attributes: Optional[Sequence[Optional[dict[str, str]]]] = None,
+        attributes: Optional[Sequence[Optional[dict[str, Any]]]] = None,
         max_workers: int = 16,
     ) -> None:
         """Register multiple written files with the metadata provider concurrently."""
@@ -483,7 +483,7 @@ class SingleStorageClient(AbstractStorageClient):
 
     @retry
     def upload_file(
-        self, remote_path: str, local_path: Union[str, IO], attributes: Optional[dict[str, str]] = None
+        self, remote_path: str, local_path: Union[str, IO], attributes: Optional[dict[str, Any]] = None
     ) -> None:
         """
         Uploads a file from the local file system to the storage provider.
@@ -496,7 +496,7 @@ class SingleStorageClient(AbstractStorageClient):
         virtual_path = remote_path
         if self._metadata_provider:
             physical_path = self._resolve_write_path(remote_path)
-            self._storage_provider.upload_file(physical_path, local_path, attributes=None)
+            self._storage_provider.upload_file(physical_path, local_path, attributes)
             self._register_written_file(virtual_path, physical_path, attributes)
         else:
             self._storage_provider.upload_file(remote_path, local_path, attributes)
@@ -505,7 +505,7 @@ class SingleStorageClient(AbstractStorageClient):
         self,
         remote_paths: list[str],
         local_paths: list[str],
-        attributes: Optional[Sequence[Optional[dict[str, str]]]] = None,
+        attributes: Optional[Sequence[Optional[dict[str, Any]]]] = None,
         max_workers: int = 16,
     ) -> None:
         """
@@ -532,7 +532,7 @@ class SingleStorageClient(AbstractStorageClient):
             self._storage_provider.upload_files(local_paths, remote_paths, attributes, max_workers)
 
     @retry
-    def write(self, path: str, body: bytes, attributes: Optional[dict[str, str]] = None) -> None:
+    def write(self, path: str, body: bytes, attributes: Optional[dict[str, Any]] = None) -> None:
         """
         Write bytes to a file at the specified path.
 
@@ -543,7 +543,7 @@ class SingleStorageClient(AbstractStorageClient):
         virtual_path = path
         if self._metadata_provider:
             physical_path = self._resolve_write_path(path)
-            self._storage_provider.put_object(physical_path, body, attributes=None)
+            self._storage_provider.put_object(physical_path, body, attributes=attributes)
             self._register_written_file(virtual_path, physical_path, attributes)
         else:
             self._storage_provider.put_object(path, body, attributes=attributes)
@@ -839,7 +839,7 @@ class SingleStorageClient(AbstractStorageClient):
         memory_load_limit: int = MEMORY_LOAD_LIMIT,
         atomic: bool = True,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
-        attributes: Optional[dict[str, str]] = None,
+        attributes: Optional[dict[str, Any]] = None,
         prefetch_file: Optional[bool] = None,
     ) -> Union[PosixFile, ObjectFile]:
         """

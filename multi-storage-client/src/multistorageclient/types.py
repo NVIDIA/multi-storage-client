@@ -263,7 +263,7 @@ class StorageProvider(ABC):
         body: bytes,
         if_match: Optional[str] = None,
         if_none_match: Optional[str] = None,
-        attributes: Optional[dict[str, str]] = None,
+        attributes: Optional[dict[str, Any]] = None,
     ) -> None:
         """
         Uploads an object to the storage provider.
@@ -392,7 +392,7 @@ class StorageProvider(ABC):
         pass
 
     @abstractmethod
-    def upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, str]] = None) -> None:
+    def upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, Any]] = None) -> None:
         """
         Uploads a file from the local file system to the storage provider.
 
@@ -440,7 +440,7 @@ class StorageProvider(ABC):
         self,
         local_paths: list[str],
         remote_paths: list[str],
-        attributes: Optional[Sequence[Optional[dict[str, str]]]] = None,
+        attributes: Optional[Sequence[Optional[dict[str, Any]]]] = None,
         max_workers: int = 16,
     ) -> None:
         """

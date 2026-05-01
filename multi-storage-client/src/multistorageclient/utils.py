@@ -463,17 +463,17 @@ def calculate_worker_processes_and_threads(
     return num_worker_processes, num_worker_threads
 
 
-def validate_attributes(attributes: Optional[dict[str, str]]) -> Optional[dict[str, str]]:
+def validate_attributes(attributes: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
     """
-    Validates key/value lengths.
+    Validates key and string value lengths.
 
     :param attributes: Dictionary of attributes to parse
-    :raises ValueError: If key or value exceeds maximum length limits
+    :raises ValueError: If a key or string value exceeds maximum length limits
     :return: same attributes dictionary or None if attributes is None
 
     Limits:
     - Maximum Key Length: 32 Unicode characters
-    - Maximum Value Length: 128 Unicode characters
+    - Maximum String Value Length: 128 Unicode characters
     """
     if not attributes:
         return None
@@ -483,8 +483,7 @@ def validate_attributes(attributes: Optional[dict[str, str]]) -> Optional[dict[s
         if len(key) > 32:
             raise ValueError(f"Attribute key '{key}' exceeds maximum length of 32 characters (actual: {len(key)})")
 
-        # Validate value length
-        if len(value) > 128:
+        if isinstance(value, str) and len(value) > 128:
             raise ValueError(
                 f"Attribute value for key '{key}' exceeds maximum length of 128 characters (actual: {len(value)})"
             )

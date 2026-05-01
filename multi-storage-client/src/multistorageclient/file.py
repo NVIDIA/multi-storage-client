@@ -201,7 +201,7 @@ class ObjectFile(IOBase, IO):
     _cache_manager: Optional[CacheManager] = None
 
     _local_path: Optional[str] = None
-    _attributes: Optional[dict[str, str]] = None
+    _attributes: Optional[dict[str, Any]] = None
 
     def __init__(
         self,
@@ -212,7 +212,7 @@ class ObjectFile(IOBase, IO):
         disable_read_cache: bool = False,
         memory_load_limit: int = MEMORY_LOAD_LIMIT,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
-        attributes: Optional[dict[str, str]] = None,
+        attributes: Optional[dict[str, Any]] = None,
         prefetch_file: Optional[bool] = None,
     ):
         """
@@ -635,7 +635,7 @@ class PosixFile(IOBase, IO):
 
     _storage_client: AbstractStorageClient
     _file: IO
-    _attributes: Optional[dict[str, str]] = None
+    _attributes: Optional[dict[str, Any]] = None
 
     def __init__(
         self,
@@ -645,7 +645,7 @@ class PosixFile(IOBase, IO):
         buffering: int = -1,
         encoding: Optional[str] = None,
         atomic: bool = True,
-        attributes: Optional[dict[str, str]] = None,
+        attributes: Optional[dict[str, Any]] = None,
     ):
         # Store storage_client for emitting metrics
         self._storage_client = storage_client

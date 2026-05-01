@@ -289,7 +289,7 @@ def glob(pattern: str, attribute_filter_expression: Optional[str] = None) -> lis
         return client.glob(path, include_url_prefix=True, attribute_filter_expression=attribute_filter_expression)
 
 
-def upload_file(url: str, local_path: str, attributes: Optional[dict[str, str]] = None) -> None:
+def upload_file(url: str, local_path: str, attributes: Optional[dict[str, Any]] = None) -> None:
     """
     Upload a file to the given URL from a local path.
 
@@ -527,7 +527,7 @@ def list_recursive(
     )
 
 
-def write(url: str, body: bytes, attributes: Optional[dict[str, str]] = None) -> None:
+def write(url: str, body: bytes, attributes: Optional[dict[str, Any]] = None) -> None:
     """
     Writes an object to the storage provider at the specified path.
 

@@ -70,7 +70,7 @@ def dump(
     *,
     fix_imports: bool = True,
     buffer_callback: Optional[Callable[[Any], None]] = None,
-    attributes: Optional[dict[str, str]] = None,
+    attributes: Optional[dict[str, Any]] = None,
 ) -> None:
     """
     Adapt ``pickle.dump``.
