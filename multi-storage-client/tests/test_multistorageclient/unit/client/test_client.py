@@ -344,6 +344,47 @@ def test_single_list_recursive_file_short_circuit_applies_key_bounds(single_back
     assert [obj.key for obj in included] == ["data/file.bin"]
 
 
+def test_single_write_with_metadata_provider_accepts_non_string_attributes(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+
+    metadata_provider = MagicMock()
+    metadata_provider.realpath.return_value = ResolvedPath(
+        physical_path="logical/file.bin", state=ResolvedPathState.UNTRACKED
+    )
+    metadata_provider.generate_physical_path.return_value = ResolvedPath(
+        physical_path="physical/file.bin", state=ResolvedPathState.UNTRACKED
+    )
+    metadata_provider.allow_overwrites.return_value = False
+
+    physical_metadata = ObjectMetadata(
+        key="physical/file.bin",
+        content_length=4,
+        last_modified=datetime.now(tz=timezone.utc),
+        metadata={"existing": "value"},
+    )
+    single._storage_provider.put_object = MagicMock()
+    single._storage_provider.get_object_metadata = MagicMock(return_value=physical_metadata)
+    single._metadata_provider = metadata_provider
+    single._metadata_provider_lock = None
+
+    attributes = {
+        "count": 1,
+        "enabled": True,
+        "labels": ["train", "eval"],
+        "nested": {"source": "test"},
+    }
+
+    client.write("logical/file.bin", b"data", attributes=attributes)
+
+    single._storage_provider.put_object.assert_called_once_with("physical/file.bin", b"data", attributes=attributes)
+    metadata_provider.add_file.assert_called_once()
+    add_file_path, add_file_metadata = metadata_provider.add_file.call_args.args
+    assert add_file_path == "logical/file.bin"
+    assert add_file_metadata.metadata == {"existing": "value", **attributes}
+
+
 # --- Batch download_files / upload_files tests ---
 
 
@@ -559,7 +600,7 @@ def test_single_upload_files_with_metadata_and_attributes(single_backend_config)
     single._metadata_provider = metadata_provider
     single._metadata_provider_lock = None
 
-    attrs = [{"tag": "first"}, {"tag": "second"}]
+    attrs = [{"tag": "first", "count": 1}, {"tag": "second", "nested": {"key": "value"}}]
     client.upload_files(["logical/a", "logical/b"], ["/la", "/lb"], attributes=attrs, max_workers=8)
 
     single._storage_provider.upload_files.assert_called_once_with(
@@ -567,9 +608,9 @@ def test_single_upload_files_with_metadata_and_attributes(single_backend_config)
     )
     assert metadata_provider.add_file.call_count == 2
     added_meta_a = metadata_provider.add_file.call_args_list[0][0][1]
-    assert added_meta_a.metadata == {"tag": "first"}
+    assert added_meta_a.metadata == {"tag": "first", "count": 1}
     added_meta_b = metadata_provider.add_file.call_args_list[1][0][1]
-    assert added_meta_b.metadata == {"existing": "val", "tag": "second"}
+    assert added_meta_b.metadata == {"existing": "val", "tag": "second", "nested": {"key": "value"}}
 
 
 def test_single_upload_files_registers_metadata_in_parallel(single_backend_config):

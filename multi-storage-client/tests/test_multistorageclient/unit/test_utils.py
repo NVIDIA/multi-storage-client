@@ -35,6 +35,7 @@ from multistorageclient.utils import (
     join_paths,
     matches_attribute_filter_expression,
     merge_dictionaries_no_overwrite,
+    validate_attributes,
 )
 
 
@@ -183,6 +184,17 @@ def test_merge_dictionaries_no_overwrite_no_conflicts():
     assert merged["profiles"]["s3-remote"]["storage_provider"]["options"]["endpoint_url"] == "https://s3.amazonaws.com"
     assert merged["profiles"]["s3-local"]["storage_provider"]["options"]["endpoint_url"] == "http://localhost:9000"
     assert merged["cache"]["location"] == "/tmp/"
+
+
+def test_validate_attributes_allows_non_string_values():
+    attributes = {
+        "count": 1,
+        "enabled": True,
+        "nested": {"key": "value"},
+        "items": ["a", "b"],
+    }
+
+    assert validate_attributes(attributes) is attributes
 
 
 def test_merge_dictionaries_no_overwrite_with_conflict():

@@ -123,6 +123,55 @@ def test_list_objects_with_prefix_in_base_path():
         assert m.key.startswith("dir")
 
 
+def test_put_object_converts_provider_attributes_to_strings():
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+    provider._put_object = MagicMock(return_value=4)
+
+    attributes = {
+        "name": "model",
+        "count": 1,
+        "enabled": True,
+        "labels": ["train", "eval"],
+        "nested": {"source": "test"},
+    }
+
+    provider.put_object("file.txt", b"data", attributes=attributes)
+
+    provider._put_object.assert_called_once_with(
+        "bucket/file.txt",
+        b"data",
+        None,
+        None,
+        {
+            "name": "model",
+            "count": "1",
+            "enabled": "true",
+            "labels": '["train","eval"]',
+            "nested": '{"source":"test"}',
+        },
+    )
+    assert attributes["count"] == 1
+    assert attributes["labels"] == ["train", "eval"]
+
+
+def test_upload_file_converts_provider_attributes_to_strings():
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+    provider._upload_file = MagicMock(return_value=4)
+
+    provider.upload_file("file.txt", "/tmp/file.txt", attributes={"count": 1})
+
+    provider._upload_file.assert_called_once_with("bucket/file.txt", "/tmp/file.txt", {"count": "1"})
+
+
+def test_provider_attribute_conversion_leaves_validation_to_provider_hook():
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+    provider._put_object = MagicMock(return_value=4)
+
+    provider.put_object("file.txt", b"data", attributes={"values": ["x" * 128]})
+
+    provider._put_object.assert_called_once_with("bucket/file.txt", b"data", None, None, {"values": f'["{"x" * 128}"]'})
+
+
 def test_list_objects_with_empty_base_path():
     """Test that list_objects raises ValueError when base_path is empty."""
     provider = MockBaseStorageProvider(base_path="", provider_name="mock")
