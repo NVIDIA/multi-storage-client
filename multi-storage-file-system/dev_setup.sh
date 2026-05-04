@@ -13,7 +13,7 @@ Examples:
     ${SCRIPT_NAME} -h          # Show this help message
     ${SCRIPT_NAME} ais         # Populates the AIStore object store "dev" bucket
     ${SCRIPT_NAME} aisMinio    # Populates the MinIO object store "dev" bucket cached by the AIStore object store "dev" bucket
-    ${SCRIPT_NAME} garage      # Populates the Garage object store "dev" bucket
+    ${SCRIPT_NAME} garage      # Populates the Garage object store "dev" bucket (currently disabled)
     ${SCRIPT_NAME} gcs         # Populates the fake-gcs-server object store "dev" bucket
     ${SCRIPT_NAME} minio       # Populates the MinIO object store "dev" bucket
     ${SCRIPT_NAME} versity     # Populates the Versity object store "dev" bucket
@@ -41,6 +41,7 @@ waitForFakeGCS() {
 }
 
 waitForGarage() {
+
     garageCount="0"
     while [ "$garageCount" -ne 1 ]; do
         sleep 1
@@ -97,12 +98,12 @@ case "$target_bucket" in
         # ais ls ais://dev --all
         ais ls s3://dev --all
         ;;
-    garage)
-        waitForGarage
-        s3cmd --config=${SCRIPT_DIR}/garage.s3cfg mb s3://dev
-        find . -type f | sed 's/^..//' | xargs -I {} s3cmd --config=${SCRIPT_DIR}/garage.s3cfg put {} s3://dev/{}
-        s3cmd --config=${SCRIPT_DIR}/garage.s3cfg ls -r s3://dev
-        ;;
+    # garage)
+    #     waitForGarage
+    #     s3cmd --config=${SCRIPT_DIR}/garage.s3cfg mb s3://dev
+    #     find . -type f | sed 's/^..//' | xargs -I {} s3cmd --config=${SCRIPT_DIR}/garage.s3cfg put {} s3://dev/{}
+    #     s3cmd --config=${SCRIPT_DIR}/garage.s3cfg ls -r s3://dev
+    #     ;;
     gcs)
         waitForFakeGCS
         curl -X POST http://fake-gcs:4443/storage/v1/b -H 'Content-Type: application/json' -d '{"name": "dev"}'

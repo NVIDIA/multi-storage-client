@@ -34,6 +34,12 @@ func initFS() {
 	}
 	globals.logger.Printf("[INFO] cache dir: \"%s\"", globals.cacheDir)
 
+	err = dataCacheUp()
+	if err != nil {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] dataCacheUp() failed: %v", err)
+	}
+
 	err = metadataCacheUp()
 	if err != nil {
 		dumpStack()
@@ -99,7 +105,6 @@ func initFS() {
 	globals.outboundCacheLineList = list.New()
 	globals.dirtyCacheLineLRU = list.New()
 
-	globals.cacheMap = make(map[uint64]*cacheLineStruct, globals.config.cacheLines)
 	globals.fhMap = make(map[uint64]*fhStruct)
 
 	globals.fissionMetrics = newFissionMetrics()
@@ -119,7 +124,7 @@ func drainFS() {
 	globals.inodeEvictorCancelFunc()
 	globals.inodeEvictorWaitGroup.Wait()
 
-	globalsLock("fs.go:122:2:drainFS")
+	globalsLock("fs.go:127:2:drainFS")
 
 	for dirName, backend = range globals.config.backends {
 		globals.backendsToUnmount[dirName] = backend
@@ -131,6 +136,12 @@ func drainFS() {
 	if err != nil {
 		dumpStack()
 		globals.logger.Fatalf("[FATAL] metadataCacheDown() failed: %v", err)
+	}
+
+	err = dataCacheDown()
+	if err != nil {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] dataCacheDown() failed: %v", err)
 	}
 
 	err = os.RemoveAll(globals.cacheDir)
@@ -155,7 +166,7 @@ func processToMountList() {
 		timeNow time.Time
 	)
 
-	globalsLock("fs.go:158:2:processToMountList")
+	globalsLock("fs.go:169:2:processToMountList")
 
 	timeNow = time.Now()
 
@@ -231,7 +242,7 @@ func processToMountList() {
 // `processToUnmountList` is called to remove each backend subdirectory of the FUSE
 // file system's root directory found on the globals.backendsToUnmount list.
 func processToUnmountList() {
-	globalsLock("fs.go:234:2:processToUnmountList")
+	globalsLock("fs.go:245:2:processToUnmountList")
 	processToUnmountListAlreadyLocked()
 	globalsUnlock()
 }
@@ -590,32 +601,30 @@ func (parentInode *inodeStruct) createFileObjectInode(isVirt bool, basename stri
 // - Only clean cache lines should remain
 func clearFileCacheLinesLocked(inode *inodeStruct) {
 	var (
-		cacheLine       *cacheLineStruct
-		cacheLineNonce  uint64
-		cacheLineNumber uint64
-		ok              bool
+		cacheLineNumber      uint64
+		dataCacheLineNumber  uint64
+		dataCacheLineTracker *dataCacheLineTrackerStruct
 	)
 
 	if inode == nil || inode.inodeType != FileObject {
 		return
 	}
 
-	for cacheLineNumber, cacheLineNonce = range inode.cacheMap {
-		cacheLine, ok = globals.cacheMap[cacheLineNonce]
-		if !ok {
+	for cacheLineNumber, dataCacheLineNumber = range inode.cacheMap {
+		if dataCacheLineNumber >= uint64(len(globals.dataCacheLinesTracker)) {
 			dumpStack()
-			globals.logger.Fatalf("[FATAL] globals.cacheMap[cacheLineNonce] returned !ok")
+			globals.logger.Fatalf("[FATAL] inode.cacheMap[cacheLineNumber] returned out-of-range dataCacheLineNumber")
 		}
-		if cacheLine.state != CacheLineClean {
+		dataCacheLineTracker = &globals.dataCacheLinesTracker[dataCacheLineNumber]
+		if dataCacheLineTracker.state != CacheLineClean {
 			dumpStack()
-			globals.logger.Fatalf("[FATAL] cacheLine.state(%v) != CacheLineClean(%v)", cacheLine.state, CacheLineClean)
+			globals.logger.Fatalf("[FATAL] dataCacheLineTracker.state(%v) != CacheLineClean(%v)", dataCacheLineTracker.state, CacheLineClean)
 		}
 
-		_ = globals.cleanCacheLineLRU.Remove(cacheLine.listElement)
-		cacheLine.listElement = nil
+		globals.dataCacheLineCleanLRU.popThis(dataCacheLineTracker)
 
 		delete(inode.cacheMap, cacheLineNumber)
-		delete(globals.cacheMap, cacheLineNonce)
+		dataCacheLineTracker.free()
 	}
 }
 
@@ -810,11 +819,7 @@ func inodeEvictor() {
 	for {
 		select {
 		case <-ticker.C:
-			globalsLock("fs.go:813:4:inodeEvictor")
-
-			// Trim globals.cleanCacheLineLRU as possible/necessary
-
-			cachePrune()
+			globalsLock("fs.go:822:4:inodeEvictor")
 
 			// Scan globals.inodeEvictionLRU looking for expired inodes to evict
 
@@ -1080,7 +1085,7 @@ func prefetchDirectory(dirInodeNumber uint64) {
 		startTime               = time.Now()
 	)
 
-	globalsLock("fs.go:1083:2:prefetchDirectory")
+	globalsLock("fs.go:1088:2:prefetchDirectory")
 
 	dirInode, ok = globals.inodeMap.get(dirInodeNumber)
 	if !ok {
@@ -1109,7 +1114,7 @@ func prefetchDirectory(dirInodeNumber uint64) {
 			globals.logger.Printf("[WARN] listDirectoryWrapper(dirInode.backend.context, listDirectoryInput) failed: %v", err)
 		}
 
-		globalsLock("fs.go:1112:3:prefetchDirectory")
+		globalsLock("fs.go:1117:3:prefetchDirectory")
 
 		dirInode, ok = globals.inodeMap.get(dirInodeNumber)
 		if !ok {
@@ -1275,7 +1280,7 @@ func dumpFS(w io.Writer) {
 		rootDirInode *inodeStruct
 	)
 
-	globalsLock("fs.go:1278:2:dumpFS")
+	globalsLock("fs.go:1283:2:dumpFS")
 
 	rootDirInode, ok = globals.inodeMap.get(FUSERootDirInodeNumber)
 	if !ok {
@@ -1426,40 +1431,41 @@ func (thisInode *inodeStruct) dumpFS(w io.Writer, indent string, expectedInodeNu
 // while unlocked.
 func (thisInode *inodeStruct) finishPendingDelete() {
 	var (
-		backend         *backendStruct
-		cacheLine       *cacheLineStruct
-		cacheLineNonce  uint64
-		cacheLineNumber uint64
-		cacheLineWaiter sync.WaitGroup
-		deleteFileInput *deleteFileInputStruct
-		err             error
-		ok              bool
-		parentInode     *inodeStruct
+		backend              *backendStruct
+		cacheLineNumber      uint64
+		cacheLineWaiter      sync.WaitGroup
+		dataCacheLineNumber  uint64
+		dataCacheLineTracker *dataCacheLineTrackerStruct
+		deleteFileInput      *deleteFileInputStruct
+		err                  error
+		ok                   bool
+		parentInode          *inodeStruct
 	)
 
 Restart:
 
-	globalsLock("fs.go:1442:2:(*inodeStruct).finishPendingDelete")
+	globalsLock("fs.go:1447:2:(*inodeStruct).finishPendingDelete")
 
 	// Let's just drop cache lines that are either "clean" io "dirty"
 
-	for cacheLineNumber, cacheLineNonce = range thisInode.cacheMap {
-		cacheLine, ok = globals.cacheMap[cacheLineNonce]
-		if !ok {
+	for cacheLineNumber, dataCacheLineNumber = range thisInode.cacheMap {
+		if dataCacheLineNumber >= uint64(len(globals.dataCacheLinesTracker)) {
 			dumpStack()
-			globals.logger.Fatalf("[FATAL] globals.cacheMap[cacheLineNonce] returned !ok [case 1]")
+			globals.logger.Fatalf("[FATAL] inode.cacheMap[cacheLineNumber] returned out-of-range dataCacheLineNumber [case 1]")
 		}
-		switch cacheLine.state {
+		dataCacheLineTracker = &globals.dataCacheLinesTracker[dataCacheLineNumber]
+		switch dataCacheLineTracker.state {
 		case CacheLineClean:
 			delete(thisInode.cacheMap, cacheLineNumber)
-			delete(globals.cacheMap, cacheLineNonce)
-			_ = globals.cleanCacheLineLRU.Remove(cacheLine.listElement)
-			cacheLine.listElement = nil
+			globals.dataCacheLineCleanLRU.popThis(dataCacheLineTracker)
+			dataCacheLineTracker.free()
 		case CacheLineDirty:
 			delete(thisInode.cacheMap, cacheLineNumber)
-			delete(globals.cacheMap, cacheLineNonce)
-			_ = globals.dirtyCacheLineLRU.Remove(cacheLine.listElement)
-			cacheLine.listElement = nil
+			globals.dataCacheLineDirtyLRU.popThis(dataCacheLineTracker)
+			if thisInode.dirtyCacheLineCount > 0 {
+				thisInode.dirtyCacheLineCount--
+			}
+			dataCacheLineTracker.free()
 		default:
 			// Nothing for now
 		}
@@ -1467,14 +1473,14 @@ Restart:
 
 	// Now we need to await any pending "inbound" or "outbound" cache lines (though this shouldn't happen)
 
-	for _, cacheLineNonce = range thisInode.cacheMap {
-		cacheLine, ok = globals.cacheMap[cacheLineNonce]
-		if !ok {
+	for _, dataCacheLineNumber = range thisInode.cacheMap {
+		if dataCacheLineNumber >= uint64(len(globals.dataCacheLinesTracker)) {
 			dumpStack()
-			globals.logger.Fatalf("[FATAL] globals.cacheMap[cacheLineNonce] returned !ok [case 2]")
+			globals.logger.Fatalf("[FATAL] inode.cacheMap returned out-of-range dataCacheLineNumber [case 2]")
 		}
+		dataCacheLineTracker = &globals.dataCacheLinesTracker[dataCacheLineNumber]
 		cacheLineWaiter.Add(1)
-		cacheLine.waiters = append(cacheLine.waiters, &cacheLineWaiter)
+		dataCacheLineTracker.waiters = append(dataCacheLineTracker.waiters, &cacheLineWaiter)
 		globalsUnlock()
 		cacheLineWaiter.Wait()
 		goto Restart

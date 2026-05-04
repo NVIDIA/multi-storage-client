@@ -35,6 +35,8 @@ const (
 	defaultRAMMaxListPageSize     = uint64(1000)
 	defaultRAMMaxTotalObjectSpace = uint64(1073741824) // 2^30 == 1Gi
 	defaultRAMMaxTotalObjects     = uint64(10000)
+
+	minimumCacheLines = uint64(16)
 )
 
 // `parseAny` provides a convenient test for the existence of
@@ -726,6 +728,12 @@ func checkConfigFile() (err error) {
 		return
 	}
 
+	config.mappedCache, ok = parseBool(configFileMap, "mapped_cache", true)
+	if !ok {
+		err = errors.New("bad mapped_cache value")
+		return
+	}
+
 	config.cacheLineSize, ok = parseUint64(configFileMap, "cache_line_size", uint64(10485760))
 	if !ok {
 		err = errors.New("bad cache_line_size value")
@@ -735,6 +743,10 @@ func checkConfigFile() (err error) {
 	config.cacheLines, ok = parseUint64(configFileMap, "cache_lines", uint64(128))
 	if !ok {
 		err = errors.New("bad cache_lines value")
+		return
+	}
+	if config.cacheLines < minimumCacheLines {
+		err = fmt.Errorf("unreasonable number of cache lines (%v) - should be at least %v", config.cacheLines, minimumCacheLines)
 		return
 	}
 
@@ -1795,6 +1807,11 @@ func checkConfigFile() (err error) {
 
 		if globals.config.ttlCheckInterval != config.ttlCheckInterval {
 			err = errors.New("cannot change ttl_check_interval via SIGHUP")
+			return
+		}
+
+		if globals.config.mappedCache != config.mappedCache {
+			err = errors.New("cannot change mapped_cache via SIGHUP")
 			return
 		}
 

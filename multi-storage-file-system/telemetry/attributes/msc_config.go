@@ -18,16 +18,15 @@ package attributes
 import (
 	"crypto/md5"
 	"crypto/sha256"
+	"crypto/sha3"
 	"crypto/sha512"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"hash"
 	"strings"
 
 	"github.com/jmespath/go-jmespath"
 	"go.opentelemetry.io/otel/attribute"
-	"golang.org/x/crypto/sha3"
 )
 
 // `MSCConfigAttributesProvider` provides attributes from MSC configuration using JMESPath expressions.
@@ -179,38 +178,37 @@ func evalJMESPathWithHash(expression string, data map[string]interface{}) (inter
 // computeHash computes the hexadecimal hash digest of a string.
 // Matches Python: hashlib.new(algorithm)
 func computeHash(algorithm, value string) (string, error) {
-	h, err := newHash(algorithm)
-	if err != nil {
-		return "", err
-	}
-	h.Write([]byte(value))
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-// newHash returns a hash.Hash for the given algorithm name.
-// Supports all algorithms from Python's hashlib that are commonly available.
-func newHash(algo string) (hash.Hash, error) {
-	switch algo {
+	data := []byte(value)
+	switch algorithm {
 	case "md5":
-		return md5.New(), nil
+		sum := md5.Sum(data)
+		return hex.EncodeToString(sum[:]), nil
 	case "sha224":
-		return sha256.New224(), nil
+		sum := sha256.Sum224(data)
+		return hex.EncodeToString(sum[:]), nil
 	case "sha256":
-		return sha256.New(), nil
+		sum := sha256.Sum256(data)
+		return hex.EncodeToString(sum[:]), nil
 	case "sha384":
-		return sha512.New384(), nil
+		sum := sha512.Sum384(data)
+		return hex.EncodeToString(sum[:]), nil
 	case "sha512":
-		return sha512.New(), nil
+		sum := sha512.Sum512(data)
+		return hex.EncodeToString(sum[:]), nil
 	case "sha3-224":
-		return sha3.New224(), nil
+		sum := sha3.Sum224(data)
+		return hex.EncodeToString(sum[:]), nil
 	case "sha3-256":
-		return sha3.New256(), nil
+		sum := sha3.Sum256(data)
+		return hex.EncodeToString(sum[:]), nil
 	case "sha3-384":
-		return sha3.New384(), nil
+		sum := sha3.Sum384(data)
+		return hex.EncodeToString(sum[:]), nil
 	case "sha3-512":
-		return sha3.New512(), nil
+		sum := sha3.Sum512(data)
+		return hex.EncodeToString(sum[:]), nil
 	default:
-		return nil, fmt.Errorf("unsupported hash algorithm: %s (supported: md5, sha224, sha256, sha384, sha512, sha3-224, sha3-256, sha3-384, sha3-512)", algo)
+		return "", fmt.Errorf("unsupported hash algorithm: %s (supported: md5, sha224, sha256, sha384, sha512, sha3-224, sha3-256, sha3-384, sha3-512)", algorithm)
 	}
 }
 

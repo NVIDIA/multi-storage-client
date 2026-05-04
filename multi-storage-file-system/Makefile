@@ -1,6 +1,6 @@
 quick: build
 
-all: generate fmt build lint test bench cover assets
+all: fmt generate build lint test bench cover assets
 
 GIT_TAG := $(shell git describe --tags --always --dirty)
 BUILD_LDFLAGS := -ldflags="-X 'main.GitTag=$(GIT_TAG)'"
@@ -52,8 +52,7 @@ lint:
 	golangci-lint run --config .golangci.yml ./...
 
 lint-update:
-	rm -f $(GOPATH)/bin/golangci-lint
-	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(GOPATH)/bin v2.11.4
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.1
 
 msfs-linux-amd64:
 	GOOS=linux GOARCH=amd64 go build $(BUILD_LDFLAGS) -o msfs-linux-amd64 .
