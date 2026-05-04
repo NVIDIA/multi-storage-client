@@ -282,7 +282,8 @@ const (
 )
 
 const (
-	CacheLineInbound uint8 = iota
+	CacheLineFree uint8 = iota
+	CacheLineInbound
 	CacheLineClean
 	CacheLineOutbound
 	CacheLineDirty
