@@ -34,6 +34,12 @@ func initFS() {
 	}
 	globals.logger.Printf("[INFO] cache dir: \"%s\"", globals.cacheDir)
 
+	err = dataCacheUp()
+	if err != nil {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] dataCacheUp() failed: %v", err)
+	}
+
 	err = metadataCacheUp()
 	if err != nil {
 		dumpStack()
@@ -131,6 +137,12 @@ func drainFS() {
 	if err != nil {
 		dumpStack()
 		globals.logger.Fatalf("[FATAL] metadataCacheDown() failed: %v", err)
+	}
+
+	err = dataCacheDown()
+	if err != nil {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] dataCacheDown() failed: %v", err)
 	}
 
 	err = os.RemoveAll(globals.cacheDir)

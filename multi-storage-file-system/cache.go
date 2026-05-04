@@ -2,8 +2,83 @@ package main
 
 import (
 	"container/list"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
+	"syscall"
 )
+
+const (
+	DataCacheFileName = "MSFS_data_cache"
+)
+
+func dataCacheUp() (err error) {
+	var (
+		dataCacheLineIndex uint64
+		dataCacheLineState *dataCacheLineStateStruct
+	)
+
+	globals.dataCacheLinesFile, err = os.OpenFile(filepath.Join(globals.cacheDir, DataCacheFileName), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o666)
+	if err != nil {
+		err = fmt.Errorf("os.OpenFile(filepath.Join(globals.cacheDir, DataCacheFileName), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o666) failed: %v", err)
+		return
+	}
+
+	globals.dataCacheLinesContent, err = syscall.Mmap(
+		int(globals.dataCacheLinesFile.Fd()), 0, int(globals.config.cacheLines*globals.config.cacheLineSize),
+		syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED,
+	)
+	if err != nil {
+		err = fmt.Errorf("syscall.Mmap(int(globals.dataCacheLinesFile.Fd()),,,,,) failed: %v", err)
+		return
+	}
+
+	globals.dataCacheLinesState = make([]dataCacheLineStateStruct, globals.config.cacheLines)
+
+	globals.dataCacheLineFreeLRU.next = 0
+	globals.dataCacheLineFreeLRU.prev = globals.config.cacheLines - 1
+
+	globals.dataCacheLineFreeCount = globals.config.cacheLines
+
+	for dataCacheLineIndex = range globals.config.cacheLines {
+		dataCacheLineState = &globals.dataCacheLinesState[dataCacheLineIndex]
+
+		switch dataCacheLineIndex {
+		case 0:
+			dataCacheLineState.lru.next = 1
+			dataCacheLineState.lru.prev = 0 // not used
+		case globals.config.cacheLines - 1:
+			dataCacheLineState.lru.next = 0 // not used
+			dataCacheLineState.lru.prev = globals.config.cacheLines - 2
+		default:
+			dataCacheLineState.lru.next = dataCacheLineIndex + 1
+			dataCacheLineState.lru.prev = dataCacheLineIndex - 1
+		}
+
+		dataCacheLineState.inodeNumber = 0 // not yet applicable
+		dataCacheLineState.lineNumber = 0  // not yet applicable
+		dataCacheLineState.eTag = ""       // not yet applicable
+	}
+
+	return
+}
+
+func dataCacheDown() (err error) {
+	err = syscall.Munmap(globals.dataCacheLinesContent)
+	if err != nil {
+		err = fmt.Errorf("syscall.Munmap(globals.dataCacheLinesContent) failed: %v", err)
+		return
+	}
+
+	err = globals.dataCacheLinesFile.Close()
+	if err != nil {
+		err = fmt.Errorf("globals.dataCacheLinesFile.Close() failed: %v", err)
+		return
+	}
+
+	return
+}
 
 // `fetch` is run in a goroutine for an allocated cacheLineStruct that
 // is to be populated with a portion of the object's contents. Completion of

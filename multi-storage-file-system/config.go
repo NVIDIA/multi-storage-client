@@ -35,6 +35,8 @@ const (
 	defaultRAMMaxListPageSize     = uint64(1000)
 	defaultRAMMaxTotalObjectSpace = uint64(1073741824) // 2^30 == 1Gi
 	defaultRAMMaxTotalObjects     = uint64(10000)
+
+	minimumCacheLines = uint64(16)
 )
 
 // `parseAny` provides a convenient test for the existence of
@@ -735,6 +737,10 @@ func checkConfigFile() (err error) {
 	config.cacheLines, ok = parseUint64(configFileMap, "cache_lines", uint64(128))
 	if !ok {
 		err = errors.New("bad cache_lines value")
+		return
+	}
+	if config.cacheLines < minimumCacheLines {
+		err = fmt.Errorf("unreasonable number of cache lines (%v) - should be at least %v", config.cacheLines, minimumCacheLines)
 		return
 	}
 
