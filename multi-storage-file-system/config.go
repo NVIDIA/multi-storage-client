@@ -639,6 +639,12 @@ func checkConfigFile() (err error) {
 		return
 	}
 
+	config.fuseFdPerWorker, ok = parseBool(configFileMap, "fuse_fd_per_worker", false)
+	if !ok {
+		err = errors.New("bad fuse_fd_per_worker value")
+		return
+	}
+
 	config.uid, ok = parseUint64(configFileMap, "uid", uint64(os.Geteuid()))
 	if !ok {
 		err = errors.New("bad uid value")
@@ -1734,6 +1740,11 @@ func checkConfigFile() (err error) {
 
 		if globals.config.fuseWorkers != config.fuseWorkers {
 			err = errors.New("cannot change fuse_workers via SIGHUP")
+			return
+		}
+
+		if globals.config.fuseFdPerWorker != config.fuseFdPerWorker {
+			err = errors.New("cannot change fuse_fd_per_worker via SIGHUP")
 			return
 		}
 

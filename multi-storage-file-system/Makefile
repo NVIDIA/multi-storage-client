@@ -53,7 +53,7 @@ lint:
 
 lint-update:
 	rm -f $(GOPATH)/bin/golangci-lint
-	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(GOPATH)/bin latest
+	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(GOPATH)/bin v2.11.4
 
 msfs-linux-amd64:
 	GOOS=linux GOARCH=amd64 go build $(BUILD_LDFLAGS) -o msfs-linux-amd64 .
