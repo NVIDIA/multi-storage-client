@@ -17,7 +17,7 @@ import logging
 import os
 import threading
 from enum import Enum
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Iterator, Optional
 
 from ..constants import DEFAULT_SYNC_BATCH_SIZE
 from ..types import ObjectMetadata, SymlinkHandling
@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 MIN_BATCH_SIZE = 10
 MAX_BATCH_SIZE = 1000
+MSC_SYNC_DISABLE_PARALLEL_LISTING_ENV = "MSC_SYNC_DISABLE_PARALLEL_LISTING"
 
 # Size bucket thresholds for batching optimization
 SIZE_SMALL_THRESHOLD = 1 * 1024 * 1024  # 1 MB
@@ -195,6 +196,29 @@ class ProducerThread(threading.Thread):
         parts = path.split("/")
         return any(part.startswith(".") for part in parts)
 
+    def _create_listing_iterator(
+        self,
+        client: "AbstractStorageClient",
+        path: str,
+        *,
+        show_attributes: bool = False,
+    ) -> Iterator[ObjectMetadata]:
+        """Create a listing iterator, preferring recursive listing when compatible.
+
+        Falls back to ``list`` when attributes are required or parallel listing is disabled.
+        """
+        if show_attributes or os.getenv(MSC_SYNC_DISABLE_PARALLEL_LISTING_ENV) is not None:
+            return client.list(
+                path=path,
+                show_attributes=show_attributes,
+                symlink_handling=self.symlink_handling,
+            )
+
+        return client.list_recursive(
+            path=path,
+            symlink_handling=self.symlink_handling,
+        )
+
     def _create_source_iterator(self):
         """Create source iterator and enforce preserve_source_attributes policy."""
         if self.source_files is not None:
@@ -213,10 +237,10 @@ class ProducerThread(threading.Thread):
                     continue
             return
 
-        for source_metadata in self.source_client.list(
-            path=self.source_path,
+        for source_metadata in self._create_listing_iterator(
+            self.source_client,
+            self.source_path,
             show_attributes=self.preserve_source_attributes,
-            symlink_handling=self.symlink_handling,
         ):
             if not self.preserve_source_attributes:
                 source_metadata.metadata = None
@@ -230,10 +254,10 @@ class ProducerThread(threading.Thread):
                 self.preserve_source_attributes and getattr(self.target_client, "_metadata_provider", None)
             )
             target_iter = iter(
-                self.target_client.list(
-                    path=self.target_path,
+                self._create_listing_iterator(
+                    self.target_client,
+                    self.target_path,
                     show_attributes=target_show_attributes,
-                    symlink_handling=self.symlink_handling,
                 )
             )
 

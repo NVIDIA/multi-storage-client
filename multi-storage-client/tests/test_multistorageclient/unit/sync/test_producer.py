@@ -23,7 +23,12 @@ import pytest
 
 import multistorageclient as msc
 from multistorageclient.client import StorageClient
-from multistorageclient.sync.producer import MAX_BATCH_SIZE, MIN_BATCH_SIZE, ProducerThread
+from multistorageclient.sync.producer import (
+    MAX_BATCH_SIZE,
+    MIN_BATCH_SIZE,
+    MSC_SYNC_DISABLE_PARALLEL_LISTING_ENV,
+    ProducerThread,
+)
 from multistorageclient.sync.progress_bar import ProgressBar
 from multistorageclient.sync.types import OperationType
 from multistorageclient.types import ObjectMetadata
@@ -52,6 +57,9 @@ class MockStorageClient:
 
     def list(self, **kwargs):
         raise Exception("No Such Method")
+
+    def list_recursive(self, **kwargs):
+        return self.list(**kwargs)
 
     def commit_metadata(self, prefix: Optional[str] = None) -> None:
         pass
@@ -199,7 +207,134 @@ def test_target_listing_requests_attributes_only_when_needed(
     producer_thread.join()
 
     assert producer_thread.error is None
-    assert list_kwargs.get("show_attributes") is expected_show_attributes
+    assert list_kwargs.get("show_attributes", False) is expected_show_attributes
+
+
+def test_listing_uses_list_recursive_by_default():
+    source_client = MockStorageClient()
+    target_client = MockStorageClient()
+
+    source_files = [ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0))]
+    target_files = [ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 1))]
+    list_recursive_calls = []
+
+    def source_list_recursive(**kwargs):
+        list_recursive_calls.append(("source", kwargs))
+        return iter(source_files)
+
+    def target_list_recursive(**kwargs):
+        list_recursive_calls.append(("target", kwargs))
+        return iter(target_files)
+
+    source_client.list_recursive = source_list_recursive  # type: ignore[attr-defined]
+    target_client.list_recursive = target_list_recursive  # type: ignore[attr-defined]
+
+    producer = ProducerThread(
+        source_client=cast(StorageClient, source_client),
+        source_path="",
+        target_client=cast(StorageClient, target_client),
+        target_path="",
+        progress=ProgressBar(desc="", show_progress=False),
+        file_queue=queue.Queue(),
+        num_workers=1,
+        shutdown_event=threading.Event(),
+    )
+
+    assert list(producer._create_listing_iterator(cast(StorageClient, source_client), "source/")) == source_files
+    assert list(producer._create_listing_iterator(cast(StorageClient, target_client), "target/")) == target_files
+    assert list_recursive_calls == [
+        ("source", {"path": "source/", "symlink_handling": producer.symlink_handling}),
+        ("target", {"path": "target/", "symlink_handling": producer.symlink_handling}),
+    ]
+
+
+def test_listing_uses_list_when_parallel_listing_disabled(monkeypatch):
+    monkeypatch.setenv(MSC_SYNC_DISABLE_PARALLEL_LISTING_ENV, "true")
+    source_client = MockStorageClient()
+    target_client = MockStorageClient()
+
+    source_files = [ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0))]
+    target_files = [ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 1))]
+    list_calls = []
+
+    def source_list(**kwargs):
+        list_calls.append(("source", kwargs))
+        return iter(source_files)
+
+    def target_list(**kwargs):
+        list_calls.append(("target", kwargs))
+        return iter(target_files)
+
+    def list_recursive(**kwargs):
+        raise AssertionError("list_recursive should not be called")
+
+    source_client.list = source_list  # type: ignore[method-assign]
+    target_client.list = target_list  # type: ignore[method-assign]
+    source_client.list_recursive = list_recursive  # type: ignore[attr-defined]
+    target_client.list_recursive = list_recursive  # type: ignore[attr-defined]
+
+    producer = ProducerThread(
+        source_client=cast(StorageClient, source_client),
+        source_path="",
+        target_client=cast(StorageClient, target_client),
+        target_path="",
+        progress=ProgressBar(desc="", show_progress=False),
+        file_queue=queue.Queue(),
+        num_workers=1,
+        shutdown_event=threading.Event(),
+    )
+
+    assert list(producer._create_listing_iterator(cast(StorageClient, source_client), "source/")) == source_files
+    assert list(producer._create_listing_iterator(cast(StorageClient, target_client), "target/")) == target_files
+    assert list_calls == [
+        ("source", {"path": "source/", "show_attributes": False, "symlink_handling": producer.symlink_handling}),
+        ("target", {"path": "target/", "show_attributes": False, "symlink_handling": producer.symlink_handling}),
+    ]
+
+
+def test_listing_falls_back_to_list_when_attributes_are_requested():
+    source_client = MockStorageClient()
+    target_client = MockStorageClient()
+
+    source_files = [
+        ObjectMetadata(
+            key="file1.txt",
+            content_length=100,
+            last_modified=datetime(2025, 1, 1, 0, 0, 0),
+            metadata={"version": "1"},
+        )
+    ]
+    target_files = [ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 1))]
+    source_list_kwargs = {}
+
+    def source_list(**kwargs):
+        source_list_kwargs.update(kwargs)
+        return iter(source_files)
+
+    def list_recursive(**kwargs):
+        raise AssertionError("source list_recursive should not be called when attributes are requested")
+
+    source_client.list = source_list  # type: ignore[method-assign]
+    source_client.list_recursive = list_recursive  # type: ignore[attr-defined]
+    target_client.list = lambda **kwargs: iter(target_files)  # type: ignore[method-assign]
+
+    producer = ProducerThread(
+        source_client=cast(StorageClient, source_client),
+        source_path="",
+        target_client=cast(StorageClient, target_client),
+        target_path="",
+        progress=ProgressBar(desc="", show_progress=False),
+        file_queue=queue.Queue(),
+        num_workers=1,
+        shutdown_event=threading.Event(),
+        preserve_source_attributes=True,
+    )
+
+    assert (
+        list(producer._create_listing_iterator(cast(StorageClient, source_client), "", show_attributes=True))
+        == source_files
+    )
+    assert source_list_kwargs["show_attributes"] is True
 
 
 def test_batch_size_validation():

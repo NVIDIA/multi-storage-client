@@ -644,6 +644,9 @@ class NullStorageClient:
     def list(self, **kwargs: Any) -> Iterator[ObjectMetadata]:
         return iter([])
 
+    def list_recursive(self, **kwargs: Any) -> Iterator[ObjectMetadata]:
+        return iter([])
+
     def commit_metadata(self, prefix: Optional[str] = None) -> None:
         pass
 
