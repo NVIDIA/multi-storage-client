@@ -282,7 +282,8 @@ const (
 )
 
 const (
-	CacheLineFree uint8 = iota
+	CacheLineNotNotOnLRU uint8 = iota
+	CacheLineFree
 	CacheLineInbound
 	CacheLineClean
 	CacheLineOutbound
@@ -301,21 +302,26 @@ type cacheLineStruct struct {
 	content     []byte            // File/Object content for the range (up to) [lineNumber * globals.config.cacheLineSize:(lineNumber + 1) * global.config.cacheLineSize)
 }
 
-// `dataCacheLineLinkStruct` is used to both provide a doubly linked list head as well as
-// the links within a `dataCacheLineStateStruct` for
-type dataCacheLineLinkStruct struct {
-	next uint64
-	prev uint64
+// `dataCacheLineLRUStruct` is used as the header for an LRU of `dataCacheLineTrackerStruct`'s referenced by their .pos in globals.dataCacheLinesState
+type dataCacheLineLRUStruct struct {
+	head     uint64 // Head (most  recently) dataCacheLineTrackerStruct's .pos
+	tail     uint64 // Tail (least recently) dataCacheLineTrackerStruct's .pos
+	lruCount uint64 // Count of elements on .lruHead
+	state    uint8  // One of CacheLine*; must match every dataCach3eLineStateStruct's .state on .lruHead's list
 }
 
-// `dataCacheLineStateStruct` contains the state of each data cache line in globals.dataCacheLinesContent.
-type dataCacheLineStateStruct struct {
-	lru         dataCacheLineLinkStruct // Tracks position on one of globals.dataCacheLine{Free|Inbound|Clean|Output|Dirty}LRU
-	state       uint8                   // One of CacheLine*; determines membership in one of globals.dataCacheLine{Free|Inbound|Clean|Output|Dirty}LRU
-	contentLen  uint64                  // If <pos> is the position of this struct in globals.dataCacheLinesState, valid content is [:.contentLen] of globals.datdataCacheLinesContent[<pos>*globals.config.cacheLineSize:(<pos>+1)*globals.config.cacheLineSize]
-	inodeNumber uint64                  // Reference to an inodeStruct.inodeNumber
-	lineNumber  uint64                  // Identifies file/object range covered by content as up to [lineNumber * globals.config.cacheLineSize:(lineNumber + 1) * global.config.cacheLineSize)
-	eTag        string                  // If state == CacheLineClean, value of inodeStruct.eTag when when fetched from backend; Otherwise, == ""
+// `dataCacheLineTrackerStruct` contains the state of each data cache line in globals.dataCacheLinesContent.
+type dataCacheLineTrackerStruct struct {
+	next        uint64            // Next     (less recently used) dataCacheLineTrackerStruct's .pos
+	prev        uint64            // Previous (more recently used) dataCacheLineTrackerStruct's .pos
+	pos         uint64            // Position in globals.dataCacheLinesState
+	state       uint8             // One of CacheLine*; determines membership in one of globals.dataCacheLine{Free|Inbound|Clean|Output|Dirty}LRU
+	waiters     []*sync.WaitGroup // List of those awaiting a state change
+	conentStart uint64            // Starting offset in globals.dataCacheLinesContent
+	contentLen  uint64            // If <pos> is the position of this struct in globals.dataCacheLinesState, valid content is [:.contentLen] of globals.datdataCacheLinesContent[<pos>*globals.config.cacheLineSize:(<pos>+1)*globals.config.cacheLineSize]
+	inodeNumber uint64            // Reference to an inodeStruct.inodeNumber
+	lineNumber  uint64            // Identifies file/object range covered by content as up to [lineNumber * globals.config.cacheLineSize:(lineNumber + 1) * global.config.cacheLineSize)
+	eTag        string            // If state == CacheLineClean, value of inodeStruct.eTag when when fetched from backend; Otherwise, == ""
 }
 
 // `inodeStruct` contains the state of an inode.
@@ -346,50 +352,45 @@ type inodeStruct struct {
 
 // `globalsStruct` is the sync.Mutex protected global data structure under which all details about daemon state are tracked.
 type globalsStruct struct {
-	sync.Mutex                                                                         //
-	logger                     *log.Logger                                             //
-	metrics                    interface{}                                             // observability.MSFSMetrics (nil if observability disabled)
-	meterProvider              interface{}                                             // *sdkmetric.MeterProvider (nil if observability disabled)
-	configFilePath             string                                                  //
-	config                     *configStruct                                           //
-	configFileMap              map[string]interface{}                                  // Parsed config map for msc_config attribute provider
-	backendsToUnmount          map[string]*backendStruct                               //
-	backendsToMount            map[string]*backendStruct                               //
-	backendsSkipped            map[string]struct{}                                     //
-	backendMap                 map[uint64]*backendStruct                               // Key == backend.nonce
-	errChan                    chan error                                              //
-	fissionVolume              fission.Volume                                          //
-	lastNonce                  uint64                                                  // Used to safely allocate non-repeating values (initialized to FUSERootDirInodeNumber to ensure skipping it)
-	cacheDir                   string                                                  //
-	pebbleDB                   *pebble.DB                                              // If .config.metadataCachePagingMode == "pebble", the handle to the PebbleDB; otherwise == nil
-	inodeMap                   *inodeNumberToInodeStructMapStruct                      // Key: inodeStruct.inodeNumber;                                              Value: *inodeStruct
-	inodeEvictionQueue         *xTimeInodeNumberSetStruct                              // Key: tuple(inodeStruct.xTime,inodeStruct.inodeNumber);                     Value: struct{}
-	physChildDirEntryMap       *parentInodeNumberChildBasenameToChildInodeNumberStruct // Key: tuple(parent's inodeStruct.inodeNumber,child's inodeStruct.basename); Value: child's inodeStruct.inodeNumber
-	virtChildDirEntryMap       *parentInodeNumberChildBasenameToChildInodeNumberStruct // Key: tuple(parent's inodeStruct.inodeNumber,child's inodeStruct.basename); Value: child's inodeStruct.inodeNumber
-	inodeEvictorContext        context.Context                                         //
-	inodeEvictorCancelFunc     context.CancelFunc                                      //
-	inodeEvictorWaitGroup      sync.WaitGroup                                          //
-	inboundCacheLineList       *list.List                                              // List of cacheLineStruct's where state == CacheLineInbound
-	cleanCacheLineLRU          *list.List                                              // Contains cacheLineStruct.listElement's for state == CacheLineClean
-	outboundCacheLineList      *list.List                                              // List of cacheLineStruct's where state == CacheLineOutbound
-	dirtyCacheLineLRU          *list.List                                              // Contains cacheLineStruct.listElement's for state == CacheLineDirty
-	cacheMap                   map[uint64]*cacheLineStruct                             // Key == cacheLineStruct.nonce
-	dataCacheLinesFile         *os.File                                                // Mem-map'd file exposed via .dataCacheLinesContent
-	dataCacheLinesContent      []byte                                                  // Holds the content of each data cache line who's state is at the equivalent position in .dataCacheLinesState
-	dataCacheLinesState        []dataCacheLineStateStruct                              // Holds the state of each data cache line who's content is at the equivalent position in .dataCacheLinesContent
-	dataCacheLineFreeLRU       dataCacheLineLinkStruct                                 // LRU-ordered doubly linked list of dataCacheLineStateStruct where .state == CacheLineFree
-	dataCacheLineInboundLRU    dataCacheLineLinkStruct                                 // LRU-ordered doubly linked list of dataCacheLineStateStruct where .state == CacheLineInbound
-	dataCacheLineCleanLRU      dataCacheLineLinkStruct                                 // LRU-ordered doubly linked list of dataCacheLineStateStruct where .state == CacheLineClean
-	dataCacheLineOutboundLRU   dataCacheLineLinkStruct                                 // LRU-ordered doubly linked list of dataCacheLineStateStruct where .state == CacheLineOutbound
-	dataCacheLineDirtyLRU      dataCacheLineLinkStruct                                 // LRU-ordered doubly linked list of dataCacheLineStateStruct where .state == CacheLineDirty
-	dataCacheLineFreeCount     uint64                                                  // Count of elements on .dataCacheLineFreeLRU
-	dataCacheLineInboundCount  uint64                                                  // Count of elements on .dataCacheLineInboundLRU
-	dataCacheLineCleanCount    uint64                                                  // Count of elements on .dataCacheLineCleanLRU
-	dataCacheLineOutboundCount uint64                                                  // Count of elements on .dataCacheLineOutboundLRU
-	dataCacheLineDirtyCount    uint64                                                  // Count of elements on .dataCacheLineDirtyLRU
-	fhMap                      map[uint64]*fhStruct                                    // Key == fhStruct.nonce
-	fissionMetrics             *fissionMetricsStruct                                   //
-	backendMetrics             *backendMetricsStruct                                   //
+	sync.Mutex                                                                       //
+	logger                   *log.Logger                                             //
+	metrics                  interface{}                                             // observability.MSFSMetrics (nil if observability disabled)
+	meterProvider            interface{}                                             // *sdkmetric.MeterProvider (nil if observability disabled)
+	configFilePath           string                                                  //
+	config                   *configStruct                                           //
+	configFileMap            map[string]interface{}                                  // Parsed config map for msc_config attribute provider
+	backendsToUnmount        map[string]*backendStruct                               //
+	backendsToMount          map[string]*backendStruct                               //
+	backendsSkipped          map[string]struct{}                                     //
+	backendMap               map[uint64]*backendStruct                               // Key == backend.nonce
+	errChan                  chan error                                              //
+	fissionVolume            fission.Volume                                          //
+	lastNonce                uint64                                                  // Used to safely allocate non-repeating values (initialized to FUSERootDirInodeNumber to ensure skipping it)
+	cacheDir                 string                                                  //
+	pebbleDB                 *pebble.DB                                              // If .config.metadataCachePagingMode == "pebble", the handle to the PebbleDB; otherwise == nil
+	inodeMap                 *inodeNumberToInodeStructMapStruct                      // Key: inodeStruct.inodeNumber;                                              Value: *inodeStruct
+	inodeEvictionQueue       *xTimeInodeNumberSetStruct                              // Key: tuple(inodeStruct.xTime,inodeStruct.inodeNumber);                     Value: struct{}
+	physChildDirEntryMap     *parentInodeNumberChildBasenameToChildInodeNumberStruct // Key: tuple(parent's inodeStruct.inodeNumber,child's inodeStruct.basename); Value: child's inodeStruct.inodeNumber
+	virtChildDirEntryMap     *parentInodeNumberChildBasenameToChildInodeNumberStruct // Key: tuple(parent's inodeStruct.inodeNumber,child's inodeStruct.basename); Value: child's inodeStruct.inodeNumber
+	inodeEvictorContext      context.Context                                         //
+	inodeEvictorCancelFunc   context.CancelFunc                                      //
+	inodeEvictorWaitGroup    sync.WaitGroup                                          //
+	inboundCacheLineList     *list.List                                              // List of cacheLineStruct's where state == CacheLineInbound
+	cleanCacheLineLRU        *list.List                                              // Contains cacheLineStruct.listElement's for state == CacheLineClean
+	outboundCacheLineList    *list.List                                              // List of cacheLineStruct's where state == CacheLineOutbound
+	dirtyCacheLineLRU        *list.List                                              // Contains cacheLineStruct.listElement's for state == CacheLineDirty
+	cacheMap                 map[uint64]*cacheLineStruct                             // Key == cacheLineStruct.nonce
+	dataCacheLinesFile       *os.File                                                // Mem-map'd file exposed via .dataCacheLinesContent
+	dataCacheLinesContent    []byte                                                  // Holds the content of each data cache line who's state is at the equivalent position in .dataCacheLinesState
+	dataCacheLinesTracker    []dataCacheLineTrackerStruct                            // Holds the state of each data cache line who's content is at the equivalent position in .dataCacheLinesContent
+	dataCacheLineFreeLRU     dataCacheLineLRUStruct                                  // LRU-ordered doubly linked list of dataCacheLineTrackerStruct where .state == CacheLineFree
+	dataCacheLineInboundLRU  dataCacheLineLRUStruct                                  // LRU-ordered doubly linked list of dataCacheLineTrackerStruct where .state == CacheLineInbound
+	dataCacheLineCleanLRU    dataCacheLineLRUStruct                                  // LRU-ordered doubly linked list of dataCacheLineTrackerStruct where .state == CacheLineClean
+	dataCacheLineOutboundLRU dataCacheLineLRUStruct                                  // LRU-ordered doubly linked list of dataCacheLineTrackerStruct where .state == CacheLineOutbound
+	dataCacheLineDirtyLRU    dataCacheLineLRUStruct                                  // LRU-ordered doubly linked list of dataCacheLineTrackerStruct where .state == CacheLineDirty
+	fhMap                    map[uint64]*fhStruct                                    // Key == fhStruct.nonce
+	fissionMetrics           *fissionMetricsStruct                                   //
+	backendMetrics           *backendMetricsStruct                                   //
 }
 
 var globals globalsStruct

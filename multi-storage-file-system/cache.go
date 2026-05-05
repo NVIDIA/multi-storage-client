@@ -15,8 +15,8 @@ const (
 
 func dataCacheUp() (err error) {
 	var (
-		dataCacheLineIndex uint64
-		dataCacheLineState *dataCacheLineStateStruct
+		dataCacheLineIndex   uint64
+		dataCacheLineTracker *dataCacheLineTrackerStruct
 	)
 
 	globals.dataCacheLinesFile, err = os.OpenFile(filepath.Join(globals.cacheDir, DataCacheFileName), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o666)
@@ -34,35 +34,181 @@ func dataCacheUp() (err error) {
 		return
 	}
 
-	globals.dataCacheLinesState = make([]dataCacheLineStateStruct, globals.config.cacheLines)
+	globals.dataCacheLinesTracker = make([]dataCacheLineTrackerStruct, globals.config.cacheLines)
 
-	globals.dataCacheLineFreeLRU.next = 0
-	globals.dataCacheLineFreeLRU.prev = globals.config.cacheLines - 1
-
-	globals.dataCacheLineFreeCount = globals.config.cacheLines
+	globals.dataCacheLineFreeLRU = dataCacheLineLRUStruct{
+		head:     0, // not yet applicable
+		tail:     0, // not yet applicable
+		lruCount: 0,
+		state:    CacheLineFree,
+	}
 
 	for dataCacheLineIndex = range globals.config.cacheLines {
-		dataCacheLineState = &globals.dataCacheLinesState[dataCacheLineIndex]
+		dataCacheLineTracker = &globals.dataCacheLinesTracker[dataCacheLineIndex]
 
-		switch dataCacheLineIndex {
-		case 0:
-			dataCacheLineState.lru.next = 1
-			dataCacheLineState.lru.prev = 0 // not used
-		case globals.config.cacheLines - 1:
-			dataCacheLineState.lru.next = 0 // not used
-			dataCacheLineState.lru.prev = globals.config.cacheLines - 2
-		default:
-			dataCacheLineState.lru.next = dataCacheLineIndex + 1
-			dataCacheLineState.lru.prev = dataCacheLineIndex - 1
-		}
+		dataCacheLineTracker.pos = dataCacheLineIndex
+		dataCacheLineTracker.state = CacheLineNotNotOnLRU
+		dataCacheLineTracker.waiters = make([]*sync.WaitGroup, 0, 1)
+		dataCacheLineTracker.conentStart = dataCacheLineIndex * globals.config.cacheLineSize
+		dataCacheLineTracker.contentLen = 0  // not yet applicable
+		dataCacheLineTracker.inodeNumber = 0 // not yet applicable
+		dataCacheLineTracker.lineNumber = 0  // not yet applicable
+		dataCacheLineTracker.eTag = ""       // not yet applicable
 
-		dataCacheLineState.contentLen = 0  // not yet applicable
-		dataCacheLineState.inodeNumber = 0 // not yet applicable
-		dataCacheLineState.lineNumber = 0  // not yet applicable
-		dataCacheLineState.eTag = ""       // not yet applicable
+		globals.dataCacheLineFreeLRU.pushTail(dataCacheLineTracker)
+	}
+
+	globals.dataCacheLineInboundLRU = dataCacheLineLRUStruct{
+		head:     0, // not yet applicable
+		tail:     0, // not yet applicable
+		lruCount: 0,
+		state:    CacheLineInbound,
+	}
+
+	globals.dataCacheLineCleanLRU = dataCacheLineLRUStruct{
+		head:     0, // not yet applicable
+		tail:     0, // not yet applicable
+		lruCount: 0,
+		state:    CacheLineClean,
+	}
+
+	globals.dataCacheLineOutboundLRU = dataCacheLineLRUStruct{
+		head:     0, // not yet applicable
+		tail:     0, // not yet applicable
+		lruCount: 0,
+		state:    CacheLineOutbound,
+	}
+
+	globals.dataCacheLineDirtyLRU = dataCacheLineLRUStruct{
+		head:     0, // not yet applicable
+		tail:     0, // not yet applicable
+		lruCount: 0,
+		state:    CacheLineDirty,
 	}
 
 	return
+}
+
+func (dataCacheLineLRU *dataCacheLineLRUStruct) pushTail(dataCacheLineTracker *dataCacheLineTrackerStruct) {
+	// if dataCacheLineTracker.state != CacheLineNotNotOnLRU {
+	// 	dumpStack()
+	// 	globals.logger.Fatalf("dataCacheLineTracker.state(%v) != CacheLineNotNotOnLRU(%v)", dataCacheLineTracker.state, CacheLineNotNotOnLRU)
+	// }
+
+	dataCacheLineTracker.next = 0 // not yet applicable
+	dataCacheLineTracker.state = dataCacheLineLRU.state
+
+	if dataCacheLineLRU.lruCount == 0 {
+		dataCacheLineTracker.prev = 0 // not yet applicable
+
+		dataCacheLineLRU.head = dataCacheLineTracker.pos
+		dataCacheLineLRU.tail = dataCacheLineTracker.pos
+		dataCacheLineLRU.lruCount = 1
+	} else {
+		globals.dataCacheLinesTracker[dataCacheLineLRU.tail].next = dataCacheLineTracker.pos
+
+		dataCacheLineTracker.prev = dataCacheLineLRU.tail
+
+		dataCacheLineLRU.tail = dataCacheLineTracker.pos
+	}
+}
+
+func (dataCacheLineLRU *dataCacheLineLRUStruct) popHead() (dataCacheLineTracker *dataCacheLineTrackerStruct) {
+	if dataCacheLineLRU.lruCount == 0 {
+		dataCacheLineTracker = nil
+		return
+	}
+
+	dataCacheLineTracker = &globals.dataCacheLinesTracker[dataCacheLineLRU.head]
+
+	// if dataCacheLineTracker.pos != dataCacheLineLRU.head {
+	// 	dumpStack()
+	// 	globals.logger.Fatalf("dataCacheLineTracker.pos(%v) != dataCacheLineLRU.head(%v)", dataCacheLineTracker.pos, dataCacheLineLRU.head)
+	// }
+	// if dataCacheLineTracker.state != dataCacheLineLRU.state {
+	// 	dumpStack()
+	// 	globals.logger.Fatalf("dataCacheLineTracker.state(%v) != dataCacheLineLRU.state(%v)", dataCacheLineTracker.state, dataCacheLineLRU.state)
+	// }
+
+	if dataCacheLineLRU.lruCount == 1 {
+		dataCacheLineLRU.head = 0 // not yet applicable
+		dataCacheLineLRU.tail = 0 // not yet applicable
+		dataCacheLineLRU.lruCount = 0
+	} else {
+		dataCacheLineLRU.tail = dataCacheLineTracker.prev
+		dataCacheLineLRU.lruCount--
+	}
+
+	dataCacheLineTracker.next = 0 // not yet applicable
+	dataCacheLineTracker.prev = 0 // not yet applicable
+	dataCacheLineTracker.state = CacheLineNotNotOnLRU
+
+	return
+}
+
+func (dataCacheLineLRU *dataCacheLineLRUStruct) popThis(dataCacheLineTracker *dataCacheLineTrackerStruct) {
+	// if dataCacheLineLRU.lruCount == 0 {
+	// 	dumpStack()
+	// 	globals.logger.Fatalf("dataCacheLineLRU.lruCount == 0")
+	// }
+	// if dataCacheLineTracker.state != dataCacheLineLRU.state {
+	// 	dumpStack()
+	// 	globals.logger.Fatalf("dataCacheLineTracker.state(%v) != dataCacheLineLRU.state(%v)", dataCacheLineTracker.state, dataCacheLineLRU.state)
+	// }
+
+	if dataCacheLineLRU.lruCount == 1 {
+		dataCacheLineLRU.head = 0 // not yet applicable
+		dataCacheLineLRU.tail = 0 // not yet applicable
+		dataCacheLineLRU.lruCount = 0
+	} else {
+		switch dataCacheLineTracker.pos {
+		case dataCacheLineLRU.head:
+			dataCacheLineLRU.head = dataCacheLineTracker.next
+			globals.dataCacheLinesTracker[dataCacheLineLRU.head].prev = 0 // not yet applicable
+		case dataCacheLineLRU.tail:
+			dataCacheLineLRU.tail = dataCacheLineTracker.prev
+			globals.dataCacheLinesTracker[dataCacheLineLRU.tail].next = 0 // not yet applicable
+		default:
+			globals.dataCacheLinesTracker[dataCacheLineTracker.prev].next = dataCacheLineTracker.next
+			globals.dataCacheLinesTracker[dataCacheLineTracker.next].prev = dataCacheLineTracker.prev
+		}
+
+		dataCacheLineLRU.lruCount--
+	}
+
+	dataCacheLineTracker.next = 0 // not yet applicable
+	dataCacheLineTracker.prev = 0 // not yet applicable
+	dataCacheLineTracker.state = CacheLineNotNotOnLRU
+}
+
+func (dataCacheLineLRU *dataCacheLineLRUStruct) touchThis(dataCacheLineTracker *dataCacheLineTrackerStruct) {
+	// if dataCacheLineLRU.lruCount == 0 {
+	// 	dumpStack()
+	// 	globals.logger.Fatalf("dataCacheLineLRU.lruCount == 0")
+	// }
+	// if dataCacheLineTracker.state != dataCacheLineLRU.state {
+	// 	dumpStack()
+	// 	globals.logger.Fatalf("dataCacheLineTracker.state(%v) != dataCacheLineLRU.state(%v)", dataCacheLineTracker.state, dataCacheLineLRU.state)
+	// }
+
+	if dataCacheLineTracker.pos == dataCacheLineLRU.tail {
+		return
+	}
+
+	if dataCacheLineTracker.pos == dataCacheLineLRU.head {
+		dataCacheLineLRU.head = dataCacheLineTracker.next
+		globals.dataCacheLinesTracker[dataCacheLineTracker.next].prev = 0 // not yet applicable
+	} else {
+		globals.dataCacheLinesTracker[dataCacheLineTracker.prev].next = dataCacheLineTracker.next
+		globals.dataCacheLinesTracker[dataCacheLineTracker.next].prev = dataCacheLineTracker.prev
+	}
+
+	globals.dataCacheLinesTracker[dataCacheLineLRU.tail].next = dataCacheLineTracker.pos
+
+	dataCacheLineTracker.next = 0 // not yet applicable
+	dataCacheLineTracker.prev = dataCacheLineLRU.tail
+
+	dataCacheLineLRU.tail = dataCacheLineTracker.pos
 }
 
 func dataCacheDown() (err error) {
@@ -95,7 +241,7 @@ func (cacheLine *cacheLineStruct) fetch() {
 		readFileOutput *readFileOutputStruct
 	)
 
-	globalsLock("cache.go:98:2:(*cacheLineStruct).fetch")
+	globalsLock("cache.go:244:2:(*cacheLineStruct).fetch")
 
 	inode, ok = globals.inodeMap.get(cacheLine.inodeNumber)
 	if !ok {
@@ -126,7 +272,7 @@ func (cacheLine *cacheLineStruct) fetch() {
 
 	readFileOutput, err = readFileWrapper(backend.context, readFileInput)
 	if err != nil {
-		globalsLock("cache.go:129:3:(*cacheLineStruct).fetch")
+		globalsLock("cache.go:275:3:(*cacheLineStruct).fetch")
 		globals.logger.Printf("[WARN] [TODO] (*cacheLineStruct) fetch() needs to handle error reading cache line")
 		inode, ok = globals.inodeMap.get(cacheLine.inodeNumber)
 		if ok {
@@ -144,7 +290,7 @@ func (cacheLine *cacheLineStruct) fetch() {
 		return
 	}
 
-	globalsLock("cache.go:147:2:(*cacheLineStruct).fetch")
+	globalsLock("cache.go:293:2:(*cacheLineStruct).fetch")
 	inode, ok = globals.inodeMap.get(cacheLine.inodeNumber)
 	if ok {
 		inode.inboundCacheLineCount--
