@@ -19,12 +19,8 @@ unfixable = []
 python-downloads = "never"
 python-preference = "only-system"
 resolution = "lowest-direct"
-constraint-dependencies = [
-    "authlib>=1.6.9",
-]
 override-dependencies = [
-    "protobuf>=7.34.0rc2",
-    "pyopenssl>=26.0.0",
+    "protobuf>=7.34.1",
 ]
 
 [tool.uv.sources]

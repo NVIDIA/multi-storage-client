@@ -116,7 +116,7 @@ ray = [
     "protobuf>=7.34.0rc2"
 ]
 torch = [
-    "torch>=2.10,<3"
+    "torch>=2.11,<3"
 ]
 xarray = [
     "xarray>=2024.07.0"
