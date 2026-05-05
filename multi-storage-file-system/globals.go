@@ -312,6 +312,7 @@ type dataCacheLineLinkStruct struct {
 type dataCacheLineStateStruct struct {
 	lru         dataCacheLineLinkStruct // Tracks position on one of globals.dataCacheLine{Free|Inbound|Clean|Output|Dirty}LRU
 	state       uint8                   // One of CacheLine*; determines membership in one of globals.dataCacheLine{Free|Inbound|Clean|Output|Dirty}LRU
+	contentLen  uint64                  // If <pos> is the position of this struct in globals.dataCacheLinesState, valid content is [:.contentLen] of globals.datdataCacheLinesContent[<pos>*globals.config.cacheLineSize:(<pos>+1)*globals.config.cacheLineSize]
 	inodeNumber uint64                  // Reference to an inodeStruct.inodeNumber
 	lineNumber  uint64                  // Identifies file/object range covered by content as up to [lineNumber * globals.config.cacheLineSize:(lineNumber + 1) * global.config.cacheLineSize)
 	eTag        string                  // If state == CacheLineClean, value of inodeStruct.eTag when when fetched from backend; Otherwise, == ""

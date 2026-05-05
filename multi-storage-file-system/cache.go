@@ -56,6 +56,7 @@ func dataCacheUp() (err error) {
 			dataCacheLineState.lru.prev = dataCacheLineIndex - 1
 		}
 
+		dataCacheLineState.contentLen = 0  // not yet applicable
 		dataCacheLineState.inodeNumber = 0 // not yet applicable
 		dataCacheLineState.lineNumber = 0  // not yet applicable
 		dataCacheLineState.eTag = ""       // not yet applicable
@@ -94,7 +95,7 @@ func (cacheLine *cacheLineStruct) fetch() {
 		readFileOutput *readFileOutputStruct
 	)
 
-	globalsLock("cache.go:22:2:(*cacheLineStruct).fetch")
+	globalsLock("cache.go:98:2:(*cacheLineStruct).fetch")
 
 	inode, ok = globals.inodeMap.get(cacheLine.inodeNumber)
 	if !ok {
@@ -125,7 +126,7 @@ func (cacheLine *cacheLineStruct) fetch() {
 
 	readFileOutput, err = readFileWrapper(backend.context, readFileInput)
 	if err != nil {
-		globalsLock("cache.go:53:3:(*cacheLineStruct).fetch")
+		globalsLock("cache.go:129:3:(*cacheLineStruct).fetch")
 		globals.logger.Printf("[WARN] [TODO] (*cacheLineStruct) fetch() needs to handle error reading cache line")
 		inode, ok = globals.inodeMap.get(cacheLine.inodeNumber)
 		if ok {
@@ -143,7 +144,7 @@ func (cacheLine *cacheLineStruct) fetch() {
 		return
 	}
 
-	globalsLock("cache.go:71:2:(*cacheLineStruct).fetch")
+	globalsLock("cache.go:147:2:(*cacheLineStruct).fetch")
 	inode, ok = globals.inodeMap.get(cacheLine.inodeNumber)
 	if ok {
 		inode.inboundCacheLineCount--

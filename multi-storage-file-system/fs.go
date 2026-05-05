@@ -125,7 +125,7 @@ func drainFS() {
 	globals.inodeEvictorCancelFunc()
 	globals.inodeEvictorWaitGroup.Wait()
 
-	globalsLock("fs.go:122:2:drainFS")
+	globalsLock("fs.go:128:2:drainFS")
 
 	for dirName, backend = range globals.config.backends {
 		globals.backendsToUnmount[dirName] = backend
@@ -167,7 +167,7 @@ func processToMountList() {
 		timeNow time.Time
 	)
 
-	globalsLock("fs.go:158:2:processToMountList")
+	globalsLock("fs.go:170:2:processToMountList")
 
 	timeNow = time.Now()
 
@@ -243,7 +243,7 @@ func processToMountList() {
 // `processToUnmountList` is called to remove each backend subdirectory of the FUSE
 // file system's root directory found on the globals.backendsToUnmount list.
 func processToUnmountList() {
-	globalsLock("fs.go:234:2:processToUnmountList")
+	globalsLock("fs.go:246:2:processToUnmountList")
 	processToUnmountListAlreadyLocked()
 	globalsUnlock()
 }
@@ -822,7 +822,7 @@ func inodeEvictor() {
 	for {
 		select {
 		case <-ticker.C:
-			globalsLock("fs.go:813:4:inodeEvictor")
+			globalsLock("fs.go:825:4:inodeEvictor")
 
 			// Trim globals.cleanCacheLineLRU as possible/necessary
 
@@ -1092,7 +1092,7 @@ func prefetchDirectory(dirInodeNumber uint64) {
 		startTime               = time.Now()
 	)
 
-	globalsLock("fs.go:1083:2:prefetchDirectory")
+	globalsLock("fs.go:1095:2:prefetchDirectory")
 
 	dirInode, ok = globals.inodeMap.get(dirInodeNumber)
 	if !ok {
@@ -1121,7 +1121,7 @@ func prefetchDirectory(dirInodeNumber uint64) {
 			globals.logger.Printf("[WARN] listDirectoryWrapper(dirInode.backend.context, listDirectoryInput) failed: %v", err)
 		}
 
-		globalsLock("fs.go:1112:3:prefetchDirectory")
+		globalsLock("fs.go:1124:3:prefetchDirectory")
 
 		dirInode, ok = globals.inodeMap.get(dirInodeNumber)
 		if !ok {
@@ -1287,7 +1287,7 @@ func dumpFS(w io.Writer) {
 		rootDirInode *inodeStruct
 	)
 
-	globalsLock("fs.go:1278:2:dumpFS")
+	globalsLock("fs.go:1290:2:dumpFS")
 
 	rootDirInode, ok = globals.inodeMap.get(FUSERootDirInodeNumber)
 	if !ok {
@@ -1451,7 +1451,7 @@ func (thisInode *inodeStruct) finishPendingDelete() {
 
 Restart:
 
-	globalsLock("fs.go:1442:2:(*inodeStruct).finishPendingDelete")
+	globalsLock("fs.go:1454:2:(*inodeStruct).finishPendingDelete")
 
 	// Let's just drop cache lines that are either "clean" io "dirty"
 
