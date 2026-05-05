@@ -140,6 +140,7 @@ type configStruct struct {
 	mountName                                 string                     // JSON/YAML "mountname"                                         default:"msfs"
 	mountPoint                                string                     // JSON/YAML "mountpoint"                                        default:"${MSFS_MOUNTPOINT:-/mnt}""
 	fuseWorkers                               uint64                     // JSON/YAML "fuse_workers"                                      default:0
+	fuseFdPerWorker                           bool                       // JSON/YAML "fuse_fd_per_worker"                                default:false
 	uid                                       uint64                     // JSON/YAML "uid"                                               default:<current euid>
 	gid                                       uint64                     // JSON/YAML "gid"                                               default:<current egid>
 	dirPerm                                   uint64                     // JSON/YAML "dir_perm"                                          default:0o555
