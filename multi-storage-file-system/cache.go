@@ -49,11 +49,12 @@ func dataCacheUp() (err error) {
 		dataCacheLineTracker.pos = dataCacheLineIndex
 		dataCacheLineTracker.state = CacheLineNotNotOnLRU
 		dataCacheLineTracker.waiters = make([]*sync.WaitGroup, 0, 1)
-		dataCacheLineTracker.conentStart = dataCacheLineIndex * globals.config.cacheLineSize
-		dataCacheLineTracker.contentLen = 0  // not yet applicable
-		dataCacheLineTracker.inodeNumber = 0 // not yet applicable
-		dataCacheLineTracker.lineNumber = 0  // not yet applicable
-		dataCacheLineTracker.eTag = ""       // not yet applicable
+		dataCacheLineTracker.contentStart = dataCacheLineIndex * globals.config.cacheLineSize
+		dataCacheLineTracker.contentLength = 0     // not yet applicable
+		dataCacheLineTracker.contentGeneration = 0 // not yet applicable
+		dataCacheLineTracker.inodeNumber = 0       // not yet applicable
+		dataCacheLineTracker.lineNumber = 0        // not yet applicable
+		dataCacheLineTracker.eTag = ""             // not yet applicable
 
 		globals.dataCacheLineFreeLRU.pushTail(dataCacheLineTracker)
 	}
@@ -241,7 +242,7 @@ func (cacheLine *cacheLineStruct) fetch() {
 		readFileOutput *readFileOutputStruct
 	)
 
-	globalsLock("cache.go:244:2:(*cacheLineStruct).fetch")
+	globalsLock("cache.go:245:2:(*cacheLineStruct).fetch")
 
 	inode, ok = globals.inodeMap.get(cacheLine.inodeNumber)
 	if !ok {
@@ -272,7 +273,7 @@ func (cacheLine *cacheLineStruct) fetch() {
 
 	readFileOutput, err = readFileWrapper(backend.context, readFileInput)
 	if err != nil {
-		globalsLock("cache.go:275:3:(*cacheLineStruct).fetch")
+		globalsLock("cache.go:276:3:(*cacheLineStruct).fetch")
 		globals.logger.Printf("[WARN] [TODO] (*cacheLineStruct) fetch() needs to handle error reading cache line")
 		inode, ok = globals.inodeMap.get(cacheLine.inodeNumber)
 		if ok {
@@ -290,7 +291,7 @@ func (cacheLine *cacheLineStruct) fetch() {
 		return
 	}
 
-	globalsLock("cache.go:293:2:(*cacheLineStruct).fetch")
+	globalsLock("cache.go:294:2:(*cacheLineStruct).fetch")
 	inode, ok = globals.inodeMap.get(cacheLine.inodeNumber)
 	if ok {
 		inode.inboundCacheLineCount--

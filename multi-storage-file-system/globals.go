@@ -302,7 +302,7 @@ type cacheLineStruct struct {
 	content     []byte            // File/Object content for the range (up to) [lineNumber * globals.config.cacheLineSize:(lineNumber + 1) * global.config.cacheLineSize)
 }
 
-// `dataCacheLineLRUStruct` is used as the header for an LRU of `dataCacheLineTrackerStruct`'s referenced by their .pos in globals.dataCacheLinesState
+// `dataCacheLineLRUStruct` is used as the header for an LRU of `dataCacheLineTrackerStruct`'s referenced by their .pos in globals.dataCacheLinesTracker
 type dataCacheLineLRUStruct struct {
 	head     uint64 // Head (most  recently) dataCacheLineTrackerStruct's .pos
 	tail     uint64 // Tail (least recently) dataCacheLineTrackerStruct's .pos
@@ -312,16 +312,17 @@ type dataCacheLineLRUStruct struct {
 
 // `dataCacheLineTrackerStruct` contains the state of each data cache line in globals.dataCacheLinesContent.
 type dataCacheLineTrackerStruct struct {
-	next        uint64            // Next     (less recently used) dataCacheLineTrackerStruct's .pos
-	prev        uint64            // Previous (more recently used) dataCacheLineTrackerStruct's .pos
-	pos         uint64            // Position in globals.dataCacheLinesState
-	state       uint8             // One of CacheLine*; determines membership in one of globals.dataCacheLine{Free|Inbound|Clean|Output|Dirty}LRU
-	waiters     []*sync.WaitGroup // List of those awaiting a state change
-	conentStart uint64            // Starting offset in globals.dataCacheLinesContent
-	contentLen  uint64            // If <pos> is the position of this struct in globals.dataCacheLinesState, valid content is [:.contentLen] of globals.datdataCacheLinesContent[<pos>*globals.config.cacheLineSize:(<pos>+1)*globals.config.cacheLineSize]
-	inodeNumber uint64            // Reference to an inodeStruct.inodeNumber
-	lineNumber  uint64            // Identifies file/object range covered by content as up to [lineNumber * globals.config.cacheLineSize:(lineNumber + 1) * global.config.cacheLineSize)
-	eTag        string            // If state == CacheLineClean, value of inodeStruct.eTag when when fetched from backend; Otherwise, == ""
+	next              uint64            // Next     (less recently used) dataCacheLineTrackerStruct's .pos
+	prev              uint64            // Previous (more recently used) dataCacheLineTrackerStruct's .pos
+	pos               uint64            // Position in globals.dataCacheLinesTracker
+	state             uint8             // One of CacheLine*; determines membership in one of globals.dataCacheLine{Free|Inbound|Clean|Output|Dirty}LRU
+	waiters           []*sync.WaitGroup // List of those awaiting a state change
+	contentStart      uint64            // Starting offset in globals.dataCacheLinesContent
+	contentLength     uint64            // If <pos> is the position of this struct in globals.dataCacheLinesTracker, valid content is [:.contentLen] of globals.datdataCacheLinesContent[<pos>*globals.config.cacheLineSize:(<pos>+1)*globals.config.cacheLineSize]
+	contentGeneration uint64            // Incremented each modification so as to enable unlocked reading of content
+	inodeNumber       uint64            // Reference to an inodeStruct.inodeNumber
+	lineNumber        uint64            // Identifies file/object range covered by content as up to [lineNumber * globals.config.cacheLineSize:(lineNumber + 1) * global.config.cacheLineSize)
+	eTag              string            // If state == CacheLineClean, value of inodeStruct.eTag when when fetched from backend; Otherwise, == ""
 }
 
 // `inodeStruct` contains the state of an inode.
@@ -381,7 +382,7 @@ type globalsStruct struct {
 	dirtyCacheLineLRU        *list.List                                              // Contains cacheLineStruct.listElement's for state == CacheLineDirty
 	cacheMap                 map[uint64]*cacheLineStruct                             // Key == cacheLineStruct.nonce
 	dataCacheLinesFile       *os.File                                                // Mem-map'd file exposed via .dataCacheLinesContent
-	dataCacheLinesContent    []byte                                                  // Holds the content of each data cache line who's state is at the equivalent position in .dataCacheLinesState
+	dataCacheLinesContent    []byte                                                  // Holds the content of each data cache line who's state is at the equivalent position in .dataCacheLinesTracker
 	dataCacheLinesTracker    []dataCacheLineTrackerStruct                            // Holds the state of each data cache line who's content is at the equivalent position in .dataCacheLinesContent
 	dataCacheLineFreeLRU     dataCacheLineLRUStruct                                  // LRU-ordered doubly linked list of dataCacheLineTrackerStruct where .state == CacheLineFree
 	dataCacheLineInboundLRU  dataCacheLineLRUStruct                                  // LRU-ordered doubly linked list of dataCacheLineTrackerStruct where .state == CacheLineInbound
