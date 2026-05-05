@@ -52,7 +52,7 @@ lint:
 	golangci-lint run --config .golangci.yml ./...
 
 lint-update:
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.1
 
 msfs-linux-amd64:
 	GOOS=linux GOARCH=amd64 go build $(BUILD_LDFLAGS) -o msfs-linux-amd64 .

@@ -189,6 +189,8 @@ func computeHash(algorithm, value string) (string, error) {
 
 // newHash returns a hash.Hash for the given algorithm name.
 // Supports all algorithms from Python's hashlib that are commonly available.
+//
+//nolint:govet // sha3.NewXXX inlining is restricted by the hash.Hash interface return
 func newHash(algo string) (hash.Hash, error) {
 	switch algo {
 	case "md5":
