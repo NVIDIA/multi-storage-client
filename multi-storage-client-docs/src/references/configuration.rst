@@ -922,6 +922,8 @@ Retry
 
 MSC will retry on errors classified as ``RetryableError`` (see :py:class:`multistorageclient.types.RetryableError`) in addition to the retry logic of the underlying CSP native SDKs.
 
+For batch APIs such as ``StorageClient.upload_files`` and ``StorageClient.download_files``, MSC preserves the storage provider batch operation. If the provider reports item-level failures, MSC retries only the failed items instead of repeating the entire batch.
+
 Options: See parameters in :py:class:`multistorageclient.types.RetryConfig`.
 
 The retry strategy uses exponential backoff: the delay is multiplied by the backoff multiplier raised to the power of the attempt number for each subsequent attempt, and a random jitter of 0 to 1 second is added to the delay.
