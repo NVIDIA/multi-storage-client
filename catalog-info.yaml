@@ -12,7 +12,7 @@ metadata:
     - storage
     - cloud-storage
 spec:
-  owner: group:default/multi-storage-client-maintainers
+  owner: nv-dataset-owners
 ---
 apiVersion: backstage.io/v1alpha1
 kind: Component
@@ -42,7 +42,7 @@ metadata:
 spec:
   type: library
   lifecycle: experimental
-  owner: group:default/multi-storage-client-maintainers
+  owner: nv-dataset-owners
   system: multi-storage-client
 ---
 apiVersion: backstage.io/v1alpha1
@@ -69,7 +69,7 @@ metadata:
 spec:
   type: library
   lifecycle: experimental
-  owner: group:default/multi-storage-client-maintainers
+  owner: nv-dataset-owners
   system: multi-storage-client
 ---
 apiVersion: backstage.io/v1alpha1
@@ -96,5 +96,5 @@ metadata:
 spec:
   type: website
   lifecycle: experimental
-  owner: group:default/multi-storage-client-maintainers
+  owner: nv-dataset-owners
   system: multi-storage-client
