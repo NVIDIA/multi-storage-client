@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import os
+import sys
 import tempfile
 
 import pytest
@@ -32,8 +33,12 @@ def sample_zarr_data():
     root = zarr.open(store_path, mode="w")
     assert isinstance(root, zarr.Group)
 
-    array1 = root.create_dataset("array1", shape=(100, 100), dtype="int32")
-    array2 = root.create_dataset("array2", shape=(50, 50), dtype="float64")
+    if sys.version_info >= (3, 14):
+        array1 = root.create_array("array1", shape=(100, 100), dtype="int32")
+        array2 = root.create_array("array2", shape=(50, 50), dtype="float64")
+    else:
+        array1 = root.create_dataset("array1", shape=(100, 100), dtype="int32")
+        array2 = root.create_dataset("array2", shape=(50, 50), dtype="float64")
     array1[:] = 1
     array2[:] = 2.0
 

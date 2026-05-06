@@ -16,6 +16,8 @@
 import uuid
 
 import pytest
+
+# https://github.com/pytorch/pytorch/issues/131765
 import torch
 import torch.distributed.checkpoint as dcp
 
@@ -27,7 +29,7 @@ from test_multistorageclient.unit.utils import config, tempdatastore
 @pytest.fixture
 def sample_data(tmp_path):
     # Create a small tensor
-    tensor = torch.tensor([1, 2, 3, 4])
+    tensor = torch.tensor([1, 2, 3, 4])  # type: ignore[reportPrivateImportUsage]
     # Create a filepath
     filepath = tmp_path / "test.pt"
     # Save the tensor to the file
@@ -39,14 +41,14 @@ def test_torch_load_with_filepath(sample_data):
     filepath, expected_tensor = sample_data
 
     result = msc.torch.load(str(filepath))
-    assert torch.equal(result, expected_tensor)
+    assert torch.equal(result, expected_tensor)  # type: ignore[reportPrivateImportUsage]
 
 
 def test_torch_load_with_msc_prefix(sample_data):
     filepath, expected_tensor = sample_data
 
     result = msc.torch.load(f"{MSC_PROTOCOL}__filesystem__{filepath}")
-    assert torch.equal(result, expected_tensor)
+    assert torch.equal(result, expected_tensor)  # type: ignore[reportPrivateImportUsage]
 
 
 def test_torch_save_with_msc_path(sample_data):
@@ -54,14 +56,14 @@ def test_torch_save_with_msc_path(sample_data):
 
     msc.torch.save(expected_tensor, msc.Path(filepath))
     result = torch.load(filepath)
-    assert torch.equal(result, expected_tensor)
+    assert torch.equal(result, expected_tensor)  # type: ignore[reportPrivateImportUsage]
 
 
 def test_torch_load_with_msc_path(sample_data):
     filepath, expected_tensor = sample_data
 
     result = msc.torch.load(msc.Path(filepath))
-    assert torch.equal(result, expected_tensor)
+    assert torch.equal(result, expected_tensor)  # type: ignore[reportPrivateImportUsage]
 
 
 class SimpleModel(torch.nn.Module):
@@ -125,7 +127,7 @@ def test_filesystem_reader_writer(temp_data_store_type: type[tempdatastore.Tempo
 
         # Compare each parameter tensor
         for param_name in original_state_dict:
-            assert torch.equal(original_state_dict[param_name], loaded_state_dict_params[param_name]), (
+            assert torch.equal(original_state_dict[param_name], loaded_state_dict_params[param_name]), (  # type: ignore[reportPrivateImportUsage]
                 f"Parameter {param_name} does not match"
             )
 
@@ -213,7 +215,7 @@ def test_torch_save_with_attributes(temp_data_store_type: type[tempdatastore.Tem
 
         test_uuid = str(uuid.uuid4())
         file_path = f"test-torch-attributes-{test_uuid}.pt"
-        tensor = torch.tensor([1, 2, 3, 4])
+        tensor = torch.tensor([1, 2, 3, 4])  # type: ignore[reportPrivateImportUsage]
 
         test_attributes = {
             "method": "torch.save",
@@ -227,7 +229,7 @@ def test_torch_save_with_attributes(temp_data_store_type: type[tempdatastore.Tem
 
             # Verify content was written correctly
             result = msc.torch.load(f"{MSC_PROTOCOL}test/{file_path}")
-            assert torch.equal(result, tensor)
+            assert torch.equal(result, tensor)  # type: ignore[reportPrivateImportUsage]
 
             # Verify attributes for storage providers that support metadata
             if hasattr(temp_data_store, "_bucket_name"):
@@ -244,7 +246,7 @@ def test_torch_save_with_attributes(temp_data_store_type: type[tempdatastore.Tem
             msc.torch.save(tensor, msc.Path(f"{MSC_PROTOCOL}test/{file_path2}"), attributes=test_attributes)
 
             result = msc.torch.load(msc.Path(f"{MSC_PROTOCOL}test/{file_path2}"))
-            assert torch.equal(result, tensor)
+            assert torch.equal(result, tensor)  # type: ignore[reportPrivateImportUsage]
 
         finally:
             try:
