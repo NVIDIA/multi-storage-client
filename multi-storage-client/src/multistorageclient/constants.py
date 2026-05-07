@@ -19,6 +19,7 @@ MEMORY_LOAD_LIMIT = 512 * 1024 * 1024
 # Default timeout values (in seconds) for storage provider connections
 DEFAULT_CONNECT_TIMEOUT = 60
 DEFAULT_READ_TIMEOUT = 60
+DEFAULT_MAX_POOL_CONNECTIONS = 128
 
 # Default host and port for the MSC Explorer application
 DEFAULT_EXPLORER_HOST = "127.0.0.1"

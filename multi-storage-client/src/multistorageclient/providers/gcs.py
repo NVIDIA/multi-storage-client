@@ -34,6 +34,7 @@ from google.oauth2.credentials import Credentials as OAuth2Credentials
 
 from multistorageclient_rust import RustClient, RustClientError, RustRetryableError
 
+from ..constants import DEFAULT_MAX_POOL_CONNECTIONS
 from ..rust_utils import parse_retry_config, run_async_rust_client_method
 from ..telemetry import Telemetry
 from ..types import (
@@ -171,6 +172,7 @@ class GoogleStorageProvider(BaseStorageProvider):
         :param credentials_provider: The provider to retrieve GCS credentials.
         :param config_dict: Resolved MSC config.
         :param telemetry_provider: A function that provides a telemetry instance.
+        :param max_pool_connections: Maximum connection pool size for the Rust client.
         """
         super().__init__(
             base_path=base_path,
@@ -192,6 +194,8 @@ class GoogleStorageProvider(BaseStorageProvider):
         if "rust_client" in kwargs:
             # Inherit the rust client options from the kwargs
             rust_client_options = copy.deepcopy(kwargs["rust_client"])
+            if "max_pool_connections" in kwargs:
+                rust_client_options["max_pool_connections"] = kwargs["max_pool_connections"]
             if "max_concurrency" in kwargs:
                 rust_client_options["max_concurrency"] = kwargs["max_concurrency"]
             if "multipart_chunksize" in kwargs:
@@ -270,6 +274,9 @@ class GoogleStorageProvider(BaseStorageProvider):
         if "bucket" not in configs:
             bucket, _ = split_path(self._base_path)
             configs["bucket"] = bucket
+
+        if "max_pool_connections" not in configs:
+            configs["max_pool_connections"] = DEFAULT_MAX_POOL_CONNECTIONS
 
         if self._credentials_provider:
             if isinstance(self._credentials_provider, GoogleIdentityPoolCredentialsProvider):

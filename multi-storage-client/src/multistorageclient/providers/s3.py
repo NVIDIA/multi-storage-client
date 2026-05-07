@@ -30,7 +30,7 @@ from dateutil.parser import parse as dateutil_parse
 
 from multistorageclient_rust import RustClient, RustClientError, RustRetryableError
 
-from ..constants import DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT
+from ..constants import DEFAULT_CONNECT_TIMEOUT, DEFAULT_MAX_POOL_CONNECTIONS, DEFAULT_READ_TIMEOUT
 from ..rust_utils import parse_retry_config, run_async_rust_client_method
 from ..signers import CloudFrontURLSigner, URLSigner
 from ..telemetry import Telemetry
@@ -46,7 +46,6 @@ from ..types import (
     SymlinkHandling,
 )
 from ..utils import (
-    get_available_cpu_count,
     safe_makedirs,
     split_path,
     validate_attributes,
@@ -55,13 +54,6 @@ from .base import BaseStorageProvider
 
 _T = TypeVar("_T")
 
-# Default connection pool size scales with CPU count or MSC Sync Threads count (minimum 64)
-MAX_POOL_CONNECTIONS = max(
-    64,
-    get_available_cpu_count(),
-    int(os.getenv("MSC_NUM_THREADS_PER_PROCESS", "0")),
-)
-
 MiB = 1024 * 1024
 
 # Python and Rust share the same multipart_threshold to keep the code simple.
@@ -69,6 +61,7 @@ MULTIPART_THRESHOLD = 64 * MiB
 MULTIPART_CHUNKSIZE = 32 * MiB
 IO_CHUNKSIZE = 32 * MiB
 PYTHON_MAX_CONCURRENCY = 8
+MAX_POOL_CONNECTIONS = DEFAULT_MAX_POOL_CONNECTIONS
 
 PROVIDER = "s3"
 
