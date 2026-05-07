@@ -814,6 +814,42 @@ class RetryableError(Exception):
     pass
 
 
+@dataclass(frozen=True)
+class BatchTransferFailure:
+    """
+    A failed item from a batch upload or download operation.
+    """
+
+    #: The item index in the batch request that failed.
+    index: int
+    #: The source path for the failed transfer.
+    source_path: str
+    #: The destination path for the failed transfer.
+    destination_path: str
+    #: The underlying exception raised for this item.
+    error: Exception
+
+
+class BatchTransferError(Exception):
+    """
+    Exception raised when one or more items fail in a batch transfer operation.
+    """
+
+    def __init__(self, failures: Sequence[BatchTransferFailure]):
+        if not failures:
+            raise ValueError("BatchTransferError requires at least one failure.")
+        self.failures = list(failures)
+        super().__init__(self._format_message())
+
+    def _format_message(self) -> str:
+        details = ", ".join(
+            f"index {failure.index} ({type(failure.error).__name__}: {failure.error})" for failure in self.failures[:3]
+        )
+        if len(self.failures) > 3:
+            details += f", and {len(self.failures) - 3} more"
+        return f"{len(self.failures)} batch transfer item(s) failed: {details}"
+
+
 class PreconditionFailedError(Exception):
     """
     Exception raised when a precondition fails. e.g. if-match, if-none-match, etc.

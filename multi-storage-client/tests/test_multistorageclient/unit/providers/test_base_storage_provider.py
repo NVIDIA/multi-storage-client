@@ -25,22 +25,29 @@ import pytest
 
 from multistorageclient.providers.base import BaseStorageProvider
 from multistorageclient.telemetry import Telemetry
-from multistorageclient.types import ObjectMetadata, Range, SymlinkHandling
+from multistorageclient.types import BatchTransferError, ObjectMetadata, Range, RetryableError, SymlinkHandling
 
 
 class MockBaseStorageProvider(BaseStorageProvider):
     _rust_client: Any = None
 
-    def _put_object(self, path: str, body: bytes) -> None:
-        pass
+    def _put_object(
+        self,
+        path: str,
+        body: bytes,
+        if_match: Optional[str] = None,
+        if_none_match: Optional[str] = None,
+        attributes: Optional[dict[str, str]] = None,
+    ) -> int:
+        return len(body)
 
     def _get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
         return b""
 
-    def _copy_object(self, src_path: str, dest_path: str) -> None:
-        pass
+    def _copy_object(self, src_path: str, dest_path: str) -> int:
+        return 0
 
-    def _delete_object(self, path: str, etag: Optional[str] = None) -> None:
+    def _delete_object(self, path: str, if_match: Optional[str] = None) -> None:
         pass
 
     def _make_symlink(self, path: str, target: str) -> None:
@@ -62,8 +69,8 @@ class MockBaseStorageProvider(BaseStorageProvider):
     ) -> Iterator[ObjectMetadata]:
         return iter([])
 
-    def _upload_file(self, remote_path: str, f: Union[str, IO]) -> None:
-        pass
+    def _upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, str]] = None) -> int:
+        return 0
 
     def _download_file(self, remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> int:
         return 0
@@ -161,6 +168,194 @@ def test_upload_file_converts_provider_attributes_to_strings():
     provider.upload_file("file.txt", "/tmp/file.txt", attributes={"count": 1})
 
     provider._upload_file.assert_called_once_with("bucket/file.txt", "/tmp/file.txt", {"count": "1"})
+
+
+def test_upload_files_threaded_reports_all_failed_indices():
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+
+    def _upload_file(remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, Any]] = None) -> None:
+        if remote_path.endswith(("remote-b", "remote-c")):
+            raise RetryableError(f"failed {remote_path}")
+
+    provider._upload_file = Mock(side_effect=_upload_file)
+
+    with pytest.raises(BatchTransferError) as exc_info:
+        provider.upload_files(
+            local_paths=["local-a", "local-b", "local-c"],
+            remote_paths=["remote-a", "remote-b", "remote-c"],
+        )
+
+    assert {failure.index for failure in exc_info.value.failures} == {1, 2}
+    assert {failure.source_path for failure in exc_info.value.failures} == {"local-b", "local-c"}
+    assert {failure.destination_path for failure in exc_info.value.failures} == {"remote-b", "remote-c"}
+
+
+def test_upload_files_async_reports_failed_indices(tmp_path):
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+
+    class FakeRustClient:
+        def __init__(self):
+            self.uploaded_keys: list[str] = []
+
+        async def upload(self, local_path: str, key: str) -> int:
+            self.uploaded_keys.append(key)
+            if key.endswith("remote-b"):
+                raise RetryableError(f"failed {key}")
+            return 1
+
+        async def upload_multipart_from_file(self, local_path: str, key: str) -> int:
+            return await self.upload(local_path, key)
+
+    local_paths = []
+    for name in ["local-a", "local-b", "local-c"]:
+        path = tmp_path / name
+        path.write_bytes(b"x")
+        local_paths.append(str(path))
+    rust_client = FakeRustClient()
+    provider._rust_client = rust_client
+
+    with pytest.raises(BatchTransferError) as exc_info:
+        provider.upload_files(
+            local_paths=local_paths,
+            remote_paths=["remote-a", "remote-b", "remote-c"],
+        )
+
+    assert rust_client.uploaded_keys == ["remote-a", "remote-b", "remote-c"]
+    assert [failure.index for failure in exc_info.value.failures] == [1]
+    assert exc_info.value.failures[0].source_path == local_paths[1]
+    assert exc_info.value.failures[0].destination_path == "remote-b"
+
+
+def test_download_files_threaded_reports_all_failed_indices():
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+
+    def download_file(remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> None:
+        if remote_path.endswith(("remote-b", "remote-c")):
+            raise RetryableError(f"failed {remote_path}")
+
+    provider.download_file = Mock(side_effect=download_file)
+    metadata = [ObjectMetadata(key=path, content_length=1, last_modified=datetime.now()) for path in ["a", "b", "c"]]
+
+    with pytest.raises(BatchTransferError) as exc_info:
+        provider.download_files(
+            remote_paths=["remote-a", "remote-b", "remote-c"],
+            local_paths=["local-a", "local-b", "local-c"],
+            metadata=metadata,
+        )
+
+    assert {failure.index for failure in exc_info.value.failures} == {1, 2}
+    assert {failure.source_path for failure in exc_info.value.failures} == {"remote-b", "remote-c"}
+    assert {failure.destination_path for failure in exc_info.value.failures} == {"local-b", "local-c"}
+
+
+def test_download_files_async_reports_failed_indices():
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+
+    class FakeRustClient:
+        def __init__(self):
+            self.downloaded_keys: list[str] = []
+
+        async def download(self, key: str, local_path: str) -> int:
+            self.downloaded_keys.append(key)
+            if key.endswith("remote-b"):
+                raise RetryableError(f"failed {key}")
+            return 1
+
+        async def download_multipart_to_file(self, key: str, local_path: str) -> int:
+            return await self.download(key, local_path)
+
+    rust_client = FakeRustClient()
+    provider._rust_client = rust_client
+    metadata = [
+        ObjectMetadata(key="remote-a", content_length=1, last_modified=datetime.now()),
+        ObjectMetadata(key="remote-b", content_length=1, last_modified=datetime.now()),
+        ObjectMetadata(key="remote-c", content_length=1, last_modified=datetime.now()),
+    ]
+
+    with pytest.raises(BatchTransferError) as exc_info:
+        provider.download_files(
+            remote_paths=["remote-a", "remote-b", "remote-c"],
+            local_paths=["local-a", "local-b", "local-c"],
+            metadata=metadata,
+        )
+
+    assert rust_client.downloaded_keys == ["remote-a", "remote-b", "remote-c"]
+    assert [failure.index for failure in exc_info.value.failures] == [1]
+    assert exc_info.value.failures[0].source_path == "remote-b"
+    assert exc_info.value.failures[0].destination_path == "local-b"
+
+
+def test_download_files_async_reports_preflight_failures():
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+
+    class FakeRustClient:
+        def __init__(self):
+            self.downloaded_keys: list[str] = []
+
+        async def download(self, key: str, local_path: str) -> int:
+            self.downloaded_keys.append(key)
+            return 1
+
+        async def download_multipart_to_file(self, key: str, local_path: str) -> int:
+            return await self.download(key, local_path)
+
+    rust_client = FakeRustClient()
+    provider._rust_client = rust_client
+    metadata = [
+        ObjectMetadata(key="remote-a", content_length=1, last_modified=datetime.now()),
+        ObjectMetadata(key="remote-b", content_length=1, last_modified=datetime.now()),
+    ]
+
+    def fail_for_second_dir(path: str) -> None:
+        if path.endswith("blocked"):
+            raise PermissionError("cannot create directory")
+
+    with patch("multistorageclient.providers.base.safe_makedirs", side_effect=fail_for_second_dir):
+        with pytest.raises(BatchTransferError) as exc_info:
+            provider.download_files(
+                remote_paths=["remote-a", "remote-b"],
+                local_paths=["ok/local-a", "blocked/local-b"],
+                metadata=metadata,
+            )
+
+    assert rust_client.downloaded_keys == ["remote-a"]
+    assert [failure.index for failure in exc_info.value.failures] == [1]
+    assert exc_info.value.failures[0].source_path == "remote-b"
+    assert exc_info.value.failures[0].destination_path == "blocked/local-b"
+    assert isinstance(exc_info.value.failures[0].error, PermissionError)
+
+
+def test_upload_files_async_reports_preflight_failures(tmp_path):
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+
+    class FakeRustClient:
+        def __init__(self):
+            self.uploaded_keys: list[str] = []
+
+        async def upload(self, local_path: str, key: str) -> int:
+            self.uploaded_keys.append(key)
+            return 1
+
+        async def upload_multipart_from_file(self, local_path: str, key: str) -> int:
+            return await self.upload(local_path, key)
+
+    rust_client = FakeRustClient()
+    provider._rust_client = rust_client
+    good_path = tmp_path / "local-a"
+    good_path.write_bytes(b"x")
+    missing_path = tmp_path / "missing"
+
+    with pytest.raises(BatchTransferError) as exc_info:
+        provider.upload_files(
+            local_paths=[str(good_path), str(missing_path)],
+            remote_paths=["remote-a", "remote-b"],
+        )
+
+    assert rust_client.uploaded_keys == ["remote-a"]
+    assert [failure.index for failure in exc_info.value.failures] == [1]
+    assert exc_info.value.failures[0].source_path == str(missing_path)
+    assert exc_info.value.failures[0].destination_path == "remote-b"
+    assert isinstance(exc_info.value.failures[0].error, FileNotFoundError)
 
 
 def test_provider_attribute_conversion_leaves_validation_to_provider_hook():

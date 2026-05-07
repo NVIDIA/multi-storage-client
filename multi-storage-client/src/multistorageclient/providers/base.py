@@ -26,7 +26,7 @@ from abc import abstractmethod
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from enum import Enum
-from typing import IO, Any, Optional, TypeVar, Union, cast
+from typing import IO, Any, NamedTuple, Optional, TypeVar, Union, cast
 
 import opentelemetry.metrics as api_metrics
 import opentelemetry.util.types as api_types
@@ -34,7 +34,16 @@ import opentelemetry.util.types as api_types
 from ..rust_utils import run_coroutine_sync
 from ..telemetry import Telemetry
 from ..telemetry.attributes.base import AttributesProvider, collect_attributes
-from ..types import MAX_SYMLINK_DEPTH, ObjectMetadata, Range, SignerType, StorageProvider, SymlinkHandling
+from ..types import (
+    MAX_SYMLINK_DEPTH,
+    BatchTransferError,
+    BatchTransferFailure,
+    ObjectMetadata,
+    Range,
+    SignerType,
+    StorageProvider,
+    SymlinkHandling,
+)
 from ..utils import (
     create_attribute_filter_evaluator,
     extract_prefix_from_glob,
@@ -49,6 +58,14 @@ from ..utils import (
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
+
+
+class _AsyncTransferItem(NamedTuple):
+    item_index: int
+    local_path: str
+    remote_path: str
+    key: str
+    use_multipart: bool
 
 
 _ShallowListResult = tuple[list[str], list[ObjectMetadata]]
@@ -1027,6 +1044,20 @@ class BaseStorageProvider(StorageProvider):
         metadata: Optional[Sequence[Optional[ObjectMetadata]]] = None,
         max_workers: int = 16,
     ) -> None:
+        """
+        Download multiple remote objects to local paths.
+
+        Missing metadata entries are resolved before transfer. When a Rust
+        client is available, downloads run through the async Rust batch path;
+        otherwise each item is downloaded through the threaded Python helper.
+
+        :param remote_paths: Remote object paths to download.
+        :param local_paths: Local destination paths for each remote object.
+        :param metadata: Optional per-object metadata used for multipart decisions.
+        :param max_workers: Maximum number of concurrent download workers.
+        :raises ValueError: If path or metadata lengths differ, or if max_workers is less than 1.
+        :raises BatchTransferError: If one or more item downloads fail.
+        """
         if len(remote_paths) != len(local_paths):
             raise ValueError("remote_paths and local_paths must have the same length")
 
@@ -1084,12 +1115,26 @@ class BaseStorageProvider(StorageProvider):
         max_workers: int,
     ) -> None:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [
-                executor.submit(self.download_file, rp, lp, metadata[i])
+            future_to_index = {
+                executor.submit(self.download_file, rp, lp, metadata[i]): i
                 for i, (rp, lp) in enumerate(zip(remote_paths, local_paths))
-            ]
-            for future in as_completed(futures):
-                future.result()
+            }
+            failures: list[BatchTransferFailure] = []
+            for future in as_completed(future_to_index):
+                i = future_to_index[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    failures.append(
+                        BatchTransferFailure(
+                            index=i,
+                            source_path=remote_paths[i],
+                            destination_path=local_paths[i],
+                            error=e,
+                        )
+                    )
+            if failures:
+                raise BatchTransferError(failures)
 
     def _download_files_async(
         self,
@@ -1104,14 +1149,33 @@ class BaseStorageProvider(StorageProvider):
 
         multipart_threshold = self._multipart_threshold
 
-        items: list[tuple[str, str, bool]] = []
+        items: list[_AsyncTransferItem] = []
+        failures: list[BatchTransferFailure] = []
         for i, (remote_path, local_path) in enumerate(zip(remote_paths, local_paths)):
-            full_path = self._prepend_base_path(remote_path)
-            _, key = split_path(full_path)
-            if os.path.dirname(local_path):
-                safe_makedirs(os.path.dirname(local_path))
-            use_multipart = metadata[i].content_length > multipart_threshold
-            items.append((key, local_path, use_multipart))
+            try:
+                full_path = self._prepend_base_path(remote_path)
+                _, key = split_path(full_path)
+                if os.path.dirname(local_path):
+                    safe_makedirs(os.path.dirname(local_path))
+                use_multipart = metadata[i].content_length > multipart_threshold
+                items.append(
+                    _AsyncTransferItem(
+                        item_index=i,
+                        local_path=local_path,
+                        remote_path=remote_path,
+                        key=key,
+                        use_multipart=use_multipart,
+                    )
+                )
+            except Exception as e:
+                failures.append(
+                    BatchTransferFailure(
+                        index=i,
+                        source_path=remote_path,
+                        destination_path=local_path,
+                        error=e,
+                    )
+                )
 
         semaphore = asyncio.Semaphore(max_workers)
 
@@ -1139,13 +1203,22 @@ class BaseStorageProvider(StorageProvider):
 
         async def _download_all() -> None:
             results = await asyncio.gather(
-                *[_download_one(key, lp, mp) for key, lp, mp in items],
+                *[_download_one(item.key, item.local_path, item.use_multipart) for item in items],
                 return_exceptions=True,
             )
-            errors = [r for r in results if isinstance(r, Exception)]
-            if errors:
-                logger.error("download_files: %d/%d downloads failed", len(errors), len(items))
-                raise errors[0]
+            failures.extend(
+                BatchTransferFailure(
+                    index=item.item_index,
+                    source_path=item.remote_path,
+                    destination_path=item.local_path,
+                    error=result,
+                )
+                for result, item in zip(results, items)
+                if isinstance(result, Exception)
+            )
+            if failures:
+                logger.error("download_files: %d/%d downloads failed", len(failures), len(remote_paths))
+                raise BatchTransferError(failures)
 
         run_coroutine_sync(_download_all)
 
@@ -1156,6 +1229,21 @@ class BaseStorageProvider(StorageProvider):
         attributes: Optional[Sequence[Optional[dict[str, Any]]]] = None,
         max_workers: int = 16,
     ) -> None:
+        """
+        Upload multiple local files to remote object paths.
+
+        Uploads use the async Rust batch path when available and no per-file
+        attributes are provided; otherwise each item is uploaded through the
+        threaded Python helper.
+
+        :param local_paths: Local source file paths to upload.
+        :param remote_paths: Remote destination object paths for each local file.
+        :param attributes: Optional per-file attributes to attach on upload.
+        :param max_workers: Maximum number of concurrent upload workers.
+        :return: None.
+        :raises ValueError: If path or attributes lengths differ, or if max_workers is less than 1.
+        :raises BatchTransferError: If one or more item uploads fail.
+        """
         if len(local_paths) != len(remote_paths):
             raise ValueError("local_paths and remote_paths must have the same length")
 
@@ -1183,12 +1271,26 @@ class BaseStorageProvider(StorageProvider):
         max_workers: int = 16,
     ) -> None:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [
-                executor.submit(self.upload_file, rp, lp, attributes[i] if attributes is not None else None)
+            future_to_index = {
+                executor.submit(self.upload_file, rp, lp, attributes[i] if attributes is not None else None): i
                 for i, (lp, rp) in enumerate(zip(local_paths, remote_paths))
-            ]
-            for future in as_completed(futures):
-                future.result()
+            }
+            failures: list[BatchTransferFailure] = []
+            for future in as_completed(future_to_index):
+                i = future_to_index[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    failures.append(
+                        BatchTransferFailure(
+                            index=i,
+                            source_path=local_paths[i],
+                            destination_path=remote_paths[i],
+                            error=e,
+                        )
+                    )
+            if failures:
+                raise BatchTransferError(failures)
 
     def _upload_files_async(
         self, rust_client: Any, local_paths: list[str], remote_paths: list[str], max_workers: int
@@ -1198,14 +1300,31 @@ class BaseStorageProvider(StorageProvider):
 
         multipart_threshold = self._multipart_threshold
 
-        # Build (local_path, object_key, use_multipart) tuples so each upload
-        # knows its resolved key and whether it exceeds the multipart threshold.
-        items: list[tuple[str, str, bool]] = []
-        for local_path, remote_path in zip(local_paths, remote_paths):
-            full_path = self._prepend_base_path(remote_path)
-            _, key = split_path(full_path)
-            file_size = os.path.getsize(local_path)
-            items.append((local_path, key, file_size > multipart_threshold))
+        items: list[_AsyncTransferItem] = []
+        failures: list[BatchTransferFailure] = []
+        for i, (local_path, remote_path) in enumerate(zip(local_paths, remote_paths)):
+            try:
+                full_path = self._prepend_base_path(remote_path)
+                _, key = split_path(full_path)
+                file_size = os.path.getsize(local_path)
+                items.append(
+                    _AsyncTransferItem(
+                        item_index=i,
+                        local_path=local_path,
+                        remote_path=remote_path,
+                        key=key,
+                        use_multipart=file_size > multipart_threshold,
+                    )
+                )
+            except Exception as e:
+                failures.append(
+                    BatchTransferFailure(
+                        index=i,
+                        source_path=local_path,
+                        destination_path=remote_path,
+                        error=e,
+                    )
+                )
 
         semaphore = asyncio.Semaphore(max_workers)
 
@@ -1233,13 +1352,22 @@ class BaseStorageProvider(StorageProvider):
 
         async def _upload_all() -> None:
             results = await asyncio.gather(
-                *[_upload_one(lp, key, mp) for lp, key, mp in items],
+                *[_upload_one(item.local_path, item.key, item.use_multipart) for item in items],
                 return_exceptions=True,
             )
-            errors = [r for r in results if isinstance(r, Exception)]
-            if errors:
-                logger.error("upload_files: %d/%d uploads failed", len(errors), len(items))
-                raise errors[0]
+            failures.extend(
+                BatchTransferFailure(
+                    index=item.item_index,
+                    source_path=item.local_path,
+                    destination_path=item.remote_path,
+                    error=result,
+                )
+                for result, item in zip(results, items)
+                if isinstance(result, Exception)
+            )
+            if failures:
+                logger.error("upload_files: %d/%d uploads failed", len(failures), len(local_paths))
+                raise BatchTransferError(failures)
 
         run_coroutine_sync(_upload_all)
 

@@ -23,7 +23,15 @@ import pytest
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.client.composite import CompositeStorageClient
 from multistorageclient.client.single import SingleStorageClient
-from multistorageclient.types import ObjectMetadata, ResolvedPath, ResolvedPathState, SymlinkHandling
+from multistorageclient.types import (
+    BatchTransferError,
+    BatchTransferFailure,
+    ObjectMetadata,
+    ResolvedPath,
+    ResolvedPathState,
+    RetryableError,
+    SymlinkHandling,
+)
 
 
 @pytest.fixture
@@ -394,6 +402,16 @@ def test_download_files_rejects_mismatched_lengths_single(single_backend_config)
         client.download_files(["/a", "/b"], ["/local_a"])
 
 
+def test_single_download_files_rejects_mismatched_metadata_length_with_replica_manager(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+    single._replica_manager = MagicMock()
+
+    with pytest.raises(ValueError, match="metadata must have the same length"):
+        client.download_files(["/a"], ["/local_a"], metadata=[])
+
+
 def test_download_files_rejects_mismatched_lengths_composite(multi_backend_config):
     client = StorageClient(multi_backend_config)
     with pytest.raises(ValueError, match="same length"):
@@ -487,7 +505,7 @@ def test_single_download_files_with_metadata_resolves_paths(single_backend_confi
     )
 
 
-def test_single_download_files_with_metadata_raises_on_missing_file(single_backend_config):
+def test_single_download_files_with_metadata_reports_missing_file_without_data_transfer(single_backend_config):
     client = StorageClient(single_backend_config)
     single = client._delegate
     assert isinstance(single, SingleStorageClient)
@@ -498,9 +516,58 @@ def test_single_download_files_with_metadata_raises_on_missing_file(single_backe
         ResolvedPath(physical_path="logical/missing", state=ResolvedPathState.UNTRACKED),
     ]
     single._metadata_provider = metadata_provider
+    single._storage_provider.download_files = MagicMock()
 
-    with pytest.raises(FileNotFoundError, match="logical/missing"):
+    with pytest.raises(FileNotFoundError):
         client.download_files(["logical/a", "logical/missing"], ["/la", "/lb"])
+
+    single._storage_provider.download_files.assert_not_called()
+
+
+def test_single_download_files_with_metadata_does_not_retry_metadata_provider_failures(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+
+    metadata_provider = MagicMock()
+    metadata_provider.realpath.side_effect = RetryableError("metadata provider unavailable")
+    single._metadata_provider = metadata_provider
+    single._storage_provider.download_files = MagicMock()
+
+    with pytest.raises(RetryableError):
+        client.download_files(["logical/a"], ["/la"])
+
+    assert metadata_provider.realpath.call_count == 1
+    single._storage_provider.download_files.assert_not_called()
+
+
+def test_single_download_files_with_metadata_reports_provider_failures_for_physical_paths(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+
+    metadata_provider = MagicMock()
+    metadata_provider.realpath.return_value = ResolvedPath(physical_path="physical/a", state=ResolvedPathState.EXISTS)
+    single._metadata_provider = metadata_provider
+    single._storage_provider.download_files = MagicMock(
+        side_effect=BatchTransferError(
+            [
+                BatchTransferFailure(
+                    index=0,
+                    source_path="physical/a",
+                    destination_path="/la",
+                    error=FileNotFoundError("missing"),
+                )
+            ]
+        )
+    )
+
+    with pytest.raises(BatchTransferError) as exc_info:
+        client.download_files(["logical/a"], ["/la"])
+
+    assert exc_info.value.failures[0].index == 0
+    assert exc_info.value.failures[0].source_path == "physical/a"
+    assert exc_info.value.failures[0].destination_path == "/la"
 
 
 def test_single_download_files_empty_lists(single_backend_config):
@@ -670,9 +737,130 @@ def test_single_upload_files_with_metadata_rejects_overwrite(single_backend_conf
     metadata_provider.realpath.return_value = ResolvedPath(physical_path="existing", state=ResolvedPathState.EXISTS)
     metadata_provider.allow_overwrites.return_value = False
     single._metadata_provider = metadata_provider
+    single._storage_provider.upload_files = MagicMock()
 
-    with pytest.raises(FileExistsError, match="already exists"):
+    with pytest.raises(FileExistsError):
         client.upload_files(["existing"], ["/la"])
+
+    single._storage_provider.upload_files.assert_not_called()
+
+
+def test_single_upload_files_with_metadata_does_not_upload_when_overwrite_fails(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+
+    metadata_provider = MagicMock()
+    metadata_provider.realpath.side_effect = [
+        ResolvedPath(physical_path="logical/a", state=ResolvedPathState.UNTRACKED),
+        ResolvedPath(physical_path="existing", state=ResolvedPathState.EXISTS),
+    ]
+    metadata_provider.generate_physical_path.return_value = ResolvedPath(
+        physical_path="physical/a", state=ResolvedPathState.UNTRACKED
+    )
+    metadata_provider.allow_overwrites.return_value = False
+    obj_meta = ObjectMetadata(key="physical/a", content_length=100, last_modified=datetime.now(tz=timezone.utc))
+    single._storage_provider.get_object_metadata = MagicMock(return_value=obj_meta)
+    single._storage_provider.upload_files = MagicMock()
+    single._metadata_provider = metadata_provider
+    single._metadata_provider_lock = None
+
+    with pytest.raises(FileExistsError):
+        client.upload_files(["logical/a", "existing"], ["/la", "/lb"])
+
+    single._storage_provider.upload_files.assert_not_called()
+    metadata_provider.add_file.assert_not_called()
+
+
+def test_single_upload_files_with_metadata_does_not_register_partial_provider_success(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+
+    metadata_provider = MagicMock()
+    metadata_provider.realpath.side_effect = [
+        ResolvedPath(physical_path="logical/a", state=ResolvedPathState.UNTRACKED),
+        ResolvedPath(physical_path="logical/b", state=ResolvedPathState.UNTRACKED),
+    ]
+    metadata_provider.generate_physical_path.side_effect = [
+        ResolvedPath(physical_path="physical/a", state=ResolvedPathState.UNTRACKED),
+        ResolvedPath(physical_path="physical/b", state=ResolvedPathState.UNTRACKED),
+    ]
+    metadata_provider.allow_overwrites.return_value = False
+    single._metadata_provider = metadata_provider
+    single._metadata_provider_lock = None
+    single._storage_provider.get_object_metadata = MagicMock(
+        return_value=ObjectMetadata(key="physical/a", content_length=100, last_modified=datetime.now(tz=timezone.utc))
+    )
+    single._storage_provider.upload_files = MagicMock(
+        side_effect=BatchTransferError(
+            [
+                BatchTransferFailure(
+                    index=1,
+                    source_path="/lb",
+                    destination_path="physical/b",
+                    error=RuntimeError("permanent upload failure"),
+                )
+            ]
+        )
+    )
+
+    with pytest.raises(BatchTransferError):
+        client.upload_files(["logical/a", "logical/b"], ["/la", "/lb"])
+
+    metadata_provider.add_file.assert_not_called()
+
+
+def test_single_upload_files_with_metadata_does_not_retry_metadata_provider_failures(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+
+    metadata_provider = MagicMock()
+    metadata_provider.realpath.side_effect = RetryableError("metadata provider unavailable")
+    single._metadata_provider = metadata_provider
+    single._metadata_provider_lock = None
+    single._storage_provider.upload_files = MagicMock()
+
+    with pytest.raises(RetryableError):
+        client.upload_files(["logical/a"], ["/la"])
+
+    assert metadata_provider.realpath.call_count == 1
+    single._storage_provider.upload_files.assert_not_called()
+
+
+def test_single_upload_files_with_metadata_reports_provider_failures_for_physical_paths(single_backend_config):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+
+    metadata_provider = MagicMock()
+    metadata_provider.realpath.return_value = ResolvedPath(physical_path="logical/a", state=ResolvedPathState.UNTRACKED)
+    metadata_provider.generate_physical_path.return_value = ResolvedPath(
+        physical_path="physical/a", state=ResolvedPathState.UNTRACKED
+    )
+    metadata_provider.allow_overwrites.return_value = False
+    single._metadata_provider = metadata_provider
+    single._metadata_provider_lock = None
+    single._storage_provider.upload_files = MagicMock(
+        side_effect=BatchTransferError(
+            [
+                BatchTransferFailure(
+                    index=0,
+                    source_path="/la",
+                    destination_path="physical/a",
+                    error=FileNotFoundError("missing local"),
+                )
+            ]
+        )
+    )
+
+    with pytest.raises(BatchTransferError) as exc_info:
+        client.upload_files(["logical/a"], ["/la"])
+
+    assert exc_info.value.failures[0].index == 0
+    assert exc_info.value.failures[0].source_path == "/la"
+    assert exc_info.value.failures[0].destination_path == "physical/a"
 
 
 def test_single_upload_files_with_metadata_allows_overwrite(single_backend_config):

@@ -30,7 +30,7 @@ from ..constants import DEFAULT_SYNC_BATCH_SIZE, MEMORY_LOAD_LIMIT
 from ..file import ObjectFile, PosixFile
 from ..providers.posix_file import PosixFileStorageProvider
 from ..replica_manager import ReplicaManager
-from ..retry import retry
+from ..retry import batch_retry, retry
 from ..sync import SyncManager
 from ..types import (
     AWARE_DATETIME_MIN,
@@ -329,6 +329,70 @@ class SingleStorageClient(AbstractStorageClient):
             for future in as_completed(future_to_virtual_path):
                 future.result()
 
+    @batch_retry(operation_name="download_files")
+    def _download_files_batch(
+        self,
+        indices: list[int],
+        remote_paths: Sequence[str],
+        local_paths: list[str],
+        metadata: Optional[Sequence[Optional[ObjectMetadata]]],
+        max_workers: int,
+    ) -> None:
+        """
+        Execute one provider batch download attempt for the selected item indices.
+
+        The ``@batch_retry`` decorator retries this method with only failed
+        indices when the provider reports item-level retryable failures.
+
+        :param indices: Original batch indices to include in this attempt.
+        :param remote_paths: Remote paths for the full original batch.
+        :param local_paths: Local destination paths for the full original batch.
+        :param metadata: Optional per-file metadata for the full original batch.
+        :param max_workers: Maximum provider workers for this attempt.
+        """
+        provider_remote_paths = [remote_paths[index] for index in indices]
+        provider_local_paths = [local_paths[index] for index in indices]
+        provider_metadata = [metadata[index] for index in indices] if metadata is not None else None
+
+        self._storage_provider.download_files(
+            provider_remote_paths,
+            provider_local_paths,
+            provider_metadata,
+            max_workers,
+        )
+
+    @batch_retry(operation_name="upload_files")
+    def _upload_files_batch(
+        self,
+        indices: list[int],
+        local_paths: list[str],
+        remote_paths: Sequence[str],
+        attributes: Optional[Sequence[Optional[dict[str, Any]]]],
+        max_workers: int,
+    ) -> None:
+        """
+        Execute one provider batch upload attempt for the selected item indices.
+
+        The ``@batch_retry`` decorator retries this method with only failed
+        indices when the provider reports item-level retryable failures.
+
+        :param indices: Original batch indices to include in this attempt.
+        :param local_paths: Local source paths for the full original batch.
+        :param remote_paths: Provider destination paths for the full original batch.
+        :param attributes: Optional per-file attributes for the full original batch.
+        :param max_workers: Maximum provider workers for this attempt.
+        """
+        provider_local_paths = [local_paths[index] for index in indices]
+        provider_remote_paths = [remote_paths[index] for index in indices]
+        provider_attributes = [attributes[index] for index in indices] if attributes is not None else None
+
+        self._storage_provider.upload_files(
+            provider_local_paths,
+            provider_remote_paths,
+            provider_attributes,
+            max_workers,
+        )
+
     @retry
     def read(
         self,
@@ -472,14 +536,19 @@ class SingleStorageClient(AbstractStorageClient):
         if len(remote_paths) != len(local_paths):
             raise ValueError("remote_paths and local_paths must have the same length")
 
+        if metadata is not None and len(metadata) != len(remote_paths):
+            raise ValueError("metadata must have the same length as remote_paths and local_paths")
+
         if self._metadata_provider:
             physical_paths = [self._resolve_read_path(rp) for rp in remote_paths]
-            self._storage_provider.download_files(physical_paths, local_paths, metadata, max_workers)
+            self._download_files_batch(
+                list(range(len(remote_paths))), physical_paths, local_paths, metadata, max_workers
+            )
         elif self._replica_manager:
             for remote_path, local_path in zip(remote_paths, local_paths):
                 self.download_file(remote_path, local_path)
         else:
-            self._storage_provider.download_files(remote_paths, local_paths, metadata, max_workers)
+            self._download_files_batch(list(range(len(remote_paths))), remote_paths, local_paths, metadata, max_workers)
 
     @retry
     def upload_file(
@@ -521,15 +590,24 @@ class SingleStorageClient(AbstractStorageClient):
         """
         if len(remote_paths) != len(local_paths):
             raise ValueError("remote_paths and local_paths must have the same length")
+
         if attributes is not None and len(attributes) != len(remote_paths):
             raise ValueError("attributes must have the same length as remote_paths and local_paths")
 
         if self._metadata_provider:
             physical_paths = [self._resolve_write_path(rp) for rp in remote_paths]
-            self._storage_provider.upload_files(local_paths, physical_paths, attributes, max_workers)
+
+            self._upload_files_batch(
+                list(range(len(remote_paths))),
+                local_paths,
+                physical_paths,
+                attributes,
+                max_workers,
+            )
+
             self._register_written_files(remote_paths, physical_paths, attributes, max_workers)
         else:
-            self._storage_provider.upload_files(local_paths, remote_paths, attributes, max_workers)
+            self._upload_files_batch(list(range(len(remote_paths))), local_paths, remote_paths, attributes, max_workers)
 
     @retry
     def write(self, path: str, body: bytes, attributes: Optional[dict[str, Any]] = None) -> None:

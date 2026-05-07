@@ -19,8 +19,8 @@ from unittest.mock import patch
 import pytest
 
 from multistorageclient import StorageClient, StorageClientConfig
-from multistorageclient.retry import retry
-from multistorageclient.types import Range, RetryableError, StorageProvider
+from multistorageclient.retry import batch_retry, retry
+from multistorageclient.types import BatchTransferError, BatchTransferFailure, Range, RetryableError, StorageProvider
 
 
 class FakeStorageProvider:
@@ -187,3 +187,195 @@ def test_file_not_found_error_logging(caplog):
 
     debug_logs = [record for record in caplog.records if record.levelname == "DEBUG" and "not found" in record.message]
     assert len(debug_logs) > 0, "FileNotFoundError should be logged at DEBUG level"
+
+
+class FakeBatchStorageProvider:
+    def __init__(self, failing_indices_by_call: list[set[int]], error: Exception):
+        self.calls: list[dict[str, object]] = []
+        self._failing_indices_by_call = failing_indices_by_call
+        self._error = error
+
+    def upload_files(self, local_paths, remote_paths, attributes=None, max_workers=16):
+        self.calls.append(
+            {
+                "local_paths": list(local_paths),
+                "remote_paths": list(remote_paths),
+                "attributes": list(attributes) if attributes is not None else None,
+            }
+        )
+        self._raise_batch_error_for_call(local_paths, remote_paths)
+
+    def download_files(self, remote_paths, local_paths, metadata=None, max_workers=16):
+        self.calls.append(
+            {
+                "remote_paths": list(remote_paths),
+                "local_paths": list(local_paths),
+                "metadata": list(metadata) if metadata is not None else None,
+            }
+        )
+        self._raise_batch_error_for_call(remote_paths, local_paths)
+
+    def _raise_batch_error_for_call(self, source_paths, destination_paths):
+        call_index = len(self.calls) - 1
+        failing_indices = (
+            self._failing_indices_by_call[call_index] if call_index < len(self._failing_indices_by_call) else set()
+        )
+        if failing_indices:
+            raise BatchTransferError(
+                [
+                    BatchTransferFailure(
+                        index=i,
+                        source_path=source_paths[i],
+                        destination_path=destination_paths[i],
+                        error=self._error,
+                    )
+                    for i in sorted(failing_indices)
+                ]
+            )
+
+
+def test_upload_files_retries_only_failed_files():
+    config = StorageClientConfig.from_json(
+        """{
+        "profiles": {
+            "default": {
+                "storage_provider": {
+                    "type": "file",
+                    "options": {
+                        "base_path": "/"
+                    }
+                }
+            }
+        }
+    }"""
+    )
+    storage_client = StorageClient(config)
+    storage_provider = FakeBatchStorageProvider(
+        failing_indices_by_call=[{1}, set()],
+        error=RetryableError("temporary upload failure"),
+    )
+    storage_client._storage_provider = cast(StorageProvider, storage_provider)
+
+    with patch("time.sleep"):
+        storage_client.upload_files(
+            remote_paths=["remote-a", "remote-b", "remote-c"],
+            local_paths=["local-a", "local-b", "local-c"],
+            attributes=[{"name": "a"}, {"name": "b"}, {"name": "c"}],
+        )
+
+    assert storage_provider.calls == [
+        {
+            "local_paths": ["local-a", "local-b", "local-c"],
+            "remote_paths": ["remote-a", "remote-b", "remote-c"],
+            "attributes": [{"name": "a"}, {"name": "b"}, {"name": "c"}],
+        },
+        {
+            "local_paths": ["local-b"],
+            "remote_paths": ["remote-b"],
+            "attributes": [{"name": "b"}],
+        },
+    ]
+
+
+def test_download_files_retries_only_failed_files():
+    config = StorageClientConfig.from_json(
+        """{
+        "profiles": {
+            "default": {
+                "storage_provider": {
+                    "type": "file",
+                    "options": {
+                        "base_path": "/"
+                    }
+                }
+            }
+        }
+    }"""
+    )
+    storage_client = StorageClient(config)
+    storage_provider = FakeBatchStorageProvider(
+        failing_indices_by_call=[{0, 2}, set()],
+        error=RetryableError("temporary download failure"),
+    )
+    storage_client._storage_provider = cast(StorageProvider, storage_provider)
+
+    with patch("time.sleep"):
+        storage_client.download_files(
+            remote_paths=["remote-a", "remote-b", "remote-c"],
+            local_paths=["local-a", "local-b", "local-c"],
+        )
+
+    assert storage_provider.calls == [
+        {
+            "remote_paths": ["remote-a", "remote-b", "remote-c"],
+            "local_paths": ["local-a", "local-b", "local-c"],
+            "metadata": None,
+        },
+        {
+            "remote_paths": ["remote-a", "remote-c"],
+            "local_paths": ["local-a", "local-c"],
+            "metadata": None,
+        },
+    ]
+
+
+def test_upload_files_does_not_retry_non_retryable_batch_failures():
+    config = StorageClientConfig.from_json(
+        """{
+        "profiles": {
+            "default": {
+                "storage_provider": {
+                    "type": "file",
+                    "options": {
+                        "base_path": "/"
+                    }
+                }
+            }
+        }
+    }"""
+    )
+    storage_client = StorageClient(config)
+    storage_provider = FakeBatchStorageProvider(
+        failing_indices_by_call=[{1}],
+        error=RuntimeError("permanent upload failure"),
+    )
+    storage_client._storage_provider = cast(StorageProvider, storage_provider)
+
+    with pytest.raises(BatchTransferError) as exc_info:
+        storage_client.upload_files(
+            remote_paths=["remote-a", "remote-b"],
+            local_paths=["local-a", "local-b"],
+        )
+
+    assert storage_provider.calls == [
+        {
+            "local_paths": ["local-a", "local-b"],
+            "remote_paths": ["remote-a", "remote-b"],
+            "attributes": None,
+        }
+    ]
+    assert len(exc_info.value.failures) == 1
+    assert isinstance(exc_info.value.failures[0].error, RuntimeError)
+
+
+def test_batch_retry_remaps_failures_without_retry_config():
+    class BatchOperation:
+        _retry_config = None
+
+        @batch_retry(operation_name="batch_operation")
+        def run(self, indices: list[int]) -> None:
+            raise BatchTransferError(
+                [
+                    BatchTransferFailure(
+                        index=1,
+                        source_path="source-b",
+                        destination_path="destination-b",
+                        error=RuntimeError("permanent failure"),
+                    )
+                ]
+            )
+
+    with pytest.raises(BatchTransferError) as exc_info:
+        BatchOperation().run([0, 1, 2])
+
+    assert [failure.index for failure in exc_info.value.failures] == [1]
