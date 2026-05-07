@@ -16,7 +16,7 @@ import (
 
 // globalsLockSiteCount is the number of distinct lockgen site strings (unique globalsLock("…") call
 // sites in this module). Maintained by: go generate (tools/lockgen).
-const globalsLockSiteCount = 64
+const globalsLockSiteCount = 65
 
 // globalsLockMaxSiteKeyLen is the length in bytes of the longest site string key in globalsLockMaxHoldBySite
 // (len(s) for that key). Maintained by: go generate (tools/lockgen).
@@ -55,9 +55,10 @@ var globalsLockMaxHoldBySite = map[string]globalsLockSiteStats{
 	"backend.go:499:3:funcLit@498":                                           {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"backend.go:560:3:funcLit@559":                                           {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"bptree_test.go:59:3:BenchmarkBPTreePageInsertion":                       {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"cache.go:245:2:(*cacheLineStruct).fetch":                                {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"cache.go:276:3:(*cacheLineStruct).fetch":                                {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"cache.go:294:2:(*cacheLineStruct).fetch":                                {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"cache.go:317:3:allocateDataCacheLines":                                  {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"cache.go:349:2:(*cacheLineStruct).fetch":                                {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"cache.go:380:3:(*cacheLineStruct).fetch":                                {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"cache.go:398:2:(*cacheLineStruct).fetch":                                {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"fission.go:1033:3:(*globalsStruct).DoRead":                              {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"fission.go:1223:2:(*globalsStruct).DoStatFS":                            {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"fission.go:1261:3:funcLit@1259":                                         {HoldCnt: 0, HoldSum: 0, HoldMax: 0},

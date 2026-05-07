@@ -90,6 +90,22 @@ func dataCacheUp() (err error) {
 	return
 }
 
+func dataCacheDown() (err error) {
+	err = syscall.Munmap(globals.dataCacheLinesContent)
+	if err != nil {
+		err = fmt.Errorf("syscall.Munmap(globals.dataCacheLinesContent) failed: %v", err)
+		return
+	}
+
+	err = globals.dataCacheLinesFile.Close()
+	if err != nil {
+		err = fmt.Errorf("globals.dataCacheLinesFile.Close() failed: %v", err)
+		return
+	}
+
+	return
+}
+
 func (dataCacheLineLRU *dataCacheLineLRUStruct) pushTail(dataCacheLineTracker *dataCacheLineTrackerStruct) {
 	// if dataCacheLineTracker.state != CacheLineNotNotOnLRU {
 	// 	dumpStack()
@@ -112,6 +128,26 @@ func (dataCacheLineLRU *dataCacheLineLRUStruct) pushTail(dataCacheLineTracker *d
 
 		dataCacheLineLRU.tail = dataCacheLineTracker.pos
 	}
+}
+
+func (dataCacheLineLRU *dataCacheLineLRUStruct) peekHead() (dataCacheLineTracker *dataCacheLineTrackerStruct) {
+	if dataCacheLineLRU.lruCount == 0 {
+		dataCacheLineTracker = nil
+		return
+	}
+
+	dataCacheLineTracker = &globals.dataCacheLinesTracker[dataCacheLineLRU.head]
+
+	// if dataCacheLineTracker.pos != dataCacheLineLRU.head {
+	// 	dumpStack()
+	// 	globals.logger.Fatalf("dataCacheLineTracker.pos(%v) != dataCacheLineLRU.head(%v)", dataCacheLineTracker.pos, dataCacheLineLRU.head)
+	// }
+	// if dataCacheLineTracker.state != dataCacheLineLRU.state {
+	// 	dumpStack()
+	// 	globals.logger.Fatalf("dataCacheLineTracker.state(%v) != dataCacheLineLRU.state(%v)", dataCacheLineTracker.state, dataCacheLineLRU.state)
+	// }
+
+	return
 }
 
 func (dataCacheLineLRU *dataCacheLineLRUStruct) popHead() (dataCacheLineTracker *dataCacheLineTrackerStruct) {
@@ -212,20 +248,88 @@ func (dataCacheLineLRU *dataCacheLineLRUStruct) touchThis(dataCacheLineTracker *
 	dataCacheLineLRU.tail = dataCacheLineTracker.pos
 }
 
-func dataCacheDown() (err error) {
-	err = syscall.Munmap(globals.dataCacheLinesContent)
-	if err != nil {
-		err = fmt.Errorf("syscall.Munmap(globals.dataCacheLinesContent) failed: %v", err)
-		return
-	}
+// `allocateDataCacheLines` is called while holding the globals lock to provision the
+// specified `count` data cache lines. As these are typically not available, the caller's
+// globals lock will be released but all data cache lines will now be returned in the
+// `cacheLineNumbers` slice. The caller would then need to reacquire the globals lock
+// and reestablish it's state where some or all of those data cache lines would be
+// utilized. The pattern of consuming them would be to read cacheLineNumbers[0] and then
+// adjust cacheLineNumbers to now equal cacheLineNumbers[1:].
+func allocateDataCacheLines(count uint64) (cacheLineNumbers []uint64) {
+	var (
+		cacheLineWaiter      sync.WaitGroup
+		dataCacheLineTracker *dataCacheLineTrackerStruct
+		inode                *inodeStruct
+		ok                   bool
+	)
 
-	err = globals.dataCacheLinesFile.Close()
-	if err != nil {
-		err = fmt.Errorf("globals.dataCacheLinesFile.Close() failed: %v", err)
-		return
-	}
+	cacheLineNumbers = make([]uint64, 0, count)
 
-	return
+	for {
+		for uint64(len(cacheLineNumbers)) < count {
+			dataCacheLineTracker = globals.dataCacheLineFreeLRU.popHead()
+			if dataCacheLineTracker == nil {
+				break
+			}
+
+			cacheLineNumbers = append(cacheLineNumbers, dataCacheLineTracker.pos)
+		}
+
+		for uint64(len(cacheLineNumbers)) < count {
+			dataCacheLineTracker = globals.dataCacheLineCleanLRU.popHead()
+			if dataCacheLineTracker == nil {
+				break
+			}
+
+			inode, ok = globals.inodeMap.get(dataCacheLineTracker.inodeNumber)
+			if !ok {
+				dumpStack()
+				globals.logger.Fatalf("[FATAL] globals.inodeMap.get(dataCacheLineTracker.inodeNumber[%v]) returned !ok", dataCacheLineTracker.inodeNumber)
+			}
+
+			delete(inode.cacheMap, dataCacheLineTracker.lineNumber)
+
+			cacheLineNumbers = append(cacheLineNumbers, dataCacheLineTracker.pos)
+		}
+
+		if uint64(len(cacheLineNumbers)) == count {
+			// Fortunately, we didn't need to await any other data cache activity
+
+			globalsUnlock()
+			return
+		}
+
+		// We need to pause while one or more data cache lines in .state CacheLineInbound transition
+
+		dataCacheLineTracker = globals.dataCacheLineInboundLRU.peekHead()
+		if dataCacheLineTracker == nil {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] globals.dataCacheLineInboundLRU.peekHead() returned nil")
+		}
+
+		cacheLineWaiter.Add(1)
+		dataCacheLineTracker.waiters = append(dataCacheLineTracker.waiters, &cacheLineWaiter)
+
+		globalsUnlock()
+
+		cacheLineWaiter.Wait()
+
+		globalsLock("cache.go:317:3:allocateDataCacheLines")
+	}
+}
+
+// `releaseDataCacheLines` is the companion to `allocateDataCacheLines` that anticipates
+// that its caller may ultimately not consume all of the allocated data cache lines. Thus,
+// the remaining cacheLineNumbers slice is simply passed to this function. The caller
+// must hold the globals lock.
+func releaseDataCacheLines(cacheLineNumbers []uint64) {
+	var (
+		cacheLineNumber uint64
+	)
+
+	for _, cacheLineNumber = range cacheLineNumbers {
+		globals.dataCacheLineFreeLRU.pushTail(&globals.dataCacheLinesTracker[cacheLineNumber])
+	}
 }
 
 // `fetch` is run in a goroutine for an allocated cacheLineStruct that
@@ -242,7 +346,7 @@ func (cacheLine *cacheLineStruct) fetch() {
 		readFileOutput *readFileOutputStruct
 	)
 
-	globalsLock("cache.go:245:2:(*cacheLineStruct).fetch")
+	globalsLock("cache.go:349:2:(*cacheLineStruct).fetch")
 
 	inode, ok = globals.inodeMap.get(cacheLine.inodeNumber)
 	if !ok {
@@ -273,7 +377,7 @@ func (cacheLine *cacheLineStruct) fetch() {
 
 	readFileOutput, err = readFileWrapper(backend.context, readFileInput)
 	if err != nil {
-		globalsLock("cache.go:276:3:(*cacheLineStruct).fetch")
+		globalsLock("cache.go:380:3:(*cacheLineStruct).fetch")
 		globals.logger.Printf("[WARN] [TODO] (*cacheLineStruct) fetch() needs to handle error reading cache line")
 		inode, ok = globals.inodeMap.get(cacheLine.inodeNumber)
 		if ok {
@@ -291,7 +395,7 @@ func (cacheLine *cacheLineStruct) fetch() {
 		return
 	}
 
-	globalsLock("cache.go:294:2:(*cacheLineStruct).fetch")
+	globalsLock("cache.go:398:2:(*cacheLineStruct).fetch")
 	inode, ok = globals.inodeMap.get(cacheLine.inodeNumber)
 	if ok {
 		inode.inboundCacheLineCount--

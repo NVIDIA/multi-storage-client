@@ -343,7 +343,7 @@ type inodeStruct struct {
 	mTime                  time.Time           // Time when this inodeStruct was last modified - note this is reported for aTime, bTime, and cTime as well
 	xTime                  time.Time           // If != time.Time{}, marks the time when, if not recently accessed, the inode may be evicted
 	isPrefetchInProgress   bool                // [inodeType == BackendRootDir || PseudoDir] indicates that a background prefetch of the directory is in progress
-	cacheMap               map[uint64]uint64   // [inodeType == FileObject] Key == file offset / globals.config.cacheLineSize; Value = cacheLineStruct.nonce; &cacheLineStruct = globals.cacheMap[Value]
+	cacheMap               map[uint64]uint64   // [inodeType == FileObject] Key == file offset / globals.config.cacheLineSize; Value = dataCacheLineTrackerStruct.pos
 	inboundCacheLineCount  uint64              // [inodeType == FileObject] count of .cache[] elements in state CacheLineInbound
 	outboundCacheLineCount uint64              // [inodeType == FileObject] count of .cache[] elements in state CacheLineOutbound
 	dirtyCacheLineCount    uint64              // [inodeType == FileObject] count of .cache[] elements in state CacheLineDirty
