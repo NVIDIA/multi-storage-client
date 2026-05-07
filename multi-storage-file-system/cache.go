@@ -249,13 +249,13 @@ func (dataCacheLineLRU *dataCacheLineLRUStruct) touchThis(dataCacheLineTracker *
 }
 
 // `allocateDataCacheLines` is called while holding the globals lock to provision the
-// specified `count` data cache lines. As these are typically not available, the caller's
-// globals lock will be released but all data cache lines will now be returned in the
-// `cacheLineNumbers` slice. The caller would then need to reacquire the globals lock
-// and reestablish it's state where some or all of those data cache lines would be
-// utilized. The pattern of consuming them would be to read cacheLineNumbers[0] and then
-// adjust cacheLineNumbers to now equal cacheLineNumbers[1:].
-func allocateDataCacheLines(count uint64) (cacheLineNumbers []uint64) {
+// specified `count` data cache lines. Ideally, the required number of data cache lines
+// are available (i.e. from either the Free or Clean LRUs) in which case `neededToBlock`
+// will be false. But if data cache lines needed to be obtained by simply awaiting their
+// availability (as in the case where Inbound data cache lines transition to Clean) or
+// more extensive efforts are needed, the value of `neededToBlock` will be true and the
+// caller's globals lock will have been released requiring their logic to restart.
+func allocateDataCacheLines(count uint64) (cacheLineNumbers []uint64, neededToBlock bool) {
 	var (
 		cacheLineWaiter      sync.WaitGroup
 		dataCacheLineTracker *dataCacheLineTrackerStruct
@@ -264,6 +264,7 @@ func allocateDataCacheLines(count uint64) (cacheLineNumbers []uint64) {
 	)
 
 	cacheLineNumbers = make([]uint64, 0, count)
+	neededToBlock = false
 
 	for {
 		for uint64(len(cacheLineNumbers)) < count {
@@ -300,6 +301,8 @@ func allocateDataCacheLines(count uint64) (cacheLineNumbers []uint64) {
 		}
 
 		// We need to pause while one or more data cache lines in .state CacheLineInbound transition
+
+		neededToBlock = true
 
 		dataCacheLineTracker = globals.dataCacheLineInboundLRU.peekHead()
 		if dataCacheLineTracker == nil {
