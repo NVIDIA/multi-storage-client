@@ -1,0 +1,52 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: msfs-s3-data
+spec:
+  capacity:
+    storage: 1Ti
+  accessModes:
+    - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: msfs-s3
+  csi:
+    driver: msfs.csi.nvidia.com
+    volumeHandle: msfs-s3-data
+    volumeAttributes:
+      bucketName: <your-bucket-name>
+      region: us-west-2
+      endpoint: "https://s3.us-west-2.amazonaws.com"
+    nodePublishSecretRef:
+      name: msfs-s3-credentials
+      namespace: msfs
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: msfs-s3-claim
+  namespace: msfs
+spec:
+  accessModes:
+    - ReadOnlyMany
+  storageClassName: msfs-s3
+  resources:
+    requests:
+      storage: 1Ti
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: msfs-pvc-test-app
+  namespace: msfs
+spec:
+  containers:
+    - name: app
+      image: busybox:latest
+      command: ["sleep", "infinity"]
+      volumeMounts:
+        - name: s3-data
+          mountPath: /mnt/storage
+  volumes:
+    - name: s3-data
+      persistentVolumeClaim:
+        claimName: msfs-s3-claim

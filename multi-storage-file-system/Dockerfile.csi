@@ -1,0 +1,43 @@
+# syntax=docker/dockerfile:1
+#
+# MSFS CSI driver image: builds both the msfs binary and the CSI node plugin.
+# Build context: multi-storage-file-system/
+
+# Stage 1: Build the MSFS binary
+FROM golang:1.25.4-bookworm AS msfs-builder
+ARG TARGETARCH
+ARG GIT_TAG=dev
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -trimpath \
+    -ldflags="-s -w -X main.GitTag=${GIT_TAG}" \
+    -o /out/msfs .
+
+# Stage 2: Build the CSI driver binary
+FROM golang:1.25.4-bookworm AS csi-builder
+ARG TARGETARCH
+WORKDIR /src
+COPY csi/go.mod csi/go.sum ./
+RUN go mod download
+COPY csi/ .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -trimpath \
+    -ldflags="-s -w" \
+    -o /out/msfs-csi-driver ./cmd/msfs-csi-driver
+
+# Stage 3: Minimal runtime
+FROM ubuntu:24.04
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fuse3 ca-certificates tini \
+    && rm -rf /var/lib/apt/lists/*
+RUN grep -q '^user_allow_other' /etc/fuse.conf 2>/dev/null || echo user_allow_other >> /etc/fuse.conf
+
+COPY --from=msfs-builder /out/msfs /usr/local/bin/msfs
+COPY --from=csi-builder /out/msfs-csi-driver /usr/local/bin/msfs-csi-driver
+COPY mount.msfs /usr/sbin/mount.msfs
+RUN chmod +x /usr/local/bin/msfs /usr/local/bin/msfs-csi-driver /usr/sbin/mount.msfs \
+    && ln -sf /usr/local/bin/msfs /usr/bin/msfs
+RUN mkdir -p /var/log/msfs
+
+ENTRYPOINT ["/usr/local/bin/msfs-csi-driver"]
