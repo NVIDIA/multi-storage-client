@@ -41,6 +41,10 @@ spec:
           args:
             - "--csi-address=/csi/csi.sock"
             - "--kubelet-registration-path=/var/lib/kubelet/plugins/msfs.csi.nvidia.com/csi.sock"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           volumeMounts:
             - name: plugin-dir
               mountPath: /csi
@@ -58,7 +62,7 @@ spec:
         - name: registration-dir
           hostPath:
             path: /var/lib/kubelet/plugins_registry
-            type: Directory
+            type: DirectoryOrCreate
         - name: fuse-device
           hostPath:
             path: /dev/fuse

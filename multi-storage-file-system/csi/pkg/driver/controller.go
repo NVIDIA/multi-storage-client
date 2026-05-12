@@ -43,6 +43,9 @@ func (cs *controllerServer) ValidateVolumeCapabilities(_ context.Context, req *c
 	if req.GetVolumeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume ID is required")
 	}
+	if len(req.GetVolumeCapabilities()) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "volume capabilities are required")
+	}
 
 	supported := []*csi.VolumeCapability_AccessMode{
 		{Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY},

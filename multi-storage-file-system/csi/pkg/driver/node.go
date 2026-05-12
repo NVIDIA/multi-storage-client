@@ -58,20 +58,33 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 		return nil, status.Error(codes.InvalidArgument, "volumeAttributes.bucketName is required")
 	}
 
+	// Reservation pattern: check-and-insert under one lock so two concurrent
+	// calls for the same targetPath cannot both start an msfs process. The
+	// reserved entry has a nil cmd; we replace it with the real mount info on
+	// success, or delete it on any failure path.
 	ns.mu.Lock()
 	if _, ok := ns.mounts[targetPath]; ok {
 		ns.mu.Unlock()
 		klog.Infof("volume already mounted at %s", targetPath)
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
+	ns.mounts[targetPath] = &mountEntry{}
 	ns.mu.Unlock()
 
+	releaseReservation := func() {
+		ns.mu.Lock()
+		delete(ns.mounts, targetPath)
+		ns.mu.Unlock()
+	}
+
 	if err := os.MkdirAll(targetPath, 0755); err != nil {
+		releaseReservation()
 		return nil, status.Errorf(codes.Internal, "failed to create target path %s: %v", targetPath, err)
 	}
 
-	configDir, configPath, err := ns.writeConfig(targetPath, volCtx, secrets)
+	configDir, configPath, err := ns.writeConfig(targetPath, volCtx, secrets, req.GetReadonly())
 	if err != nil {
+		releaseReservation()
 		return nil, status.Errorf(codes.Internal, "failed to write msfs config: %v", err)
 	}
 
@@ -83,12 +96,15 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 	klog.Infof("starting msfs: %s %s (mountpoint=%s, bucket=%s)", ns.msfsBinary, configPath, targetPath, bucketName)
 	if err := cmd.Start(); err != nil {
 		os.RemoveAll(configDir)
+		releaseReservation()
 		return nil, status.Errorf(codes.Internal, "failed to start msfs: %v", err)
 	}
 
 	if err := ns.waitForMount(targetPath, 30*time.Second); err != nil {
 		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
 		os.RemoveAll(configDir)
+		releaseReservation()
 		return nil, status.Errorf(codes.Internal, "msfs did not mount within timeout: %v", err)
 	}
 
@@ -133,6 +149,12 @@ func (ns *nodeServer) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpubl
 		klog.Warningf("fusermount failed for %s: %v (trying umount)", targetPath, err)
 		if err2 := syscall.Unmount(targetPath, 0); err2 != nil {
 			klog.Warningf("umount also failed for %s: %v", targetPath, err2)
+			// Stay idempotent: if the path is no longer a mount point, both
+			// failures most likely mean it was already unmounted. Only
+			// surface a hard error when the mount is still visible.
+			if isMountPoint(targetPath) {
+				return nil, status.Errorf(codes.Internal, "unmount %s failed: fusermount: %v, umount: %v", targetPath, err, err2)
+			}
 		}
 	}
 
@@ -163,7 +185,7 @@ func valOrDefault(m map[string]string, key, dflt string) string {
 	return dflt
 }
 
-func (ns *nodeServer) writeConfig(targetPath string, volCtx, secrets map[string]string) (string, string, error) {
+func (ns *nodeServer) writeConfig(targetPath string, volCtx, secrets map[string]string, requestReadonly bool) (string, string, error) {
 	configDir, err := os.MkdirTemp("", "msfs-csi-*")
 	if err != nil {
 		return "", "", fmt.Errorf("failed to create temp config dir: %w", err)
@@ -172,8 +194,11 @@ func (ns *nodeServer) writeConfig(targetPath string, volCtx, secrets map[string]
 	region := valOrDefault(volCtx, "region", "us-east-1")
 	endpoint := valOrDefault(volCtx, "endpoint", fmt.Sprintf("https://s3.%s.amazonaws.com", region))
 
+	// Honor the CSI request's readonly flag (set by kubelet from the PV's
+	// access mode). Fall back to volumeAttributes["readonly"] only when the
+	// request flag is false. Default is read-only.
 	readonlyStr := "true"
-	if volCtx["readonly"] == "false" {
+	if !requestReadonly && volCtx["readonly"] == "false" {
 		readonlyStr = "false"
 	}
 

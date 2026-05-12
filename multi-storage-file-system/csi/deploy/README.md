@@ -13,25 +13,28 @@
 # 1. Install the CSIDriver object (cluster-wide, once)
 kubectl apply -f csi-driver.yaml
 
-# 2. Create RBAC
+# 2. Create the namespace used by the RBAC, DaemonSet, and Secret resources
+kubectl create namespace msfs
+
+# 3. Create RBAC (ServiceAccount lives in the msfs namespace)
 kubectl apply -f rbac.yaml
 
-# 3. Deploy the node plugin DaemonSet
+# 4. Deploy the node plugin DaemonSet
 kubectl apply -f daemonset.yaml
 
-# 4. Verify CSI pods are running on all nodes
+# 5. Verify CSI pods are running on all nodes
 kubectl get pods -n msfs -l app.kubernetes.io/name=msfs-csi-node
 
-# 5. Create the AWS credentials Secret (if not already present)
+# 6. Create the AWS credentials Secret (if not already present)
 kubectl create secret generic msfs-s3-credentials \
   --namespace msfs \
   --from-literal=access_key_id='<your-access-key>' \
   --from-literal=secret_access_key='<your-secret-key>'
 
-# 6. Deploy a test pod
+# 7. Deploy a test pod
 kubectl apply -f example-pod.yaml
 
-# 7. Verify the mount
+# 8. Verify the mount
 kubectl exec -n msfs msfs-test-app -- ls /mnt/storage/s3/
 ```
 

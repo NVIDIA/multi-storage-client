@@ -46,6 +46,7 @@ spec:
       volumeMounts:
         - name: s3-data
           mountPath: /mnt/storage
+          readOnly: true
   volumes:
     - name: s3-data
       persistentVolumeClaim:

@@ -1,10 +1,23 @@
 #!/usr/bin/env bash
 #
-# MSFS CSI driver deployment runbook
+# MSFS CSI driver deployment runbook.
 #
-# Replace <your-registry>, <your-image-pull-secret>, <your-cluster-context>,
-# and <your-bucket-name> below with values appropriate for your environment.
+# Override the variables below for your environment, either by editing this file
+# or by exporting them before running the commands, e.g.:
 #
+#   export REGISTRY=ghcr.io/your-org
+#   export REGISTRY_HOST=ghcr.io
+#   export REGISTRY_USER=your-user
+#   export REGISTRY_TOKEN=your-token
+#   export CLUSTER_CONTEXT=your-kubectl-context
+#
+
+REGISTRY="${REGISTRY:-your-registry}"
+REGISTRY_HOST="${REGISTRY_HOST:-${REGISTRY%%/*}}"
+REGISTRY_USER="${REGISTRY_USER:-your-registry-user}"
+REGISTRY_TOKEN="${REGISTRY_TOKEN:-your-registry-token}"
+CLUSTER_CONTEXT="${CLUSTER_CONTEXT:-your-kubectl-context}"
+IMAGE="${IMAGE:-${REGISTRY}/msfs-csi:latest}"
 
 # ============================================================
 # 1. BUILD & PUSH THE CSI DRIVER IMAGE
@@ -17,23 +30,23 @@ docker system prune -f
 # Build for linux/amd64 (required when building on Apple Silicon for x86 nodes)
 # Build context is multi-storage-file-system/ (not csi/)
 cd multi-storage-file-system
-docker build --platform linux/amd64 -f Dockerfile.csi -t <your-registry>/msfs-csi:latest .
+docker build --platform linux/amd64 -f Dockerfile.csi -t "${IMAGE}" .
 
-# Login to your container registry (replace credentials/host as needed)
-printf '%s' '<your-registry-token>' | docker login <your-registry-host> -u '<your-registry-user>' --password-stdin
+# Login to your container registry
+printf '%s' "${REGISTRY_TOKEN}" | docker login "${REGISTRY_HOST}" -u "${REGISTRY_USER}" --password-stdin
 
 # Push the image
-docker push <your-registry>/msfs-csi:latest
+docker push "${IMAGE}"
 
 # Verify local image architecture
-docker inspect --format='{{.Architecture}}' <your-registry>/msfs-csi:latest
+docker inspect --format='{{.Architecture}}' "${IMAGE}"
 
 # ============================================================
 # 2. CONNECT TO THE KUBERNETES CLUSTER
 # ============================================================
 
 # Switch kubectl to the target cluster context
-kubectl config use-context <your-cluster-context>
+kubectl config use-context "${CLUSTER_CONTEXT}"
 
 # Confirm access
 kubectl get nodes
@@ -56,11 +69,11 @@ kubectl create namespace msfs
 kubectl apply -f csi/deploy/rbac.yaml
 
 # imagePullSecret (only needed if pulling from a private registry)
-# kubectl create secret docker-registry <your-image-pull-secret> \
+# kubectl create secret docker-registry your-image-pull-secret \
 #   --namespace msfs \
-#   --docker-server=<your-registry-host> \
-#   --docker-username='<your-registry-user>' \
-#   --docker-password='<your-registry-token>'
+#   --docker-server="${REGISTRY_HOST}" \
+#   --docker-username="${REGISTRY_USER}" \
+#   --docker-password="${REGISTRY_TOKEN}"
 
 # ============================================================
 # 5. CREATE AWS CREDENTIALS SECRET
@@ -68,8 +81,8 @@ kubectl apply -f csi/deploy/rbac.yaml
 
 kubectl create secret generic msfs-s3-credentials \
   --namespace msfs \
-  --from-literal=access_key_id='<your-access-key>' \
-  --from-literal=secret_access_key='<your-secret-key>'
+  --from-literal=access_key_id="${AWS_ACCESS_KEY_ID:-your-access-key}" \
+  --from-literal=secret_access_key="${AWS_SECRET_ACCESS_KEY:-your-secret-key}"
 
 # ============================================================
 # 6. DEPLOY CSI NODE PLUGIN DAEMONSET
@@ -136,18 +149,18 @@ kubectl delete secret msfs-s3-credentials -n msfs
 # ============================================================
 
 # Check CSI driver logs on a specific node
-# kubectl logs -n msfs <csi-node-pod-name> -c msfs-csi-driver
+# kubectl logs -n msfs CSI_NODE_POD_NAME -c msfs-csi-driver
 
 # Check node-driver-registrar logs
-# kubectl logs -n msfs <csi-node-pod-name> -c node-driver-registrar
+# kubectl logs -n msfs CSI_NODE_POD_NAME -c node-driver-registrar
 
 # Check if CSI driver socket is registered
-# kubectl exec -n msfs <csi-node-pod-name> -c msfs-csi-driver -- ls -la /csi/csi.sock
+# kubectl exec -n msfs CSI_NODE_POD_NAME -c msfs-csi-driver -- ls -la /csi/csi.sock
 
 # "exec format error" — image built for wrong arch; rebuild with --platform linux/amd64
 # "no space left on device" during build — run docker builder prune -af
 # "ImagePullBackOff" — imagePullSecret missing or wrong; check kubectl get secrets -n msfs
 # "denied" on docker push — check the registry path and that you're logged in
 # Pod stuck in ContainerCreating — check CSI driver logs and events:
-#   kubectl describe pod <pod-name> -n msfs
-#   kubectl logs -n msfs <csi-node-pod> -c msfs-csi-driver
+#   kubectl describe pod POD_NAME -n msfs
+#   kubectl logs -n msfs CSI_NODE_POD -c msfs-csi-driver
