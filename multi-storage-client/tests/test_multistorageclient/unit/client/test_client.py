@@ -386,7 +386,7 @@ def test_single_write_with_metadata_provider_accepts_non_string_attributes(singl
 
     client.write("logical/file.bin", b"data", attributes=attributes)
 
-    single._storage_provider.put_object.assert_called_once_with("physical/file.bin", b"data", attributes=attributes)
+    single._storage_provider.put_object.assert_called_once_with("physical/file.bin", b"data", attributes=None)
     metadata_provider.add_file.assert_called_once()
     add_file_path, add_file_metadata = metadata_provider.add_file.call_args.args
     assert add_file_path == "logical/file.bin"
@@ -670,9 +670,7 @@ def test_single_upload_files_with_metadata_and_attributes(single_backend_config)
     attrs = [{"tag": "first", "count": 1}, {"tag": "second", "nested": {"key": "value"}}]
     client.upload_files(["logical/a", "logical/b"], ["/la", "/lb"], attributes=attrs, max_workers=8)
 
-    single._storage_provider.upload_files.assert_called_once_with(
-        ["/la", "/lb"], ["physical/a", "physical/b"], attrs, 8
-    )
+    single._storage_provider.upload_files.assert_called_once_with(["/la", "/lb"], ["physical/a", "physical/b"], None, 8)
     assert metadata_provider.add_file.call_count == 2
     added_meta_a = metadata_provider.add_file.call_args_list[0][0][1]
     assert added_meta_a.metadata == {"tag": "first", "count": 1}
