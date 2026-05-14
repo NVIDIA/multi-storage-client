@@ -1,9 +1,18 @@
-# Static-secret PV/PVC example.
-# For IRSA / workload-identity (recommended on EKS), see example-pv-pvc-irsa.yaml.
+# IRSA / workload-identity PV/PVC example.
+#
+# Prerequisites (one-time, per cluster):
+#   - The msfs-csi-node ServiceAccount in namespace `msfs` is annotated with
+#     an IAM role ARN: eks.amazonaws.com/role-arn=arn:aws:iam::<acct>:role/<role>
+#   - That IAM role's trust policy permits AssumeRoleWithWebIdentity for the
+#     EKS cluster's OIDC provider and the msfs/msfs-csi-node service account.
+#   - The role has least-privilege S3 access to the bucket/prefix below.
+#
+# No nodePublishSecretRef is needed — the AWS SDK in msfs picks up the
+# projected service-account token automatically.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: msfs-s3-data
+  name: msfs-s3-data-irsa
 spec:
   capacity:
     storage: 1Ti
@@ -13,19 +22,17 @@ spec:
   storageClassName: msfs-s3
   csi:
     driver: msfs.csi.nvidia.com
-    volumeHandle: msfs-s3-data
+    volumeHandle: msfs-s3-data-irsa
     volumeAttributes:
+      authType: irsa
       bucketName: <your-bucket-name>
       region: us-west-2
       endpoint: "https://s3.us-west-2.amazonaws.com"
-    nodePublishSecretRef:
-      name: msfs-s3-credentials
-      namespace: msfs
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: msfs-s3-claim
+  name: msfs-s3-claim-irsa
   namespace: msfs
 spec:
   accessModes:
@@ -38,7 +45,7 @@ spec:
 apiVersion: v1
 kind: Pod
 metadata:
-  name: msfs-pvc-test-app
+  name: msfs-pvc-test-app-irsa
   namespace: msfs
 spec:
   containers:
@@ -52,4 +59,4 @@ spec:
   volumes:
     - name: s3-data
       persistentVolumeClaim:
-        claimName: msfs-s3-claim
+        claimName: msfs-s3-claim-irsa

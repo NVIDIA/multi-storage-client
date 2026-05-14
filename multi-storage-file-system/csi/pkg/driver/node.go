@@ -22,6 +22,27 @@ const (
 	killGrace      = 5 * time.Second
 )
 
+// credentialMode controls how the CSI node plugin supplies AWS credentials to
+// the msfs child process for a given volume mount.
+//
+//   - credentialModeStatic: read access_key_id / secret_access_key (and
+//     optional session_token) from the K8s Secret referenced by
+//     nodePublishSecretRef and inject them as AWS_* env vars.
+//   - credentialModeIRSA: do not inject any AWS_* env vars and do not emit
+//     credential placeholders in msfs.yaml. The AWS SDK picks up the
+//     projected ServiceAccount token via AWS_ROLE_ARN /
+//     AWS_WEB_IDENTITY_TOKEN_FILE that EKS sets on the pod.
+//   - credentialModeAuto: pick static when a secret with at least the two
+//     required keys is present, otherwise IRSA. This is the default so
+//     existing manifests keep working unchanged.
+type credentialMode string
+
+const (
+	credentialModeAuto   credentialMode = "auto"
+	credentialModeStatic credentialMode = "static"
+	credentialModeIRSA   credentialMode = "irsa"
+)
+
 type mountEntry struct {
 	cmd       *exec.Cmd
 	configDir string
@@ -77,23 +98,29 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 		ns.mu.Unlock()
 	}
 
+	mode, err := resolveCredentialMode(volCtx, secrets)
+	if err != nil {
+		releaseReservation()
+		return nil, err
+	}
+
 	if err := os.MkdirAll(targetPath, 0755); err != nil {
 		releaseReservation()
 		return nil, status.Errorf(codes.Internal, "failed to create target path %s: %v", targetPath, err)
 	}
 
-	configDir, configPath, err := ns.writeConfig(targetPath, volCtx, secrets, req.GetReadonly())
+	configDir, configPath, err := ns.writeConfig(targetPath, volCtx, secrets, req.GetReadonly(), mode)
 	if err != nil {
 		releaseReservation()
 		return nil, status.Errorf(codes.Internal, "failed to write msfs config: %v", err)
 	}
 
 	cmd := exec.Command(ns.msfsBinary, configPath)
-	cmd.Env = ns.buildEnv(secrets)
+	cmd.Env = ns.buildEnv(secrets, mode)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	klog.Infof("starting msfs: %s %s (mountpoint=%s, bucket=%s)", ns.msfsBinary, configPath, targetPath, bucketName)
+	klog.Infof("starting msfs: %s %s (mountpoint=%s, bucket=%s, authMode=%s)", ns.msfsBinary, configPath, targetPath, bucketName, mode)
 	if err := cmd.Start(); err != nil {
 		os.RemoveAll(configDir)
 		releaseReservation()
@@ -185,7 +212,52 @@ func valOrDefault(m map[string]string, key, dflt string) string {
 	return dflt
 }
 
-func (ns *nodeServer) writeConfig(targetPath string, volCtx, secrets map[string]string, requestReadonly bool) (string, string, error) {
+// hasStaticSecretKeys reports whether the secret map carries both required
+// static credential fields. Treats empty strings as missing so that a Secret
+// keyed with empty values is rejected the same as a missing one.
+func hasStaticSecretKeys(secrets map[string]string) bool {
+	return secrets["access_key_id"] != "" && secrets["secret_access_key"] != ""
+}
+
+// resolveCredentialMode determines how to supply credentials for this mount.
+//
+// Resolution rules:
+//   - If volumeAttributes.authType is set, it is honored verbatim. Unsupported
+//     values surface as gRPC InvalidArgument so misconfigured PVs fail fast.
+//   - "static" requires both access_key_id and secret_access_key in the
+//     referenced Secret; partial credentials are rejected.
+//   - "irsa" / "wif" never require a Secret. Either alias resolves to
+//     credentialModeIRSA.
+//   - "auto" (or unset) picks static if a complete Secret was provided,
+//     otherwise IRSA. This preserves backward compatibility with existing
+//     static-secret manifests while letting new IRSA-based PVs omit
+//     nodePublishSecretRef entirely.
+func resolveCredentialMode(volCtx, secrets map[string]string) (credentialMode, error) {
+	requested := strings.ToLower(strings.TrimSpace(volCtx["authType"]))
+	switch requested {
+	case "", string(credentialModeAuto):
+		if hasStaticSecretKeys(secrets) {
+			return credentialModeStatic, nil
+		}
+		// No (complete) secret provided: fall through to workload identity.
+		// If the cluster isn't actually IRSA-configured the AWS SDK will
+		// surface a clear auth error at first request time.
+		return credentialModeIRSA, nil
+	case string(credentialModeStatic):
+		if !hasStaticSecretKeys(secrets) {
+			return "", status.Error(codes.InvalidArgument,
+				"authType=static requires both access_key_id and secret_access_key in nodePublishSecretRef")
+		}
+		return credentialModeStatic, nil
+	case string(credentialModeIRSA), "wif":
+		return credentialModeIRSA, nil
+	default:
+		return "", status.Errorf(codes.InvalidArgument,
+			"unsupported authType %q (expected one of: auto, static, irsa, wif)", requested)
+	}
+}
+
+func (ns *nodeServer) writeConfig(targetPath string, volCtx, secrets map[string]string, requestReadonly bool, mode credentialMode) (string, string, error) {
 	configDir, err := os.MkdirTemp("", "msfs-csi-*")
 	if err != nil {
 		return "", "", fmt.Errorf("failed to create temp config dir: %w", err)
@@ -244,6 +316,19 @@ func (ns *nodeServer) writeConfig(targetPath string, volCtx, secrets map[string]
 		fmt.Fprintf(&globalExtra, "allow_other: %s\n", v)
 	}
 
+	// In IRSA mode we deliberately omit the access_key_id / secret_access_key
+	// placeholders so the AWS SDK falls through to its credential chain and
+	// picks up the projected ServiceAccount token (AWS_ROLE_ARN +
+	// AWS_WEB_IDENTITY_TOKEN_FILE) that EKS sets on the pod. Including the
+	// placeholders with empty env vars would make the SDK think static creds
+	// were intended and fail with "missing credentials".
+	credentialBlock := ""
+	if mode == credentialModeStatic {
+		credentialBlock = `      access_key_id: "${AWS_ACCESS_KEY_ID}"
+      secret_access_key: "${AWS_SECRET_ACCESS_KEY}"
+`
+	}
+
 	config := fmt.Sprintf(`msfs_version: 1
 endpoint: "http://0.0.0.0:0"
 mountpoint: %s
@@ -256,10 +341,8 @@ mountpoint: %s
     S3:
       region: %q
       endpoint: %q
-      access_key_id: "${AWS_ACCESS_KEY_ID}"
-      secret_access_key: "${AWS_SECRET_ACCESS_KEY}"
-      virtual_hosted_style_request: false
-`, targetPath, globalExtra.String(), volCtx["bucketName"], volCtx["prefix"], readonlyStr, backendExtra.String(), region, endpoint)
+%s      virtual_hosted_style_request: false
+`, targetPath, globalExtra.String(), volCtx["bucketName"], volCtx["prefix"], readonlyStr, backendExtra.String(), region, endpoint, credentialBlock)
 
 	configPath := filepath.Join(configDir, "msfs.yaml")
 	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
@@ -269,8 +352,16 @@ mountpoint: %s
 	return configDir, configPath, nil
 }
 
-func (ns *nodeServer) buildEnv(secrets map[string]string) []string {
+func (ns *nodeServer) buildEnv(secrets map[string]string, mode credentialMode) []string {
 	env := os.Environ()
+	// IRSA mode must not inject AWS_ACCESS_KEY_ID etc. — doing so short-
+	// circuits the SDK credential chain and prevents it from using the
+	// projected web identity token. Pass the host environment through
+	// unchanged so EKS-set vars (AWS_ROLE_ARN, AWS_WEB_IDENTITY_TOKEN_FILE,
+	// AWS_REGION) reach msfs.
+	if mode != credentialModeStatic {
+		return env
+	}
 	if v, ok := secrets["access_key_id"]; ok {
 		env = append(env, "AWS_ACCESS_KEY_ID="+v)
 	}

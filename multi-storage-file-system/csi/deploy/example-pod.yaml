@@ -1,3 +1,5 @@
+# Static-secret inline ephemeral volume example.
+# For IRSA / workload-identity (recommended on EKS), see example-pod-irsa.yaml.
 apiVersion: v1
 kind: Pod
 metadata:
