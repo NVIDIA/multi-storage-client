@@ -8,34 +8,28 @@ The sidecar pattern requires `Bidirectional` mount propagation from the MSFS con
 
 ## Architecture
 
-```
-┌─── Every EC2 Node ─────────────────────────────────────────┐
-│                                                             │
-│  ┌─────────────────────┐     ┌──────────────────────────┐  │
-│  │ CSI Node Plugin     │     │ node-driver-registrar    │  │
-│  │ (DaemonSet)         │     │ (registers socket with   │  │
-│  │                     │     │  kubelet)                 │  │
-│  │ gRPC server on      │     └──────────────────────────┘  │
-│  │ /csi/csi.sock       │                                    │
-│  └──────────┬──────────┘                                    │
-│             │                                               │
-│   NodePublishVolume                                         │
-│             │                                               │
-│             ▼                                               │
-│  ┌─────────────────────┐                                    │
-│  │ msfs process        │──── FUSE mount at targetPath       │
-│  │ (child of plugin)   │                                    │
-│  └─────────────────────┘                                    │
-│             │                                               │
-│        kubelet bind-mounts targetPath into pod              │
-│             │                                               │
-│             ▼                                               │
-│  ┌─────────────────────┐                                    │
-│  │ App Pod             │                                    │
-│  │ /mnt/storage/s3/... │ ◄── S3 bucket contents visible     │
-│  └─────────────────────┘                                    │
-└─────────────────────────────────────────────────────────────┘
-```
+![MSFS CSI Driver Architecture](docs/architecture.png)
+
+**In one sentence:** the driver runs as a single `DaemonSet` (one pod per worker node) that mounts an S3 bucket as a FUSE filesystem and lets the kubelet bind-mount it into your application pod — no controller plugin, nothing on the control plane, and the app pod stays unprivileged.
+
+### Where it runs
+
+| Component | Workload type | Lives on | Notes |
+|---|---|---|---|
+| `CSIDriver` object | Cluster-scoped K8s resource | API server | Declarative registration; not a running process |
+| `msfs-csi-node` pod | `DaemonSet` (`msfs` namespace) | Every worker node | Two containers: `msfs-csi-driver` + `node-driver-registrar` sidecar |
+| `msfs` (FUSE) | Child process of the driver container | Same worker node | One per mounted volume; spawned on `NodePublishVolume`, killed on `NodeUnpublishVolume` |
+| App pod | Your workload | Any worker node | Just references the PVC or inline CSI volume |
+
+There is **no controller `Deployment` or `StatefulSet`**. The `CSIDriver` object sets `attachRequired: false` because object storage has no attach/detach phase — any node can talk to S3 over HTTPS in parallel, so there's no cluster-wide work for a controller to do. On managed Kubernetes (EKS, GKE, AKS) nothing runs on the control plane.
+
+### Per-node flow when a pod starts
+
+1. The kubelet on the chosen worker node sees a Pod that needs an MSC volume.
+2. It calls `NodePublishVolume` on the local `msfs-csi-driver` over a UNIX socket at `/csi/csi.sock` (registered with the kubelet by the `node-driver-registrar` sidecar).
+3. The driver writes a temporary `msfs.yaml`, sets AWS env vars from the K8s `Secret`, and execs the `msfs` binary, which creates a FUSE mount at the kubelet-managed `targetPath`.
+4. The kubelet bind-mounts `targetPath` into the app pod at the requested mount path (e.g. `/mnt/storage/s3/`).
+5. On pod deletion, `NodeUnpublishVolume` stops the `msfs` process and cleans up the mount.
 
 ## Quick start
 
@@ -58,7 +52,22 @@ kubectl apply -f csi/deploy/rbac.yaml
 kubectl apply -f csi/deploy/daemonset.yaml
 ```
 
-### 3. Create an AWS credentials Secret
+### 3. Configure credentials (choose one mode)
+
+The driver supports two credential modes via `volumeAttributes.authType`. Default is `auto`: static when a secret is provided, otherwise IRSA.
+
+**Recommended on EKS — IRSA / workload identity (no Secret needed):**
+
+```bash
+kubectl annotate serviceaccount msfs-csi-node \
+  --namespace msfs \
+  eks.amazonaws.com/role-arn='arn:aws:iam::<account-id>:role/<msfs-csi-role>' \
+  --overwrite
+```
+
+The IAM role's trust policy must allow `AssumeRoleWithWebIdentity` from the cluster's OIDC provider for the `system:serviceaccount:msfs:msfs-csi-node` SA. The role needs least-privilege S3 access (e.g. `s3:ListBucket` + `s3:GetObject` scoped to the bucket and prefix). See `deploy/EKS_CSI_CREDENTIALS_A_B_C_GUIDE.md` for an exact policy.
+
+**Fallback — static AWS access keys in a Secret:**
 
 ```bash
 kubectl create secret generic msfs-s3-credentials \
@@ -95,7 +104,7 @@ volumes:
 
 **Option B: Inline ephemeral (quick testing)**
 
-S3 details specified directly in the pod spec:
+S3 details specified directly in the pod spec. Static-secret variant:
 
 ```yaml
 containers:
@@ -113,6 +122,19 @@ volumes:
         region: us-west-2
       nodePublishSecretRef:
         name: msfs-s3-credentials
+```
+
+IRSA variant — no `nodePublishSecretRef`:
+
+```yaml
+volumes:
+  - name: s3-data
+    csi:
+      driver: msfs.csi.nvidia.com
+      volumeAttributes:
+        authType: irsa
+        bucketName: my-bucket
+        region: us-west-2
 ```
 
 No `privileged`, no `SYS_ADMIN`, no mount propagation in the app pod with either option.
@@ -139,9 +161,16 @@ csi/
     csi-driver.yaml             CSIDriver K8s object
     daemonset.yaml              Node plugin DaemonSet + registrar
     rbac.yaml                   ServiceAccount + ClusterRole
-    example-pod.yaml            Test pod using the CSI volume
-    commands-runbook.sh          Full command reference
+    storageclass.yaml           Default StorageClass
+    example-pod.yaml            Static-secret inline pod example
+    example-pod-irsa.yaml       IRSA / workload-identity inline pod example
+    example-pv-pvc.yaml         Static-secret PV/PVC example
+    example-pv-pvc-irsa.yaml    IRSA / workload-identity PV/PVC example
+    commands-runbook.sh         Full command reference
+    EKS_CSI_CREDENTIALS_A_B_C_GUIDE.md
+                                Phased credentials migration plan
     README.md                   Deploy instructions
+  charts/msfs-csi/              Helm chart (single-command install)
   go.mod / go.sum               Go module (CSI spec + gRPC deps)
 ```
 
@@ -150,10 +179,11 @@ The Dockerfile is at `multi-storage-file-system/Dockerfile.csi` (build context n
 ## How NodePublishVolume works
 
 1. Kubelet calls `NodePublishVolume` with `targetPath`, `volumeAttributes`, and `secrets`.
-2. The plugin writes a temporary `msfs.yaml` config from `volumeAttributes` (bucket, region, prefix, etc.).
-3. AWS credentials from the K8s Secret (`nodePublishSecretRef`) are set as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` environment variables on the msfs process.
-4. The plugin execs `msfs <config-path>`. MSFS creates a FUSE mount at `targetPath`.
-5. Kubelet bind-mounts `targetPath` into the app pod.
+2. The plugin resolves the credential mode from `volumeAttributes.authType` (`auto` / `static` / `irsa`).
+3. The plugin writes a temporary `msfs.yaml` config from `volumeAttributes` (bucket, region, prefix, etc.). In `static` mode the config includes `${AWS_ACCESS_KEY_ID}` / `${AWS_SECRET_ACCESS_KEY}` placeholders; in `irsa` mode they are omitted so the AWS SDK falls through to its credential chain (projected SA token).
+4. In `static` mode, AWS credentials from the K8s Secret (`nodePublishSecretRef`) are exported as env vars on the msfs process. In `irsa` mode no AWS env vars are injected — EKS-set `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE` reach msfs unchanged.
+5. The plugin execs `msfs <config-path>`. MSFS creates a FUSE mount at `targetPath`.
+6. Kubelet bind-mounts `targetPath` into the app pod.
 
 ## How NodeUnpublishVolume works
 
@@ -167,6 +197,7 @@ The Dockerfile is at `multi-storage-file-system/Dockerfile.csi` (build context n
 | Key | Required | Default | Description |
 |-----|----------|---------|-------------|
 | `bucketName` | Yes | - | S3 bucket name |
+| `authType` | No | `auto` | Credential mode: `auto` (static if Secret provided, else IRSA), `static`, `irsa` (alias `wif`) |
 | `region` | No | `us-east-1` | AWS region |
 | `endpoint` | No | `https://s3.<region>.amazonaws.com` | S3 endpoint URL |
 | `prefix` | No | `""` | Object key prefix (with trailing `/` if non-empty) |
@@ -176,6 +207,8 @@ The Dockerfile is at `multi-storage-file-system/Dockerfile.csi` (build context n
 | `flatDirConfirmationPages` | No | - | Flat directory confirmation pages |
 
 ## Secret keys reference
+
+Only required when `authType=static` (or `auto` with a Secret provided). In `irsa` mode the Secret is unused.
 
 The K8s Secret referenced by `nodePublishSecretRef` should contain:
 

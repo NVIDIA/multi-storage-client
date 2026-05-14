@@ -1,11 +1,15 @@
 # MSFS CSI Driver Deployment
 
+> For an architecture overview (what runs where, why there's no controller plugin), see the [main CSI README](../README.md#architecture).
+
 ## Prerequisites
 
 - Kubernetes 1.28+
 - EC2 nodes with `fuse` kernel module loaded
 - MSFS CSI image pushed to a registry accessible from the cluster
-- AWS credentials Secret in the target namespace
+- One of the following auth modes:
+  - **Recommended on EKS:** IRSA wired to the `msfs-csi-node` ServiceAccount (no Secret needed). See [`EKS_CSI_CREDENTIALS_A_B_C_GUIDE.md`](EKS_CSI_CREDENTIALS_A_B_C_GUIDE.md) for the IAM role + OIDC trust setup.
+  - **Fallback:** AWS credentials Secret in the target namespace, referenced by `nodePublishSecretRef`.
 
 ## Deploy
 
@@ -25,14 +29,24 @@ kubectl apply -f daemonset.yaml
 # 5. Verify CSI pods are running on all nodes
 kubectl get pods -n msfs -l app.kubernetes.io/name=msfs-csi-node
 
-# 6. Create the AWS credentials Secret (if not already present)
-kubectl create secret generic msfs-s3-credentials \
+# 6a. EKS IRSA (recommended): annotate the SA with the IAM role ARN.
+#     The role's trust policy must permit AssumeRoleWithWebIdentity for the
+#     EKS OIDC provider and the system:serviceaccount:msfs:msfs-csi-node SA.
+kubectl annotate serviceaccount msfs-csi-node \
   --namespace msfs \
-  --from-literal=access_key_id='<your-access-key>' \
-  --from-literal=secret_access_key='<your-secret-key>'
+  eks.amazonaws.com/role-arn='arn:aws:iam::<account-id>:role/<msfs-csi-role>' \
+  --overwrite
 
-# 7. Deploy a test pod
-kubectl apply -f example-pod.yaml
+# 6b. Static-secret fallback (only if not using IRSA)
+# kubectl create secret generic msfs-s3-credentials \
+#   --namespace msfs \
+#   --from-literal=access_key_id='<your-access-key>' \
+#   --from-literal=secret_access_key='<your-secret-key>'
+
+# 7. Deploy a test pod (IRSA example by default)
+kubectl apply -f example-pod-irsa.yaml
+# OR the static-secret variant:
+# kubectl apply -f example-pod.yaml
 
 # 8. Verify the mount
 kubectl exec -n msfs msfs-test-app -- ls /mnt/storage/s3/
@@ -76,6 +90,7 @@ No privileged pods, no SYS_ADMIN, no mount propagation needed in the app pod.
 | Key | Required | Default | Description |
 |-----|----------|---------|-------------|
 | `bucketName` | Yes | - | S3 bucket name |
+| `authType` | No | `auto` | Credential mode: `auto`, `static`, `irsa` (alias `wif`) |
 | `region` | No | `us-east-1` | AWS region |
 | `endpoint` | No | `https://s3.<region>.amazonaws.com` | S3 endpoint URL |
 | `prefix` | No | `""` | Object key prefix |
