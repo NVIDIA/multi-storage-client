@@ -1493,9 +1493,20 @@ class StorageClientConfig:
                     # Verify it's a supported protocol
                     if protocol not in SUPPORTED_IMPLICIT_PROFILE_PROTOCOLS:
                         raise ValueError(f'Unsupported protocol in implicit profile: "{protocol}"')
-                    implicit_profile_config = create_implicit_profile_config(
-                        profile_name=profile, protocol=protocol, base_path=bucket
-                    )
+
+                    implicit_profile_name = f"{protocol}-{bucket}"
+                    existing_profile = merged_profiles.get(implicit_profile_name)
+                    if (
+                        existing_profile
+                        and existing_profile.get("storage_provider", {}).get("type")
+                        == PROTOCOL_TO_PROVIDER_TYPE_MAPPING[protocol]
+                        and existing_profile.get("storage_provider", {}).get("options", {}).get("base_path") == bucket
+                    ):
+                        implicit_profile_config = {"profiles": {profile: copy.deepcopy(existing_profile)}}
+                    else:
+                        implicit_profile_config = create_implicit_profile_config(
+                            profile_name=profile, protocol=protocol, base_path=bucket
+                        )
                 else:
                     raise ValueError(f'Invalid implicit profile format: "{profile}"')
             else:
