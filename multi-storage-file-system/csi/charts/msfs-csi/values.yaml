@@ -1,0 +1,96 @@
+# Default values for msfs-csi.
+# A single-command install:  helm install msfs-csi ./charts/msfs-csi
+#
+# Recommended on EKS:
+#   helm install msfs-csi ./charts/msfs-csi \
+#     --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::<acct>:role/<role>
+
+# -- Container image for the CSI node plugin.
+image:
+  repository: msfs-csi
+  tag: ""           # defaults to .Chart.AppVersion when empty
+  pullPolicy: IfNotPresent
+
+# -- Sidecar image used by Kubernetes to register the driver socket with kubelet.
+nodeDriverRegistrar:
+  image:
+    repository: registry.k8s.io/sig-storage/csi-node-driver-registrar
+    tag: v2.12.0
+    pullPolicy: IfNotPresent
+
+# -- Image pull secrets for private registries.
+imagePullSecrets: []
+# - name: my-registry-secret
+
+# -- Namespace creation.
+# When false, the chart assumes the release namespace already exists; the chart
+# itself does not enforce a namespace. Set true to have the chart create one.
+namespace:
+  create: false
+  name: msfs
+
+# -- ServiceAccount used by the CSI node plugin.
+# IRSA is wired here. The IAM role + OIDC trust policy are AWS-side
+# prerequisites — see the chart README.
+serviceAccount:
+  create: true
+  name: msfs-csi-node
+  # Annotations placed on the ServiceAccount.
+  # For EKS IRSA, set:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::<acct>:role/<role>
+  annotations: {}
+  labels: {}
+
+# -- DaemonSet (node plugin) configuration.
+nodePlugin:
+  # CSI driver name. Must match the .driver field in PV/inline volume specs.
+  driverName: msfs.csi.nvidia.com
+  # CSI socket directory on the host. Should rarely need to change.
+  hostPluginPath: /var/lib/kubelet/plugins/msfs.csi.nvidia.com
+  hostKubeletPath: /var/lib/kubelet/pods
+  hostRegistrationPath: /var/lib/kubelet/plugins_registry
+  hostFuseDevice: /dev/fuse
+  resources: {}
+  # Example:
+  # resources:
+  #   limits:
+  #     memory: 512Mi
+  #   requests:
+  #     cpu: 100m
+  #     memory: 128Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  podLabels: {}
+  # Extra args appended to the msfs-csi-driver container.
+  extraArgs: []
+
+# -- Optional StorageClass.
+storageClass:
+  create: true
+  name: msfs-s3
+  # Set as the cluster's default StorageClass. Usually false — leave platform
+  # defaults alone.
+  default: false
+  reclaimPolicy: Retain
+  volumeBindingMode: Immediate
+
+# -- Static-secret fallback (only used when authType=static or auto-with-secret).
+# This chart NEVER inlines credential values. It only references an existing
+# Secret you (or your secret-management tool) created out of band.
+staticCredentials:
+  # When non-empty, generated example PVs/inline volumes will reference this
+  # Secret via nodePublishSecretRef. Leave empty for IRSA-only deployments.
+  existingSecretName: ""
+  # Namespace of the existing Secret (defaults to release namespace).
+  existingSecretNamespace: ""
+
+# -- Default credential mode written into example manifests rendered by this
+# chart. Volume specs you author yourself can override per-volume via
+# volumeAttributes.authType. Allowed values: auto, static, irsa, wif.
+auth:
+  mode: irsa
+
+# -- Common labels added to every rendered object.
+commonLabels: {}

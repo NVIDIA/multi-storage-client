@@ -1,0 +1,7 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: msfs-s3
+provisioner: msfs.csi.nvidia.com
+reclaimPolicy: Retain
+volumeBindingMode: Immediate

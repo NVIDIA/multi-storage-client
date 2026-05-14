@@ -1,0 +1,67 @@
+MSFS CSI driver installed:
+  Release:           {{ .Release.Name }}
+  Namespace:         {{ .Release.Namespace }}
+  Driver name:       {{ .Values.nodePlugin.driverName }}
+  Image:             {{ include "msfs-csi.image" . }}
+  Default authMode:  {{ .Values.auth.mode }}
+{{- if .Values.storageClass.create }}
+  StorageClass:      {{ .Values.storageClass.name }}
+{{- end }}
+
+1. Verify the node plugin is running on every worker node:
+
+     kubectl get pods --namespace {{ .Release.Namespace }} \
+       -l app.kubernetes.io/name={{ include "msfs-csi.name" . }} -o wide
+     kubectl get csidriver {{ .Values.nodePlugin.driverName }}
+
+{{- if eq .Values.auth.mode "irsa" }}
+
+2. IRSA prerequisite (one-time, AWS-side):
+
+   The ServiceAccount "{{ include "msfs-csi.serviceAccountName" . }}" must be
+   annotated with an IAM role ARN whose trust policy allows
+   AssumeRoleWithWebIdentity from the cluster's OIDC provider.
+
+   {{- if hasKey .Values.serviceAccount.annotations "eks.amazonaws.com/role-arn" }}
+   Detected annotation:
+     eks.amazonaws.com/role-arn: {{ index .Values.serviceAccount.annotations "eks.amazonaws.com/role-arn" }}
+   {{- else }}
+   No "eks.amazonaws.com/role-arn" annotation was set on the SA. Set one:
+
+     kubectl annotate serviceaccount {{ include "msfs-csi.serviceAccountName" . }} \
+       --namespace {{ .Release.Namespace }} \
+       eks.amazonaws.com/role-arn='arn:aws:iam::<account-id>:role/<msfs-csi-role>' \
+       --overwrite
+
+   See the chart README for the IAM role + trust policy template.
+   {{- end }}
+{{- else }}
+
+2. Static-secret mode is selected. Create the credentials Secret:
+
+     kubectl create secret generic msfs-s3-credentials \
+       --namespace {{ .Release.Namespace }} \
+       --from-literal=access_key_id='<your-access-key>' \
+       --from-literal=secret_access_key='<your-secret-key>'
+
+   ...or, better, sync it from your secret manager (Vault, Sealed Secrets, etc.).
+{{- end }}
+
+3. Mount a bucket. Pick PV/PVC or inline:
+
+     # IRSA (recommended on EKS):
+     kubectl apply -f deploy/example-pv-pvc-irsa.yaml
+     # or
+     kubectl apply -f deploy/example-pod-irsa.yaml
+
+     # Static-secret fallback:
+     kubectl apply -f deploy/example-pv-pvc.yaml
+     # or
+     kubectl apply -f deploy/example-pod.yaml
+
+4. Verify the mount:
+
+     kubectl exec -n {{ .Release.Namespace }} <pod-name> -- ls /mnt/storage/s3/
+
+For full IAM walkthrough, troubleshooting, and value reference, see the chart
+README: charts/msfs-csi/README.md

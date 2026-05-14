@@ -1,0 +1,14 @@
+# Patterns to ignore when building the chart package.
+.DS_Store
+.git/
+.gitignore
+.idea/
+*.tmproj
+.vscode/
+.project
+.idea/
+.swp
+.bak
+.tgz
+*.orig
+README.md.bak
