@@ -565,7 +565,8 @@ class SingleStorageClient(AbstractStorageClient):
         virtual_path = remote_path
         if self._metadata_provider:
             physical_path = self._resolve_write_path(remote_path)
-            self._storage_provider.upload_file(physical_path, local_path, attributes)
+            # Attributes belong to logical metadata, so physical writes get none and registration stores them.
+            self._storage_provider.upload_file(physical_path, local_path, attributes=None)
             self._register_written_file(virtual_path, physical_path, attributes)
         else:
             self._storage_provider.upload_file(remote_path, local_path, attributes)
@@ -597,11 +598,12 @@ class SingleStorageClient(AbstractStorageClient):
         if self._metadata_provider:
             physical_paths = [self._resolve_write_path(rp) for rp in remote_paths]
 
+            # Attributes belong to logical metadata, so physical writes get none and registration stores them.
             self._upload_files_batch(
                 list(range(len(remote_paths))),
                 local_paths,
                 physical_paths,
-                attributes,
+                None,
                 max_workers,
             )
 
@@ -621,7 +623,8 @@ class SingleStorageClient(AbstractStorageClient):
         virtual_path = path
         if self._metadata_provider:
             physical_path = self._resolve_write_path(path)
-            self._storage_provider.put_object(physical_path, body, attributes=attributes)
+            # Attributes belong to logical metadata, so physical writes get none and registration stores them.
+            self._storage_provider.put_object(physical_path, body, attributes=None)
             self._register_written_file(virtual_path, physical_path, attributes)
         else:
             self._storage_provider.put_object(path, body, attributes=attributes)

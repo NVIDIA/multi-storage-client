@@ -20,7 +20,8 @@ python-downloads = "never"
 python-preference = "only-system"
 resolution = "lowest-direct"
 override-dependencies = [
-    "protobuf>=7.34.1",
+    "google-cloud-storage>=3.2",
+    "protobuf>=7.34.1"
 ]
 
 [tool.uv.sources]
