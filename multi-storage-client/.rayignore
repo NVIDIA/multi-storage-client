@@ -1,0 +1,10 @@
+#
+# Ray ignore configuration.
+#
+# https://docs.ray.io/en/latest/ray-core/handling-dependencies.html#runtime-environments-api-ref
+#
+
+*
+!src/**/*.py
+!tests/**/*.py
+!pyproject.toml
