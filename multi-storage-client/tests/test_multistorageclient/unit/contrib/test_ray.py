@@ -20,20 +20,17 @@ from datetime import datetime
 
 import pytest
 import ray
+import ray.runtime_env
 
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.contrib.ray import SharedEvent, SharedQueue
 from multistorageclient.sync.producer import OperationType
 from multistorageclient.types import ExecutionMode, ObjectMetadata
-
-from ..utils import tempdatastore
+from test_multistorageclient.unit.utils import tempdatastore
 
 
 @pytest.fixture(scope="module")
 def ray_cluster():
-    # Get project root (where pyproject.toml is)
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
-
     # Set environment variables for the main process
     os.environ["MSC_NUM_PROCESSES"] = "1"
     os.environ["MSC_NUM_THREADS_PER_PROCESS"] = "2"
@@ -42,16 +39,14 @@ def ray_cluster():
         num_cpus=2,
         num_gpus=0,
         ignore_reinit_error=True,
-        runtime_env={
-            "excludes": [".git", ".git/**", "*.pyc", "__pycache__"],
-            "working_dir": project_root,
+        runtime_env=ray.runtime_env.RuntimeEnv(
+            working_dir=os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../..")),
             # Ensure workers can import from the project and inherit env vars
-            "env_vars": {
-                "PYTHONPATH": project_root,
+            env_vars={
                 "MSC_NUM_PROCESSES": "2",
                 "MSC_NUM_THREADS_PER_PROCESS": "2",
             },
-        },
+        ),
     )
     yield
     ray.shutdown()
