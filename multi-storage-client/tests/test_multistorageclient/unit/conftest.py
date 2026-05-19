@@ -112,6 +112,8 @@ def reset_globals():
 
     with shortcuts._STORAGE_CLIENT_CACHE_LOCK:
         shortcuts._STORAGE_CLIENT_CACHE.clear()
+    with shortcuts._PATH_MAPPING_CACHE_LOCK:
+        shortcuts._PATH_MAPPING_CACHE.clear()
 
     # Preserve MSC environment variables for testing
     msc_num_processes = os.environ.get("MSC_NUM_PROCESSES")
