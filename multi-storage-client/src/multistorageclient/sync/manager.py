@@ -418,7 +418,6 @@ class SyncManager:
             batch_size,
         )
         producer_thread.start()
-        producer_thread.join()
 
         if output_path:
             dryrun_dir = output_path
@@ -433,6 +432,7 @@ class SyncManager:
         total_bytes_added = 0
         total_bytes_deleted = 0
 
+        # Stream the producer output to JSONL files.
         with open(add_path, "w") as add_file, open(delete_path, "w") as delete_file:
             while True:
                 batch = file_queue.get()
@@ -448,6 +448,9 @@ class SyncManager:
                         delete_file.write(json.dumps(item.to_dict()) + "\n")
                         total_files_deleted += 1
                         total_bytes_deleted += item.content_length
+
+        # Wait for the producer thread to finish.
+        producer_thread.join()
 
         progress.close()
         logger.debug(f"Completed dryrun sync operation {description}")
