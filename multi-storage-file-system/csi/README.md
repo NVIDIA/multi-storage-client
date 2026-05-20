@@ -8,9 +8,59 @@ The sidecar pattern requires `Bidirectional` mount propagation from the MSFS con
 
 ## Architecture
 
-![MSFS CSI Driver Architecture](docs/architecture.png)
-
 **In one sentence:** the driver runs as a single `DaemonSet` (one pod per worker node) that mounts an S3 bucket as a FUSE filesystem and lets the kubelet bind-mount it into your application pod — no controller plugin, nothing on the control plane, and the app pod stays unprivileged.
+
+```text
++--------------------------------------------------------------------+
+|                           Worker node                              |
+|                                                                    |
+|    +---------+                                                     |
+|    | kubelet |                                                     |
+|    +----+----+                                                     |
+|         |                                                          |
+|         |  (1) NodePublishVolume gRPC                              |
+|         |      over /csi/csi.sock                                  |
+|         v                                                          |
+|    +----------------------------------------------------+          |
+|    |    msfs-csi-node DaemonSet pod   (privileged)      |          |
+|    |                                                    |          |
+|    |    +---------------------+                         |          |
+|    |    |  msfs-csi-driver    |                         |          |
+|    |    +----------+----------+                         |          |
+|    |               |  (2) exec(msfs <config>)           |          |
+|    |               v                                    |          |
+|    |    +---------------------+                         |          |
+|    |    |  msfs  (FUSE)       |                         |          |
+|    |    +----------+----------+                         |          |
+|    +---------------|------------------------------------+          |
+|                    |                                               |
+|                    |  (3) FUSE mount appears at kubelet's          |
+|                    |      targetPath on the host                   |
+|                    v                                               |
+|    +----------------------------------------------------+          |
+|    |    Application pod   (unprivileged, no SYS_ADMIN)  |          |
+|    |                                                    |          |
+|    |    +---------------------+                         |          |
+|    |    |  app container      |                         |          |
+|    |    |                     |  (4) kubelet bind-      |          |
+|    |    |  /mnt/storage  <----+      mounts targetPath  |          |
+|    |    |                     |      into the container |          |
+|    |    +----------+----------+                         |          |
+|    +---------------|------------------------------------+          |
+|                    |  (5) read / write                             |
+|                    v                                               |
+|         (kernel routes I/O through FUSE back to msfs above)        |
+|                    |                                               |
++--------------------|-----------------------------------------------+
+                     |  (6) HTTPS — GetObject / PutObject /
+                     |              ListObjectsV2 scoped by prefix
+                     v
+            +---------------------+
+            |  AWS S3             |
+            |  (or any MSC        |
+            |   backend)          |
+            +---------------------+
+```
 
 ### Where it runs
 
@@ -25,7 +75,7 @@ There is **no controller `Deployment` or `StatefulSet`**. The `CSIDriver` object
 
 ### Per-node flow when a pod starts
 
-1. The kubelet on the chosen worker node sees a Pod that needs an MSC volume.
+1. The kubelet on the chosen worker node sees a Pod that needs an MSFS volume.
 2. It calls `NodePublishVolume` on the local `msfs-csi-driver` over a UNIX socket at `/csi/csi.sock` (registered with the kubelet by the `node-driver-registrar` sidecar).
 3. The driver writes a temporary `msfs.yaml`, sets AWS env vars from the K8s `Secret`, and execs the `msfs` binary, which creates a FUSE mount at the kubelet-managed `targetPath`.
 4. The kubelet bind-mounts `targetPath` into the app pod at the requested mount path (e.g. `/mnt/storage/s3/`).
