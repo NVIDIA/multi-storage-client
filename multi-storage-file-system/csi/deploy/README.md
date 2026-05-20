@@ -8,7 +8,7 @@
 - EC2 nodes with `fuse` kernel module loaded
 - MSFS CSI image pushed to a registry accessible from the cluster
 - One of the following auth modes:
-  - **Recommended on EKS:** IRSA wired to the `msfs-csi-node` ServiceAccount (no Secret needed). See [`EKS_CSI_CREDENTIALS_A_B_C_GUIDE.md`](EKS_CSI_CREDENTIALS_A_B_C_GUIDE.md) for the IAM role + OIDC trust setup.
+  - **Recommended on EKS:** IRSA wired to the `msfs-csi-node` ServiceAccount (no Secret needed). See the [Helm chart README's IRSA walkthrough](../charts/msfs-csi/README.md#aws-side-for-irsa-one-time-manual--by-design) for the IAM role + OIDC trust setup.
   - **Fallback:** AWS credentials Secret in the target namespace, referenced by `nodePublishSecretRef`.
 
 ## Deploy

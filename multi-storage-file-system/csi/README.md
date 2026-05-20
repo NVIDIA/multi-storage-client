@@ -115,7 +115,7 @@ kubectl annotate serviceaccount msfs-csi-node \
   --overwrite
 ```
 
-The IAM role's trust policy must allow `AssumeRoleWithWebIdentity` from the cluster's OIDC provider for the `system:serviceaccount:msfs:msfs-csi-node` SA. The role needs least-privilege S3 access (e.g. `s3:ListBucket` + `s3:GetObject` scoped to the bucket and prefix). See `deploy/EKS_CSI_CREDENTIALS_A_B_C_GUIDE.md` for an exact policy.
+The IAM role's trust policy must allow `AssumeRoleWithWebIdentity` from the cluster's OIDC provider for the `system:serviceaccount:msfs:msfs-csi-node` SA. The role needs least-privilege S3 access (e.g. `s3:ListBucket` + `s3:GetObject` scoped to the bucket and prefix). See the [Helm chart README's IRSA walkthrough](charts/msfs-csi/README.md#aws-side-for-irsa-one-time-manual--by-design) for an exact trust policy and bucket policy.
 
 **Fallback — static AWS access keys in a Secret:**
 
@@ -217,8 +217,6 @@ csi/
     example-pv-pvc.yaml         Static-secret PV/PVC example
     example-pv-pvc-irsa.yaml    IRSA / workload-identity PV/PVC example
     commands-runbook.sh         Full command reference
-    EKS_CSI_CREDENTIALS_A_B_C_GUIDE.md
-                                Phased credentials migration plan
     README.md                   Deploy instructions
   charts/msfs-csi/              Helm chart (single-command install)
   go.mod / go.sum               Go module (CSI spec + gRPC deps)
