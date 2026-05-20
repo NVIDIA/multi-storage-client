@@ -21,7 +21,7 @@ from typing import Any, Optional, Union
 from urllib.parse import ParseResult, urlparse
 
 from .client import StorageClient
-from .config import RESERVED_POSIX_PROFILE_NAME, SUPPORTED_IMPLICIT_PROFILE_PROTOCOLS, StorageClientConfig
+from .config import RESERVED_POSIX_PROFILE_NAME, SUPPORTED_IMPLICIT_PROFILE_PROTOCOLS, PathMapping, StorageClientConfig
 from .file import ObjectFile, PosixFile
 from .telemetry import Telemetry
 from .types import MSC_PROTOCOL, ExecutionMode, ObjectMetadata, PatternList, SignerType, SymlinkHandling, SyncResult
@@ -30,6 +30,8 @@ _TELEMETRY_PROVIDER: Optional[Callable[[], Telemetry]] = None
 _TELEMETRY_PROVIDER_LOCK = threading.Lock()
 _STORAGE_CLIENT_CACHE: dict[str, StorageClient] = {}
 _STORAGE_CLIENT_CACHE_LOCK = threading.Lock()
+_PATH_MAPPING_CACHE: dict[Optional[str], PathMapping] = {}
+_PATH_MAPPING_CACHE_LOCK = threading.Lock()
 _PROCESS_ID = os.getpid()
 
 logger = logging.getLogger(__name__)
@@ -48,11 +50,14 @@ def _reinitialize_after_fork() -> None:
     only its lock is reinitialized.
     """
     global _STORAGE_CLIENT_CACHE, _STORAGE_CLIENT_CACHE_LOCK
+    global _PATH_MAPPING_CACHE, _PATH_MAPPING_CACHE_LOCK
     global _TELEMETRY_PROVIDER_LOCK
     global _PROCESS_ID
 
     _STORAGE_CLIENT_CACHE.clear()
     _STORAGE_CLIENT_CACHE_LOCK = threading.Lock()
+    _PATH_MAPPING_CACHE.clear()
+    _PATH_MAPPING_CACHE_LOCK = threading.Lock()
     # we don't need to reset telemetry provider as it is supposed to be a top-level Python function
     _TELEMETRY_PROVIDER_LOCK = threading.Lock()
     _PROCESS_ID = os.getpid()
@@ -133,6 +138,27 @@ def _resolve_msc_url(url: str) -> tuple[str, str]:
     return profile, path
 
 
+def _read_cached_path_mapping() -> PathMapping:
+    """
+    Read path mapping once per ``MSC_CONFIG`` value for shortcut URL resolution.
+
+    Path mapping checks happen on every non-MSC shortcut call, including POSIX paths. Caching here keeps that hot path
+    from repeatedly loading and validating the full MSC config while preserving ``StorageClientConfig.read_path_mapping``
+    behavior for direct callers.
+    """
+    cache_key = os.getenv("MSC_CONFIG", None)
+    if cache_key in _PATH_MAPPING_CACHE:
+        return _PATH_MAPPING_CACHE[cache_key]
+
+    with _PATH_MAPPING_CACHE_LOCK:
+        if cache_key in _PATH_MAPPING_CACHE:
+            return _PATH_MAPPING_CACHE[cache_key]
+
+        path_mapping = StorageClientConfig.read_path_mapping()
+        _PATH_MAPPING_CACHE[cache_key] = path_mapping
+        return path_mapping
+
+
 def _resolve_non_msc_url(url: str) -> tuple[str, str]:
     """
     Resolve a non-MSC URL to a profile name and path.
@@ -146,7 +172,7 @@ def _resolve_non_msc_url(url: str) -> tuple[str, str]:
     :return: A tuple of (profile_name, path)
     """
     # Check if we have a valid path mapping, if so check if there is a matching mapping
-    path_mapping = StorageClientConfig.read_path_mapping()
+    path_mapping = _read_cached_path_mapping()
     if path_mapping:
         # Look for a matching mapping
         possible_mapping = path_mapping.find_mapping(url)

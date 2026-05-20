@@ -24,6 +24,7 @@ import numpy as np
 import pytest
 
 import multistorageclient as msc
+import multistorageclient.config as msc_config
 from multistorageclient.client import StorageClient
 from multistorageclient.file import ObjectFile
 from multistorageclient.providers.manifest_metadata import (
@@ -711,6 +712,26 @@ def test_implicit_profiles_with_msc_config(file_storage_config_with_path_mapping
         for env_var in ["AWS_ENDPOINT_URL"]:
             if env_var in os.environ:
                 del os.environ[env_var]
+
+
+def test_path_mapping_is_cached_for_repeated_non_msc_resolution(file_storage_config_with_path_mapping, monkeypatch):
+    """Repeated POSIX resolution should not reload path mapping for an unchanged config."""
+    calls = 0
+    original_from_config = msc_config.PathMapping.from_config
+
+    def counting_from_config(config_dict=None):
+        nonlocal calls
+        calls += 1
+        return original_from_config(config_dict)
+
+    monkeypatch.setattr(msc_config.PathMapping, "from_config", counting_from_config)
+
+    for index in range(3):
+        client, path = msc.resolve_storage_client(f"/tmp/msc-cache-test-{index}.txt")
+        assert client.profile == "__filesystem__"
+        assert path == f"/tmp/msc-cache-test-{index}.txt"
+
+    assert calls == 1
 
 
 @pytest.mark.parametrize(
