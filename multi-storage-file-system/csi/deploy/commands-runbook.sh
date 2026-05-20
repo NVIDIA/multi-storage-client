@@ -29,7 +29,10 @@ docker system prune -f
 
 # Build for linux/amd64 (required when building on Apple Silicon for x86 nodes)
 # Build context is multi-storage-file-system/ (not csi/)
-cd multi-storage-file-system
+cd multi-storage-file-system || {
+  echo "error: failed to cd into multi-storage-file-system (run this script from the repository root)" >&2
+  exit 1
+}
 docker build --platform linux/amd64 -f Dockerfile.csi -t "${IMAGE}" .
 
 # Login to your container registry
