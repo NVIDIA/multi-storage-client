@@ -171,10 +171,8 @@ class S3StorageProvider(BaseStorageProvider):
             Can be ``True`` (verify using system CA bundle, default), ``False`` (skip verification), or a string path to a custom CA certificate bundle.
         :param request_checksum_calculation: For :py:class:`botocore.config.Config`.
             When the underlying S3 client should calculate request checksums.
-            See the equivalent option in the `AWS configuration file <https://boto3.amazonaws.com/v1/documentation/api/latest/guide/configuration.html#using-a-configuration-file>`_.
         :param response_checksum_validation: For :py:class:`botocore.config.Config`.
             When the underlying S3 client should validate response checksums.
-            See the equivalent option in the `AWS configuration file <https://boto3.amazonaws.com/v1/documentation/api/latest/guide/configuration.html#using-a-configuration-file>`_.
         :param max_pool_connections: For :py:class:`botocore.config.Config`.
             The maximum number of connections to keep in a connection pool.
         :param connect_timeout: For :py:class:`botocore.config.Config`.
@@ -188,6 +186,16 @@ class S3StorageProvider(BaseStorageProvider):
         :param checksum_algorithm: Upload-only object integrity algorithm.
             One of ``"CRC32"``, ``"CRC32C"``, ``"SHA1"``, ``"SHA256"``, ``"CRC64NVME"`` (case-insensitive).
             When ``rust_client`` is enabled, only ``"SHA256"`` is accepted.
+        :param multipart_threshold: For :py:class:`boto3.s3.transfer.TransferConfig`.
+            The transfer size threshold for which multipart uploads, downloads, and copies will automatically be triggered.
+        :param max_concurrency: For :py:class:`boto3.s3.transfer.TransferConfig`.
+            The maximum number of threads that will be making requests to perform a transfer.
+            If ``use_threads`` is set to ``False``, the value provided is ignored as the transfer will only ever use the current thread.
+        :param multipart_chunksize: For :py:class:`boto3.s3.transfer.TransferConfig`.
+            The partition size of each part for a multipart transfer.
+        :param io_chunksize: For :py:class:`boto3.s3.transfer.TransferConfig`.
+            The max size of each chunk in the ``io`` queue. Currently, this is the size used when read is called on the downloaded stream as well.
+            Note: This value is ignored when resolved transfer manager type is CRTTransferManager.
         """
         super().__init__(
             base_path=base_path,

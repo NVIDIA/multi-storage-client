@@ -544,7 +544,6 @@ Options: See parameters in :py:class:`multistorageclient.providers.ais_s3.AIStor
            password: ${AIS_PASSWORD}
            authn_endpoint: https://authn.example.com:52001
            ca_cert: /path/to/authn-ca.crt  # CA certificate for AuthN server (often same as above)
-.. _rust-client-reference:
 
 ``huggingface``
 ---------------
@@ -587,6 +586,8 @@ Options: See parameters in :py:class:`multistorageclient.providers.huggingface.H
    operations.
 
    For detailed configuration instructions, see the `HuggingFace documentation <https://huggingface.co/docs/huggingface_hub/en/guides/download#faster-downloads>`_.
+
+.. _rust-client-reference:
 
 ``rust_client`` (experimental)
 ------------------------------
@@ -1354,9 +1355,9 @@ When a profile is configured with multiple backends, MSC automatically uses a :p
 
 .. important::
    **Metadata Provider Requirement**
-   
+
    Multi-backend configuration requires a custom metadata provider that returns routing information. The metadata provider must implement ``realpath()`` to return a :py:class:`~multistorageclient.types.ResolvedPath` object with the ``profile`` field set to match one of your configured backend profile names.
-   
+
    The standard ``manifest`` metadata provider does not support multi-backend routing and cannot be used with this feature.
 
 Configuration Using storage_provider_profiles
@@ -1380,7 +1381,7 @@ The recommended approach is to define individual backend profiles, then referenc
          options:
            access_key: ${AWS_ACCESS_KEY_US}
            secret_key: ${AWS_SECRET_KEY_US}
-     
+
      # Backend 2: EU West region
      eu-west-backend:
        storage_provider:
@@ -1393,7 +1394,7 @@ The recommended approach is to define individual backend profiles, then referenc
          options:
            access_key: ${AWS_ACCESS_KEY_EU}
            secret_key: ${AWS_SECRET_KEY_EU}
-     
+
      # Multi-backend profile (read-only)
      global-dataset:
        storage_provider_profiles:
