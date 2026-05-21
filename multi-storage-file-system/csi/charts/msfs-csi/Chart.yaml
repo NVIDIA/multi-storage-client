@@ -1,0 +1,25 @@
+apiVersion: v2
+name: msfs-csi
+description: |
+  MSFS CSI driver — mounts S3 object storage as a POSIX FUSE filesystem inside
+  Kubernetes pods. Supports IRSA / workload identity (recommended on EKS) and
+  static AWS access keys (fallback).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.28.0-0"
+home: https://github.com/NVIDIA/multi-storage-client
+sources:
+  - https://github.com/NVIDIA/multi-storage-client
+maintainers:
+  - name: NVIDIA Multi-Storage Client team
+keywords:
+  - csi
+  - s3
+  - fuse
+  - storage
+  - aws
+  - eks
+  - irsa
+annotations:
+  category: Storage

@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "msfs-csi.fullname" . }}-node
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "msfs-csi.labels" . | nindent 4 }}
+    app.kubernetes.io/component: node-plugin
+spec:
+  selector:
+    matchLabels:
+      {{- include "msfs-csi.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "msfs-csi.selectorLabels" . | nindent 8 }}
+        {{- with .Values.nodePlugin.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodePlugin.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "msfs-csi.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodePlugin.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodePlugin.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodePlugin.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: msfs-csi-driver
+          image: {{ include "msfs-csi.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "--endpoint=unix:///csi/csi.sock"
+            - "--v=4"
+            {{- with .Values.nodePlugin.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          securityContext:
+            privileged: true
+            capabilities:
+              add: ["SYS_ADMIN"]
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+            - name: pods-mount-dir
+              mountPath: /var/lib/kubelet/pods
+              mountPropagation: Bidirectional
+            - name: fuse-device
+              mountPath: /dev/fuse
+          {{- with .Values.nodePlugin.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        - name: node-driver-registrar
+          image: "{{ .Values.nodeDriverRegistrar.image.repository }}:{{ .Values.nodeDriverRegistrar.image.tag }}"
+          imagePullPolicy: {{ .Values.nodeDriverRegistrar.image.pullPolicy }}
+          args:
+            - "--csi-address=/csi/csi.sock"
+            - "--kubelet-registration-path={{ .Values.nodePlugin.hostPluginPath }}/csi.sock"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+            - name: registration-dir
+              mountPath: /registration
+      volumes:
+        - name: plugin-dir
+          hostPath:
+            path: {{ .Values.nodePlugin.hostPluginPath }}
+            type: DirectoryOrCreate
+        - name: pods-mount-dir
+          hostPath:
+            path: {{ .Values.nodePlugin.hostKubeletPath }}
+            type: Directory
+        - name: registration-dir
+          hostPath:
+            path: {{ .Values.nodePlugin.hostRegistrationPath }}
+            type: DirectoryOrCreate
+        - name: fuse-device
+          hostPath:
+            path: {{ .Values.nodePlugin.hostFuseDevice }}
+            type: CharDevice

@@ -1,0 +1,33 @@
+# IRSA / workload-identity inline ephemeral volume example.
+#
+# Prerequisites (one-time, per cluster):
+#   - The msfs-csi-node ServiceAccount in namespace `msfs` is annotated with
+#     an IAM role ARN: eks.amazonaws.com/role-arn=arn:aws:iam::<acct>:role/<role>
+#   - That IAM role's trust policy permits AssumeRoleWithWebIdentity for the
+#     EKS cluster's OIDC provider and the msfs/msfs-csi-node service account.
+#   - The role has least-privilege S3 access to the bucket/prefix below.
+#
+# No nodePublishSecretRef is needed — the AWS SDK in msfs picks up the
+# projected service-account token automatically.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: msfs-test-app-irsa
+  namespace: msfs
+spec:
+  containers:
+    - name: app
+      image: busybox:latest
+      command: ["sleep", "infinity"]
+      volumeMounts:
+        - name: s3-data
+          mountPath: /mnt/storage
+  volumes:
+    - name: s3-data
+      csi:
+        driver: msfs.csi.nvidia.com
+        volumeAttributes:
+          authType: irsa
+          bucketName: <your-bucket-name>
+          region: us-west-2
+          endpoint: "https://s3.us-west-2.amazonaws.com"

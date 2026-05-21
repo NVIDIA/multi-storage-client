@@ -24,6 +24,8 @@ http.go              HTTP utilities
 metrics.go           Prometheus/OpenTelemetry metrics
 utils.go             Shared helpers
 mount.msfs           Mount helper script (called by `mount -t msfs`)
+Dockerfile.csi       Multi-stage Docker build for the CSI driver image (builds both msfs and msfs-csi-driver)
+csi/                 Kubernetes CSI driver — mounts S3 buckets as POSIX volumes inside pods (separate Go module; see csi/README.md)
 telemetry/           OpenTelemetry setup, auth, attributes, periodic metrics
 tools/lockgen/       Code generator for typed lock wrappers
 packaging/           Debian and RPM packaging specs
@@ -78,6 +80,9 @@ make                   # builds the FUSE binary
 | Build binaries | `cd multi-storage-file-system && just compile` |
 | Full release build | `just multi-storage-file-system/build` |
 | Build Debian/RPM packages | `cd multi-storage-file-system && just package` |
+| Build CSI driver (Go only) | `cd multi-storage-file-system/csi && go build ./...` |
+| Build CSI driver image | `cd multi-storage-file-system && docker build --platform linux/amd64 -f Dockerfile.csi -t <your-registry>/msfs-csi:latest .` |
+| Deploy CSI driver | See `multi-storage-file-system/csi/deploy/commands-runbook.sh` |
 
 ## Testing
 
