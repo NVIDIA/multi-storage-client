@@ -971,7 +971,10 @@ class S3StorageProvider(BaseStorageProvider):
 
                 if self._rust_client and isinstance(f, io.BytesIO) and not extra_args:
                     data = f.getbuffer()
-                    run_async_rust_client_method(self._rust_client, "upload_multipart_from_bytes", key, data)
+                    try:
+                        run_async_rust_client_method(self._rust_client, "upload_multipart_from_bytes", key, data)
+                    finally:
+                        data.release()
                 else:
                     if self._checksum_algorithm:
                         extra_args["ChecksumAlgorithm"] = self._checksum_algorithm
