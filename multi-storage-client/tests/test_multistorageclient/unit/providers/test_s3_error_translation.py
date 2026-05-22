@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -20,7 +22,12 @@ from botocore.exceptions import ClientError, IncompleteReadError, ReadTimeoutErr
 
 from multistorageclient.providers.s3 import S3StorageProvider, StaticS3CredentialsProvider
 from multistorageclient.types import PreconditionFailedError, RetryableError
-from multistorageclient_rust import RustClientError, RustRetryableError
+from multistorageclient_rust import RustClient, RustClientError, RustRetryableError
+
+
+class _FailingRustClient:
+    async def upload_multipart_from_bytes(self, key, data):
+        raise RustRetryableError("Connection reset by peer")
 
 
 def _create_s3_provider() -> S3StorageProvider:
@@ -358,6 +365,20 @@ def test_translate_errors_rust_retryable_error():
     assert "retryable error from Rust" in str(exc_info.value)
     assert "test-bucket/test-key" in str(exc_info.value)
     assert "RustRetryableError" in str(exc_info.value)
+
+
+def test_large_bytesio_upload_releases_buffer_after_rust_retryable_error():
+    provider = _create_s3_provider()
+    provider._rust_client = cast(RustClient, _FailingRustClient())
+    provider._multipart_threshold = 1
+    provider._checksum_algorithm = None
+
+    stream = io.BytesIO(b"large enough for multipart")
+
+    with pytest.raises(RetryableError):
+        provider._upload_file("test-bucket/test-key", stream)
+
+    stream.close()
 
 
 def test_translate_errors_generic_exception():
