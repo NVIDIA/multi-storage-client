@@ -15,20 +15,19 @@
 
 import argparse
 import logging
-import pathlib
 import pprint
-import tempfile
 from dataclasses import dataclass
 from typing import Final
 
 import githubkit
+import httpx
+import httpx_retries
 import packaging.utils
-import pyartifactory
-import pyartifactory.exception
-import pydantic
 
 import multistorageclient_scripts.cli as cli
 import multistorageclient_scripts.utils.argparse_extensions as argparse_extensions
+import multistorageclient_scripts.utils.httpx.auth
+from multistorageclient_scripts.utils.wait import wait
 
 logger = logging.getLogger(__name__)
 
@@ -52,12 +51,8 @@ class Arguments(argparse_extensions.Arguments):
 
     #: GitHub token.
     github_token: Final[str]
-    #: Artifactory username.
-    artifactory_username: Final[str]
-    #: Artifactory password.
-    artifactory_password: Final[str]
-    #: Kitmaker token.
-    # kitmaker_token: Final[str]
+    #: Kitmaker Portal token.
+    kitmaker_portal_token: Final[str]
     #: Git tag.
     git_tag: Final[str]
     #: Phase to exit after.
@@ -76,15 +71,9 @@ PARSER = cli.SUBPARSERS.add_parser(
 argparse_extensions.add_argument_partial(parser=PARSER, arguments_type=Arguments, argument_key="github_token")(
     help="GitHub token. For local runs, log in with the GitHub CLI and pass `$(gh auth token)`."
 )
-argparse_extensions.add_argument_partial(parser=PARSER, arguments_type=Arguments, argument_key="artifactory_username")(
-    help="Artifactory username."
+argparse_extensions.add_argument_partial(parser=PARSER, arguments_type=Arguments, argument_key="kitmaker_portal_token")(
+    help="Kitmaker Portal token."
 )
-argparse_extensions.add_argument_partial(parser=PARSER, arguments_type=Arguments, argument_key="artifactory_password")(
-    help="Artifactory password."
-)
-# argparse_extensions.add_argument_partial(parser=PARSER, arguments_type=Arguments, argument_key="kitmaker_token")(
-#     help="Kitmaker token."
-# )
 argparse_extensions.add_argument_partial(parser=PARSER, arguments_type=Arguments, argument_key="git_tag")(
     help="Git tag."
 )
@@ -125,6 +114,59 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
         key=lambda release_asset: release_asset.name,
     )
 
+    # https://kitmaker.gitlab-master-pages.nvidia.com/kitmaker-docs/users/portal-api/wheel-release-api
+    # https://kitmaker-portal.nvidia.com/api/v0/docs
+    kitmaker_client = httpx.Client(
+        auth=multistorageclient_scripts.utils.httpx.auth.BearerAuth(token=arguments.kitmaker_portal_token),
+        base_url="https://kitmaker-portal.nvidia.com/api/",
+        follow_redirects=True,
+        transport=httpx_retries.RetryTransport(retry=httpx_retries.Retry(backoff_factor=2)),
+        # Kitmaker's TLS certificate uses an NVIDIA CA instead of ones in common CA bundles on most systems.
+        verify=False,
+    )
+
+    def kitmaker_create_release(upload: bool) -> httpx.Response:
+        """
+        Create a Kitmaker release.
+
+        :param upload: Whether to upload wheels or do a dry run.
+        """
+        return kitmaker_client.post(
+            url="v0/projects/397/releases",
+            json={
+                "project_name": "multi-storage-client",
+                "payload": [
+                    {
+                        "pic": "svc-nv-msc@nvidia.com",
+                        "job_type": "wheel-release-job",
+                        "url": release_wheel.browser_download_url,
+                        "upload": upload,
+                    }
+                    for release_wheel in release_wheels
+                ],
+            },
+        ).raise_for_status()
+
+    def kitmaker_get_release_status(release_uuid: str) -> httpx.Response:
+        """
+        Get a Kitmaker release's status.
+
+        :param release_uuid: Release UUID.
+        """
+        return kitmaker_client.get(url=f"v0/status/{release_uuid}").raise_for_status()
+
+    def poll_kitmaker_release_status(release_uuid: str) -> httpx.Response:
+        kitmaker_get_release_status_response = kitmaker_get_release_status(release_uuid=release_uuid)
+        kitmaker_get_release_status_response_json = kitmaker_get_release_status_response.json()
+        logger.info(
+            f"Kitmaker release {release_uuid} is in {kitmaker_get_release_status_response_json['status']} status."
+        )
+        return kitmaker_get_release_status_response
+
+    kitmaker_release_success_statuses = {"completed"}
+    kitmaker_release_failure_statuses = {"failed"}
+    kitmaker_release_end_statuses = kitmaker_release_success_statuses | kitmaker_release_failure_statuses
+
     # ----------------------------------------------------------------------------------------------------
     #
     # Check inputs.
@@ -143,14 +185,76 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
     for release_wheel in release_wheels:
         packaging.utils.parse_wheel_filename(release_wheel.name)
 
+    if get_release_by_tag_response.parsed_data.draft or len(release_wheels) == 0:
+        # Draft GitHub releases are private. We haven't worked with Kitmaker to set up access yet.
+        logger.info(
+            f"Skipping Kitmaker dry-run release since the existing GitHub release for {arguments.git_tag} is a draft or has no wheels."
+        )
+    else:
+        # Create a Kitmaker dry-run release to reduce the probability of partial batch publishing failures.
+        try:
+            kitmaker_create_release_response = kitmaker_create_release(upload=False)
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                "\n".join(
+                    [
+                        "Failed to create a Kitmaker dry-run release:",
+                        pprint.pformat(e.response.json()),
+                    ]
+                )
+            )
+            raise
+        kitmaker_create_release_response_json = kitmaker_create_release_response.json()
+        logger.info(
+            "\n".join(
+                [
+                    "Created a Kitmaker dry-run release:",
+                    pprint.pformat(kitmaker_create_release_response_json),
+                ]
+            )
+        )
+
+        try:
+            logger.info(
+                f"Waiting for Kitmaker dry-run release {kitmaker_create_release_response_json['release_uuid']}..."
+            )
+            kitmaker_get_release_status_response = wait(
+                waitable=lambda: poll_kitmaker_release_status(
+                    release_uuid=kitmaker_create_release_response_json["release_uuid"]
+                ),
+                should_wait=lambda kitmaker_get_release_status_response: (
+                    kitmaker_get_release_status_response.json()["status"] not in kitmaker_release_end_statuses
+                ),
+                # 5 seconds * 120 attempts = 600 seconds (10 minutes).
+                attempt_interval_seconds=5,
+                max_attempts=120,
+            )
+            kitmaker_get_release_status_response_json = kitmaker_get_release_status_response.json()
+            logger.info(
+                "\n".join(
+                    [
+                        f"Kitmaker dry-run release {kitmaker_create_release_response_json['release_uuid']} ended in {kitmaker_get_release_status_response_json['status']} status:",
+                        pprint.pformat(kitmaker_get_release_status_response_json),
+                    ]
+                )
+            )
+
+            if kitmaker_get_release_status_response_json["status"] not in kitmaker_release_success_statuses:
+                raise RuntimeError(
+                    f"Kitmaker dry-run release {kitmaker_create_release_response_json['release_uuid']} failed with status {kitmaker_get_release_status_response_json['status']}!"
+                )
+        except AssertionError:
+            logger.error(
+                f"Timed out waiting for Kitmaker dry-run release {kitmaker_create_release_response_json['release_uuid']}!"
+            )
+            raise
+
     if arguments.phase == Phase.check:
         return 0
 
     # ----------------------------------------------------------------------------------------------------
     #
     # Publish.
-    #
-    # Make this re-entrant.
     #
     # ----------------------------------------------------------------------------------------------------
 
@@ -163,78 +267,58 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
         logger.info("No release wheels to mirror. Nothing to do.")
         return 0
 
-    artifactory_client = pyartifactory.Artifactory(
-        url="https://urm.nvidia.com/artifactory",
-        auth=(arguments.artifactory_username, pydantic.SecretStr(arguments.artifactory_password)),
-        api_version=2,
-        timeout=60,
+    try:
+        kitmaker_create_release_response = kitmaker_create_release(upload=True)
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            "\n".join(
+                [
+                    "Failed to create a Kitmaker release:",
+                    pprint.pformat(e.response.json()),
+                ]
+            )
+        )
+        raise
+    kitmaker_create_release_response_json = kitmaker_create_release_response.json()
+    logger.info(
+        "\n".join(
+            [
+                "Created a Kitmaker release:",
+                pprint.pformat(kitmaker_create_release_response_json),
+            ]
+        )
     )
 
-    for release_wheel in release_wheels:
-        artifactory_artifact_path = pathlib.Path(
-            "sw-ngc-data-platform-pypi", "multi-storage-client", arguments.git_tag, release_wheel.name
+    try:
+        logger.info(f"Waiting for Kitmaker release {kitmaker_create_release_response_json['release_uuid']}...")
+        kitmaker_get_release_status_response = wait(
+            waitable=lambda: poll_kitmaker_release_status(
+                release_uuid=kitmaker_create_release_response_json["release_uuid"]
+            ),
+            should_wait=lambda kitmaker_get_release_status_response: (
+                kitmaker_get_release_status_response.json()["status"] not in kitmaker_release_end_statuses
+            ),
+            # 5 seconds * 120 attempts = 600 seconds (10 minutes).
+            attempt_interval_seconds=5,
+            max_attempts=120,
         )
+        kitmaker_get_release_status_response_json = kitmaker_get_release_status_response.json()
         logger.info(
-            f"Using Artifactory artifact path {str(artifactory_artifact_path)} for release wheel {release_wheel.name}."
+            "\n".join(
+                [
+                    f"Kitmaker release {kitmaker_create_release_response_json['release_uuid']} ended in {kitmaker_get_release_status_response_json['status']} status:",
+                    pprint.pformat(kitmaker_get_release_status_response_json),
+                ]
+            )
         )
 
-        try:
-            get_artifact_response = artifactory_client.artifacts.info(artifact_path=artifactory_artifact_path)
-            logger.info(
-                "\n".join(
-                    [
-                        f"Found existing Artifactory artifact for {release_wheel.name}:",
-                        pprint.pformat(get_artifact_response.model_dump()),
-                    ]
-                )
+        if kitmaker_get_release_status_response_json["status"] not in kitmaker_release_success_statuses:
+            raise RuntimeError(
+                f"Kitmaker release {kitmaker_create_release_response_json['release_uuid']} failed with status {kitmaker_get_release_status_response_json['status']}!"
             )
-
-            logger.info(
-                f"Existing Artifactory artifact for release wheel {release_wheel.name}. Skipping release wheel."
-            )
-            continue
-        except pyartifactory.exception.ArtifactNotFoundError:
-            with tempfile.NamedTemporaryFile(mode="wb") as release_wheel_file:
-                get_release_asset_response = github_client.rest.repos.get_release_asset(
-                    owner="NVIDIA",
-                    repo="multi-storage-client",
-                    asset_id=release_wheel.id,
-                    headers={"Accept": "application/octet-stream"},
-                    stream=True,
-                )
-                for chunk in get_release_asset_response.iter_bytes(chunk_size=1_000_000):
-                    release_wheel_file.write(chunk)
-                release_wheel_file.flush()
-                logger.info(f"Downloaded release wheel {release_wheel.name} to {release_wheel_file.name}.")
-
-                _, version, _, tags = packaging.utils.parse_wheel_filename(release_wheel.name)
-                interpreters = {tag.interpreter for tag in tags}
-                deploy_artifact_response = artifactory_client.artifacts.deploy(
-                    local_file_location=release_wheel_file.name,
-                    artifact_path=artifactory_artifact_path,
-                    # Hardcode "arch=any" + "os=any" temporarily to unblock publishing.
-                    #
-                    # This is just for Kitmaker K1 bookkeeping since it doesn't extract wheel metadata.
-                    properties={
-                        "component_name": ["multi_storage_client"],
-                        "version": [str(version)],
-                        "python-tag": [next(iter(interpreters))],
-                        "arch": ["any"],
-                        "os": ["any"],
-                        "changelist": [get_release_by_tag_response.parsed_data.html_url],
-                        "branch": ["release"],
-                        "release_approver": ["svc-nv-msc"],
-                        "release_status": ["ready"],
-                    },
-                )
-                logger.info(
-                    "\n".join(
-                        [
-                            f"Created Artifactory artifact for {release_wheel.name}:",
-                            pprint.pformat(deploy_artifact_response.model_dump()),
-                        ]
-                    )
-                )
+    except AssertionError:
+        logger.error(f"Timed out waiting for Kitmaker release {kitmaker_create_release_response_json['release_uuid']}!")
+        raise
 
     if arguments.phase == Phase.publish:
         return 0
