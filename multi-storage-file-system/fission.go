@@ -945,9 +945,7 @@ func (*globalsStruct) DoOpen(inHeader *fission.InHeader, openIn *fission.OpenIn)
 func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn) (readOut *fission.ReadOut, errno syscall.Errno) {
 	var (
 		backend                         *backendStruct
-		cacheLine                       *cacheLineStruct
 		cacheLineHits                   uint64 // As this is the fall-thru condition, includes +cacheMisses+cacheWaits
-		cacheLineNonce                  uint64
 		cacheLineNumber                 uint64
 		cacheLineNumberMaxInBackend     uint64
 		cacheLineMisses                 uint64
@@ -957,6 +955,9 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 		cacheLineWaits                  uint64
 		cacheLinesToPotentiallyPrefetch uint64
 		curOffset                       = readIn.Offset
+		dataCacheLineNumber             uint64
+		dataCacheLineNumbers            []uint64
+		dataCacheLineTracker            *dataCacheLineTrackerStruct
 		fh                              *fhStruct
 		inode                           *inodeStruct
 		latency                         float64
@@ -965,12 +966,13 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 		prefetchCacheLineNumber         uint64
 		prefetchCacheLineNumberMax      uint64
 		prefetchCacheLineNumberMin      uint64
+		prefetchCacheLineNumbers        []uint64
 		startTime                       = time.Now()
 	)
 
 	defer func() {
 		latency = time.Since(startTime).Seconds()
-		globalsLock("fission.go:973:3:funcLit@971")
+		globalsLock("fission.go:975:3:funcLit@973")
 		if errno == 0 {
 			globals.fissionMetrics.ReadSuccesses.Inc()
 			globals.fissionMetrics.ReadSuccessLatencies.Observe(latency)
@@ -990,7 +992,11 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 				backend.fissionMetrics.ReadFailureSizes.Observe(float64(readIn.Size))
 			}
 		}
-		cacheLineHits -= cacheLineMisses + cacheLineWaits
+		if cacheLineHits >= (cacheLineMisses + cacheLineWaits) {
+			cacheLineHits -= cacheLineMisses + cacheLineWaits
+		} else {
+			cacheLineHits = 0
+		}
 		if backend == nil {
 			if cacheLineHits != 0 {
 				globals.fissionMetrics.ReadCacheHits.Add(float64(cacheLineHits))
@@ -1030,7 +1036,7 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 	}
 
 	for len(readOut.Data) < cap(readOut.Data) {
-		globalsLock("fission.go:1033:3:(*globalsStruct).DoRead")
+		globalsLock("fission.go:1039:3:(*globalsStruct).DoRead")
 
 		inode, ok = globals.inodeMap.get(inHeader.NodeID)
 		if !ok {
@@ -1085,30 +1091,13 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 
 		cacheLineNumber = curOffset / globals.config.cacheLineSize
 
-		cacheLineNonce, ok = inode.cacheMap[cacheLineNumber]
+		dataCacheLineNumber, ok = inode.cacheMap[cacheLineNumber]
 		if !ok {
 			cacheLineMisses++
 
 			globals.fissionVolume.HighLatencyCallback(inHeader)
 
-			cacheLine = &cacheLineStruct{
-				nonce:       fetchNonce(),
-				state:       CacheLineInbound,
-				waiters:     make([]*sync.WaitGroup, 1),
-				inodeNumber: inode.inodeNumber,
-				lineNumber:  cacheLineNumber,
-			}
-
-			cacheLineWaiter.Add(1)
-			cacheLine.waiters[0] = &cacheLineWaiter
-
-			inode.cacheMap[cacheLineNumber] = cacheLine.nonce
-			globals.cacheMap[cacheLine.nonce] = cacheLine
-
-			inode.inboundCacheLineCount++
-			cacheLine.listElement = globals.inboundCacheLineList.PushBack(cacheLine)
-
-			go cacheLine.fetch()
+			prefetchCacheLineNumbers = prefetchCacheLineNumbers[:0]
 
 			if globals.config.cacheLinesToPrefetch > 0 {
 				cacheLineNumberMaxInBackend = ((inode.sizeInBackend + globals.config.cacheLineSize - 1) / globals.config.cacheLineSize) - 1
@@ -1119,6 +1108,10 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 					cacheLinesToPotentiallyPrefetch = cacheLineNumberMaxInBackend - cacheLineNumber
 				}
 
+				if cacheLinesToPotentiallyPrefetch >= globals.config.cacheLines {
+					cacheLinesToPotentiallyPrefetch = globals.config.cacheLines - 1
+				}
+
 				if cacheLinesToPotentiallyPrefetch > 0 {
 					prefetchCacheLineNumberMin = cacheLineNumber + 1
 					prefetchCacheLineNumberMax = prefetchCacheLineNumberMin + cacheLinesToPotentiallyPrefetch - 1
@@ -1126,28 +1119,133 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 					for prefetchCacheLineNumber = prefetchCacheLineNumberMin; prefetchCacheLineNumber <= prefetchCacheLineNumberMax; prefetchCacheLineNumber++ {
 						_, ok = inode.cacheMap[prefetchCacheLineNumber]
 						if !ok {
-							cacheLine = &cacheLineStruct{
-								nonce:       fetchNonce(),
-								state:       CacheLineInbound,
-								waiters:     make([]*sync.WaitGroup, 0, 1),
-								inodeNumber: inode.inodeNumber,
-								lineNumber:  prefetchCacheLineNumber,
-							}
-
-							inode.cacheMap[prefetchCacheLineNumber] = cacheLine.nonce
-							globals.cacheMap[cacheLine.nonce] = cacheLine
-
-							inode.inboundCacheLineCount++
-							cacheLine.listElement = globals.inboundCacheLineList.PushBack(cacheLine)
-
-							go cacheLine.fetch()
-
-							prefetchCacheLinesIssued++
+							prefetchCacheLineNumbers = append(prefetchCacheLineNumbers, prefetchCacheLineNumber)
 						}
 					}
 				}
 			}
 
+			dataCacheLineNumbers, _ = allocateDataCacheLines(1 + uint64(len(prefetchCacheLineNumbers)))
+
+			globalsLock("fission.go:1130:4:(*globalsStruct).DoRead")
+
+			inode, ok = globals.inodeMap.get(inHeader.NodeID)
+			if !ok {
+				backend = nil
+				releaseDataCacheLines(dataCacheLineNumbers)
+				globalsUnlock()
+				errno = syscall.ENOENT
+				return
+			}
+
+			if inode.backendNonce == 0 {
+				backend = nil
+			} else {
+				backend, ok = globals.backendMap[inode.backendNonce]
+				if !ok {
+					dumpStack()
+					globals.logger.Fatalf("[FATAL] globals.backendMap[inode.backendNonce]")
+				}
+			}
+
+			if inode.inodeType != FileObject {
+				releaseDataCacheLines(dataCacheLineNumbers)
+				globalsUnlock()
+				errno = syscall.EBADF
+				return
+			}
+
+			_, ok = inode.fhSet[readIn.FH]
+			if !ok {
+				releaseDataCacheLines(dataCacheLineNumbers)
+				globalsUnlock()
+				errno = syscall.EBADF
+				return
+			}
+			fh, ok = globals.fhMap[readIn.FH]
+			if !ok {
+				dumpStack()
+				globals.logger.Fatalf("[FATAL] globals.fhMap[readIn.FH] returned !ok")
+			}
+			if !fh.allowReads {
+				releaseDataCacheLines(dataCacheLineNumbers)
+				globalsUnlock()
+				errno = syscall.EBADF
+				return
+			}
+
+			inode.touch(nil)
+
+			if curOffset >= inode.sizeInBackend {
+				releaseDataCacheLines(dataCacheLineNumbers)
+				globalsUnlock()
+				break
+			}
+
+			cacheLineNumber = curOffset / globals.config.cacheLineSize
+			_, ok = inode.cacheMap[cacheLineNumber]
+			if ok {
+				releaseDataCacheLines(dataCacheLineNumbers)
+				globalsUnlock()
+				continue
+			}
+
+			if len(dataCacheLineNumbers) == 0 {
+				dumpStack()
+				globals.logger.Fatalf("[FATAL] allocateDataCacheLines() returned no data cache lines")
+			}
+
+			dataCacheLineTracker = &globals.dataCacheLinesTracker[dataCacheLineNumbers[0]]
+			dataCacheLineNumbers = dataCacheLineNumbers[1:]
+
+			cacheLineWaiter.Add(1)
+			dataCacheLineTracker.waiters = make([]*sync.WaitGroup, 1)
+			dataCacheLineTracker.waiters[0] = &cacheLineWaiter
+			dataCacheLineTracker.contentLength = 0
+			dataCacheLineTracker.contentGeneration++
+			dataCacheLineTracker.inodeNumber = inode.inodeNumber
+			dataCacheLineTracker.lineNumber = cacheLineNumber
+			dataCacheLineTracker.eTag = ""
+
+			inode.cacheMap[cacheLineNumber] = dataCacheLineTracker.pos
+			inode.inboundCacheLineCount++
+			globals.dataCacheLineInboundLRU.pushTail(dataCacheLineTracker)
+
+			globals.dataCacheActivityWG.Add(1)
+			go dataCacheLineTracker.fetch()
+
+			for _, prefetchCacheLineNumber = range prefetchCacheLineNumbers {
+				if len(dataCacheLineNumbers) == 0 {
+					break
+				}
+
+				_, ok = inode.cacheMap[prefetchCacheLineNumber]
+				if ok {
+					continue
+				}
+
+				dataCacheLineTracker = &globals.dataCacheLinesTracker[dataCacheLineNumbers[0]]
+				dataCacheLineNumbers = dataCacheLineNumbers[1:]
+
+				dataCacheLineTracker.waiters = make([]*sync.WaitGroup, 0, 1)
+				dataCacheLineTracker.contentLength = 0
+				dataCacheLineTracker.contentGeneration++
+				dataCacheLineTracker.inodeNumber = inode.inodeNumber
+				dataCacheLineTracker.lineNumber = prefetchCacheLineNumber
+				dataCacheLineTracker.eTag = ""
+
+				inode.cacheMap[prefetchCacheLineNumber] = dataCacheLineTracker.pos
+				inode.inboundCacheLineCount++
+				globals.dataCacheLineInboundLRU.pushTail(dataCacheLineTracker)
+
+				globals.dataCacheActivityWG.Add(1)
+				go dataCacheLineTracker.fetch()
+
+				prefetchCacheLinesIssued++
+			}
+
+			releaseDataCacheLines(dataCacheLineNumbers)
+
 			globalsUnlock()
 
 			cacheLineWaiter.Wait()
@@ -1155,19 +1253,20 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 			continue
 		}
 
-		cacheLine, ok = globals.cacheMap[cacheLineNonce]
-		if !ok {
+		if dataCacheLineNumber >= uint64(len(globals.dataCacheLinesTracker)) {
 			dumpStack()
-			globals.logger.Fatalf("[FATAL] globals.cacheMap[cacheLineNonce] returned !ok")
+			globals.logger.Fatalf("[FATAL] inode.cacheMap[cacheLineNumber] returned out-of-range dataCacheLineNumber")
 		}
 
-		if cacheLine.state == CacheLineInbound {
+		dataCacheLineTracker = &globals.dataCacheLinesTracker[dataCacheLineNumber]
+
+		if dataCacheLineTracker.state == CacheLineInbound {
 			cacheLineWaits++
 
 			globals.fissionVolume.HighLatencyCallback(inHeader)
 
 			cacheLineWaiter.Add(1)
-			cacheLine.waiters = append(cacheLine.waiters, &cacheLineWaiter)
+			dataCacheLineTracker.waiters = append(dataCacheLineTracker.waiters, &cacheLineWaiter)
 
 			globalsUnlock()
 
@@ -1176,9 +1275,14 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 			continue
 		}
 
+		if dataCacheLineTracker.state != CacheLineClean {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] dataCacheLineTracker.state(%v) != CacheLineClean(%v)", dataCacheLineTracker.state, CacheLineClean)
+		}
+
 		cacheLineHits++ // Note that this is the fall-thru condition that counts resolved (cacheLine)Misses & (cacheLine)Waits as (subsequent) Hits
 
-		cacheLine.touch()
+		dataCacheLineTracker.touch()
 
 		cacheLineOffsetStart = curOffset - (cacheLineNumber * globals.config.cacheLineSize)
 
@@ -1186,8 +1290,8 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 		if cacheLineOffsetLimit > globals.config.cacheLineSize {
 			cacheLineOffsetLimit = globals.config.cacheLineSize
 		}
-		if cacheLineOffsetLimit > uint64(len(cacheLine.content)) {
-			cacheLineOffsetLimit = uint64(len(cacheLine.content))
+		if cacheLineOffsetLimit > dataCacheLineTracker.contentLength {
+			cacheLineOffsetLimit = dataCacheLineTracker.contentLength
 		}
 
 		if cacheLineOffsetLimit == cacheLineOffsetStart {
@@ -1198,13 +1302,10 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 			break
 		}
 
-		// [TODO] At this point, we have grabbed a reference to what, while readonly mode is all we support,
-		//        is immutable. Hence, it is safe to release the global lock before copying data out of it.
+		readOut.Data = append(readOut.Data, globals.dataCacheLinesContent[dataCacheLineTracker.contentStart+cacheLineOffsetStart:dataCacheLineTracker.contentStart+cacheLineOffsetLimit]...)
+		curOffset += cacheLineOffsetLimit - cacheLineOffsetStart
 
 		globalsUnlock()
-
-		readOut.Data = append(readOut.Data, cacheLine.content[cacheLineOffsetStart:cacheLineOffsetLimit]...)
-		curOffset += cacheLineOffsetLimit - cacheLineOffsetStart
 	}
 
 	errno = 0
@@ -1220,7 +1321,7 @@ func (*globalsStruct) DoWrite(inHeader *fission.InHeader, writeIn *fission.Write
 
 // `DoStatFS` implements the package fission callback to fetch statistics about this FUSE file system.
 func (*globalsStruct) DoStatFS(inHeader *fission.InHeader) (statFSOut *fission.StatFSOut, errno syscall.Errno) {
-	globalsLock("fission.go:1223:2:(*globalsStruct).DoStatFS")
+	globalsLock("fission.go:1324:2:(*globalsStruct).DoStatFS")
 
 	statFSOut = &fission.StatFSOut{
 		KStatFS: fission.KStatFS{
@@ -1258,7 +1359,7 @@ func (*globalsStruct) DoRelease(inHeader *fission.InHeader, releaseIn *fission.R
 
 	defer func() {
 		latency = time.Since(startTime).Seconds()
-		globalsLock("fission.go:1261:3:funcLit@1259")
+		globalsLock("fission.go:1362:3:funcLit@1360")
 		if errno == 0 {
 			globals.fissionMetrics.ReleaseSuccesses.Inc()
 			globals.fissionMetrics.ReleaseSuccessLatencies.Observe(latency)
@@ -1277,7 +1378,7 @@ func (*globalsStruct) DoRelease(inHeader *fission.InHeader, releaseIn *fission.R
 		globalsUnlock()
 	}()
 
-	globalsLock("fission.go:1280:2:(*globalsStruct).DoRelease")
+	globalsLock("fission.go:1381:2:(*globalsStruct).DoRelease")
 
 	inode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
@@ -1417,7 +1518,7 @@ func (*globalsStruct) DoOpenDir(inHeader *fission.InHeader, openDirIn *fission.O
 
 	defer func() {
 		latency = time.Since(startTime).Seconds()
-		globalsLock("fission.go:1420:3:funcLit@1418")
+		globalsLock("fission.go:1521:3:funcLit@1519")
 		if errno == 0 {
 			globals.fissionMetrics.OpenDirSuccesses.Inc()
 			globals.fissionMetrics.OpenDirSuccessLatencies.Observe(latency)
@@ -1436,7 +1537,7 @@ func (*globalsStruct) DoOpenDir(inHeader *fission.InHeader, openDirIn *fission.O
 		globalsUnlock()
 	}()
 
-	globalsLock("fission.go:1439:2:(*globalsStruct).DoOpenDir")
+	globalsLock("fission.go:1540:2:(*globalsStruct).DoOpenDir")
 
 	inode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
@@ -1569,7 +1670,7 @@ func (*globalsStruct) DoReadDir(inHeader *fission.InHeader, readDirIn *fission.R
 		}
 
 		latency = time.Since(startTime).Seconds()
-		globalsLock("fission.go:1572:3:funcLit@1565")
+		globalsLock("fission.go:1673:3:funcLit@1666")
 		if errno == 0 {
 			globals.fissionMetrics.ReadDirSuccesses.Inc()
 			globals.fissionMetrics.ReadDirSuccessLatencies.Observe(latency)
@@ -1607,7 +1708,7 @@ func (*globalsStruct) DoReadDir(inHeader *fission.InHeader, readDirIn *fission.R
 	curReadDirOutSize = 0
 	curOffset = readDirIn.Offset
 
-	globalsLock("fission.go:1610:2:(*globalsStruct).DoReadDir")
+	globalsLock("fission.go:1711:2:(*globalsStruct).DoReadDir")
 
 Restart:
 
@@ -1730,7 +1831,7 @@ Restart:
 
 			listDirectoryOutput, err = listDirectoryWrapper(backend.context, listDirectoryInput)
 
-			globalsLock("fission.go:1733:4:(*globalsStruct).DoReadDir")
+			globalsLock("fission.go:1834:4:(*globalsStruct).DoReadDir")
 
 			fh.listDirectoryInProgress = false
 
@@ -1846,7 +1947,7 @@ func (*globalsStruct) DoReleaseDir(inHeader *fission.InHeader, releaseDirIn *fis
 
 	defer func() {
 		latency = time.Since(startTime).Seconds()
-		globalsLock("fission.go:1849:3:funcLit@1847")
+		globalsLock("fission.go:1950:3:funcLit@1948")
 		if errno == 0 {
 			globals.fissionMetrics.ReleaseDirSuccesses.Inc()
 			globals.fissionMetrics.ReleaseDirSuccessLatencies.Observe(latency)
@@ -1865,7 +1966,7 @@ func (*globalsStruct) DoReleaseDir(inHeader *fission.InHeader, releaseDirIn *fis
 		globalsUnlock()
 	}()
 
-	globalsLock("fission.go:1868:2:(*globalsStruct).DoReleaseDir")
+	globalsLock("fission.go:1969:2:(*globalsStruct).DoReleaseDir")
 
 	inode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
@@ -1970,7 +2071,7 @@ func (*globalsStruct) DoCreate(inHeader *fission.InHeader, createIn *fission.Cre
 
 	defer func() {
 		latency = time.Since(startTime).Seconds()
-		globalsLock("fission.go:1973:3:funcLit@1971")
+		globalsLock("fission.go:2074:3:funcLit@2072")
 		if errno == 0 {
 			globals.fissionMetrics.CreateSuccesses.Inc()
 			globals.fissionMetrics.CreateSuccessLatencies.Observe(latency)
@@ -1989,7 +2090,7 @@ func (*globalsStruct) DoCreate(inHeader *fission.InHeader, createIn *fission.Cre
 		globalsUnlock()
 	}()
 
-	globalsLock("fission.go:1992:2:(*globalsStruct).DoCreate")
+	globalsLock("fission.go:2093:2:(*globalsStruct).DoCreate")
 
 	parentInode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
@@ -2191,7 +2292,7 @@ func (*globalsStruct) DoReadDirPlus(inHeader *fission.InHeader, readDirPlusIn *f
 		}
 
 		latency = time.Since(startTime).Seconds()
-		globalsLock("fission.go:2194:3:funcLit@2187")
+		globalsLock("fission.go:2295:3:funcLit@2288")
 		if errno == 0 {
 			globals.fissionMetrics.ReadDirPlusSuccesses.Inc()
 			globals.fissionMetrics.ReadDirPlusSuccessLatencies.Observe(latency)
@@ -2231,7 +2332,7 @@ func (*globalsStruct) DoReadDirPlus(inHeader *fission.InHeader, readDirPlusIn *f
 
 	entryAttrValidSec, entryAttrValidNSec = timeDurationToAttrDuration(globals.config.entryAttrTTL)
 
-	globalsLock("fission.go:2234:2:(*globalsStruct).DoReadDirPlus")
+	globalsLock("fission.go:2335:2:(*globalsStruct).DoReadDirPlus")
 
 Restart:
 
@@ -2354,7 +2455,7 @@ Restart:
 
 			listDirectoryOutput, err = listDirectoryWrapper(backend.context, listDirectoryInput)
 
-			globalsLock("fission.go:2357:4:(*globalsStruct).DoReadDirPlus")
+			globalsLock("fission.go:2458:4:(*globalsStruct).DoReadDirPlus")
 
 			fh.listDirectoryInProgress = false
 
@@ -2491,7 +2592,7 @@ func (*globalsStruct) DoStatX(inHeader *fission.InHeader, statXIn *fission.StatX
 
 	defer func() {
 		latency = time.Since(startTime).Seconds()
-		globalsLock("fission.go:2494:3:funcLit@2492")
+		globalsLock("fission.go:2595:3:funcLit@2593")
 		if errno == 0 {
 			globals.fissionMetrics.StatXSuccesses.Inc()
 			globals.fissionMetrics.StatXSuccessLatencies.Observe(latency)
@@ -2510,7 +2611,7 @@ func (*globalsStruct) DoStatX(inHeader *fission.InHeader, statXIn *fission.StatX
 		globalsUnlock()
 	}()
 
-	globalsLock("fission.go:2513:2:(*globalsStruct).DoStatX")
+	globalsLock("fission.go:2614:2:(*globalsStruct).DoStatX")
 
 	thisInode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {

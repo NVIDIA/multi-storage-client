@@ -49,8 +49,9 @@ RUN    apt-get update \
 
 RUN echo "user_allow_other" >> /etc/fuse.conf
 
+# Note: Rolling back to Golang 1.25.10 to avoid performance regression in 1.26 line
+ARG GolangVersion=1.25.10
 ARG TARGETARCH
-ARG GolangVersion=1.26.2
 WORKDIR /tmp
 RUN GolangBasename="go${GolangVersion}.linux-${TARGETARCH}.tar.gz"; \
     GolangURL="https://golang.org/dl/${GolangBasename}"; \
@@ -116,10 +117,10 @@ FROM buildable AS ais
 
 WORKDIR /
 
-RUN git clone --depth 1 --branch v1.4.4 https://github.com/NVIDIA/aistore.git
-
+# Note: Rolling back to AIStore v1.4.3 to avoid dependency on Golang 1.26 line
+ARG AIStoreVersion=v1.4.3
+RUN git clone --depth 1 --branch $AIStoreVersion https://github.com/NVIDIA/aistore.git
 WORKDIR /aistore
-
 RUN (. /root/.bashrc_additions && make cli)
 
 RUN echo '#!/bin/bash'                                                                                                   >  /root/deploy_1_1.sh
@@ -145,24 +146,24 @@ EXPOSE 4443
 
 ENTRYPOINT ["/bin/fake-gcs-server", "-data", "/data", "-scheme", "http"]
 
-FROM buildable AS garage
+# FROM buildable AS garage
 
-WORKDIR /
+# WORKDIR /
 
-# RUN git clone --depth 1 --branch v2.2.0 https://git.deuxfleurs.fr/Deuxfleurs/garage.git
-RUN git clone --depth 1 --branch v2.2.0 https://github.com/deuxfleurs-org/garage.git
+# # RUN git clone --depth 1 --branch v2.2.0 https://git.deuxfleurs.fr/Deuxfleurs/garage.git
+# RUN git clone --depth 1 --branch v2.2.0 https://github.com/deuxfleurs-org/garage.git
 
-WORKDIR /garage
+# WORKDIR /garage
 
-RUN cargo build --release
+# RUN cargo build --release
 
-ENV PATH="/garage/target/release:${PATH}"
+# ENV PATH="/garage/target/release:${PATH}"
 
-RUN mkdir -p /var/lib/garage/meta
-RUN mkdir -p /var/lib/garage/data
+# RUN mkdir -p /var/lib/garage/meta
+# RUN mkdir -p /var/lib/garage/data
 
-COPY multi-storage-file-system/garage.toml /etc/garage.toml
-COPY multi-storage-file-system/garage.sh   /root/garage.sh
+# COPY multi-storage-file-system/garage.toml /etc/garage.toml
+# COPY multi-storage-file-system/garage.sh   /root/garage.sh
 
 WORKDIR /root
 

@@ -8,6 +8,8 @@ package main
 
 import (
 	"sort"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -16,7 +18,7 @@ import (
 
 // globalsLockSiteCount is the number of distinct lockgen site strings (unique globalsLock("…") call
 // sites in this module). Maintained by: go generate (tools/lockgen).
-const globalsLockSiteCount = 64
+const globalsLockSiteCount = 65
 
 // globalsLockMaxSiteKeyLen is the length in bytes of the longest site string key in globalsLockMaxHoldBySite
 // (len(s) for that key). Maintained by: go generate (tools/lockgen).
@@ -55,29 +57,30 @@ var globalsLockMaxHoldBySite = map[string]globalsLockSiteStats{
 	"backend.go:499:3:funcLit@498":                                           {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"backend.go:560:3:funcLit@559":                                           {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"bptree_test.go:59:3:BenchmarkBPTreePageInsertion":                       {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"cache.go:22:2:(*cacheLineStruct).fetch":                                 {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"cache.go:53:3:(*cacheLineStruct).fetch":                                 {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"cache.go:71:2:(*cacheLineStruct).fetch":                                 {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fission.go:1033:3:(*globalsStruct).DoRead":                              {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fission.go:1223:2:(*globalsStruct).DoStatFS":                            {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fission.go:1261:3:funcLit@1259":                                         {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fission.go:1280:2:(*globalsStruct).DoRelease":                           {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fission.go:1420:3:funcLit@1418":                                         {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fission.go:1439:2:(*globalsStruct).DoOpenDir":                           {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"cache.go:377:3:allocateDataCacheLines":                                  {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"cache.go:425:2:(*dataCacheLineTrackerStruct).fetch":                     {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"cache.go:457:2:(*dataCacheLineTrackerStruct).fetch":                     {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fission.go:1039:3:(*globalsStruct).DoRead":                              {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fission.go:1130:4:(*globalsStruct).DoRead":                              {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fission.go:1324:2:(*globalsStruct).DoStatFS":                            {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fission.go:1362:3:funcLit@1360":                                         {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fission.go:1381:2:(*globalsStruct).DoRelease":                           {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fission.go:1521:3:funcLit@1519":                                         {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"fission.go:153:3:funcLit@151":                                           {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fission.go:1572:3:funcLit@1565":                                         {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fission.go:1610:2:(*globalsStruct).DoReadDir":                           {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fission.go:1540:2:(*globalsStruct).DoOpenDir":                           {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fission.go:1673:3:funcLit@1666":                                         {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fission.go:1711:2:(*globalsStruct).DoReadDir":                           {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"fission.go:172:2:(*globalsStruct).DoLookup":                             {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fission.go:1733:4:(*globalsStruct).DoReadDir":                           {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fission.go:1849:3:funcLit@1847":                                         {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fission.go:1868:2:(*globalsStruct).DoReleaseDir":                        {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fission.go:1973:3:funcLit@1971":                                         {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fission.go:1992:2:(*globalsStruct).DoCreate":                            {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fission.go:2194:3:funcLit@2187":                                         {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fission.go:2234:2:(*globalsStruct).DoReadDirPlus":                       {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fission.go:2357:4:(*globalsStruct).DoReadDirPlus":                       {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fission.go:2494:3:funcLit@2492":                                         {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fission.go:2513:2:(*globalsStruct).DoStatX":                             {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fission.go:1834:4:(*globalsStruct).DoReadDir":                           {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fission.go:1950:3:funcLit@1948":                                         {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fission.go:1969:2:(*globalsStruct).DoReleaseDir":                        {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fission.go:2074:3:funcLit@2072":                                         {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fission.go:2093:2:(*globalsStruct).DoCreate":                            {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fission.go:2295:3:funcLit@2288":                                         {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fission.go:2335:2:(*globalsStruct).DoReadDirPlus":                       {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fission.go:2458:4:(*globalsStruct).DoReadDirPlus":                       {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fission.go:2595:3:funcLit@2593":                                         {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fission.go:2614:2:(*globalsStruct).DoStatX":                             {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"fission.go:294:3:funcLit@292":                                           {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"fission.go:313:2:(*globalsStruct).DoGetAttr":                            {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"fission.go:434:3:funcLit@432":                                           {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
@@ -88,30 +91,30 @@ var globalsLockMaxHoldBySite = map[string]globalsLockSiteStats{
 	"fission.go:692:2:(*globalsStruct).DoRmDir":                              {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"fission.go:839:3:funcLit@837":                                           {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"fission.go:858:2:(*globalsStruct).DoOpen":                               {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fission.go:973:3:funcLit@971":                                           {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fission.go:975:3:funcLit@973":                                           {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"fission_test.go:1228:2:TestFissionDoUnlinkRollbackOnBackendFailure":     {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"fission_test.go:1618:2:TestFissionConvertPhysicalToVirtual":             {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"fission_test.go:1644:2:TestFissionConvertPhysicalToVirtual":             {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"fission_test.go:1680:2:TestFissionConvertPhysicalToVirtual":             {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"fission_test.go:461:2:TestFissionDoGetAttrStatX":                        {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"fission_test.go:641:2:TestFissionDoOpenDirReadDirReadDirPlusReleaseDir": {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fs.go:1083:2:prefetchDirectory":                                         {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fs.go:1112:3:prefetchDirectory":                                         {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fs.go:122:2:drainFS":                                                    {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fs.go:1278:2:dumpFS":                                                    {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fs.go:1442:2:(*inodeStruct).finishPendingDelete":                        {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fs.go:158:2:processToMountList":                                         {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fs.go:234:2:processToUnmountList":                                       {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fs.go:1088:2:prefetchDirectory":                                         {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fs.go:1117:3:prefetchDirectory":                                         {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fs.go:127:2:drainFS":                                                    {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fs.go:1283:2:dumpFS":                                                    {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fs.go:1447:2:(*inodeStruct).finishPendingDelete":                        {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fs.go:169:2:processToMountList":                                         {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fs.go:245:2:processToUnmountList":                                       {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"fs.go:24:2:initFS":                                                      {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"fs.go:813:4:inodeEvictor":                                               {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"http.go:114:4:(*globalsStruct).ServeHTTP":                               {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"http.go:134:4:(*globalsStruct).ServeHTTP":                               {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"http.go:148:3:(*globalsStruct).ServeHTTP":                               {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"http.go:157:3:(*globalsStruct).ServeHTTP":                               {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"http.go:180:3:(*globalsStruct).ServeHTTP":                               {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"http.go:216:3:(*globalsStruct).ServeHTTP":                               {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"http.go:234:3:(*globalsStruct).ServeHTTP":                               {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"http.go:262:3:(*globalsStruct).ServeHTTP":                               {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"fs.go:822:4:inodeEvictor":                                               {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"http.go:150:4:(*globalsStruct).ServeHTTP":                               {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"http.go:170:4:(*globalsStruct).ServeHTTP":                               {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"http.go:184:3:(*globalsStruct).ServeHTTP":                               {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"http.go:193:3:(*globalsStruct).ServeHTTP":                               {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"http.go:221:3:(*globalsStruct).ServeHTTP":                               {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"http.go:290:3:(*globalsStruct).ServeHTTP":                               {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"http.go:308:3:(*globalsStruct).ServeHTTP":                               {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"http.go:336:3:(*globalsStruct).ServeHTTP":                               {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 }
 
 // lockgen-end: globalsLockMaxHoldBySite
@@ -237,8 +240,9 @@ func GlobalsLockHolderSite() string {
 type GlobalsLockMaxHoldEntry struct {
 	Site    string
 	HoldCnt uint64
-	HoldAvg time.Duration
+	HoldSum time.Duration
 	HoldMax time.Duration
+	HoldAvg time.Duration
 }
 
 // GlobalsLockMaxHoldDurations returns a snapshot of per-site stats (map iteration order), including HoldAvg.
@@ -248,16 +252,71 @@ func GlobalsLockMaxHoldDurations() []GlobalsLockMaxHoldEntry {
 	n := len(globalsLockMaxHoldBySite)
 	out := make([]GlobalsLockMaxHoldEntry, 0, n)
 	for site, st := range globalsLockMaxHoldBySite {
-		e := GlobalsLockMaxHoldEntry{Site: site, HoldCnt: st.HoldCnt, HoldMax: st.HoldMax}
+		e := GlobalsLockMaxHoldEntry{Site: site, HoldCnt: st.HoldCnt, HoldSum: st.HoldSum, HoldMax: st.HoldMax}
 		if st.HoldCnt > 0 {
 			e.HoldAvg = time.Duration(int64(st.HoldSum) / int64(st.HoldCnt))
+		} else {
+			e.HoldAvg = time.Duration(0)
 		}
 		out = append(out, e)
 	}
 	return out
 }
 
-// SortGlobalsLockMaxHoldEntriesByHoldAvg sorts entries in place by HoldAvg descending (highest average first).
+func globalsLockSiteSortKey(site string) (filePath string, lineNumber uint64, remainder string) {
+	var (
+		lineNumberAsString string
+		ok                 bool
+	)
+
+	filePath, remainder, ok = strings.Cut(site, ":")
+	if !ok {
+		return
+	}
+
+	lineNumberAsString, remainder, ok = strings.Cut(remainder, ":")
+	if !ok {
+		lineNumberAsString = remainder
+		remainder = ""
+	}
+
+	lineNumber, _ = strconv.ParseUint(lineNumberAsString, 10, 64)
+
+	return
+}
+
+// SortGlobalsLockMaxHoldEntriesBySite sorts entries in place by file path, line number, then remainder.
+func SortGlobalsLockMaxHoldEntriesBySite(entries []GlobalsLockMaxHoldEntry) {
+	sort.Slice(entries, func(i, j int) bool {
+		iFilePath, iLineNumber, iRemainder := globalsLockSiteSortKey(entries[i].Site)
+		jFilePath, jLineNumber, jRemainder := globalsLockSiteSortKey(entries[j].Site)
+
+		if iFilePath != jFilePath {
+			return iFilePath < jFilePath
+		}
+		if iLineNumber != jLineNumber {
+			return iLineNumber < jLineNumber
+		}
+		return iRemainder < jRemainder
+	})
+}
+
+// SortGlobalsLockMaxHoldEntriesByHoldCnt sorts entries in place by HoldCnt descending.
+func SortGlobalsLockMaxHoldEntriesByHoldCnt(entries []GlobalsLockMaxHoldEntry) {
+	sort.Slice(entries, func(i, j int) bool { return entries[i].HoldCnt > entries[j].HoldCnt })
+}
+
+// SortGlobalsLockMaxHoldEntriesByHoldSum sorts entries in place by HoldSum descending.
+func SortGlobalsLockMaxHoldEntriesByHoldSum(entries []GlobalsLockMaxHoldEntry) {
+	sort.Slice(entries, func(i, j int) bool { return entries[i].HoldSum > entries[j].HoldSum })
+}
+
+// SortGlobalsLockMaxHoldEntriesByHoldMax sorts entries in place by HoldMax descending.
+func SortGlobalsLockMaxHoldEntriesByHoldMax(entries []GlobalsLockMaxHoldEntry) {
+	sort.Slice(entries, func(i, j int) bool { return entries[i].HoldMax > entries[j].HoldMax })
+}
+
+// SortGlobalsLockMaxHoldEntriesByHoldAvg sorts entries in place by HoldAvg descending.
 func SortGlobalsLockMaxHoldEntriesByHoldAvg(entries []GlobalsLockMaxHoldEntry) {
 	sort.Slice(entries, func(i, j int) bool { return entries[i].HoldAvg > entries[j].HoldAvg })
 }

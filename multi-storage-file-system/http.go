@@ -20,6 +20,36 @@ const (
 	HTTP_SERVER_IDLE_TIMEOUT  = 10 * time.Second
 )
 
+func formatLockDuration(duration time.Duration) string {
+	var (
+		absDuration time.Duration
+		unit        string
+		value       float64
+	)
+
+	absDuration = duration
+	if absDuration < 0 {
+		absDuration = -absDuration
+	}
+
+	switch {
+	case absDuration >= time.Second:
+		unit = "s"
+		value = float64(duration) / float64(time.Second)
+	case absDuration >= time.Millisecond:
+		unit = "ms"
+		value = float64(duration) / float64(time.Millisecond)
+	case absDuration >= time.Microsecond:
+		unit = "us"
+		value = float64(duration) / float64(time.Microsecond)
+	default:
+		unit = "ns"
+		value = float64(duration)
+	}
+
+	return fmt.Sprintf("%.2f %-2s", value, unit)
+}
+
 func startHTTPHandler() {
 	var (
 		err       error
@@ -87,13 +117,19 @@ func (*globalsStruct) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		globalsLockMaxHoldEntries []GlobalsLockMaxHoldEntry
 		globalsLockMaxHoldEntry   GlobalsLockMaxHoldEntry
 		globalsLockedHolderSite   string
+		holdAvgAsString           string
 		holdAvgAsStringLen        int
 		holdAvgAsStringMaxLen     int
 		holdCntAsString           string
 		holdCntMax                uint64
 		holdCntMaxAsStringLen     int
+		holdMaxAsString           string
 		holdMaxAsStringLen        int
 		holdMaxAsStringMaxLen     int
+		holdSumAsString           string
+		holdSumAsStringLen        int
+		holdSumAsStringMaxLen     int
+		locksSortDirective        string
 		numDrained                uint64
 		registry                  *prometheus.Registry
 	)
@@ -111,7 +147,7 @@ func (*globalsStruct) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "  <li><a href=\"/hang\">/hang</a></li>\n")
 			fmt.Fprintf(w, "  <li><a href=\"/locks\">/locks</a></li>\n")
 			fmt.Fprintf(w, "  <li><a href=\"/metrics\">/metrics</a></li>\n")
-			globalsLock("http.go:114:4:(*globalsStruct).ServeHTTP")
+			globalsLock("http.go:150:4:(*globalsStruct).ServeHTTP")
 			backendNames = make([]string, 0, len(globals.config.backends))
 			for _, backend = range globals.config.backends {
 				backendNames = append(backendNames, backend.dirName)
@@ -131,7 +167,7 @@ func (*globalsStruct) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "  /hang\n")
 			fmt.Fprintf(w, "  /locks\n")
 			fmt.Fprintf(w, "  /metrics\n")
-			globalsLock("http.go:134:4:(*globalsStruct).ServeHTTP")
+			globalsLock("http.go:170:4:(*globalsStruct).ServeHTTP")
 			backendNames = make([]string, 0, len(globals.config.backends))
 			for _, backend = range globals.config.backends {
 				backendNames = append(backendNames, backend.dirName)
@@ -145,7 +181,7 @@ func (*globalsStruct) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.RequestURI == "/backends":
 		w.WriteHeader(http.StatusOK)
 
-		globalsLock("http.go:148:3:(*globalsStruct).ServeHTTP")
+		globalsLock("http.go:184:3:(*globalsStruct).ServeHTTP")
 
 		for _, backend = range globals.config.backends {
 			fmt.Fprintf(w, "%s\n", backend.dirName)
@@ -154,7 +190,7 @@ func (*globalsStruct) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		globalsUnlock()
 
 	case r.RequestURI == "/drain":
-		globalsLock("http.go:157:3:(*globalsStruct).ServeHTTP")
+		globalsLock("http.go:193:3:(*globalsStruct).ServeHTTP")
 
 		numDrained = inodeEvictorForceDrain()
 
@@ -176,16 +212,38 @@ func (*globalsStruct) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "possible hang due to %s\n", globalsLockedHolderSite)
 		}
 
-	case r.RequestURI == "/locks":
-		globalsLock("http.go:180:3:(*globalsStruct).ServeHTTP")
+	case r.URL.Path == "/locks":
+		locksSortDirective = r.URL.Query().Get("sort")
+		if locksSortDirective == "" {
+			locksSortDirective = "sum"
+		}
+
+		globalsLock("http.go:221:3:(*globalsStruct).ServeHTTP")
 		globalsLockMaxHoldEntries = GlobalsLockMaxHoldDurations()
 		globalsUnlock()
-		SortGlobalsLockMaxHoldEntriesByHoldAvg(globalsLockMaxHoldEntries)
+
+		switch locksSortDirective {
+		case "site":
+			SortGlobalsLockMaxHoldEntriesBySite(globalsLockMaxHoldEntries)
+		case "cnt":
+			SortGlobalsLockMaxHoldEntriesByHoldCnt(globalsLockMaxHoldEntries)
+		case "sum":
+			SortGlobalsLockMaxHoldEntriesByHoldSum(globalsLockMaxHoldEntries)
+		case "max":
+			SortGlobalsLockMaxHoldEntriesByHoldMax(globalsLockMaxHoldEntries)
+		case "avg":
+			SortGlobalsLockMaxHoldEntriesByHoldAvg(globalsLockMaxHoldEntries)
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintf(w, "bad sort directive - must be one of: site, cnt, sum, max, avg\n")
+			return
+		}
 
 		w.WriteHeader(http.StatusOK)
 		holdCntMax = 0
-		holdAvgAsStringMaxLen = 0
+		holdSumAsStringMaxLen = 0
 		holdMaxAsStringMaxLen = 0
+		holdAvgAsStringMaxLen = 0
 		for _, globalsLockMaxHoldEntry = range globalsLockMaxHoldEntries {
 			if globalsLockMaxHoldEntry.HoldCnt == 0 {
 				continue
@@ -193,27 +251,43 @@ func (*globalsStruct) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if holdCntMax < globalsLockMaxHoldEntry.HoldCnt {
 				holdCntMax = globalsLockMaxHoldEntry.HoldCnt
 			}
-			holdAvgAsStringLen = len(globalsLockMaxHoldEntry.HoldAvg.String())
-			if holdAvgAsStringMaxLen < holdAvgAsStringLen {
-				holdAvgAsStringMaxLen = holdAvgAsStringLen
+			holdSumAsString = formatLockDuration(globalsLockMaxHoldEntry.HoldSum)
+			holdSumAsStringLen = len(holdSumAsString)
+			if holdSumAsStringMaxLen < holdSumAsStringLen {
+				holdSumAsStringMaxLen = holdSumAsStringLen
 			}
-			holdMaxAsStringLen = len(globalsLockMaxHoldEntry.HoldMax.String())
+			holdMaxAsString = formatLockDuration(globalsLockMaxHoldEntry.HoldMax)
+			holdMaxAsStringLen = len(holdMaxAsString)
 			if holdMaxAsStringMaxLen < holdMaxAsStringLen {
 				holdMaxAsStringMaxLen = holdMaxAsStringLen
+			}
+			holdAvgAsString = formatLockDuration(globalsLockMaxHoldEntry.HoldAvg)
+			holdAvgAsStringLen = len(holdAvgAsString)
+			if holdAvgAsStringMaxLen < holdAvgAsStringLen {
+				holdAvgAsStringMaxLen = holdAvgAsStringLen
 			}
 		}
 		holdCntMaxAsStringLen = len(strconv.FormatUint(holdCntMax, 10))
 		for _, globalsLockMaxHoldEntry = range globalsLockMaxHoldEntries {
-			if globalsLockMaxHoldEntry.HoldCnt != 0 {
-				holdCntAsString = strconv.FormatUint(globalsLockMaxHoldEntry.HoldCnt, 10)
-				fmt.Fprintf(w, "    %*s  cnt %*s  avg %*s  max %*s\n", globalsLockMaxSiteKeyLen, globalsLockMaxHoldEntry.Site, holdCntMaxAsStringLen, holdCntAsString, holdAvgAsStringMaxLen, globalsLockMaxHoldEntry.HoldAvg.String(), holdMaxAsStringMaxLen, globalsLockMaxHoldEntry.HoldMax.String())
+			if globalsLockMaxHoldEntry.HoldCnt == 0 {
+				continue
 			}
+			holdCntAsString = strconv.FormatUint(globalsLockMaxHoldEntry.HoldCnt, 10)
+			holdSumAsString = formatLockDuration(globalsLockMaxHoldEntry.HoldSum)
+			holdMaxAsString = formatLockDuration(globalsLockMaxHoldEntry.HoldMax)
+			holdAvgAsString = formatLockDuration(globalsLockMaxHoldEntry.HoldAvg)
+			fmt.Fprintf(w, "    %*s cnt %*s sum %*s max %*s avg %*s\n",
+				globalsLockMaxSiteKeyLen, globalsLockMaxHoldEntry.Site,
+				holdCntMaxAsStringLen, holdCntAsString,
+				holdSumAsStringMaxLen, holdSumAsString,
+				holdMaxAsStringMaxLen, holdMaxAsString,
+				holdAvgAsStringMaxLen, holdAvgAsString)
 		}
 
 	case r.RequestURI == "/metrics":
 		registry = prometheus.NewRegistry()
 
-		globalsLock("http.go:216:3:(*globalsStruct).ServeHTTP")
+		globalsLock("http.go:290:3:(*globalsStruct).ServeHTTP")
 
 		registerFissionMetrics(registry, globals.fissionMetrics)
 		registerBackendMetrics(registry, globals.backendMetrics)
@@ -231,7 +305,7 @@ func (*globalsStruct) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		globalsLock("http.go:234:3:(*globalsStruct).ServeHTTP")
+		globalsLock("http.go:308:3:(*globalsStruct).ServeHTTP")
 
 		backend = globals.config.backends[backendName]
 		if backend == nil {
@@ -259,7 +333,7 @@ func (*globalsStruct) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "  /hang\n")
 		fmt.Fprintf(w, "  /locks\n")
 		fmt.Fprintf(w, "  /metrics\n")
-		globalsLock("http.go:262:3:(*globalsStruct).ServeHTTP")
+		globalsLock("http.go:336:3:(*globalsStruct).ServeHTTP")
 		for _, backend = range globals.config.backends {
 			fmt.Fprintf(w, "  /metrics/%s\n", backend.dirName)
 		}
