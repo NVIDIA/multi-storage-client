@@ -544,6 +544,7 @@ Options: See parameters in :py:class:`multistorageclient.providers.ais_s3.AIStor
            password: ${AIS_PASSWORD}
            authn_endpoint: https://authn.example.com:52001
            ca_cert: /path/to/authn-ca.crt  # CA certificate for AuthN server (often same as above)
+.. _rust-client-reference:
 
 ``huggingface``
 ---------------
@@ -586,8 +587,6 @@ Options: See parameters in :py:class:`multistorageclient.providers.huggingface.H
    operations.
 
    For detailed configuration instructions, see the `HuggingFace documentation <https://huggingface.co/docs/huggingface_hub/en/guides/download#faster-downloads>`_.
-
-.. _rust-client-reference:
 
 ``rust_client`` (experimental)
 ------------------------------

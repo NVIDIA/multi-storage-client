@@ -3,6 +3,10 @@ run:
   concurrency: 8
   go: 1.23.5
   tests: true
+  # Allow `just analyze` from the CLI to coexist with editor-integration lint
+  # runs (e.g. Cursor / VS Code Go extension on save). Without this, the second
+  # instance exits with "parallel golangci-lint is running".
+  allow-parallel-runners: true
 linters:
   default: none
   enable:

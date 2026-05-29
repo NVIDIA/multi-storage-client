@@ -1,16 +1,15 @@
 package main
 
 import (
-	"container/list"
 	"context"
 	"log"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/NVIDIA/fission/v4"
-	"github.com/cockroachdb/pebble/v2"
 )
 
 //go:generate go run ./tools/lockgen -dir .
@@ -103,26 +102,37 @@ type backendConfigS3Struct struct {
 	retryDelay []time.Duration //                  Delay slice indexed by RetryDelay()'s attempt arg - 1
 }
 
+// `flatDirHintStruct` configures parallel listing for a known flat directory.
+type flatDirHintStruct struct {
+	Path           string // Directory path relative to prefix (e.g., "training-data/")
+	KeyPrefixChars string // Characters that appear at the start of basenames (default: "0123456789abcdefghijklmnopqrstuvwxyz")
+	SplitDepth     int    // Number of leading chars for sub-prefixes (default: 1)
+}
+
 // `backendStruct` contains the generic backend's settings and runtime
 // particulars as well is references to backendType-specific details.
 type backendStruct struct {
 	// From <config-file>
-	dirName                     string      //     JSON/YAML "dir_name"                       required
-	readOnly                    bool        //     JSON/YAML "readonly"                       default:true
-	flushOnClose                bool        //     JSON/YAML "flush_on_close"                 default:true
-	uid                         uint64      //     JSON/YAML "uid"                            default:<current euid>
-	gid                         uint64      //     JSON/YAML "gid"                            default:<current egid>
-	dirPerm                     uint64      //     JSON/YAML "dir_perm"                       default:0o555(ro)/0o777(rw)
-	filePerm                    uint64      //     JSON/YAML "file_perm"                      default:0o444(ro)/0o666(rw)
-	directoryPageSize           uint64      //     JSON/YAML "directory_page_size"            default:0(endpoint determined)
-	multiPartCacheLineThreshold uint64      //     JSON/YAML "multipart_cache_line_threshold" default:512
-	uploadPartCacheLines        uint64      //     JSON/YAML "upload_part_cache_lines"        default:32
-	uploadPartConcurrency       uint64      //     JSON/YAML "upload_part_concurrency"        default:32
-	bucketContainerName         string      //     JSON/YAML "bucket_container_name"          required
-	prefix                      string      //     JSON/YAML "prefix"                         default:""
-	traceLevel                  uint64      //     JSON/YAML "trace_level"                    default:0
-	backendType                 string      //     JSON/YAML "backend_type"                   required(one of "AIStore", "GCS", "PSEUDO", "RAM", "S3")
-	backendTypeSpecifics        interface{} //                                                as-required(one of *backendConfig{AIStore|GCS|PSEUDO|RAM|S3}Struct)
+	dirName                     string              //     JSON/YAML "dir_name"                       required
+	readOnly                    bool                //     JSON/YAML "readonly"                       default:true
+	flushOnClose                bool                //     JSON/YAML "flush_on_close"                 default:true
+	uid                         uint64              //     JSON/YAML "uid"                            default:<current euid>
+	gid                         uint64              //     JSON/YAML "gid"                            default:<current egid>
+	dirPerm                     uint64              //     JSON/YAML "dir_perm"                       default:0o555(ro)/0o777(rw)
+	filePerm                    uint64              //     JSON/YAML "file_perm"                      default:0o444(ro)/0o666(rw)
+	directoryPageSize           uint64              //     JSON/YAML "directory_page_size"            default:0(endpoint determined)
+	multiPartCacheLineThreshold uint64              //     JSON/YAML "multipart_cache_line_threshold" default:512
+	uploadPartCacheLines        uint64              //     JSON/YAML "upload_part_cache_lines"        default:32
+	uploadPartConcurrency       uint64              //     JSON/YAML "upload_part_concurrency"        default:32
+	bucketContainerName         string              //     JSON/YAML "bucket_container_name"          required
+	prefix                      string              //     JSON/YAML "prefix"                         default:""
+	traceLevel                  uint64              //     JSON/YAML "trace_level"                    default:0
+	manifestPath                string              //     JSON/YAML "manifest_path"                  default:""
+	manifestGenWorkers          int                 //     JSON/YAML "manifest_gen_workers"           default:200
+	flatDirConfirmationPages    int                 //     JSON/YAML "flat_dir_confirmation_pages"    default:5
+	flatDirHints                []flatDirHintStruct //     JSON/YAML "flat_dir_hints"                 default:nil
+	backendType                 string              //     JSON/YAML "backend_type"                   required(one of "AIStore", "GCS", "PSEUDO", "RAM", "S3")
+	backendTypeSpecifics        interface{}         //                                                as-required(one of *backendConfig{AIStore|GCS|PSEUDO|RAM|S3}Struct)
 	// Runtime state
 	nonce          uint64                //        Key in globalsStruct.backendMap
 	backendPath    string                //        URL incorporating each of the above path-related values
@@ -250,6 +260,14 @@ const (
 	NewChildDirEntOffsetMask = uint64(1) << 63
 )
 
+type DirEntryInfo struct {
+	InodeNumber   uint64
+	InodeType     uint32
+	Size          uint64
+	Mode          uint32
+	MTimeUnixNano int64
+}
+
 // `fhStruct` contains the state of a file handle for an inode.
 type fhStruct struct {
 	nonce uint64 // Key in inodeStruct.fhSet & globalsStruct.fhMap
@@ -270,7 +288,9 @@ type fhStruct struct {
 	nextListDirectoryOutputStartingOffset uint64
 	listDirectorySubdirectorySet          map[string]struct{}
 	listDirectorySubdirectoryList         []string
-	// For inode.inodeType == FUSERootDir, enumerating each dir_entry by walking .inode.childDirMap then .inode.childFileMap
+	serveFromBPTree                       bool
+	serveFromManifest                     bool
+	manifestEntries                       []manifestDirEntry
 }
 
 const (
@@ -355,21 +375,16 @@ type globalsStruct struct {
 	backendMap               map[uint64]*backendStruct                               // Key == backend.nonce
 	errChan                  chan error                                              //
 	fissionVolume            fission.Volume                                          //
-	lastNonce                uint64                                                  // Used to safely allocate non-repeating values (initialized to FUSERootDirInodeNumber to ensure skipping it)
+	lastNonce                uint64                                                  // Used to safely allocate non-repeating values (initialized to FUSERootDirInodeNumber to ensure skipping it); accessed via atomic.AddUint64 in fetchNonce
 	cacheDir                 string                                                  //
-	pebbleDB                 *pebble.DB                                              // If .config.metadataCachePagingMode == "pebble", the handle to the PebbleDB; otherwise == nil
-	inodeMap                 *inodeNumberToInodeStructMapStruct                      // Key: inodeStruct.inodeNumber;                                              Value: *inodeStruct
+	inodeMap                 *shardedInodeMap                                        // Sharded by inodeNumber: Key: inodeStruct.inodeNumber; Value: *inodeStruct
 	inodeEvictionQueue       *xTimeInodeNumberSetStruct                              // Key: tuple(inodeStruct.xTime,inodeStruct.inodeNumber);                     Value: struct{}
-	physChildDirEntryMap     *parentInodeNumberChildBasenameToChildInodeNumberStruct // Key: tuple(parent's inodeStruct.inodeNumber,child's inodeStruct.basename); Value: child's inodeStruct.inodeNumber
+	physChildDirEntryMap     *shardedDirEntryMap                                     // Sharded B+Tree: Key: tuple(parent's inodeStruct.inodeNumber,child's inodeStruct.basename); Value: DirEntryInfo
 	virtChildDirEntryMap     *parentInodeNumberChildBasenameToChildInodeNumberStruct // Key: tuple(parent's inodeStruct.inodeNumber,child's inodeStruct.basename); Value: child's inodeStruct.inodeNumber
 	inodeEvictorContext      context.Context                                         //
 	inodeEvictorCancelFunc   context.CancelFunc                                      //
 	inodeEvictorWaitGroup    sync.WaitGroup                                          //
-	inboundCacheLineList     *list.List                                              // List of cacheLineStruct's where state == CacheLineInbound
-	cleanCacheLineLRU        *list.List                                              // Contains cacheLineStruct.listElement's for state == CacheLineClean
-	outboundCacheLineList    *list.List                                              // List of cacheLineStruct's where state == CacheLineOutbound
-	dirtyCacheLineLRU        *list.List                                              // Contains cacheLineStruct.listElement's for state == CacheLineDirty
-	dataCacheLinesFile       *os.File                                                // Mem-map'd file exposed via .dataCacheLinesContent
+	dataCacheLinesFile       *os.File                                                // When config.mappedCache: backing file for .dataCacheLinesContent mmap; otherwise nil
 	dataCacheLinesContent    []byte                                                  // Holds the content of each data cache line who's state is at the equivalent position in .dataCacheLinesTracker
 	dataCacheLinesTracker    []dataCacheLineTrackerStruct                            // Holds the state of each data cache line who's content is at the equivalent position in .dataCacheLinesContent
 	dataCacheLineFreeLRU     dataCacheLineLRUStruct                                  // LRU-ordered doubly linked list of dataCacheLineTrackerStruct where .state == CacheLineFree
@@ -534,14 +549,9 @@ func checkForFile(filePath string) (ok bool) {
 	return
 }
 
-// `fetchNonce` is called while globals.Lock is held (via globalsLock) to grep the next
-// `number only used once` value. The presumption here is that a
-// simple incrementing uint64 would take many centuries to wrap
-// around to zero that returned values from this func will never
-// replicate earlier returned values.
+// `fetchNonce` returns the next unique `number only used once` value.
+// Uses atomic increment so it is safe to call with or without globals.Lock().
 func fetchNonce() (nonce uint64) {
-	nonce = globals.lastNonce + 1
-	globals.lastNonce = nonce
-
+	nonce = atomic.AddUint64(&globals.lastNonce, 1)
 	return
 }

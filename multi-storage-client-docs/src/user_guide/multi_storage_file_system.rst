@@ -287,6 +287,71 @@ Alternatively, enable automatic periodic configuration reloading:
    backends:
      # ...
 
+Manifest-Based Bootstrap
+========================
+
+For large-scale datasets (millions of objects), MSFS can pre-generate a manifest of directory listings at mount time. This enables immediate POSIX access without per-file S3 calls.
+
+Enable manifest generation by adding ``manifest_path`` to a backend:
+
+.. code-block:: yaml
+
+   backends:
+     - dir_name: s3
+       readonly: true
+       manifest_path: "/home/user/.msfs_manifest"
+       backend_type: S3
+       S3:
+         # ...
+
+On first mount, MSFS generates per-directory TSV manifests via parallel BFS listing of S3, then ingests entries into sharded B+Trees backed by PebbleDB for persistent, memory-efficient lookups.
+
+Manifest Configuration Options
+------------------------------
+
+.. code-block:: yaml
+
+   backends:
+     - dir_name: s3
+       manifest_path: "/home/user/.msfs_manifest"
+       manifest_gen_workers: 200             # Number of parallel BFS listing workers (default: 200)
+       flat_dir_confirmation_pages: 5        # Pages to confirm a flat dir before parallel listing (default: 5)
+
+**Flat Directory Acceleration**
+
+For buckets with flat layouts (millions of files in a single prefix with no subdirectories),
+MSFS automatically detects large flat directories and parallelizes listing using prefix-based
+or range-based splitting. User-provided hints can further optimize this:
+
+.. code-block:: yaml
+
+   backends:
+     - dir_name: s3
+       manifest_path: "/home/user/.msfs_manifest"
+       flat_dir_hints:
+         - path: "training-data/"
+           key_prefix_chars: "0123456789"
+           split_depth: 2
+
+.. list-table:: Flat Directory Hint Fields
+   :widths: 20 15 65
+   :header-rows: 1
+
+   * - Field
+     - Type
+     - Description
+   * - ``path``
+     - string
+     - Directory path relative to the backend prefix (must end with ``/``)
+   * - ``key_prefix_chars``
+     - string
+     - Characters that appear at the start of basenames (default: ``0123456789abcdefghijklmnopqrstuvwxyz``)
+   * - ``split_depth``
+     - int
+     - Number of leading characters for sub-prefix generation (default: 1; depth 2 with 10 chars = 100 sub-workers)
+
+Without hints, MSFS detects flat directories automatically and selects the best parallelization strategy (prefix discovery or lexicographic range splitting).
+
 Performance
 ===========
 

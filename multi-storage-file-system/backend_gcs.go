@@ -280,7 +280,7 @@ func (gcsContext *gcsContextStruct) listObjects(listObjectsInput *listObjectsInp
 	bucketHandle = bucketHandle.Retryer(gcsContext.retryOption)
 
 	query = &storage.Query{
-		Prefix:      gcsContext.backend.prefix,
+		Prefix:      gcsContext.backend.prefix + listObjectsInput.prefix,
 		StartOffset: listObjectsInput.startAfter,
 	}
 
@@ -337,6 +337,14 @@ func (gcsContext *gcsContextStruct) listObjects(listObjectsInput *listObjectsInp
 }
 
 // `readFile` is called to read a range of a `file` at the specified path.
+// `redactSecrets` redacts this GCS backend's configured API key from s.
+func (gcsContext *gcsContextStruct) redactSecrets(s string) string {
+	if cfg, ok := gcsContext.backend.backendTypeSpecifics.(*backendConfigGCSStruct); ok && cfg != nil {
+		s = redactValue(s, cfg.apiKey, "***REDACTED-GCS-API-KEY***")
+	}
+	return s
+}
+
 // An error is returned if either the specified path is not a `file` or non-existent.
 func (gcsContext *gcsContextStruct) readFile(readFileInput *readFileInputStruct) (readFileOutput *readFileOutputStruct, err error) {
 	var (

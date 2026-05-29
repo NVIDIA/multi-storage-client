@@ -1,7 +1,6 @@
 package main
 
 import (
-	"container/list"
 	"context"
 	"fmt"
 	"io"
@@ -21,7 +20,7 @@ func initFS() {
 		timeNow          time.Time
 	)
 
-	globalsLock("fs.go:24:2:initFS")
+	globalsLock("fs.go:23:2:initFS")
 
 	globals.backendMap = make(map[uint64]*backendStruct)
 
@@ -40,15 +39,17 @@ func initFS() {
 		globals.logger.Fatalf("[FATAL] dataCacheUp() failed: %v", err)
 	}
 
-	err = metadataCacheUp()
-	if err != nil {
+	var bptreeErr error
+	bptreePages, bptreeErr = newBptreePageStore(globals.cacheDir)
+	if bptreeErr != nil {
 		dumpStack()
-		globals.logger.Fatalf("[FATAL] metadataCacheUp() failed: %v", err)
+		globals.logger.Fatalf("[FATAL] newBptreePageStore(%q) failed: %v", globals.cacheDir, bptreeErr)
 	}
+	globals.logger.Printf("[INFO] bptree page store opened at %q", globals.cacheDir)
 
-	globals.inodeMap = inodeNumberToInodeStructMapStructCreate("globals.inodeMap", globals.config.inodeMapKeysPerPageMax, globals.config.inodeMapPageEvictLowLimit, globals.config.inodeMapPageEvictHighLimit, globals.config.inodeMapPageDirtyFlushTrigger, globals.config.inodeMapFlushedPerGC)
+	globals.inodeMap = newShardedInodeMap("globals.inodeMap", globals.config.inodeMapKeysPerPageMax, globals.config.inodeMapPageEvictLowLimit, globals.config.inodeMapPageEvictHighLimit, globals.config.inodeMapPageDirtyFlushTrigger, globals.config.inodeMapFlushedPerGC)
 	globals.inodeEvictionQueue = xTimeInodeNumberSetStructCreate("globals.inodeEvictionQueue", globals.config.inodeEvictionQueueKeysPerPageMax, globals.config.inodeEvictionQueuePageEvictLowLimit, globals.config.inodeEvictionQueuePageEvictHighLimit, globals.config.inodeEvictionQueuePageDirtyFlushTrigger, globals.config.inodeEvictionQueueFlushedPerGC)
-	globals.physChildDirEntryMap = parentInodeNumberChildBasenameToChildInodeNumberStructCreate("globals.physChildDirEntryMap", globals.config.physChildDirEntryMapKeysPerPageMax, globals.config.physChildDirEntryMapPageEvictLowLimit, globals.config.physChildDirEntryMapPageEvictHighLimit, globals.config.physChildDirEntryMapPageDirtyFlushTrigger, globals.config.physChildDirEntryMapFlushedPerGC)
+	globals.physChildDirEntryMap = newShardedDirEntryMap("globals.physChildDirEntryMap", globals.config.physChildDirEntryMapKeysPerPageMax, globals.config.physChildDirEntryMapPageEvictLowLimit, globals.config.physChildDirEntryMapPageEvictHighLimit, globals.config.physChildDirEntryMapPageDirtyFlushTrigger, globals.config.physChildDirEntryMapFlushedPerGC)
 	globals.virtChildDirEntryMap = parentInodeNumberChildBasenameToChildInodeNumberStructCreate("globals.virtChildDirEntryMap", globals.config.virtChildDirEntryMapKeysPerPageMax, globals.config.virtChildDirEntryMapPageEvictLowLimit, globals.config.virtChildDirEntryMapPageEvictHighLimit, globals.config.virtChildDirEntryMapPageDirtyFlushTrigger, globals.config.virtChildDirEntryMapFlushedPerGC)
 
 	if globals.config.processMemoryLimit > 0 {
@@ -100,11 +101,6 @@ func initFS() {
 	globals.inodeEvictorContext, globals.inodeEvictorCancelFunc = context.WithCancel(context.Background())
 	globals.inodeEvictorWaitGroup.Go(inodeEvictor)
 
-	globals.inboundCacheLineList = list.New()
-	globals.cleanCacheLineLRU = list.New()
-	globals.outboundCacheLineList = list.New()
-	globals.dirtyCacheLineLRU = list.New()
-
 	globals.fhMap = make(map[uint64]*fhStruct)
 
 	globals.fissionMetrics = newFissionMetrics()
@@ -124,7 +120,7 @@ func drainFS() {
 	globals.inodeEvictorCancelFunc()
 	globals.inodeEvictorWaitGroup.Wait()
 
-	globalsLock("fs.go:127:2:drainFS")
+	globalsLock("fs.go:123:2:drainFS")
 
 	for dirName, backend = range globals.config.backends {
 		globals.backendsToUnmount[dirName] = backend
@@ -132,10 +128,14 @@ func drainFS() {
 
 	processToUnmountListAlreadyLocked()
 
-	err = metadataCacheDown()
-	if err != nil {
-		dumpStack()
-		globals.logger.Fatalf("[FATAL] metadataCacheDown() failed: %v", err)
+	if bptreePages != nil {
+		err = bptreePages.close()
+		if err != nil {
+			globals.logger.Printf("[WARN] bptree page store close failed: %v", err)
+		} else {
+			globals.logger.Printf("[INFO] bptree page store closed")
+		}
+		bptreePages = nil
 	}
 
 	err = dataCacheDown()
@@ -284,9 +284,9 @@ func processToUnmountListAlreadyLocked() {
 // `emptyChildInodes` is called to remove all child inodes.
 func (parentInode *inodeStruct) emptyChildInodes() {
 	var (
+		childDirInfo                         DirEntryInfo
 		childInode                           *inodeStruct
 		childInodeBasename                   string
-		childInodeNumber                     uint64
 		parentInodePhysChildDirEntryMapIndex uint64
 		parentInodePhysChildDirEntryMapLimit uint64
 		parentInodePhysChildDirEntryMapStart uint64
@@ -305,16 +305,16 @@ func (parentInode *inodeStruct) emptyChildInodes() {
 			parentInodePhysChildDirEntryMapIndex--
 
 			// for parentInodePhysChildDirEntryMapIndex = parentInodePhysChildDirEntryMapLimit - 1; parentInodePhysChildDirEntryMapIndex >= parentInodePhysChildDirEntryMapStart; parentInodePhysChildDirEntryMapIndex-- {
-			_, childInodeBasename, childInodeNumber, ok = globals.physChildDirEntryMap.getByIndex(parentInodePhysChildDirEntryMapIndex)
+			childInodeBasename, childDirInfo, ok = globals.physChildDirEntryMap.getByIndex(parentInode.inodeNumber, parentInodePhysChildDirEntryMapIndex)
 			if !ok {
 				dumpStack()
 				globals.logger.Fatalf("[FATAL] globals.physChildDirEntryMap.getByIndex(parentInodePhysChildDirEntryMapIndex) returned !ok")
 			}
 
-			childInode, ok = globals.inodeMap.get(childInodeNumber)
+			childInode, ok = globals.inodeMap.get(childDirInfo.InodeNumber)
 			if !ok {
 				dumpStack()
-				globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childInodeNumber) returned !ok [case physChildDirEntryMap]")
+				globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childDirInfo.InodeNumber) returned !ok [case physChildDirEntryMap]")
 			}
 
 			if childInode.inodeType == PseudoDir {
@@ -329,10 +329,10 @@ func (parentInode *inodeStruct) emptyChildInodes() {
 				}
 			}
 
-			ok = globals.inodeMap.delete(childInodeNumber)
+			ok = globals.inodeMap.delete(childDirInfo.InodeNumber)
 			if !ok {
 				dumpStack()
-				globals.logger.Fatalf("[FATAL] globals.inodeMap.delete(childInodeNumber) returned !ok [case physChildDirEntryMap]")
+				globals.logger.Fatalf("[FATAL] globals.inodeMap.delete(childDirInfo.InodeNumber) returned !ok [case physChildDirEntryMap]")
 			}
 
 			ok = globals.physChildDirEntryMap.delete(parentInode.inodeNumber, childInodeBasename)
@@ -356,17 +356,17 @@ func (parentInode *inodeStruct) emptyChildInodes() {
 			parentInodeVirtChildDirEntryMapIndex--
 
 			// for parentInodeVirtChildDirEntryMapIndex = parentInodeVirtChildDirEntryMapLimit - 1; parentInodeVirtChildDirEntryMapIndex >= parentInodeVirtChildDirEntryMapStart; parentInodeVirtChildDirEntryMapIndex-- {
-			_, childInodeBasename, childInodeNumber, ok = globals.virtChildDirEntryMap.getByIndex(parentInodeVirtChildDirEntryMapIndex)
+			childInodeBasename, childDirInfo, ok = globals.virtChildDirEntryMap.getByIndex(parentInodeVirtChildDirEntryMapIndex)
 			if !ok {
 				dumpStack()
 				globals.logger.Fatalf("[FATAL] globals.virtChildDirEntryMap.getByIndex(parentInodeVirtChildDirEntryMapIndex) returned !ok")
 			}
 
 			if (childInodeBasename != DotDirEntryBasename) && (childInodeBasename != DotDotDirEntryBasename) {
-				childInode, ok = globals.inodeMap.get(childInodeNumber)
+				childInode, ok = globals.inodeMap.get(childDirInfo.InodeNumber)
 				if !ok {
 					dumpStack()
-					globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childInodeNumber) returned !ok [case virtChildDirEntryMap]")
+					globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childDirInfo.InodeNumber) returned !ok [case virtChildDirEntryMap]")
 				}
 
 				if childInode.inodeType == PseudoDir {
@@ -381,10 +381,10 @@ func (parentInode *inodeStruct) emptyChildInodes() {
 					}
 				}
 
-				ok = globals.inodeMap.delete(childInodeNumber)
+				ok = globals.inodeMap.delete(childDirInfo.InodeNumber)
 				if !ok {
 					dumpStack()
-					globals.logger.Fatalf("[FATAL] globals.inodeMap.delete(childInodeNumber) returned !ok [case virtChildDirEntryMap]")
+					globals.logger.Fatalf("[FATAL] globals.inodeMap.delete(childDirInfo.InodeNumber) returned !ok [case virtChildDirEntryMap]")
 				}
 			}
 
@@ -418,7 +418,7 @@ func (childInode *inodeStruct) convertToPhysInodeIfNecessary() {
 		ok = globals.inodeEvictionQueue.remove(childInode)
 		if !ok {
 			dumpStack()
-			globals.logger.Fatalf("[FATAL] globals.inodeEvictionQueue.remove(childInode) returned !ok")
+			globals.logger.Fatalf("[FATAL] globals.inodeEvictionQueue.remove(childInode) returned !ok in convertToPhysInodeIfNecessary — inode %d", childInode.inodeNumber)
 		}
 		childInode.xTime = time.Time{}
 	}
@@ -440,8 +440,10 @@ func (childInode *inodeStruct) convertToPhysInodeIfNecessary() {
 	childInode.touch(nil)
 }
 
-// `createPseudoDirInode` is called while globals.Lock() is held to create a new PsuedoDir inodeStruct.
-func (parentInode *inodeStruct) createPseudoDirInode(isVirt bool, basename string) (pseudoDirInode *inodeStruct) {
+// `createPseudoDirInode` is called while globals.Lock() is held to create a new PseudoDir inodeStruct.
+// If skipTouch is true, the new inode is not placed on the eviction queue (used during bulk ingest
+// where children are added after globals.Unlock, so the empty-dir eviction check would be premature).
+func (parentInode *inodeStruct) createPseudoDirInode(isVirt bool, basename string, skipTouch ...bool) (pseudoDirInode *inodeStruct) {
 	var (
 		backend *backendStruct
 		ok      bool
@@ -514,8 +516,10 @@ func (parentInode *inodeStruct) createPseudoDirInode(isVirt bool, basename strin
 		globals.logger.Fatalf("[FATAL] globals.virtChildDirEntryMap.put(pseudoDirInode.inodeNumber, DotDotDirEntryBasename, parentInode.inodeNumber) returned !ok")
 	}
 
-	parentInode.touch(nil)
-	pseudoDirInode.touch(nil)
+	if len(skipTouch) == 0 || !skipTouch[0] {
+		parentInode.touch(nil)
+		pseudoDirInode.touch(nil)
+	}
 
 	return
 }
@@ -751,9 +755,8 @@ func (inode *inodeStruct) touch(mTimeAsInterface interface{}) {
 		ok = globals.inodeEvictionQueue.remove(inode)
 		if !ok {
 			dumpStack()
-			globals.logger.Fatalf("[FATAL] globals.inodeEvictionQueue.remove(inode) returned !ok")
+			globals.logger.Fatalf("[FATAL] globals.inodeEvictionQueue.remove(inode) returned !ok in touch() — inode %d", inode.inodeNumber)
 		}
-
 		inode.xTime = time.Time{}
 	}
 
@@ -819,7 +822,7 @@ func inodeEvictor() {
 	for {
 		select {
 		case <-ticker.C:
-			globalsLock("fs.go:822:4:inodeEvictor")
+			globalsLock("fs.go:825:4:inodeEvictor")
 
 			// Scan globals.inodeEvictionLRU looking for expired inodes to evict
 
@@ -956,7 +959,7 @@ func inodeEvictorForceDrain() (numDrained uint64) {
 func (parentInode *inodeStruct) findChildInode(basename string) (childInode *inodeStruct, ok bool) {
 	var (
 		backend            *backendStruct
-		childInodeNumber   uint64
+		childDirInfo       DirEntryInfo
 		dirOrFilePath      string
 		err                error
 		statDirectoryInput *statDirectoryInputStruct
@@ -974,12 +977,12 @@ func (parentInode *inodeStruct) findChildInode(basename string) (childInode *ino
 
 	// First see if we already know about the childInode
 
-	childInodeNumber, ok = globals.physChildDirEntryMap.getByBasename(parentInode.inodeNumber, basename)
+	childDirInfo, ok = globals.physChildDirEntryMap.getByBasename(parentInode.inodeNumber, basename)
 	if ok {
-		childInode, ok = globals.inodeMap.get(childInodeNumber)
+		childInode, ok = globals.inodeMap.get(childDirInfo.InodeNumber)
 		if !ok {
 			dumpStack()
-			globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childInodeNumber) returned !ok [findChildInode() case 1]")
+			globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childDirInfo.InodeNumber) returned !ok [findChildInode() case 1]")
 		}
 
 		// [TODO] We might want to (1) validate the object or prefix exists and (2) if it doesn't and this is a PseudoDir, convert it & all descendents to "virt"
@@ -987,26 +990,39 @@ func (parentInode *inodeStruct) findChildInode(basename string) (childInode *ino
 		return
 	}
 
-	childInodeNumber, ok = globals.virtChildDirEntryMap.getByBasename(parentInode.inodeNumber, basename)
+	childDirInfo, ok = globals.virtChildDirEntryMap.getByBasename(parentInode.inodeNumber, basename)
 	if ok {
-		childInode, ok = globals.inodeMap.get(childInodeNumber)
+		childInode, ok = globals.inodeMap.get(childDirInfo.InodeNumber)
 		if !ok {
 			dumpStack()
-			globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childInodeNumber) returned !ok [findChildInode() case 2]")
+			globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childDirInfo.InodeNumber) returned !ok [findChildInode() case 2]")
 		}
-
-		// [TODO] We might want to (1) validate the object or prefix doesn't exist and (2) if it does and this is a PseudoDir, convert it to "phys"
 
 		return
 	}
-
-	// We didn't already know about the childInode, so let's first look for an existing object in the backend
 
 	backend, ok = globals.backendMap[parentInode.backendNonce]
 	if !ok {
 		dumpStack()
 		globals.logger.Fatalf("[FATAL] globals.backendMap[parentInode.backendNonce] returned !ok")
 	}
+
+	// Check manifest per-directory TSV before S3 fallback
+	if backend.manifestPath != "" {
+		manifestPartFile := manifestPartPath(backend.manifestPath, parentInode.objectPath)
+		mEntry, mFound := lookupInManifestPart(manifestPartFile, basename)
+		if mFound {
+			if mEntry.Kind == "d" {
+				childInode = parentInode.createPseudoDirInode(false, basename)
+			} else {
+				childInode = parentInode.createFileObjectInode(false, basename, mEntry.Size, mEntry.ETag, mEntry.MTime)
+			}
+			ok = true
+			return
+		}
+	}
+
+	// Fall through to S3
 
 	if parentInode.objectPath == "" {
 		dirOrFilePath = basename
@@ -1085,7 +1101,7 @@ func prefetchDirectory(dirInodeNumber uint64) {
 		startTime               = time.Now()
 	)
 
-	globalsLock("fs.go:1088:2:prefetchDirectory")
+	globalsLock("fs.go:1104:2:prefetchDirectory")
 
 	dirInode, ok = globals.inodeMap.get(dirInodeNumber)
 	if !ok {
@@ -1114,7 +1130,7 @@ func prefetchDirectory(dirInodeNumber uint64) {
 			globals.logger.Printf("[WARN] listDirectoryWrapper(dirInode.backend.context, listDirectoryInput) failed: %v", err)
 		}
 
-		globalsLock("fs.go:1117:3:prefetchDirectory")
+		globalsLock("fs.go:1133:3:prefetchDirectory")
 
 		dirInode, ok = globals.inodeMap.get(dirInodeNumber)
 		if !ok {
@@ -1174,8 +1190,8 @@ func prefetchDirectory(dirInodeNumber uint64) {
 // `findChildDirInode` is called to locate, or create if missing, a child directory inodeStruct.
 func (parentInode *inodeStruct) findChildDirInode(basename string) (childDirInode *inodeStruct) {
 	var (
-		childDirInodeNumber uint64
-		ok                  bool
+		childDirInfo DirEntryInfo
+		ok           bool
 	)
 
 	defer func() {
@@ -1185,12 +1201,12 @@ func (parentInode *inodeStruct) findChildDirInode(basename string) (childDirInod
 
 	// First see if we already know about the childInode
 
-	childDirInodeNumber, ok = globals.physChildDirEntryMap.getByBasename(parentInode.inodeNumber, basename)
+	childDirInfo, ok = globals.physChildDirEntryMap.getByBasename(parentInode.inodeNumber, basename)
 	if ok {
-		childDirInode, ok = globals.inodeMap.get(childDirInodeNumber)
+		childDirInode, ok = globals.inodeMap.get(childDirInfo.InodeNumber)
 		if !ok {
 			dumpStack()
-			globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childDirInodeNumber) returned !ok [findChildDirInode() case 1]")
+			globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childDirInfo.InodeNumber) returned !ok [findChildDirInode() case 1]")
 		}
 
 		// [TODO] We might want to validate that childDirInode.inodeType == PseudoDir
@@ -1199,12 +1215,12 @@ func (parentInode *inodeStruct) findChildDirInode(basename string) (childDirInod
 		return
 	}
 
-	childDirInodeNumber, ok = globals.virtChildDirEntryMap.getByBasename(parentInode.inodeNumber, basename)
+	childDirInfo, ok = globals.virtChildDirEntryMap.getByBasename(parentInode.inodeNumber, basename)
 	if ok {
-		childDirInode, ok = globals.inodeMap.get(childDirInodeNumber)
+		childDirInode, ok = globals.inodeMap.get(childDirInfo.InodeNumber)
 		if !ok {
 			dumpStack()
-			globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childDirInodeNumber) returned !ok [findChildDirInode() case 2]")
+			globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childDirInfo.InodeNumber) returned !ok [findChildDirInode() case 2]")
 		}
 
 		// [TODO] We might want to validate that childDirInode.inodeType == PseudoDir
@@ -1223,8 +1239,8 @@ func (parentInode *inodeStruct) findChildDirInode(basename string) (childDirInod
 // `findChildFileInode` is called to locate, or create if missing, a child file inodeStruct.
 func (parentInode *inodeStruct) findChildFileInode(basename, eTag string, mTime time.Time, size uint64) (childFileInode *inodeStruct) {
 	var (
-		childFileInodeNumber uint64
-		ok                   bool
+		childDirInfo DirEntryInfo
+		ok           bool
 	)
 
 	defer func() {
@@ -1234,12 +1250,12 @@ func (parentInode *inodeStruct) findChildFileInode(basename, eTag string, mTime 
 
 	// First see if we already know about the childInode
 
-	childFileInodeNumber, ok = globals.physChildDirEntryMap.getByBasename(parentInode.inodeNumber, basename)
+	childDirInfo, ok = globals.physChildDirEntryMap.getByBasename(parentInode.inodeNumber, basename)
 	if ok {
-		childFileInode, ok = globals.inodeMap.get(childFileInodeNumber)
+		childFileInode, ok = globals.inodeMap.get(childDirInfo.InodeNumber)
 		if !ok {
 			dumpStack()
-			globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childFileInodeNumber) returned !ok [findChildFileInode() case 1]")
+			globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childDirInfo.InodeNumber) returned !ok [findChildFileInode() case 1]")
 		}
 
 		// [TODO] We might want to validate that childFileInode.inodeType == FileObject
@@ -1248,12 +1264,12 @@ func (parentInode *inodeStruct) findChildFileInode(basename, eTag string, mTime 
 		return
 	}
 
-	childFileInodeNumber, ok = globals.virtChildDirEntryMap.getByBasename(parentInode.inodeNumber, basename)
+	childDirInfo, ok = globals.virtChildDirEntryMap.getByBasename(parentInode.inodeNumber, basename)
 	if ok {
-		childFileInode, ok = globals.inodeMap.get(childFileInodeNumber)
+		childFileInode, ok = globals.inodeMap.get(childDirInfo.InodeNumber)
 		if !ok {
 			dumpStack()
-			globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childFileInodeNumber) returned !ok [findChildFileInode() case 1]")
+			globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childDirInfo.InodeNumber) returned !ok [findChildFileInode() case 1]")
 		}
 
 		// [TODO] We might want to validate that childFileInode.inodeType == FileObject
@@ -1280,7 +1296,7 @@ func dumpFS(w io.Writer) {
 		rootDirInode *inodeStruct
 	)
 
-	globalsLock("fs.go:1283:2:dumpFS")
+	globalsLock("fs.go:1299:2:dumpFS")
 
 	rootDirInode, ok = globals.inodeMap.get(FUSERootDirInodeNumber)
 	if !ok {
@@ -1301,9 +1317,9 @@ func dumpFS(w io.Writer) {
 func (thisInode *inodeStruct) dumpFS(w io.Writer, indent string, expectedInodeNumber uint64, expectedBasename string) {
 	var (
 		backend                   *backendStruct
+		childDirInfo              DirEntryInfo
 		childInode                *inodeStruct
 		childInodeBasename        string
-		childInodeNumber          uint64
 		nextIndent                = indent + DUMP_FS_DIR_INDENT
 		ok                        bool
 		physChildDirEntryMapIndex uint64
@@ -1354,73 +1370,73 @@ func (thisInode *inodeStruct) dumpFS(w io.Writer, indent string, expectedInodeNu
 	virtChildDirEntryMapStart, virtChildDirEntryMapLimit = globals.virtChildDirEntryMap.getIndexRange(thisInode.inodeNumber)
 
 	for virtChildDirEntryMapIndex = virtChildDirEntryMapStart; virtChildDirEntryMapIndex < virtChildDirEntryMapLimit; virtChildDirEntryMapIndex++ {
-		_, childInodeBasename, childInodeNumber, ok = globals.virtChildDirEntryMap.getByIndex(virtChildDirEntryMapIndex)
+		childInodeBasename, childDirInfo, ok = globals.virtChildDirEntryMap.getByIndex(virtChildDirEntryMapIndex)
 		if !ok {
 			dumpStack()
 			globals.logger.Fatalf("[FATAL] globals.virtChildDirEntryMap.getByIndex(virtChildDirEntryMapIndex) returned !ok")
 		}
 
 		if childInodeBasename == DotDirEntryBasename {
-			if childInodeNumber != thisInode.inodeNumber {
+			if childDirInfo.InodeNumber != thisInode.inodeNumber {
 				dumpStack()
-				globals.logger.Fatalf("[FATAL] childInodeNumber(%v) != thisInode.inodeNumber(%v) [case virt]", childInodeNumber, thisInode.inodeNumber)
+				globals.logger.Fatalf("[FATAL] childDirInfo.InodeNumber(%v) != thisInode.inodeNumber(%v) [case virt]", childDirInfo.InodeNumber, thisInode.inodeNumber)
 			}
-			fmt.Fprintf(w, "%s%5d \"%s\"\n", nextIndent, childInodeNumber, childInodeBasename)
+			fmt.Fprintf(w, "%s%5d \"%s\"\n", nextIndent, childDirInfo.InodeNumber, childInodeBasename)
 			continue
 		}
 
 		if childInodeBasename == DotDotDirEntryBasename {
-			if childInodeNumber != thisInode.parentInodeNumber {
+			if childDirInfo.InodeNumber != thisInode.parentInodeNumber {
 				dumpStack()
-				globals.logger.Fatalf("[FATAL] childInodeNumber(%v) != thisInode.parentInodeNumber(%v) [case virt]", childInodeNumber, thisInode.parentInodeNumber)
+				globals.logger.Fatalf("[FATAL] childDirInfo.InodeNumber(%v) != thisInode.parentInodeNumber(%v) [case virt]", childDirInfo.InodeNumber, thisInode.parentInodeNumber)
 			}
-			fmt.Fprintf(w, "%s%5d \"%s\"\n", nextIndent, childInodeNumber, childInodeBasename)
+			fmt.Fprintf(w, "%s%5d \"%s\"\n", nextIndent, childDirInfo.InodeNumber, childInodeBasename)
 			continue
 		}
 
-		childInode, ok = globals.inodeMap.get(childInodeNumber)
+		childInode, ok = globals.inodeMap.get(childDirInfo.InodeNumber)
 		if !ok {
 			dumpStack()
-			globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childInodeNumber) returned !ok [case virt]")
+			globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childDirInfo.InodeNumber) returned !ok [case virt]")
 		}
 
-		childInode.dumpFS(w, nextIndent, childInodeNumber, childInodeBasename)
+		childInode.dumpFS(w, nextIndent, childDirInfo.InodeNumber, childInodeBasename)
 	}
 
 	physChildDirEntryMapStart, physChildDirEntryMapLimit = globals.physChildDirEntryMap.getIndexRange(thisInode.inodeNumber)
 
 	for physChildDirEntryMapIndex = physChildDirEntryMapStart; physChildDirEntryMapIndex < physChildDirEntryMapLimit; physChildDirEntryMapIndex++ {
-		_, childInodeBasename, childInodeNumber, ok = globals.physChildDirEntryMap.getByIndex(physChildDirEntryMapIndex)
+		childInodeBasename, childDirInfo, ok = globals.physChildDirEntryMap.getByIndex(thisInode.inodeNumber, physChildDirEntryMapIndex)
 		if !ok {
 			dumpStack()
 			globals.logger.Fatalf("[FATAL] globals.physChildDirEntryMap.getByIndex(physChildDirEntryMapIndex) returned !ok")
 		}
 
 		if childInodeBasename == DotDirEntryBasename {
-			if childInodeNumber != thisInode.inodeNumber {
+			if childDirInfo.InodeNumber != thisInode.inodeNumber {
 				dumpStack()
-				globals.logger.Fatalf("[FATAL] childInodeNumber(%v) != thisInode.inodeNumber(%v) [case phys]", childInodeNumber, thisInode.inodeNumber)
+				globals.logger.Fatalf("[FATAL] childDirInfo.InodeNumber(%v) != thisInode.inodeNumber(%v) [case phys]", childDirInfo.InodeNumber, thisInode.inodeNumber)
 			}
-			fmt.Fprintf(w, "%s%5d \"%s\"\n", nextIndent, childInodeNumber, childInodeBasename)
+			fmt.Fprintf(w, "%s%5d \"%s\"\n", nextIndent, childDirInfo.InodeNumber, childInodeBasename)
 			continue
 		}
 
 		if childInodeBasename == DotDotDirEntryBasename {
-			if childInodeNumber != thisInode.parentInodeNumber {
+			if childDirInfo.InodeNumber != thisInode.parentInodeNumber {
 				dumpStack()
-				globals.logger.Fatalf("[FATAL] childInodeNumber(%v) != thisInode.parentInodeNumber(%v) [case phys]", childInodeNumber, thisInode.parentInodeNumber)
+				globals.logger.Fatalf("[FATAL] childDirInfo.InodeNumber(%v) != thisInode.parentInodeNumber(%v) [case phys]", childDirInfo.InodeNumber, thisInode.parentInodeNumber)
 			}
-			fmt.Fprintf(w, "%s%5d \"%s\"\n", nextIndent, childInodeNumber, childInodeBasename)
+			fmt.Fprintf(w, "%s%5d \"%s\"\n", nextIndent, childDirInfo.InodeNumber, childInodeBasename)
 			continue
 		}
 
-		childInode, ok = globals.inodeMap.get(childInodeNumber)
+		childInode, ok = globals.inodeMap.get(childDirInfo.InodeNumber)
 		if !ok {
 			dumpStack()
-			globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childInodeNumber) returned !ok [case phys]")
+			globals.logger.Fatalf("[FATAL] globals.inodeMap.get(childDirInfo.InodeNumber) returned !ok [case phys]")
 		}
 
-		childInode.dumpFS(w, nextIndent, childInodeNumber, childInodeBasename)
+		childInode.dumpFS(w, nextIndent, childDirInfo.InodeNumber, childInodeBasename)
 	}
 }
 
@@ -1444,7 +1460,7 @@ func (thisInode *inodeStruct) finishPendingDelete() {
 
 Restart:
 
-	globalsLock("fs.go:1447:2:(*inodeStruct).finishPendingDelete")
+	globalsLock("fs.go:1463:2:(*inodeStruct).finishPendingDelete")
 
 	// Let's just drop cache lines that are either "clean" io "dirty"
 

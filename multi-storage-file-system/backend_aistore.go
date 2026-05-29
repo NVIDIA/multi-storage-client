@@ -226,7 +226,7 @@ func (aisContext *aistoreContextStruct) listObjects(listObjectsInput *listObject
 		backend = aisContext.backend
 		lsmsg   = &apc.LsoMsg{
 			Props:  strings.Join([]string{apc.GetPropsName, apc.GetPropsETag, apc.GetPropsSize}, ","),
-			Prefix: backend.prefix,
+			Prefix: backend.prefix + listObjectsInput.prefix,
 		}
 		timeNow = time.Now()
 	)
@@ -286,6 +286,14 @@ func (aisContext *aistoreContextStruct) listObjects(listObjectsInput *listObject
 }
 
 // `readFile` is called to read a range of a `file` at the specified path.
+// `redactSecrets` redacts this AIStore backend's configured authentication token from s.
+func (aisContext *aistoreContextStruct) redactSecrets(s string) string {
+	if cfg, ok := aisContext.backend.backendTypeSpecifics.(*backendConfigAIStoreStruct); ok && cfg != nil {
+		s = redactValue(s, cfg.authnToken, "***REDACTED-AIS-AUTHN-TOKEN***")
+	}
+	return s
+}
+
 // An error is returned if either the specified path is not a `file` or non-existent.
 func (aisContext *aistoreContextStruct) readFile(readFileInput *readFileInputStruct) (readFileOutput *readFileOutputStruct, err error) {
 	var (

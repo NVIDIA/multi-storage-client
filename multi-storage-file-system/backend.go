@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/NVIDIA/multi-storage-client/multi-storage-file-system/telemetry"
@@ -68,6 +69,13 @@ type backendContextIf interface {
 	// As error will result if either the specified path is not a `file` or non-existent.
 	statFile(statFileInput *statFileInputStruct) (statFileOutput *statFileOutputStruct, err error)
 
+	// `redactSecrets` returns s with this backend's configured secret values
+	// (access keys, tokens, etc.) replaced by placeholders. Backends without
+	// secrets return s unchanged. Use the package-level `redactSecrets` wrapper
+	// at call sites so a nil backend (e.g. a config-parse error before any
+	// backend exists) is handled gracefully.
+	redactSecrets(s string) string
+
 	// [TODO] writeFile equivalents: simple PUT as well as the exciting challenges of MPU
 }
 
@@ -86,6 +94,7 @@ type deleteFileOutputStruct struct{}
 // to listDirectory().
 type listDirectoryInputStruct struct {
 	continuationToken string // If != "", from prior listDirectoryOutput.nextContinuationToken
+	startAfter        string // If != "", start listing after this key (relative to backend.prefix); ignored when continuationToken is set
 	maxItems          uint64 // If == 0, limited instead by the object server
 	dirPath           string // Relative to backend.prefix; if != "", should end with a trailing "/"
 }
@@ -112,6 +121,7 @@ type listDirectoryOutputStruct struct {
 // to listObjects(). Objects to be enumerated are all relative to
 // backend.prefix which, if != "", should end with a trailing "/".
 type listObjectsInputStruct struct {
+	prefix            string // If != "", narrows enumeration to keys under backend.prefix+prefix (no delimiter)
 	startAfter        string // If != "", .continuationToken must == ""
 	continuationToken string // If != "", from prior listObjectsOutput.nextContinuationToken and .startAfter must == ""
 	maxItems          uint64 // If == 0, limited instead by the object server
@@ -132,6 +142,27 @@ type listObjectsOutputStruct struct {
 	object                []listObjectsOutputObjectStruct
 	nextContinuationToken string
 	isTruncated           bool
+}
+
+// `listPrefixInputStruct` lays out the fields provided as input to listPrefixWrapper().
+// Unlike listDirectory, this does NOT use a Delimiter — it returns all objects
+// matching the prefix. Supports StartAfter for range-based parallel listing and a
+// client-side StopAt bound. listPrefixWrapper builds on listObjects(); there is no
+// per-backend listPrefix() method.
+type listPrefixInputStruct struct {
+	prefix            string // Full prefix relative to backend.prefix (e.g., "training-data/sam")
+	startAfter        string // Start listing after this key (relative to backend.prefix)
+	stopAt            string // Stop when key >= this value (relative to backend.prefix; empty = no limit)
+	continuationToken string
+	maxItems          uint64
+}
+
+// `listPrefixOutputStruct` lays out the fields produced as output by listPrefixWrapper().
+type listPrefixOutputStruct struct {
+	file                  []listDirectoryOutputFileStruct
+	nextContinuationToken string
+	isTruncated           bool
+	stopped               bool // True if listing was stopped early because a key >= stopAt was encountered
 }
 
 // `readFileInputStruct` lays out the fields provided as input
@@ -257,7 +288,7 @@ func deleteFileWrapper(backendContext backendContextIf, deleteFileInput *deleteF
 	latency = time.Since(startTime).Seconds()
 
 	go func(backend *backendStruct, latency float64, err error) {
-		globalsLock("backend.go:260:3:funcLit@259")
+		globalsLock("backend.go:291:3:funcLit@290")
 		if err == nil {
 			globals.backendMetrics.DeleteFileSuccesses.Inc()
 			globals.backendMetrics.DeleteFileSuccessLatencies.Observe(latency)
@@ -311,7 +342,7 @@ func listDirectoryWrapper(backendContext backendContextIf, listDirectoryInput *l
 	latency = time.Since(startTime).Seconds()
 
 	go func(backend *backendStruct, latency float64, err error) {
-		globalsLock("backend.go:314:3:funcLit@313")
+		globalsLock("backend.go:345:3:funcLit@344")
 		if err == nil {
 			globals.backendMetrics.ListDirectorySuccesses.Inc()
 			globals.backendMetrics.ListDirectorySuccessLatencies.Observe(latency)
@@ -370,23 +401,25 @@ func listObjectsWrapper(backendContext backendContextIf, listObjectsInput *listO
 
 	latency = time.Since(startTime).Seconds()
 
-	go func(backend *backendStruct, latency float64, err error) {
-		globalsLock("backend.go:374:3:funcLit@373")
-		if err == nil {
-			globals.backendMetrics.ListObjectsSuccesses.Inc()
-			globals.backendMetrics.ListObjectsSuccessLatencies.Observe(latency)
+	if globals.backendMetrics != nil && backendCommon.backendMetrics != nil {
+		go func(backend *backendStruct, latency float64, err error) {
+			globalsLock("backend.go:406:4:funcLit@405")
+			if err == nil {
+				globals.backendMetrics.ListObjectsSuccesses.Inc()
+				globals.backendMetrics.ListObjectsSuccessLatencies.Observe(latency)
 
-			backend.backendMetrics.ListObjectsSuccesses.Inc()
-			backend.backendMetrics.ListObjectsSuccessLatencies.Observe(latency)
-		} else {
-			globals.backendMetrics.ListObjectsFailures.Inc()
-			globals.backendMetrics.ListObjectsFailureLatencies.Observe(latency)
+				backend.backendMetrics.ListObjectsSuccesses.Inc()
+				backend.backendMetrics.ListObjectsSuccessLatencies.Observe(latency)
+			} else {
+				globals.backendMetrics.ListObjectsFailures.Inc()
+				globals.backendMetrics.ListObjectsFailureLatencies.Observe(latency)
 
-			backend.backendMetrics.ListObjectsFailures.Inc()
-			backend.backendMetrics.ListObjectsFailureLatencies.Observe(latency)
-		}
-		globalsUnlock()
-	}(backendCommon, latency, err)
+				backend.backendMetrics.ListObjectsFailures.Inc()
+				backend.backendMetrics.ListObjectsFailureLatencies.Observe(latency)
+			}
+			globalsUnlock()
+		}(backendCommon, latency, err)
+	}
 
 	recordBackendMetrics(backendCommon.dirName, "listObjects", startTime, err, 0)
 
@@ -414,6 +447,84 @@ func listObjectsWrapper(backendContext backendContextIf, listObjectsInput *listO
 	return
 }
 
+// `listPrefixWrapper` lists all objects under listPrefixInput.prefix (no delimiter),
+// optionally starting after a key and stopping once a key reaches StopAt. It is a
+// generic helper built on listObjects() — there is no per-backend listPrefix() method.
+// The StartAfter and Prefix narrowing happen server-side (via listObjects); only the
+// StopAt bound and basename trimming are applied here, client-side, so this works for
+// every backend that implements listObjects(). Metrics and tracing are captured by the
+// underlying listObjectsWrapper() (so listObjects metrics cover these operations).
+func listPrefixWrapper(backendContext backendContextIf, listPrefixInput *listPrefixInputStruct) (listPrefixOutput *listPrefixOutputStruct, err error) {
+	var (
+		listObjectsOutput *listObjectsOutputStruct
+		object            listObjectsOutputObjectStruct
+		startAfter        = listPrefixInput.startAfter
+	)
+
+	// listObjects() forbids StartAfter and ContinuationToken together. Once we are
+	// paginating with a continuation token it already encodes the start position, so
+	// drop StartAfter (this matches S3's documented behavior of ignoring start-after
+	// when a continuation token is present).
+	if listPrefixInput.continuationToken != "" {
+		startAfter = ""
+	}
+
+	listObjectsOutput, err = listObjectsWrapper(backendContext, &listObjectsInputStruct{
+		prefix:            listPrefixInput.prefix,
+		startAfter:        startAfter,
+		continuationToken: listPrefixInput.continuationToken,
+		maxItems:          listPrefixInput.maxItems,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	listPrefixOutput = &listPrefixOutputStruct{
+		file:                  make([]listDirectoryOutputFileStruct, 0, len(listObjectsOutput.object)),
+		nextContinuationToken: listObjectsOutput.nextContinuationToken,
+		isTruncated:           listObjectsOutput.isTruncated,
+	}
+
+	for _, object = range listObjectsOutput.object {
+		// stopAt and object.path are both relative to backend.prefix.
+		if listPrefixInput.stopAt != "" && object.path >= listPrefixInput.stopAt {
+			listPrefixOutput.stopped = true
+			listPrefixOutput.isTruncated = false
+			break
+		}
+		listPrefixOutput.file = append(listPrefixOutput.file, listDirectoryOutputFileStruct{
+			basename: strings.TrimPrefix(object.path, listPrefixInput.prefix),
+			eTag:     object.eTag,
+			mTime:    object.mTime,
+			size:     object.size,
+		})
+	}
+
+	return listPrefixOutput, nil
+}
+
+// `redactSecrets` returns s with secret material redacted. When backend (and its
+// context) is non-nil, the backend's own `redactSecrets` is used to strip that
+// backend's configured secret values. When backend is nil — e.g. a config-parse
+// error logged before any backend has been constructed — a conservative
+// AWS-credential-shape heuristic is applied as defense-in-depth.
+func redactSecrets(backend *backendStruct, s string) string {
+	if backend != nil && backend.context != nil {
+		return backend.context.redactSecrets(s)
+	}
+	return redactAWSSecretShapes(s)
+}
+
+// `redactValue` replaces every occurrence of secret in s with placeholder. Values
+// shorter than 8 characters are ignored to avoid redacting incidental substrings
+// (and empty secrets, which would otherwise match everywhere).
+func redactValue(s, secret, placeholder string) string {
+	if len(secret) < 8 {
+		return s
+	}
+	return strings.ReplaceAll(s, secret, placeholder)
+}
+
 // `readFileWrapper` is a wrapper function around the supplied backendContext's `readFile` function enabling centralized metrics and tracing capture.
 func readFileWrapper(backendContext backendContextIf, readFileInput *readFileInputStruct) (readFileOutput *readFileOutputStruct, err error) {
 	var (
@@ -432,7 +543,7 @@ func readFileWrapper(backendContext backendContextIf, readFileInput *readFileInp
 	latency = time.Since(startTime).Seconds()
 
 	go func(backend *backendStruct, latency float64, err error) {
-		globalsLock("backend.go:435:3:funcLit@434")
+		globalsLock("backend.go:546:3:funcLit@545")
 		if err == nil {
 			globals.backendMetrics.ReadFileSuccesses.Inc()
 			globals.backendMetrics.ReadFileSuccessLatencies.Observe(latency)
@@ -496,7 +607,7 @@ func statDirectoryWrapper(backendContext backendContextIf, statDirectoryInput *s
 	latency = time.Since(startTime).Seconds()
 
 	go func(backend *backendStruct, latency float64, err error) {
-		globalsLock("backend.go:499:3:funcLit@498")
+		globalsLock("backend.go:610:3:funcLit@609")
 		if err == nil {
 			globals.backendMetrics.StatDirectorySuccesses.Inc()
 			globals.backendMetrics.StatDirectorySuccessLatencies.Observe(latency)
@@ -557,7 +668,7 @@ func statFileWrapper(backendContext backendContextIf, statFileInput *statFileInp
 	latency = time.Since(startTime).Seconds()
 
 	go func(backend *backendStruct, latency float64, err error) {
-		globalsLock("backend.go:560:3:funcLit@559")
+		globalsLock("backend.go:671:3:funcLit@670")
 		if err == nil {
 			globals.backendMetrics.StatFileSuccesses.Inc()
 			globals.backendMetrics.StatFileSuccessLatencies.Observe(latency)
