@@ -17,7 +17,9 @@ import codecs
 import logging
 import os
 import stat
-from pathlib import Path, PurePosixPath
+from functools import total_ordering
+from pathlib import Path, PurePath, PurePosixPath
+from types import NotImplementedType
 from typing import Union
 
 from .client import StorageClient
@@ -69,6 +71,7 @@ class StatResult:
         self.st_gid = os.getgid() if hasattr(os, "getgid") else 0  # Group ID
 
 
+@total_ordering
 class MultiStoragePath:
     """
     A path object similar to pathlib.Path that supports both local and remote file systems.
@@ -119,6 +122,35 @@ class MultiStoragePath:
             self._storage_client.profile == other._storage_client.profile
             and self._internal_path == other._internal_path
         )
+
+    def __lt__(self, other):
+        """
+        Return True if this path sorts before another path-like object.
+
+        Ordering is based on the normalized storage profile and internal path. ``pathlib`` paths are
+        compared as local filesystem paths; unsupported types return ``NotImplemented``.
+        """
+        other = self._coerce_path(other)
+        if other is NotImplemented:
+            return NotImplemented
+        return self._ordering_key() < other._ordering_key()
+
+    @staticmethod
+    def _coerce_path(other) -> "MultiStoragePath | NotImplementedType":
+        """
+        Convert supported path-like objects to ``MultiStoragePath`` for comparison.
+        """
+        if isinstance(other, MultiStoragePath):
+            return other
+        if isinstance(other, PurePath):
+            return MultiStoragePath(other)
+        return NotImplemented
+
+    def _ordering_key(self) -> tuple[str, PurePosixPath]:
+        """
+        Return the resolved profile and internal path used for equality-compatible ordering.
+        """
+        return (self._storage_client.profile, self._internal_path)
 
     def __hash__(self) -> int:
         """Return hash of the path."""

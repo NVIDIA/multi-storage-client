@@ -250,6 +250,51 @@ def test_hashable_path():
     assert len(paths) == 1
 
 
+def test_path_ordering():
+    config.setup_msc_config(
+        config_dict={
+            "profiles": {
+                "test": {
+                    "storage_provider": {
+                        "type": "file",
+                        "options": {"base_path": tempfile.gettempdir()},
+                    }
+                }
+            }
+        }
+    )
+
+    local_path = msc.Path("/tmp/testfile")
+    filesystem_path = msc.Path("msc://__filesystem__/tmp/testfile")
+
+    paths = [
+        msc.Path("msc://test/datasets/b.parquet"),
+        local_path,
+        msc.Path("msc://test/datasets/a.parquet"),
+        filesystem_path,
+    ]
+
+    assert sorted(paths) == [
+        local_path,
+        filesystem_path,
+        msc.Path("msc://test/datasets/a.parquet"),
+        msc.Path("msc://test/datasets/b.parquet"),
+    ]
+    assert min(paths) == local_path
+    assert max(paths) == msc.Path("msc://test/datasets/b.parquet")
+    assert local_path == filesystem_path
+    assert not (local_path < filesystem_path)
+    assert not (filesystem_path < local_path)
+    assert local_path != Path("/tmp/testfile")
+    assert [str(path) for path in sorted([Path("/tmp/z"), msc.Path("/tmp/a"), PurePosixPath("/tmp/m")])] == [
+        "/tmp/a",
+        "/tmp/m",
+        "/tmp/z",
+    ]
+    with pytest.raises(TypeError):
+        msc.Path("/tmp/testfile") < "/tmp/other"
+
+
 def test_pickable_path():
     local_path = msc.Path("/tmp/test/file.txt")
     pickled = pickle.dumps(local_path)
