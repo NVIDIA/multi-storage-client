@@ -385,6 +385,11 @@ class BaseStorageProvider(StorageProvider):
                 data_size = sum(len(item) for item in result)
             elif isinstance(result[0], str):
                 data_size = sum(len(item) if item.isascii() else len(item.encode()) for item in result)
+        else:
+            try:
+                data_size = memoryview(result).nbytes
+            except TypeError:
+                pass
 
         return data_size
 

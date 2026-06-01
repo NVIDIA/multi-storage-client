@@ -375,6 +375,29 @@ def test_list_objects_with_empty_base_path():
         list(provider.list_objects(path=""))
 
 
+def test_calculate_data_size_supports_buffer_protocol_result():
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+
+    cases = [
+        (b"abcd", 4),
+        ("abcd", 4),
+        ("é", 2),
+        (4, 4),
+        ([b"ab", b"cd"], 4),
+        (["ab", "é"], 4),
+        (bytearray(b"abcd"), 4),
+        (memoryview(b"abcd"), 4),
+    ]
+    for result, expected_size in cases:
+        assert provider._calculate_data_size(result, BaseStorageProvider._Operation.READ, None) == expected_size
+
+    assert provider._calculate_data_size(object(), BaseStorageProvider._Operation.READ, None) is None
+    assert (
+        provider._calculate_data_size(bytearray(b"abcd"), BaseStorageProvider._Operation.READ, "RuntimeError") is None
+    )
+    assert provider._calculate_data_size(bytearray(b"abcd"), BaseStorageProvider._Operation.INFO, None) is None
+
+
 def test_async_metrics_disabled_by_default():
     """Test that async metrics are disabled when not specified in config."""
     config = {
