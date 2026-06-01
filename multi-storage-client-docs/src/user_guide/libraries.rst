@@ -216,4 +216,7 @@ This module provides the ``Path`` class for working with paths in a way similar 
    for matched in msc.Path("msc://data-s3-iad/data").glob("*.txt"):
        print(matched)
 
+   # Sort paths for deterministic processing
+   paths = sorted(msc.Path("msc://data-s3-iad/data").glob("*.txt"))
+
 .. note:: The ``Path`` class implements much of the same interface as ``pathlib.Path``, making it familiar to use while working with remote storage.
