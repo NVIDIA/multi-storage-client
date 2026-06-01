@@ -387,7 +387,8 @@ class BaseStorageProvider(StorageProvider):
                 data_size = sum(len(item) if item.isascii() else len(item.encode()) for item in result)
         else:
             try:
-                data_size = memoryview(cast(Union[bytes, bytearray, memoryview], result)).nbytes
+                buffer_result: Any = result
+                data_size = memoryview(buffer_result).nbytes
             except TypeError:
                 pass
 
