@@ -4,73 +4,106 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
-	"os"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/NVIDIA/sortedmap"
 	"github.com/cockroachdb/pebble/v2"
 )
 
-// `pebbleLogger` is a simple implementation of a `pebble.Logger`.
+// `pebbleLogger` routes Pebble's internal logging through globals.logger with a
+// "[PEBBLE]" prefix. Adopted from main's f8c77acc (PebbleDB integration); wired
+// into bptreePageStore's pebble.Options below.
 type pebbleLogger struct{}
 
-// `Errorf` is the implementation of the Errorf() func for a `pebble.Logger`.
 func (pebbleLogger) Errorf(format string, args ...interface{}) {
 	globals.logger.Printf("[ERROR] [PEBBLE] "+format, args...)
 }
 
-// `Fatalf` is the implementation of the Fatalf() func for a `pebble.Logger`.
 func (pebbleLogger) Fatalf(format string, args ...interface{}) {
 	globals.logger.Fatalf("[FATAL] [PEBBLE] "+format, args...)
 }
 
-// `Infof` is the implementation of the Infof() func for a `pebble.Logger`.
 func (pebbleLogger) Infof(format string, args ...interface{}) {
 	globals.logger.Printf("[INFO] [PEBBLE] "+format, args...)
 }
 
-// `metadataCacheUp` performs any necessary cache setup.
-func metadataCacheUp() (err error) {
-	var (
-		pebbleOpts *pebble.Options
-	)
-
-	switch globals.config.metadataCachePagingMode {
-	case "file":
-		globals.pebbleDB = nil
-	case "pebble":
-		pebbleOpts = &pebble.Options{
-			CacheSize:                 int64(globals.config.pebbleCacheSize),
-			DisableWAL:                true,
-			L0CompactionFileThreshold: int(globals.config.pebbleL0CompactionFileThreshold),
-			L0StopWritesThreshold:     int(globals.config.pebbleL0StopWritesThreshold),
-			Logger:                    pebbleLogger{},
-			MemTableSize:              globals.config.pebbleMemTableSize,
-		}
-		globals.pebbleDB, err = pebble.Open(globals.cacheDir, pebbleOpts)
-		if err != nil {
-			err = fmt.Errorf("pebble.Open(globals.cacheDir[\"%s\"], pebbleOpts) failed: %v", globals.cacheDir, err)
-		}
-	default:
-		err = fmt.Errorf("bad metadata_cache_paging_mode value (\"%s\") - must be either \"file\" or \"pebble\"", globals.config.metadataCachePagingMode)
-	}
-	return
+type bptreePageStore struct {
+	db *pebble.DB
 }
 
-// `metadataCacheDown` performs any necessary cache teardown.
-func metadataCacheDown() (err error) {
-	if globals.pebbleDB == nil {
-		err = nil
-	} else {
-		err = globals.pebbleDB.Close()
-		if err != nil {
-			err = fmt.Errorf("globals.pebbleDB.Close() failed: %v", err)
-		}
+var bptreePages *bptreePageStore
+
+func newBptreePageStore(dirPath string) (*bptreePageStore, error) {
+	dbPath := filepath.Join(dirPath, "pages.db")
+	cacheSize := int64(globals.config.pebbleCacheSize)
+	memTableSize := globals.config.pebbleMemTableSize
+	l0CompactionFileThreshold := int(globals.config.pebbleL0CompactionFileThreshold)
+	l0StopWritesThreshold := int(globals.config.pebbleL0StopWritesThreshold)
+	cache := pebble.NewCache(cacheSize)
+	// pebble.Open takes its own ref on cache; release our init ref on all return paths
+	// so the cache is freed when bptreePageStore.close() shuts the DB down.
+	defer cache.Unref()
+	opts := &pebble.Options{
+		Cache:                     cache,
+		MemTableSize:              memTableSize,
+		DisableWAL:                true,
+		L0CompactionFileThreshold: l0CompactionFileThreshold,
+		L0StopWritesThreshold:     l0StopWritesThreshold,
+		Logger:                    pebbleLogger{},
 	}
-	return
+	db, err := pebble.Open(dbPath, opts)
+	if err != nil {
+		return nil, fmt.Errorf("pebble.Open(%q) failed: %w", dbPath, err)
+	}
+	return &bptreePageStore{db: db}, nil
+}
+
+func (ps *bptreePageStore) get(objectNumber, objectLength uint64) ([]byte, error) {
+	key := make([]byte, 8)
+	binary.BigEndian.PutUint64(key, objectNumber)
+
+	data, closer, err := ps.db.Get(key)
+	if err != nil {
+		return nil, fmt.Errorf("pageStore.get(%016X) failed: %w", objectNumber, err)
+	}
+	defer closer.Close()
+
+	if objectLength != uint64(len(data)) {
+		return nil, fmt.Errorf("pageStore.get(%016X): objectLength[%d] != len(data)[%d]", objectNumber, objectLength, len(data))
+	}
+
+	out := make([]byte, len(data))
+	copy(out, data)
+	return out, nil
+}
+
+func (ps *bptreePageStore) put(objectNumber uint64, data []byte) error {
+	key := make([]byte, 8)
+	binary.BigEndian.PutUint64(key, objectNumber)
+	if err := ps.db.Set(key, data, pebble.NoSync); err != nil {
+		return fmt.Errorf("pageStore.put(%016X) failed: %w", objectNumber, err)
+	}
+	return nil
+}
+
+func (ps *bptreePageStore) delete(objectNumber uint64) error {
+	key := make([]byte, 8)
+	binary.BigEndian.PutUint64(key, objectNumber)
+	if err := ps.db.Delete(key, pebble.NoSync); err != nil {
+		return fmt.Errorf("pageStore.delete(%016X) failed: %w", objectNumber, err)
+	}
+	return nil
+}
+
+func (ps *bptreePageStore) close() error {
+	if ps == nil || ps.db == nil {
+		return nil
+	}
+	return ps.db.Close()
 }
 
 // `inodeNumberToInodeStructMapStruct` is used to maintain a sortedmap.BPlusTree used
@@ -276,19 +309,29 @@ func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) DumpValue(
 
 // `GetNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for inodeNumberToInodeStructMapStruct.
 func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) GetNode(objectNumber, objectOffset, objectLength uint64) (nodeByteSlice []byte, err error) {
-	nodeByteSlice, err = readPage(objectNumber, objectOffset, objectLength)
+	if objectOffset != 0 {
+		err = fmt.Errorf("objectOffset(%v) != 0", objectOffset)
+		return
+	}
+	nodeByteSlice, err = bptreePages.get(objectNumber, objectLength)
 	return
 }
 
 // `PutNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for inodeNumberToInodeStructMapStruct.
 func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) PutNode(nodeByteSlice []byte) (objectNumber, objectOffset uint64, err error) {
-	objectNumber, objectOffset, err = writePage(nodeByteSlice)
+	objectNumber = fetchNonce()
+	objectOffset = 0
+	err = bptreePages.put(objectNumber, nodeByteSlice)
 	return
 }
 
 // `DiscardNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for inodeNumberToInodeStructMapStruct.
 func (inodeNumberToInodeStructMap *inodeNumberToInodeStructMapStruct) DiscardNode(objectNumber, objectOffset, objectLength uint64) (err error) {
-	err = discardPage(objectNumber, objectOffset, objectLength)
+	if objectOffset != 0 {
+		err = fmt.Errorf("objectOffset(%v) != 0", objectOffset)
+		return
+	}
+	err = bptreePages.delete(objectNumber)
 	return
 }
 
@@ -921,19 +964,29 @@ func (xTimeInodeNumberSet *xTimeInodeNumberSetStruct) DumpValue(value sortedmap.
 
 // `GetNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for xTimeInodeNumberSetStruct.
 func (xTimeInodeNumberSet *xTimeInodeNumberSetStruct) GetNode(objectNumber, objectOffset, objectLength uint64) (nodeByteSlice []byte, err error) {
-	nodeByteSlice, err = readPage(objectNumber, objectOffset, objectLength)
+	if objectOffset != 0 {
+		err = fmt.Errorf("objectOffset(%v) != 0", objectOffset)
+		return
+	}
+	nodeByteSlice, err = bptreePages.get(objectNumber, objectLength)
 	return
 }
 
 // `PutNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for xTimeInodeNumberSetStruct.
 func (xTimeInodeNumberSet *xTimeInodeNumberSetStruct) PutNode(nodeByteSlice []byte) (objectNumber, objectOffset uint64, err error) {
-	objectNumber, objectOffset, err = writePage(nodeByteSlice)
+	objectNumber = fetchNonce()
+	objectOffset = 0
+	err = bptreePages.put(objectNumber, nodeByteSlice)
 	return
 }
 
 // `DiscardNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for xTimeInodeNumberSetStruct.
 func (xTimeInodeNumberSet *xTimeInodeNumberSetStruct) DiscardNode(objectNumber, objectOffset, objectLength uint64) (err error) {
-	err = discardPage(objectNumber, objectOffset, objectLength)
+	if objectOffset != 0 {
+		err = fmt.Errorf("objectOffset(%v) != 0", objectOffset)
+		return
+	}
+	err = bptreePages.delete(objectNumber)
 	return
 }
 
@@ -1051,39 +1104,38 @@ func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBa
 }
 
 // `getByBasename` is called to find the `childInode` in a `parentInode's` logical `{phys|virt}ChildDirEntryMap`.
-func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) getByBasename(parentInodeNumber uint64, childBasename string) (childInodeNumber uint64, ok bool) {
+func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) getByBasename(parentInodeNumber uint64, childBasename string) (info DirEntryInfo, ok bool) {
 	var (
-		childInodeNumberAsValue sortedmap.Value
-		err                     error
+		valueAsValue sortedmap.Value
+		err          error
 	)
 
-	childInodeNumberAsValue, ok, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.GetByKey(uint64StringTupleToByteSlice(parentInodeNumber, childBasename))
+	valueAsValue, ok, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.GetByKey(uint64StringTupleToByteSlice(parentInodeNumber, childBasename))
 	if err != nil {
 		dumpStack()
 		globals.logger.Fatalf("[FATAL] parentInodeNumberChildBasenameToChildInodeNumber.bpTree.GetByKey(uint64StringTupleToByteSlice(parentInodeNumber, childBasename)) failed: %v", err)
 	}
 
 	if ok {
-		childInodeNumber, ok = childInodeNumberAsValue.(uint64)
+		info, ok = valueAsValue.(DirEntryInfo)
 		if !ok {
 			dumpStack()
-			globals.logger.Fatalf("[FATAL] childInodeNumberAsValue.(uint64) returned !ok")
+			globals.logger.Fatalf("[FATAL] valueAsValue.(DirEntryInfo) returned !ok")
 		}
 	}
 
 	return
 }
 
-// `getByIndex` is called to find the `inode` in `globals.{phys|virt}ChildDirEntryMap` given its `index`.
-func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) getByIndex(index uint64) (parentInodeNumber uint64, childInodeBasename string, childInodeNumber uint64, ok bool) {
+// `getByIndex` is called to find the `inode` in `globals.{phys|virt}ChildDirEntryMap` given its global `index`.
+func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) getByIndex(index uint64) (childBasename string, info DirEntryInfo, ok bool) {
 	var (
-		childInodeNumberAsValue                   sortedmap.Value
-		err                                       error
-		parentInodeNumberChildBasenameAsByteSlice []byte
-		parentInodeNumberChildBasenameAsKey       sortedmap.Key
+		valueAsValue sortedmap.Value
+		keyAsKey     sortedmap.Key
+		err          error
 	)
 
-	parentInodeNumberChildBasenameAsKey, childInodeNumberAsValue, ok, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.GetByIndex(int(index))
+	keyAsKey, valueAsValue, ok, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.GetByIndex(int(index))
 	if err != nil {
 		dumpStack()
 		globals.logger.Fatalf("[FATAL] parentInodeNumberChildBasenameToChildInodeNumber.bpTree.GetByIndex(int(index)) failed: %v", err)
@@ -1092,18 +1144,17 @@ func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBa
 		return
 	}
 
-	parentInodeNumberChildBasenameAsByteSlice, ok = parentInodeNumberChildBasenameAsKey.([]byte)
-	if !ok {
+	keyAsByteSlice, keyOk := keyAsKey.([]byte)
+	if !keyOk {
 		dumpStack()
-		globals.logger.Fatalf("[FATAL] parentInodeNumberChildBasenameAsKey.([]byte) returned !ok")
+		globals.logger.Fatalf("[FATAL] keyAsKey.([]byte) returned !ok")
 	}
+	_, childBasename = byteSliceToUint64StringTuple(keyAsByteSlice)
 
-	parentInodeNumber, childInodeBasename = byteSliceToUint64StringTuple(parentInodeNumberChildBasenameAsByteSlice)
-
-	childInodeNumber, ok = childInodeNumberAsValue.(uint64)
+	info, ok = valueAsValue.(DirEntryInfo)
 	if !ok {
 		dumpStack()
-		globals.logger.Fatalf("[FATAL] childInodeNumberAsValue.(uint64) returned !ok")
+		globals.logger.Fatalf("[FATAL] valueAsValue.(DirEntryInfo) returned !ok")
 	}
 
 	return
@@ -1141,15 +1192,56 @@ func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBa
 		err error
 	)
 
-	ok, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.Put(uint64StringTupleToByteSlice(parentInodeNumber, childInodeBasename), childInodeNumber)
+	info := DirEntryInfo{
+		InodeNumber: childInodeNumber,
+	}
+
+	ok, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.Put(uint64StringTupleToByteSlice(parentInodeNumber, childInodeBasename), info)
 	if err != nil {
 		dumpStack()
-		globals.logger.Fatalf("[FATAL] parentInodeNumberChildBasenameToChildInodeNumber.bpTree.Put(uint64StringTupleToByteSlice(parentInodeNumber, childInodeBasename), childInodeNumber) failed: %v", err)
+		globals.logger.Fatalf("[FATAL] parentInodeNumberChildBasenameToChildInodeNumber.bpTree.Put() failed: %v", err)
 	}
 
 	parentInodeNumberChildBasenameToChildInodeNumber.flushIfNecessary()
 
 	return
+}
+
+// `putByKeyNoFlush` is like putByKey but skips flushIfNecessary. Use during bulk ingest.
+func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) putByKeyNoFlush(parentInodeNumber uint64, childBasename string, info DirEntryInfo) (ok bool) {
+	var (
+		err error
+	)
+
+	ok, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.Put(uint64StringTupleToByteSlice(parentInodeNumber, childBasename), info)
+	if err != nil {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] parentInodeNumberChildBasenameToChildInodeNumber.bpTree.Put() failed: %v", err)
+	}
+
+	return
+}
+
+// `forceFlush` triggers an immediate flush + prune of dirty pages.
+func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) forceFlush() {
+	var err error
+
+	_, _, _, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.Flush(false)
+	if err != nil {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] bpTree.Flush(false) failed: %v", err)
+	}
+	err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.Prune()
+	if err != nil {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] bpTree.Prune() failed: %v", err)
+	}
+}
+
+// `lenForParent` returns the number of children for a given parent inode.
+func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) lenForParent(parentInodeNumber uint64) uint64 {
+	start, limit := parentInodeNumberChildBasenameToChildInodeNumber.getIndexRange(parentInodeNumber)
+	return limit - start
 }
 
 // `flushIfNecessary` will track the number of updates (one is assumed per call to this function)
@@ -1243,18 +1335,13 @@ func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBa
 
 // `DumpValue` is here to satisfy sortedmap.DumpCallbacks interface for parentInodeNumberChildBasenameToChildInodeNumberStruct.
 func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) DumpValue(value sortedmap.Value) (valueAsString string, err error) {
-	var (
-		ok         bool
-		valueAsU64 uint64
-	)
-
-	valueAsU64, ok = value.(uint64)
+	info, ok := value.(DirEntryInfo)
 	if !ok {
-		err = errors.New("value.(uint64) returned !ok")
+		err = errors.New("value.(DirEntryInfo) returned !ok")
 		return
 	}
 
-	valueAsString = fmt.Sprintf("%016X", valueAsU64)
+	valueAsString = fmt.Sprintf("inode=%016X type=%d size=%d mode=%o", info.InodeNumber, info.InodeType, info.Size, info.Mode)
 
 	err = nil
 	return
@@ -1262,19 +1349,29 @@ func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBa
 
 // `GetNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for parentInodeNumberChildBasenameToChildInodeNumberStruct.
 func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) GetNode(objectNumber, objectOffset, objectLength uint64) (nodeByteSlice []byte, err error) {
-	nodeByteSlice, err = readPage(objectNumber, objectOffset, objectLength)
+	if objectOffset != 0 {
+		err = fmt.Errorf("objectOffset(%v) != 0", objectOffset)
+		return
+	}
+	nodeByteSlice, err = bptreePages.get(objectNumber, objectLength)
 	return
 }
 
 // `PutNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for parentInodeNumberChildBasenameToChildInodeNumberStruct.
 func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) PutNode(nodeByteSlice []byte) (objectNumber, objectOffset uint64, err error) {
-	objectNumber, objectOffset, err = writePage(nodeByteSlice)
+	objectNumber = fetchNonce()
+	objectOffset = 0
+	err = bptreePages.put(objectNumber, nodeByteSlice)
 	return
 }
 
 // `DiscardNode` is here to satisfy sortedmap.BPlusTreeCallbacks interface for parentInodeNumberChildBasenameToChildInodeNumberStruct.
 func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) DiscardNode(objectNumber, objectOffset, objectLength uint64) (err error) {
-	err = discardPage(objectNumber, objectOffset, objectLength)
+	if objectOffset != 0 {
+		err = fmt.Errorf("objectOffset(%v) != 0", objectOffset)
+		return
+	}
+	err = bptreePages.delete(objectNumber)
 	return
 }
 
@@ -1323,19 +1420,23 @@ func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBa
 // `PackValue` is here to satisfy sortedmap.BPlusTreeCallbacks interface for parentInodeNumberChildBasenameToChildInodeNumberStruct.
 func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) PackValue(value sortedmap.Value) (packedValue []byte, err error) {
 	var (
-		ok         bool
-		valueAsU64 uint64
+		info DirEntryInfo
+		ok   bool
 	)
 
-	valueAsU64, ok = value.(uint64)
+	info, ok = value.(DirEntryInfo)
 	if !ok {
-		err = errors.New("value.(uint64) returned !ok")
+		err = errors.New("value.(DirEntryInfo) returned !ok")
 		return
 	}
 
-	packedValue = make([]byte, 8)
+	packedValue = make([]byte, 32)
 
-	binary.BigEndian.PutUint64(packedValue, valueAsU64)
+	binary.BigEndian.PutUint64(packedValue[0:8], info.InodeNumber)
+	binary.BigEndian.PutUint32(packedValue[8:12], info.InodeType)
+	binary.BigEndian.PutUint64(packedValue[12:20], info.Size)
+	binary.BigEndian.PutUint32(packedValue[20:24], info.Mode)
+	binary.BigEndian.PutUint64(packedValue[24:32], uint64(info.MTimeUnixNano))
 
 	err = nil
 	return
@@ -1343,233 +1444,250 @@ func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBa
 
 // `UnpackValue` is here to satisfy sortedmap.BPlusTreeCallbacks interface for parentInodeNumberChildBasenameToChildInodeNumberStruct.
 func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) UnpackValue(payloadData []byte) (value sortedmap.Value, bytesConsumed uint64, err error) {
-	if len(payloadData) < 8 {
-		err = errors.New("len(payloadData) < 8")
+	if len(payloadData) < 32 {
+		err = errors.New("len(payloadData) < 32")
 		return
 	}
 
-	value = binary.BigEndian.Uint64(payloadData[:8])
-	bytesConsumed = 8
+	value = DirEntryInfo{
+		InodeNumber:   binary.BigEndian.Uint64(payloadData[0:8]),
+		InodeType:     binary.BigEndian.Uint32(payloadData[8:12]),
+		Size:          binary.BigEndian.Uint64(payloadData[12:20]),
+		Mode:          binary.BigEndian.Uint32(payloadData[20:24]),
+		MTimeUnixNano: int64(binary.BigEndian.Uint64(payloadData[24:32])),
+	}
+	bytesConsumed = 32
 
 	err = nil
 	return
 }
 
-// `readPage` provides a generic function to read a metadata cache page.
-func readPage(pageNonce, mustBeZeroOffset, requiredLength uint64) (pageByteSlice []byte, err error) {
-	var (
-		closeErr                      error
-		ioCloser                      io.Closer
-		pageByteSliceReleasedByCloser []byte
-		pageFile                      *os.File
-		pageFileInfo                  os.FileInfo
-		pageFilePath                  string
-		pageNonceAsByteSlice          []byte
-	)
+// --- Sharded physChildDirEntryMap ---
 
-	if mustBeZeroOffset != 0 {
-		err = fmt.Errorf("mustBeZeroOffset[%v] != 0", mustBeZeroOffset)
-		return
+const dirEntryMapShardCount = 64
+
+type dirEntryMapShard struct {
+	mu                sync.Mutex
+	tree              *parentInodeNumberChildBasenameToChildInodeNumberStruct
+	batchesSinceFlush uint64
+}
+
+type shardedDirEntryMap struct {
+	shards [dirEntryMapShardCount]dirEntryMapShard
+}
+
+func newShardedDirEntryMap(namePrefix string, maxKeysPerNode, evictLowLimit, evictHighLimit, pageDirtyFlushTrigger, flushesSinceLastGCMax uint64) *shardedDirEntryMap {
+	m := &shardedDirEntryMap{}
+	for i := range m.shards {
+		name := fmt.Sprintf("%s.shard%02d", namePrefix, i)
+		m.shards[i].tree = parentInodeNumberChildBasenameToChildInodeNumberStructCreate(
+			name, maxKeysPerNode, evictLowLimit, evictHighLimit, pageDirtyFlushTrigger, flushesSinceLastGCMax)
 	}
+	return m
+}
 
-	if globals.pebbleDB == nil {
-		pageFilePath = fmt.Sprintf("%s/%016X", globals.cacheDir, pageNonce)
+func (m *shardedDirEntryMap) shardFor(parentInodeNumber uint64) *dirEntryMapShard {
+	return &m.shards[parentInodeNumber%dirEntryMapShardCount]
+}
 
-		pageFile, err = os.Open(pageFilePath)
-		if err != nil {
-			err = fmt.Errorf("os.Open(pageFilePath[\"%s\"]) failed: %v", pageFilePath, err)
-			return
-		}
-
-		pageFileInfo, err = pageFile.Stat()
-		if err != nil {
-			err = fmt.Errorf("pageFile[\"%s\"].Stat() failed: %v", pageFilePath, err)
-			closeErr = pageFile.Close()
-			if closeErr != nil {
-				err = fmt.Errorf("%s [and pageFile.Close() failed: %v]", err, closeErr)
-			}
-			return
-		}
-
-		if uint64(pageFileInfo.Size()) != requiredLength {
-			err = fmt.Errorf("uint64(pageFileInfo[\"%s\"].Size())[%v] != requiredLength[%v]", pageFilePath, pageFileInfo.Size(), requiredLength)
-			closeErr = pageFile.Close()
-			if closeErr != nil {
-				err = fmt.Errorf("%s [and pageFile.Close() failed: %v]", err, closeErr)
-			}
-			return
-		}
-
-		pageByteSlice = make([]byte, requiredLength)
-
-		_, err = pageFile.ReadAt(pageByteSlice, int64(mustBeZeroOffset))
-		if err != nil {
-			err = fmt.Errorf("pageFile[\"%s\"].ReadAt(buf, int(mustBeZeroOffset)) failed: %v", pageFilePath, err)
-			closeErr = pageFile.Close()
-			if closeErr != nil {
-				err = fmt.Errorf("%s [and pageFile.Close() failed: %v]", err, closeErr)
-			}
-			return
-		}
-
-		err = pageFile.Close()
-		if err != nil {
-			err = fmt.Errorf("pageFile[\"%s\"].Close() failed: %v", pageFilePath, err)
-			return
-		}
-	} else {
-		pageNonceAsByteSlice = make([]byte, 8)
-
-		binary.BigEndian.PutUint64(pageNonceAsByteSlice, pageNonce)
-
-		pageByteSliceReleasedByCloser, ioCloser, err = globals.pebbleDB.Get(pageNonceAsByteSlice)
-		if err == nil {
-			pageByteSlice = make([]byte, len(pageByteSliceReleasedByCloser))
-
-			copy(pageByteSlice, pageByteSliceReleasedByCloser)
-
-			err = ioCloser.Close()
-			if err != nil {
-				dumpStack()
-				globals.logger.Fatalf("[FATAL] ioCloser.Close() failed: %v", err)
-			}
-
-			if uint64(len(pageByteSlice)) != requiredLength {
-				err = fmt.Errorf("uint64(len(pageByteSlice))[%v] != requiredLength[%v]", uint64(len(pageByteSlice)), requiredLength)
-			}
-		} else {
-			err = fmt.Errorf("globals.pebbleDB.Get(pageNonceAsByteSlice) failed: %v", err)
-		}
-	}
-
+func (m *shardedDirEntryMap) getByBasename(parentInodeNumber uint64, childBasename string) (info DirEntryInfo, ok bool) {
+	s := m.shardFor(parentInodeNumber)
+	s.mu.Lock()
+	info, ok = s.tree.getByBasename(parentInodeNumber, childBasename)
+	s.mu.Unlock()
 	return
 }
 
-// `writePage` provides a generic function to write a metadata cache page.
-func writePage(pageByteSlice []byte) (pageNonce, mustBeZeroOffset uint64, err error) {
-	var (
-		closeErr             error
-		pageFile             *os.File
-		pageFilePath         string
-		pageNonceAsByteSlice []byte
-	)
-
-	pageNonce = fetchNonce()
-	mustBeZeroOffset = 0
-
-	if globals.pebbleDB == nil {
-		pageFilePath = fmt.Sprintf("%s/%016X", globals.cacheDir, pageNonce)
-
-		pageFile, err = os.OpenFile(pageFilePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err != nil {
-			if errors.Is(err, os.ErrExist) {
-				err = fmt.Errorf("os.OpenFile(pageFilePath[\"%s\"], os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) failed due to pre-existing file", pageFilePath)
-			} else {
-				err = fmt.Errorf("os.OpenFile(pageFilePath[\"%s\"], os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) failed: %v", pageFilePath, err)
-			}
-			return
-		}
-
-		_, err = pageFile.Write(pageByteSlice)
-		if err != nil {
-			err = fmt.Errorf("pageFile[\"%s\"].Write(pageByteSlice) failed: %v", pageFilePath, err)
-			closeErr = pageFile.Close()
-			if closeErr != nil {
-				err = fmt.Errorf("%s [and pageFile.Close() failed: %v]", err, closeErr)
-			}
-			return
-		}
-
-		err = pageFile.Close()
-		if err != nil {
-			err = fmt.Errorf("pageFile[\"%s\"].Close() failed: %v", pageFilePath, err)
-			return
-		}
-	} else {
-		pageNonceAsByteSlice = make([]byte, 8)
-
-		binary.BigEndian.PutUint64(pageNonceAsByteSlice, pageNonce)
-
-		err = globals.pebbleDB.Set(pageNonceAsByteSlice, pageByteSlice, pebble.NoSync)
-		if err != nil {
-			err = fmt.Errorf("globals.pebbleDB.Set(pageNonceAsByteSlice, pageByteSlice, pebble.NoSync) failed: %v", err)
-			return
-		}
-	}
-
+func (m *shardedDirEntryMap) put(parentInodeNumber uint64, childInodeBasename string, childInodeNumber uint64) (ok bool) {
+	s := m.shardFor(parentInodeNumber)
+	s.mu.Lock()
+	ok = s.tree.put(parentInodeNumber, childInodeBasename, childInodeNumber)
+	s.mu.Unlock()
 	return
 }
 
-// `discardPage` provides a generic function to discard a metadata cache page.
-func discardPage(pageNonce, mustBeZeroOffset, requiredLength uint64) (err error) {
-	var (
-		closeErr             error
-		pageFile             *os.File
-		pageFileInfo         os.FileInfo
-		pageFilePath         string
-		pageNonceAsByteSlice []byte
-	)
-
-	if mustBeZeroOffset != 0 {
-		err = fmt.Errorf("mustBeZeroOffset[%v] != 0", mustBeZeroOffset)
-		return
-	}
-
-	if globals.pebbleDB == nil {
-		pageFilePath = fmt.Sprintf("%s/%016X", globals.cacheDir, pageNonce)
-
-		pageFile, err = os.OpenFile(pageFilePath, os.O_RDWR, 0o600)
-		if err != nil {
-			err = fmt.Errorf("os.OpenFile(pageFilePath[\"%s\"], os.O_RDWR, 0o600) failed: %v", pageFilePath, err)
-			return
-		}
-
-		pageFileInfo, err = pageFile.Stat()
-		if err != nil {
-			err = fmt.Errorf("pageFile[\"%s\"].Stat() failed: %v", pageFilePath, err)
-			closeErr = pageFile.Close()
-			if closeErr != nil {
-				err = fmt.Errorf("%s [and pageFile.Close() failed: %v]", err, closeErr)
-			}
-			return
-		}
-
-		if uint64(pageFileInfo.Size()) != requiredLength {
-			err = fmt.Errorf("uint64(pageFileInfo[\"%s\"].Size())[%v] != requiredLength[%v]", pageFilePath, pageFileInfo.Size(), requiredLength)
-			closeErr = pageFile.Close()
-			if closeErr != nil {
-				err = fmt.Errorf("%s [and pageFile.Close() failed: %v]", err, closeErr)
-			}
-			return
-		}
-
-		err = os.Remove(pageFilePath)
-		if err != nil {
-			err = fmt.Errorf("os.Remove(pageFilePath[\"%s\"], os.O_RDWR, 0o600) failed: %v", pageFilePath, err)
-			closeErr = pageFile.Close()
-			if closeErr != nil {
-				err = fmt.Errorf("%s as did pageFile.Close(): %v", err, closeErr)
-			}
-			return
-		}
-
-		err = pageFile.Close()
-		if err != nil {
-			err = fmt.Errorf("pageFile[\"%s\"].Close() failed: %v", pageFilePath, err)
-			return
-		}
-	} else {
-		pageNonceAsByteSlice = make([]byte, 8)
-
-		binary.BigEndian.PutUint64(pageNonceAsByteSlice, pageNonce)
-
-		err = globals.pebbleDB.Delete(pageNonceAsByteSlice, pebble.NoSync)
-		if err != nil {
-			err = fmt.Errorf("globals.pebbleDB.Delete(pageNonceAsByteSlice, pebble.NoSync) failed: %v", err)
-		}
-
-		// Note that we do not check requiredLength
-	}
-
+func (m *shardedDirEntryMap) putByKeyNoFlush(parentInodeNumber uint64, childBasename string, info DirEntryInfo) (ok bool) {
+	s := m.shardFor(parentInodeNumber)
+	s.mu.Lock()
+	ok = s.tree.putByKeyNoFlush(parentInodeNumber, childBasename, info)
+	s.mu.Unlock()
 	return
+}
+
+func (m *shardedDirEntryMap) delete(parentInodeNumber uint64, childInodeBasename string) (ok bool) {
+	s := m.shardFor(parentInodeNumber)
+	s.mu.Lock()
+	ok = s.tree.delete(parentInodeNumber, childInodeBasename)
+	s.mu.Unlock()
+	return
+}
+
+func (m *shardedDirEntryMap) getIndexRange(parentInodeNumber uint64) (start, limit uint64) {
+	s := m.shardFor(parentInodeNumber)
+	s.mu.Lock()
+	start, limit = s.tree.getIndexRange(parentInodeNumber)
+	s.mu.Unlock()
+	return
+}
+
+func (m *shardedDirEntryMap) getByIndex(parentInodeNumber, index uint64) (childBasename string, info DirEntryInfo, ok bool) {
+	s := m.shardFor(parentInodeNumber)
+	s.mu.Lock()
+	childBasename, info, ok = s.tree.getByIndex(index)
+	s.mu.Unlock()
+	return
+}
+
+func (m *shardedDirEntryMap) lenForParent(parentInodeNumber uint64) uint64 {
+	s := m.shardFor(parentInodeNumber)
+	s.mu.Lock()
+	result := s.tree.lenForParent(parentInodeNumber)
+	s.mu.Unlock()
+	return result
+}
+
+func (m *shardedDirEntryMap) forceFlush() {
+	for i := range m.shards {
+		m.shards[i].mu.Lock()
+		m.shards[i].tree.forceFlush()
+		m.shards[i].mu.Unlock()
+	}
+}
+
+func (m *shardedDirEntryMap) discard() {
+	for i := range m.shards {
+		m.shards[i].tree.discard()
+	}
+}
+
+func (m *shardedDirEntryMap) setPageDirtyFlushTrigger(value uint64) {
+	for i := range m.shards {
+		m.shards[i].tree.pageDirtyFlushTrigger = value
+	}
+}
+
+func (m *shardedDirEntryMap) getPageDirtyFlushTrigger() uint64 {
+	return m.shards[0].tree.pageDirtyFlushTrigger
+}
+
+func (m *shardedDirEntryMap) setFlushesSinceLastGCMax(value uint64) {
+	for i := range m.shards {
+		m.shards[i].tree.flushesSinceLastGCMax = value
+	}
+}
+
+func (m *shardedDirEntryMap) getFlushesSinceLastGCMax() uint64 {
+	return m.shards[0].tree.flushesSinceLastGCMax
+}
+
+// --- Sharded inodeMap ---
+
+const inodeMapShardCount = 64
+
+type inodeMapShard struct {
+	mu   sync.Mutex
+	tree *inodeNumberToInodeStructMapStruct
+}
+
+type shardedInodeMap struct {
+	shards [inodeMapShardCount]inodeMapShard
+}
+
+func newShardedInodeMap(namePrefix string, maxKeysPerNode, evictLowLimit, evictHighLimit, pageDirtyFlushTrigger, flushesSinceLastGCMax uint64) *shardedInodeMap {
+	m := &shardedInodeMap{}
+	for i := range m.shards {
+		name := fmt.Sprintf("%s.shard%02d", namePrefix, i)
+		m.shards[i].tree = inodeNumberToInodeStructMapStructCreate(
+			name, maxKeysPerNode, evictLowLimit, evictHighLimit, pageDirtyFlushTrigger, flushesSinceLastGCMax)
+	}
+	return m
+}
+
+func (m *shardedInodeMap) shardFor(inodeNumber uint64) *inodeMapShard {
+	return &m.shards[inodeNumber%inodeMapShardCount]
+}
+
+func (m *shardedInodeMap) get(inodeNumber uint64) (inode *inodeStruct, ok bool) {
+	s := m.shardFor(inodeNumber)
+	s.mu.Lock()
+	inode, ok = s.tree.get(inodeNumber)
+	s.mu.Unlock()
+	return
+}
+
+func (m *shardedInodeMap) put(inode *inodeStruct) (ok bool) {
+	s := m.shardFor(inode.inodeNumber)
+	s.mu.Lock()
+	ok = s.tree.put(inode)
+	s.mu.Unlock()
+	return
+}
+
+func (m *shardedInodeMap) touch(inode *inodeStruct) (ok bool) {
+	s := m.shardFor(inode.inodeNumber)
+	s.mu.Lock()
+	ok = s.tree.touch(inode)
+	s.mu.Unlock()
+	return
+}
+
+func (m *shardedInodeMap) delete(inodeNumber uint64) (ok bool) {
+	s := m.shardFor(inodeNumber)
+	s.mu.Lock()
+	ok = s.tree.delete(inodeNumber)
+	s.mu.Unlock()
+	return
+}
+
+func (m *shardedInodeMap) len() (totalLen int) {
+	for i := range m.shards {
+		m.shards[i].mu.Lock()
+		totalLen += m.shards[i].tree.len()
+		m.shards[i].mu.Unlock()
+	}
+	return
+}
+
+func (m *shardedInodeMap) forceFlush() {
+	for i := range m.shards {
+		m.shards[i].mu.Lock()
+		var err error
+		_, _, _, err = m.shards[i].tree.bpTree.Flush(false)
+		if err != nil {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] shardedInodeMap shard %d Flush failed: %v", i, err)
+		}
+		err = m.shards[i].tree.bpTree.Prune()
+		if err != nil {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] shardedInodeMap shard %d Prune failed: %v", i, err)
+		}
+		m.shards[i].mu.Unlock()
+	}
+}
+
+func (m *shardedInodeMap) discard() {
+	for i := range m.shards {
+		m.shards[i].tree.discard()
+	}
+}
+
+func (m *shardedInodeMap) setPageDirtyFlushTrigger(value uint64) {
+	for i := range m.shards {
+		m.shards[i].tree.pageDirtyFlushTrigger = value
+	}
+}
+
+func (m *shardedInodeMap) getPageDirtyFlushTrigger() uint64 {
+	return m.shards[0].tree.pageDirtyFlushTrigger
+}
+
+func (m *shardedInodeMap) setFlushesSinceLastGCMax(value uint64) {
+	for i := range m.shards {
+		m.shards[i].tree.flushesSinceLastGCMax = value
+	}
+}
+
+func (m *shardedInodeMap) getFlushesSinceLastGCMax() uint64 {
+	return m.shards[0].tree.flushesSinceLastGCMax
 }

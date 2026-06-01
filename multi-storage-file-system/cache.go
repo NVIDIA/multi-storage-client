@@ -43,8 +43,22 @@ func dataCacheUp() (err error) {
 			return
 		}
 	} else {
+		// RAM-backed cache: use an anonymous private mmap (fd=-1, MAP_ANON) instead
+		// of `make([]byte, N)`. The kernel only commits physical pages on first
+		// touch, so workloads that never read file data (e.g. pure manifest ingest
+		// with no FUSE reads) pay zero RSS for the cache. Even when reads happen,
+		// the mapping lives outside the Go heap, so it is not scanned by the GC
+		// and does not count against debug.SetMemoryLimit (per Go runtime docs).
 		globals.dataCacheLinesFile = nil
-		globals.dataCacheLinesContent = make([]byte, dataCacheLineContentSize)
+		globals.dataCacheLinesContent, err = syscall.Mmap(
+			-1, 0, int(dataCacheLineContentSize),
+			syscall.PROT_READ|syscall.PROT_WRITE,
+			syscall.MAP_PRIVATE|syscall.MAP_ANON,
+		)
+		if err != nil {
+			err = fmt.Errorf("anonymous syscall.Mmap(-1, 0, dataCacheLineContentSize, ...) failed: %v", err)
+			return
+		}
 	}
 
 	globals.dataCacheLinesTracker = make([]dataCacheLineTrackerStruct, globals.config.cacheLines)
@@ -106,13 +120,18 @@ func dataCacheUp() (err error) {
 func dataCacheDown() (err error) {
 	globals.dataCacheActivityWG.Wait()
 
-	if globals.config.mappedCache {
+	// Both mapped_cache=true (file-backed) and mapped_cache=false (anonymous) paths
+	// use mmap-allocated memory, so Munmap covers both. The file fd is only present
+	// for the mapped_cache=true case.
+	if globals.dataCacheLinesContent != nil {
 		err = syscall.Munmap(globals.dataCacheLinesContent)
 		if err != nil {
 			err = fmt.Errorf("syscall.Munmap(globals.dataCacheLinesContent) failed: %v", err)
 			return
 		}
+	}
 
+	if globals.dataCacheLinesFile != nil {
 		err = globals.dataCacheLinesFile.Close()
 		if err != nil {
 			err = fmt.Errorf("globals.dataCacheLinesFile.Close() failed: %v", err)
@@ -374,7 +393,7 @@ func allocateDataCacheLines(count uint64) (cacheLineNumbers []uint64, neededToBl
 
 		cacheLineWaiter.Wait()
 
-		globalsLock("cache.go:377:3:allocateDataCacheLines")
+		globalsLock("cache.go:396:3:allocateDataCacheLines")
 	}
 }
 
@@ -422,7 +441,7 @@ func (dataCacheLineTracker *dataCacheLineTrackerStruct) fetch() {
 
 	defer globals.dataCacheActivityWG.Done()
 
-	globalsLock("cache.go:425:2:(*dataCacheLineTrackerStruct).fetch")
+	globalsLock("cache.go:444:2:(*dataCacheLineTrackerStruct).fetch")
 
 	inode, ok = globals.inodeMap.get(dataCacheLineTracker.inodeNumber)
 	if !ok {
@@ -454,7 +473,7 @@ func (dataCacheLineTracker *dataCacheLineTrackerStruct) fetch() {
 		dataCacheLineTracker.contentLength = uint64(copy(content, readFileOutput.buf))
 	}
 
-	globalsLock("cache.go:457:2:(*dataCacheLineTrackerStruct).fetch")
+	globalsLock("cache.go:476:2:(*dataCacheLineTrackerStruct).fetch")
 	inode, ok = globals.inodeMap.get(dataCacheLineTracker.inodeNumber)
 	if ok {
 		inode.inboundCacheLineCount--

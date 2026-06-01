@@ -478,6 +478,19 @@ func (pseudoContext *pseudoContextStruct) listObjects(listObjectsInput *listObje
 		continuationTokenAsUint64++
 	}
 
+	// Apply listObjectsInput.prefix (client-side narrowing for this synthetic backend).
+	// Objects are generated in sorted order, so the matching keys form a contiguous run;
+	// a per-page filter yields the correct subset across paginated calls.
+	if listObjectsInput.prefix != "" {
+		filtered := listObjectsOutput.object[:0]
+		for _, candidate := range listObjectsOutput.object {
+			if strings.HasPrefix(candidate.path, listObjectsInput.prefix) {
+				filtered = append(filtered, candidate)
+			}
+		}
+		listObjectsOutput.object = filtered
+	}
+
 	err = nil
 	return
 }
@@ -580,6 +593,11 @@ func (pseudoContext *pseudoContextStruct) statFile(statFileInput *statFileInputS
 
 	err = nil
 	return
+}
+
+// `redactSecrets` is a no-op for the PSEUDO backend, which has no secrets.
+func (pseudoContext *pseudoContextStruct) redactSecrets(s string) string {
+	return s
 }
 
 // `canonicalDirPath` converts the supplied dirPath to `/[dirName/]*` (including pseudoContext.backend.prefix).

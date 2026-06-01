@@ -15,6 +15,7 @@ func BenchmarkBPTreePageInsertion(b *testing.B) {
 	var (
 		dirEntryBasename    string
 		dirEntryInodeNumber uint64
+		dirInfo             DirEntryInfo
 		err                 error
 		inode               *inodeStruct
 		ok                  bool
@@ -56,9 +57,10 @@ backends: [
 	b.ResetTimer()
 
 	for range b.N {
-		globalsLock("bptree_test.go:59:3:BenchmarkBPTreePageInsertion")
+		globalsLock("bptree_test.go:60:3:BenchmarkBPTreePageInsertion")
 
-		ramInodeNumber, ok = globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, "ram")
+		dirInfo, ok = globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, "ram")
+		ramInodeNumber = dirInfo.InodeNumber
 		if !ok {
 			b.Fatalf("globals.virtChildDirEntryMap.getByBasename(FUSERootDirInodeNumber, \"ram\") returned !ok")
 		}

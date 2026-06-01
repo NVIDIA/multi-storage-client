@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -38,6 +39,12 @@ func main() {
 	osArgs = make([]string, len(os.Args))
 	_ = copy(osArgs, os.Args)
 
+	// Handle "generate-manifest" subcommand before normal CLI parsing
+	if len(osArgs) >= 2 && osArgs[1] == "generate-manifest" {
+		runGenerateManifest(osArgs)
+		return
+	}
+
 	displayHelpMatchSet = make(map[string]struct{})
 	displayHelpMatchSet["-?"] = struct{}{}
 	displayHelpMatchSet["-h"] = struct{}{}
@@ -59,6 +66,7 @@ func main() {
 
 	if displayHelp {
 		fmt.Printf("usage: %s [{-?|-h|help|-help|--help|-v|-version|--version} | <config-file>]\n", osArgs[0])
+		fmt.Printf("       %s generate-manifest --backend <name> [--output <path>] [--workers N] [--temp-dir <dir>] [<config-file>]\n", osArgs[0])
 		fmt.Printf("  where a <config-file>, ending in suffix .yaml, .yml, or .json, is to be found while searching:\n")
 		fmt.Printf("    ${MSC_CONFIG}\n")
 		fmt.Printf("    ${XDG_CONFIG_HOME}/msc/config.{yaml|yml|json}\n")
@@ -76,7 +84,10 @@ func main() {
 	err = checkConfigFile()
 	if err != nil {
 		dumpStack()
-		globals.logger.Fatalf("[FATAL] parsing config-file (\"%s\") failed: %v", globals.configFilePath, err)
+		// CodeQL [SM01413]: clear-text-logging false positive — audit of every fmt.Errorf
+		// in config.go confirmed no error message embeds credential values (only field
+		// names + backend indices). redactSecrets() is defense-in-depth.
+		globals.logger.Fatalf("[FATAL] parsing config-file (\"%s\") failed: %s", globals.configFilePath, redactSecrets(nil, err.Error()))
 	}
 
 	initObservability()
@@ -92,6 +103,61 @@ func main() {
 	}
 
 	startHTTPHandler()
+
+	for _, backend := range globals.config.backends {
+		if backend.readOnly && backend.manifestPath != "" {
+			manifestBackend := backend
+			go func() {
+				manifestStartTime := time.Now()
+
+				_, statErr := os.Stat(manifestBackend.manifestPath)
+				switch {
+				case statErr != nil && !os.IsNotExist(statErr):
+					globals.logger.Printf("[WARN] manifest-bootstrap: cannot stat %q for backend %q: %v",
+						manifestBackend.manifestPath, manifestBackend.dirName, statErr)
+					return
+				case os.IsNotExist(statErr):
+					globals.logger.Printf("[INFO] manifest-bootstrap: manifest not found at %q, generating for backend %q...",
+						manifestBackend.manifestPath, manifestBackend.dirName)
+
+					genStart := time.Now()
+					genWorkers := manifestBackend.manifestGenWorkers
+					if genWorkers <= 0 {
+						genWorkers = defaultManifestGenWorkers
+					}
+					genCfg := &manifestGenConfig{
+						workers:     genWorkers,
+						outputPath:  manifestBackend.manifestPath,
+						backendName: manifestBackend.dirName,
+						backend:     manifestBackend,
+					}
+					if genErr := generateManifest(genCfg); genErr != nil {
+						// CodeQL [SM01413]: clear-text-logging false positive — see audit note at startup.
+						globals.logger.Printf("[WARN] manifest-bootstrap: generation failed for backend %q: %s", manifestBackend.dirName, redactSecrets(manifestBackend, genErr.Error()))
+						return
+					}
+					globals.logger.Printf("[INFO] manifest-bootstrap: generation complete for backend %q (%v)",
+						manifestBackend.dirName, time.Since(genStart).Round(time.Millisecond))
+				default:
+					globals.logger.Printf("[INFO] manifest-bootstrap: using existing manifest at %q for backend %q",
+						manifestBackend.manifestPath, manifestBackend.dirName)
+				}
+
+				globals.logger.Printf("[INFO] manifest-bootstrap: starting ingest for backend %q...", manifestBackend.dirName)
+				ingestStart := time.Now()
+				if ingestErr := ingestManifest(manifestBackend.manifestPath, manifestBackend); ingestErr != nil {
+					// CodeQL [SM01413]: clear-text-logging false positive — see audit note at startup.
+					globals.logger.Printf("[WARN] manifest-bootstrap: ingest failed for backend %q: %s", manifestBackend.dirName, redactSecrets(manifestBackend, ingestErr.Error()))
+					return
+				}
+				globals.logger.Printf("[INFO] manifest-bootstrap: ingest complete for backend %q (%v)",
+					manifestBackend.dirName, time.Since(ingestStart).Round(time.Millisecond))
+
+				globals.logger.Printf("[INFO] manifest-bootstrap: total bootstrap time for backend %q: %v",
+					manifestBackend.dirName, time.Since(manifestStartTime).Round(time.Millisecond))
+			}()
+		}
+	}
 
 	signalChan = make(chan os.Signal, 1)
 	signal.Notify(signalChan, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
@@ -145,7 +211,8 @@ func main() {
 
 				processToMountList()
 			} else {
-				globals.logger.Printf("[WARN] parsing config-file (\"%s\") failed: %v", globals.configFilePath, err)
+				// CodeQL [SM01413]: clear-text-logging false positive — see audit note at startup.
+				globals.logger.Printf("[WARN] parsing config-file (\"%s\") failed: %s", globals.configFilePath, redactSecrets(nil, err.Error()))
 			}
 
 			errLastCheckConfigFile = err
@@ -162,7 +229,8 @@ func main() {
 
 				processToMountList()
 			} else if (errLastCheckConfigFile == nil) || (errLastCheckConfigFile.Error() != err.Error()) {
-				globals.logger.Printf("[WARN] parsing config-file (\"%s\") failed: %v", globals.configFilePath, err)
+				// CodeQL [SM01413]: clear-text-logging false positive — see audit note at startup.
+				globals.logger.Printf("[WARN] parsing config-file (\"%s\") failed: %s", globals.configFilePath, redactSecrets(nil, err.Error()))
 			}
 
 			errLastCheckConfigFile = err
@@ -329,6 +397,66 @@ func initObservability() {
 	globals.metrics = metrics
 	globals.meterProvider = meterProvider // Store for shutdown later
 	globals.logger.Printf("[INFO] metrics instruments created successfully")
+}
+
+// `runGenerateManifest` handles the "generate-manifest" subcommand.
+// It parses the config, sets up the specified backend, runs the BFS manifest
+// generation pipeline, and exits.
+func runGenerateManifest(osArgs []string) {
+	fs := flag.NewFlagSet("generate-manifest", flag.ExitOnError)
+	backendName := fs.String("backend", "", "backend name from config (required)")
+	outputPath := fs.String("output", ".msfs_manifest", "output manifest directory path (per-directory format)")
+	workers := fs.Int("workers", defaultManifestGenWorkers, "number of parallel listing workers")
+	tempDir := fs.String("temp-dir", "", "directory for temporary shard files (default: system temp)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "usage: %s generate-manifest --backend <name> [--output <path>] [--workers N] [--temp-dir <dir>] [<config-file>]\n", osArgs[0])
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(osArgs[2:]); err != nil {
+		os.Exit(1)
+	}
+
+	if *backendName == "" {
+		fmt.Fprintf(os.Stderr, "error: --backend is required\n")
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	// Remaining non-flag args are treated as [config-file]
+	configArgs := []string{osArgs[0]}
+	if fs.NArg() > 0 {
+		configArgs = append(configArgs, fs.Arg(0))
+	}
+
+	initGlobals(configArgs)
+
+	err := checkConfigFile()
+	if err != nil {
+		dumpStack()
+		// CodeQL [SM01413]: clear-text-logging false positive — see audit note at startup.
+		globals.logger.Fatalf("[FATAL] parsing config-file (\"%s\") failed: %s", globals.configFilePath, redactSecrets(nil, err.Error()))
+	}
+
+	cfg := &manifestGenConfig{
+		workers:     *workers,
+		outputPath:  *outputPath,
+		tempDir:     *tempDir,
+		backendName: *backendName,
+	}
+
+	globals.logger.Printf("[INFO] manifest-gen: starting (backend=%q, workers=%d, output=%q)",
+		cfg.backendName, cfg.workers, cfg.outputPath)
+
+	err = generateManifest(cfg)
+	if err != nil {
+		// CodeQL [SM01413]: clear-text-logging false positive — manifest-gen errors
+		// originate from backend listings and writeFile, never embed credentials.
+		globals.logger.Fatalf("[FATAL] manifest-gen failed: %s", redactSecrets(cfg.backend, err.Error()))
+	}
+
+	os.Exit(0)
 }
 
 // processAttributeProviders instantiates attribute providers from configuration.

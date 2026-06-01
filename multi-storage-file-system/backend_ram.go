@@ -359,6 +359,18 @@ func (ramContext *ramContextStruct) listObjects(listObjectsInput *listObjectsInp
 	ramContext.appendObjects(ramDirLeaf, "", &listObjectsOutput.object)
 	slices.SortFunc(listObjectsOutput.object, func(a, b listObjectsOutputObjectStruct) int { return cmp.Compare(a.path, b.path) })
 
+	// Now apply listObjectsInput.prefix (client-side narrowing for this synthetic backend)
+
+	if listObjectsInput.prefix != "" {
+		filtered := listObjectsOutput.object[:0]
+		for _, candidate := range listObjectsOutput.object {
+			if strings.HasPrefix(candidate.path, listObjectsInput.prefix) {
+				filtered = append(filtered, candidate)
+			}
+		}
+		listObjectsOutput.object = filtered
+	}
+
 	// Now apply listObjectsInput.startAfter
 
 	if listObjectsInput.startAfter != "" {
@@ -405,6 +417,11 @@ func (ramContext *ramContextStruct) listObjects(listObjectsInput *listObjectsInp
 
 	err = nil
 	return
+}
+
+// `redactSecrets` is a no-op for the RAM backend, which has no secrets.
+func (ramContext *ramContextStruct) redactSecrets(s string) string {
+	return s
 }
 
 // `readFile` is called to read a range of a `file` at the specified path.

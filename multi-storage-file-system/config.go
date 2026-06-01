@@ -180,6 +180,46 @@ func parseSeconds(m map[string]interface{}, key string, dflt interface{}) (d tim
 
 // `parseString` fetches what is expected to be a string value for the
 // specified key from the map. If the key is missing and a non-nil
+func parseFlatDirHints(backendMap map[string]interface{}) []flatDirHintStruct {
+	hintsRaw, ok := backendMap["flat_dir_hints"]
+	if !ok {
+		return nil
+	}
+	hintsSlice, ok := hintsRaw.([]interface{})
+	if !ok {
+		return nil
+	}
+	var hints []flatDirHintStruct
+	for _, h := range hintsSlice {
+		hMap, ok := h.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		hint := flatDirHintStruct{
+			KeyPrefixChars: "0123456789abcdefghijklmnopqrstuvwxyz",
+			SplitDepth:     1,
+		}
+		if p, ok := hMap["path"].(string); ok {
+			hint.Path = p
+		}
+		if c, ok := hMap["key_prefix_chars"].(string); ok {
+			hint.KeyPrefixChars = c
+		}
+		if d, ok := hMap["split_depth"]; ok {
+			switch v := d.(type) {
+			case int:
+				hint.SplitDepth = v
+			case float64:
+				hint.SplitDepth = int(v)
+			}
+		}
+		if hint.Path != "" {
+			hints = append(hints, hint)
+		}
+	}
+	return hints
+}
+
 // dflt is provided, the dflt value will be used. In either case of
 // a value to be returned, it will be expanded with environment variable
 // substitutions, if any, before being returned.
@@ -1181,6 +1221,36 @@ func checkConfigFile() (err error) {
 				err = fmt.Errorf("bad trace_level at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
 				return
 			}
+
+			backendAsStructNew.manifestPath, ok = parseString(backendAsMap, "manifest_path", "")
+			if !ok {
+				err = fmt.Errorf("bad manifest_path at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
+
+			manifestGenWorkersU64, ok := parseUint64(backendAsMap, "manifest_gen_workers", uint64(defaultManifestGenWorkers))
+			if !ok {
+				err = fmt.Errorf("bad manifest_gen_workers at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
+			if manifestGenWorkersU64 == 0 {
+				err = fmt.Errorf("manifest_gen_workers must be > 0 at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
+			backendAsStructNew.manifestGenWorkers = int(manifestGenWorkersU64)
+
+			flatDirConfPagesU64, ok := parseUint64(backendAsMap, "flat_dir_confirmation_pages", uint64(defaultFlatDirConfirmationPages))
+			if !ok {
+				err = fmt.Errorf("bad flat_dir_confirmation_pages at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
+			if flatDirConfPagesU64 == 0 {
+				err = fmt.Errorf("flat_dir_confirmation_pages must be > 0 at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
+			backendAsStructNew.flatDirConfirmationPages = int(flatDirConfPagesU64)
+
+			backendAsStructNew.flatDirHints = parseFlatDirHints(backendAsMap)
 
 			backendAsStructNew.backendType, ok = parseString(backendAsMap, "backend_type", nil)
 			if !ok {

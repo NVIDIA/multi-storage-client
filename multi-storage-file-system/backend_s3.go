@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -252,6 +253,9 @@ func (s3Context *s3ContextStruct) listDirectory(listDirectoryInput *listDirector
 	if listDirectoryInput.continuationToken != "" {
 		s3ListObjectsV2Input.ContinuationToken = aws.String(listDirectoryInput.continuationToken)
 	}
+	if listDirectoryInput.startAfter != "" {
+		s3ListObjectsV2Input.StartAfter = aws.String(backend.prefix + listDirectoryInput.startAfter)
+	}
 	if listDirectoryInput.maxItems != 0 {
 		s3ListObjectsV2Input.MaxKeys = aws.Int32(int32(listDirectoryInput.maxItems))
 	}
@@ -308,10 +312,13 @@ func (s3Context *s3ContextStruct) listObjects(listObjectsInput *listObjectsInput
 
 	s3ListObjectsV2Input = &s3.ListObjectsV2Input{
 		Bucket: aws.String(backend.bucketContainerName),
-		Prefix: aws.String(backend.prefix),
+		Prefix: aws.String(backend.prefix + listObjectsInput.prefix),
 	}
 	if listObjectsInput.continuationToken != "" {
 		s3ListObjectsV2Input.ContinuationToken = aws.String(listObjectsInput.continuationToken)
+	}
+	if listObjectsInput.startAfter != "" {
+		s3ListObjectsV2Input.StartAfter = aws.String(backend.prefix + listObjectsInput.startAfter)
 	}
 	if listObjectsInput.maxItems != 0 {
 		s3ListObjectsV2Input.MaxKeys = aws.Int32(int32(listObjectsInput.maxItems))
@@ -319,7 +326,7 @@ func (s3Context *s3ContextStruct) listObjects(listObjectsInput *listObjectsInput
 
 	s3ListObjectsV2Output, err = s3Context.s3Client.ListObjectsV2(context.Background(), s3ListObjectsV2Input)
 	if err != nil {
-		err = fmt.Errorf("[S3] listDirectory failed: %v", err)
+		err = fmt.Errorf("[S3] listObjects failed: %v", err)
 		return
 	}
 
@@ -349,6 +356,37 @@ func (s3Context *s3ContextStruct) listObjects(listObjectsInput *listObjectsInput
 	}
 
 	return
+}
+
+var (
+	// `awsAccessKeyIDPattern` matches AWS access key IDs: AKIA (long-term) or
+	// ASIA (STS session) prefix, followed by 16 uppercase alphanumeric chars.
+	awsAccessKeyIDPattern = regexp.MustCompile(`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`)
+	// `awsSecretAccessKeyPattern` matches AWS secret access keys: exactly 40
+	// characters of base64 alphabet. Conservative — may also match other
+	// 40-char base64 strings (etags, tokens), which is acceptable at the
+	// no-backend config-parse log sites where this heuristic is the fallback.
+	awsSecretAccessKeyPattern = regexp.MustCompile(`\b[A-Za-z0-9+/=]{40}\b`)
+)
+
+// `redactAWSSecretShapes` redacts AWS-credential-shaped substrings from s. It is
+// the heuristic used by the package-level `redactSecrets` wrapper when no backend
+// context is available (e.g. config-parse errors logged before backends exist).
+func redactAWSSecretShapes(s string) string {
+	s = awsAccessKeyIDPattern.ReplaceAllString(s, "***REDACTED-AWS-ACCESS-KEY-ID***")
+	s = awsSecretAccessKeyPattern.ReplaceAllString(s, "***REDACTED-AWS-SECRET-ACCESS-KEY***")
+	return s
+}
+
+// `redactSecrets` redacts this S3 backend's configured credential values, then
+// applies the AWS-credential-shape heuristic to also cover credentials sourced
+// from the environment or instance metadata (which are not stored in config).
+func (s3Context *s3ContextStruct) redactSecrets(s string) string {
+	if cfg, ok := s3Context.backend.backendTypeSpecifics.(*backendConfigS3Struct); ok && cfg != nil {
+		s = redactValue(s, cfg.secretAccessKey, "***REDACTED-AWS-SECRET-ACCESS-KEY***")
+		s = redactValue(s, cfg.accessKeyID, "***REDACTED-AWS-ACCESS-KEY-ID***")
+	}
+	return redactAWSSecretShapes(s)
 }
 
 // `readFile` is called to read a range of a `file` at the specified path.
