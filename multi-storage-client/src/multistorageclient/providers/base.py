@@ -380,15 +380,15 @@ class BaseStorageProvider(StorageProvider):
             data_size = len(result) if result.isascii() else len(result.encode())
         elif isinstance(result, int):
             data_size = result
-        elif isinstance(result, list) and len(result) > 0:
-            if isinstance(result[0], bytes):
-                data_size = sum(len(item) for item in result)
-            elif isinstance(result[0], str):
-                data_size = sum(len(item) if item.isascii() else len(item.encode()) for item in result)
+        elif isinstance(result, list):
+            if len(result) > 0:
+                if isinstance(result[0], bytes):
+                    data_size = sum(len(item) for item in result)
+                elif isinstance(result[0], str):
+                    data_size = sum(len(item) if item.isascii() else len(item.encode()) for item in result)
         else:
             try:
-                buffer_result: Any = result
-                data_size = memoryview(buffer_result).nbytes
+                data_size = memoryview(result).nbytes
             except TypeError:
                 pass
 
