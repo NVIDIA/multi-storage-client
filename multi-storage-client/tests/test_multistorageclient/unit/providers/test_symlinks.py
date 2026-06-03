@@ -557,6 +557,58 @@ def test_list_recursive_symlinks_from_posix_with_preserve_raises_on_broken_targe
             list(storage_client.list_recursive(path="", symlink_handling=SymlinkHandling.PRESERVE))
 
 
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[[tempdatastore.TemporaryPOSIXDirectory]],
+)
+def test_list_symlinks_from_posix_with_follow_raises_on_broken_target(
+    temp_data_store_type: type[tempdatastore.TemporaryDataStore],
+):
+    """
+    ``symlink_handling=SymlinkHandling.FOLLOW`` must raise ``ValueError``
+    when a symlink's target does not exist (broken / dangling symlink),
+    symmetric with :py:attr:`SymlinkHandling.PRESERVE`.
+
+    Under ``FOLLOW`` a symlink is dereferenced and classified as a regular
+    file or directory. A broken symlink is neither -- ``os.path.isfile`` and
+    ``os.path.isdir`` both follow the link to the missing target and return
+    ``False`` -- so without an explicit guard the entry is silently dropped
+    from the listing. That silent omission lets an upload/sync "succeed"
+    while quietly leaving out files the caller intended to include, so the
+    provider must fail fast instead, telling the caller to switch to
+    ``SKIP`` to ignore the symlink.
+
+    Layout created by this test::
+
+        base_dir/
+        ├── c.txt
+        └── dangling   -> missing.txt   (target does not exist)
+    """
+    with temp_data_store_type() as temp_data_store:
+        storage_client, base_path = _build_posix_storage_client_for_preserve_error(temp_data_store)
+
+        os.symlink(os.path.join(base_path, "missing.txt"), os.path.join(base_path, "dangling"))
+
+        with pytest.raises(ValueError, match="Broken symlink"):
+            list(storage_client.list(prefix="", symlink_handling=SymlinkHandling.FOLLOW))
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[[tempdatastore.TemporaryPOSIXDirectory]],
+)
+def test_list_recursive_symlinks_from_posix_with_follow_raises_on_broken_target(
+    temp_data_store_type: type[tempdatastore.TemporaryDataStore],
+):
+    with temp_data_store_type() as temp_data_store:
+        storage_client, base_path = _build_posix_storage_client_for_preserve_error(temp_data_store)
+
+        os.symlink(os.path.join(base_path, "missing.txt"), os.path.join(base_path, "dangling"))
+
+        with pytest.raises(ValueError, match="Broken symlink"):
+            list(storage_client.list_recursive(path="", symlink_handling=SymlinkHandling.FOLLOW))
+
+
 @pytest.mark.serial
 def test_sync_from_posix_to_s3_to_posix_preserves_symlinks():
     """
