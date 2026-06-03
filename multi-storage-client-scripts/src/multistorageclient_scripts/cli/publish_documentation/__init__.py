@@ -24,11 +24,12 @@ from types import FrameType
 from typing import Final, Optional
 
 import githubkit
-import githubkit.versions.latest.models
-import urllib3
+import httpx
+import httpx_retries
 
 import multistorageclient_scripts.cli as cli
 import multistorageclient_scripts.utils.argparse_extensions as argparse_extensions
+import multistorageclient_scripts.utils.httpx.auth
 from multistorageclient_scripts.utils.wait import wait
 
 logger = logging.getLogger(__name__)
@@ -167,19 +168,13 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
 
     # https://docs.github.com/en/actions/reference/security/oidc#methods-for-requesting-the-oidc-token
     # https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-cloud-providers#using-custom-actions
-    get_oidc_token_response = urllib3.request(
-        method="GET",
-        url=os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"],
-        headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
-        timeout=30,
-        retries=urllib3.Retry(),
+    github_actions_oidc_token_client = httpx.Client(
+        auth=multistorageclient_scripts.utils.httpx.auth.BearerAuth(token=os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]),
+        base_url=os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"].rstrip("/") + "/",
+        follow_redirects=True,
+        transport=httpx_retries.RetryTransport(retry=httpx_retries.Retry(backoff_factor=2)),
     )
-    if get_oidc_token_response.status != 200:
-        raise RuntimeError(
-            "Failed to get GitHub Actions OIDC token!",
-            get_oidc_token_response.status,
-            get_oidc_token_response.data.decode(),
-        )
+    get_oidc_token_response = github_actions_oidc_token_client.get(url="").raise_for_status()
     oidc_token = get_oidc_token_response.json().get("value")
     if oidc_token is None:
         raise ValueError("GitHub Actions OIDC token is missing from response!")

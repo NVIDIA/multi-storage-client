@@ -63,5 +63,5 @@ Publish Wheels:
     - |
       nix develop --command bash -c "
         cd multi-storage-client-scripts &&
-        uv run msc-scripts publish-wheels --github-token ${GITHUB_SERVICE_ACCOUNT_TOKEN} --artifactory-username ${URM_ARTIFACTORY_USERNAME} --artifactory-password ${URM_ARTIFACTORY_PASSWORD} --git-tag ${CI_COMMIT_TAG} --phase publish
+        uv run msc-scripts publish-wheels --github-token ${GITHUB_SERVICE_ACCOUNT_TOKEN} --kitmaker-portal-token ${KITMAKER_PORTAL_SERVICE_ACCOUNT_TOKEN} --git-tag ${CI_COMMIT_TAG} --phase publish
       "

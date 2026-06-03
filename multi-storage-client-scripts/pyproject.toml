@@ -13,10 +13,10 @@ classifiers = [
 ]
 dependencies = [
     "multi-storage-client",
-    "dulwich>=1.2.1,<2",
+    "dulwich>=1.2.6,<2",
     "githubkit>=0.15.5,<1",
-    "packaging>=26.2,<27",
-    "pyartifactory>=2.11.2,<3"
+    "httpx-retries>=0.5,<1",
+    "packaging>=26.2,<27"
 ]
 
 [project.scripts]
