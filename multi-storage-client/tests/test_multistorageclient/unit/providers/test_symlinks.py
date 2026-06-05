@@ -537,7 +537,7 @@ def test_list_symlinks_from_posix_with_preserve_raises_on_broken_target(
 
         os.symlink(os.path.join(base_path, "missing.txt"), os.path.join(base_path, "dangling"))
 
-        with pytest.raises(ValueError, match="Broken symlink"):
+        with pytest.raises(FileNotFoundError, match="Broken symlink"):
             list(storage_client.list(prefix="", symlink_handling=SymlinkHandling.PRESERVE))
 
 
@@ -553,7 +553,7 @@ def test_list_recursive_symlinks_from_posix_with_preserve_raises_on_broken_targe
 
         os.symlink(os.path.join(base_path, "missing.txt"), os.path.join(base_path, "dangling"))
 
-        with pytest.raises(ValueError, match="Broken symlink"):
+        with pytest.raises(FileNotFoundError, match="Broken symlink"):
             list(storage_client.list_recursive(path="", symlink_handling=SymlinkHandling.PRESERVE))
 
 
@@ -565,7 +565,7 @@ def test_list_symlinks_from_posix_with_follow_raises_on_broken_target(
     temp_data_store_type: type[tempdatastore.TemporaryDataStore],
 ):
     """
-    ``symlink_handling=SymlinkHandling.FOLLOW`` must raise ``ValueError``
+    ``symlink_handling=SymlinkHandling.FOLLOW`` must raise ``FileNotFoundError``
     when a symlink's target does not exist (broken / dangling symlink),
     symmetric with :py:attr:`SymlinkHandling.PRESERVE`.
 
@@ -589,7 +589,7 @@ def test_list_symlinks_from_posix_with_follow_raises_on_broken_target(
 
         os.symlink(os.path.join(base_path, "missing.txt"), os.path.join(base_path, "dangling"))
 
-        with pytest.raises(ValueError, match="Broken symlink"):
+        with pytest.raises(FileNotFoundError, match="Broken symlink"):
             list(storage_client.list(prefix="", symlink_handling=SymlinkHandling.FOLLOW))
 
 
@@ -605,7 +605,7 @@ def test_list_recursive_symlinks_from_posix_with_follow_raises_on_broken_target(
 
         os.symlink(os.path.join(base_path, "missing.txt"), os.path.join(base_path, "dangling"))
 
-        with pytest.raises(ValueError, match="Broken symlink"):
+        with pytest.raises(FileNotFoundError, match="Broken symlink"):
             list(storage_client.list_recursive(path="", symlink_handling=SymlinkHandling.FOLLOW))
 
 

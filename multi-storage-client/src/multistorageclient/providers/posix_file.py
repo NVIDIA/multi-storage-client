@@ -320,7 +320,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
 
                     real_target = os.path.realpath(full_path)
                     if not os.path.exists(real_target):
-                        raise ValueError(
+                        raise FileNotFoundError(
                             f"Broken symlink '{relative_path}' points to a missing target "
                             f"({full_path} -> {real_target}). Use symlink_handling=SKIP to ignore."
                         )
@@ -354,7 +354,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
                     real_target = os.path.realpath(full_path)
                     if not os.path.exists(real_target):
                         relative_path = os.path.relpath(full_path, self._base_path)
-                        raise ValueError(
+                        raise FileNotFoundError(
                             f"Broken symlink '{relative_path}' points to a missing target "
                             f"({full_path} -> {real_target}). Use symlink_handling=SKIP to ignore."
                         )
@@ -412,6 +412,8 @@ class PosixFileStorageProvider(BaseStorageProvider):
                         symlink_target=relative_target,
                     )
 
+        except FileNotFoundError:
+            raise
         except (OSError, PermissionError) as e:
             logger.warning(f"Failed to list contents of {dir_path}, caused by: {e}")
             return
