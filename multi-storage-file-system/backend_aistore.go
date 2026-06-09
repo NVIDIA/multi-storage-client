@@ -24,6 +24,14 @@ type aistoreContextStruct struct {
 	backend    *backendStruct
 	baseParams api.BaseParams // Connection parameters
 	bck        cmn.Bck        // Bucket metadata/ structure
+	// `listBackend`, when non-nil, is the backend named by the AIStore backend's
+	// `manifest_gen_backend` (e.g. a direct S3 backend). LIST/STAT-DIR operations are
+	// delegated to its context so that manifest generation and readdir bypass AIS's
+	// (slow, cold) cross-cloud listing, while object reads continue to flow through
+	// AIS for its caching/fast-tier. We store the *backendStruct (not its context)
+	// and dereference `.context` at call time so a later re-setup can't leave a stale
+	// pointer here.
+	listBackend *backendStruct
 }
 
 // `backendCommon` is called to return a pointer to the context's common `backendStruct`.
@@ -94,11 +102,26 @@ func (backend *backendStruct) setupAIStoreContext() (err error) {
 	}
 
 	// Store context
-	backend.context = &aistoreContextStruct{
+	aisContext := &aistoreContextStruct{
 		backend:    backend,
 		baseParams: baseParams,
 		bck:        bck,
 	}
+
+	// If a manifest_gen_backend is configured, route LIST/STAT-DIR operations to it
+	// (reads still go via AIS). Ensure its context is set up (it may not have been
+	// set up yet, depending on backend mount ordering).
+	if backendAIStore.manifestGenBackend != nil {
+		if backendAIStore.manifestGenBackend.context == nil {
+			if err = backendAIStore.manifestGenBackend.setupContext(); err != nil {
+				err = fmt.Errorf("[AIStore] failed to set up manifest_gen_backend %q: %v", backendAIStore.manifestGenBackend.dirName, err)
+				return
+			}
+		}
+		aisContext.listBackend = backendAIStore.manifestGenBackend
+	}
+
+	backend.context = aisContext
 
 	// Record backendPath
 	if backend.prefix == "" {
@@ -157,6 +180,11 @@ func (aisContext *aistoreContextStruct) deleteFile(deleteFileInput *deleteFileIn
 // indicates the `directory` has been completely enumerated. The `isTruncated` field will also
 // align with this convention.
 func (aisContext *aistoreContextStruct) listDirectory(listDirectoryInput *listDirectoryInputStruct) (listDirectoryOutput *listDirectoryOutputStruct, err error) {
+	// Delegate listing to the manifest_gen_backend (e.g. direct S3) when configured.
+	if aisContext.listBackend != nil {
+		return aisContext.listBackend.context.listDirectory(listDirectoryInput)
+	}
+
 	var (
 		backend     = aisContext.backend
 		fullDirPath = backend.prefix + listDirectoryInput.dirPath
@@ -222,6 +250,11 @@ func (aisContext *aistoreContextStruct) listDirectory(listDirectoryInput *listDi
 // empty list of elements (`objects`) indicates the list of `objects` has been completely
 // enumerated. The `isTruncated` field will also align with this convention.
 func (aisContext *aistoreContextStruct) listObjects(listObjectsInput *listObjectsInputStruct) (listObjectsOutput *listObjectsOutputStruct, err error) {
+	// Delegate listing to the manifest_gen_backend (e.g. direct S3) when configured.
+	if aisContext.listBackend != nil {
+		return aisContext.listBackend.context.listObjects(listObjectsInput)
+	}
+
 	var (
 		backend = aisContext.backend
 		lsmsg   = &apc.LsoMsg{
@@ -337,6 +370,11 @@ func (aisContext *aistoreContextStruct) readFile(readFileInput *readFileInputStr
 // `statDirectory` is called to verify that the specified path refers to a `directory`.
 // An error is returned if either the specified path is not a `directory` or non-existent.
 func (aisContext *aistoreContextStruct) statDirectory(statDirectoryInput *statDirectoryInputStruct) (statDirectoryOutput *statDirectoryOutputStruct, err error) {
+	// Delegate directory stat to the manifest_gen_backend (e.g. direct S3) when configured.
+	if aisContext.listBackend != nil {
+		return aisContext.listBackend.context.statDirectory(statDirectoryInput)
+	}
+
 	var (
 		backend     = aisContext.backend
 		fullDirPath = backend.prefix + statDirectoryInput.dirPath

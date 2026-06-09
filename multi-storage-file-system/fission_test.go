@@ -1722,3 +1722,99 @@ func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 		t.Fatalf("DoLookup(ram,Name:\"dir2\") failed after conversion (errno: %v)", errno)
 	}
 }
+
+// TestFissionDoReadFetchFailureReturnsEIO is a regression test for the cache-line
+// fetch-failure deadlock. When a backend read failed, fetch() used to leave the
+// cache line marked Clean with contentLength==0; a subsequent DoRead then computed
+// an inverted slice (offsetLimit < offsetStart) and PANICKED while holding the
+// global lock. DoRead's deferred metrics func re-acquired that non-reentrant lock
+// during panic unwinding and self-deadlocked, wedging the entire filesystem.
+//
+// After the fix, DoRead must surface EIO for a failed cache line and evict it,
+// without panicking and without leaking the global lock.
+func TestFissionDoReadFetchFailureReturnsEIO(t *testing.T) {
+	var (
+		errno     syscall.Errno
+		fh        uint64
+		fileBIno  uint64
+		inHeader  *fission.InHeader
+		inode     *inodeStruct
+		lookupIn  *fission.LookupIn
+		lookupOut *fission.LookupOut
+		ok        bool
+		openOut   *fission.OpenOut
+		ramDirIno uint64
+		tracker   *dataCacheLineTrackerStruct
+	)
+
+	fissionTestUp(t)
+	defer fissionTestDown(t)
+
+	// Navigate to the RAM-backed fileB.
+	inHeader = &fission.InHeader{NodeID: FUSERootDirInodeNumber}
+	lookupIn = &fission.LookupIn{Name: []byte("ram")}
+	lookupOut, errno = globals.DoLookup(inHeader, lookupIn)
+	if errno != 0 {
+		t.Fatalf("DoLookup(root,\"ram\") failed (errno: %v)", errno)
+	}
+	ramDirIno = lookupOut.EntryOut.NodeID
+
+	inHeader = &fission.InHeader{NodeID: ramDirIno}
+	lookupIn = &fission.LookupIn{Name: []byte("fileB")}
+	lookupOut, errno = globals.DoLookup(inHeader, lookupIn)
+	if errno != 0 {
+		t.Fatalf("DoLookup(ram,\"fileB\") failed (errno: %v)", errno)
+	}
+	fileBIno = lookupOut.EntryOut.NodeID
+
+	// Open fileB read-only to obtain a file handle.
+	inHeader = &fission.InHeader{NodeID: fileBIno}
+	openOut, errno = globals.DoOpen(inHeader, &fission.OpenIn{Flags: fission.FOpenRequestRDONLY})
+	if errno != 0 {
+		t.Fatalf("DoOpen(fileB, RDONLY) failed (errno: %v)", errno)
+	}
+	fh = openOut.FH
+
+	// Inject a poisoned cache line for line 0: Clean but with a failed fetch
+	// (contentLength == 0) — exactly the state fetch() leaves on a backend error.
+	// Setting it up directly keeps the subsequent read on the cache-hit path and
+	// avoids depending on a flaky backend.
+	globals.Lock()
+	inode, ok = globals.inodeMap.get(fileBIno)
+	if !ok {
+		globals.Unlock()
+		t.Fatalf("inodeMap.get(fileBIno) returned !ok")
+	}
+	if inode.cacheMap == nil {
+		inode.cacheMap = make(map[uint64]uint64)
+	}
+	tracker = globals.dataCacheLineFreeLRU.popHead()
+	if tracker == nil {
+		globals.Unlock()
+		t.Fatalf("dataCacheLineFreeLRU.popHead() returned nil (no free cache lines)")
+	}
+	tracker.inodeNumber = inode.inodeNumber
+	tracker.lineNumber = 0
+	tracker.contentLength = 0
+	tracker.eTag = ""
+	tracker.fetchFailed = true
+	inode.cacheMap[0] = tracker.pos
+	globals.dataCacheLineCleanLRU.pushTail(tracker)
+	globals.Unlock()
+
+	// Read line 0. Before the fix this panicked while holding the global lock and
+	// deadlocked the whole filesystem; it must now cleanly return EIO.
+	inHeader = &fission.InHeader{NodeID: fileBIno}
+	_, errno = globals.DoRead(inHeader, &fission.ReadIn{FH: fh, Offset: 0, Size: testFissionReadBufSize})
+	if errno != syscall.EIO {
+		t.Fatalf("DoRead over a failed cache line returned errno %v (expected EIO %v)", errno, syscall.EIO)
+	}
+
+	// The failed line must have been evicted so a later read re-fetches it.
+	globals.Lock()
+	_, ok = inode.cacheMap[0]
+	globals.Unlock()
+	if ok {
+		t.Fatalf("failed cache line was not evicted from inode.cacheMap after EIO")
+	}
+}

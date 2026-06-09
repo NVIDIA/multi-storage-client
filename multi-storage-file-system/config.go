@@ -1305,6 +1305,12 @@ func checkConfigFile() (err error) {
 						err = fmt.Errorf("bad AIStore.timeout at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
 						return
 					}
+
+					backendConfigAIStoreAsStruct.manifestGenBackendName, ok = parseString(backendConfigAIStoreAsMap, "manifest_gen_backend", "")
+					if !ok {
+						err = fmt.Errorf("bad AIStore.manifest_gen_backend at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+						return
+					}
 				} else {
 					backendConfigAIStoreAsStruct = &backendConfigAIStoreStruct{
 						endpoint:                 os.Getenv("AIS_ENDPOINT"),
@@ -1790,6 +1796,36 @@ func checkConfigFile() (err error) {
 		}
 	}
 
+	// Resolve AIStore `manifest_gen_backend` references now that all backends are
+	// parsed. Each reference must name another, non-AIStore backend in this config;
+	// that backend serves LIST/STAT-DIR while reads continue via AIS.
+	for _, aisBackend := range config.backends {
+		if aisBackend.backendType != "AIStore" {
+			continue
+		}
+		aisCfg := aisBackend.backendTypeSpecifics.(*backendConfigAIStoreStruct)
+		if aisCfg.manifestGenBackendName == "" {
+			continue
+		}
+		if aisCfg.manifestGenBackendName == aisBackend.dirName {
+			err = fmt.Errorf("AIStore backend %q manifest_gen_backend cannot reference itself", aisBackend.dirName)
+			return
+		}
+		srcBackend, found := config.backends[aisCfg.manifestGenBackendName]
+		if !found {
+			err = fmt.Errorf("AIStore backend %q manifest_gen_backend %q not found among configured backends", aisBackend.dirName, aisCfg.manifestGenBackendName)
+			return
+		}
+		if srcBackend.backendType == "AIStore" {
+			err = fmt.Errorf("AIStore backend %q manifest_gen_backend %q must not be an AIStore backend", aisBackend.dirName, aisCfg.manifestGenBackendName)
+			return
+		}
+		if srcBackend.bucketContainerName != aisBackend.bucketContainerName || srcBackend.prefix != aisBackend.prefix {
+			globals.logger.Printf("[WARN] an AIStore manifest_gen_backend targets a different bucket/prefix than its AIStore backend; listing and reads may not align")
+		}
+		aisCfg.manifestGenBackend = srcBackend
+	}
+
 	if globals.config == nil {
 		// Move all (local) config.backends to globals.backendsToMount
 
@@ -2132,6 +2168,11 @@ func checkConfigFile() (err error) {
 
 				switch backendAsStructOld.backendType {
 				case "AIStore":
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigAIStoreStruct).manifestGenBackendName != backendAsStructNew.backendTypeSpecifics.(*backendConfigAIStoreStruct).manifestGenBackendName {
+						err = fmt.Errorf("cannot change AIStore.manifest_gen_backend in backends[\"%s\"]", dirName)
+						return
+					}
+
 					if backendAsStructOld.backendTypeSpecifics.(*backendConfigAIStoreStruct).endpoint != backendAsStructNew.backendTypeSpecifics.(*backendConfigAIStoreStruct).endpoint {
 						err = fmt.Errorf("cannot change AIStore.endpoint in backends[\"%s\"]", dirName)
 						return

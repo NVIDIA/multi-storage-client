@@ -20,6 +20,13 @@ import (
 	"testing"
 )
 
+func activateBackendsToMountForTest() {
+	for dirName, backend := range globals.backendsToMount {
+		delete(globals.backendsToMount, dirName)
+		globals.config.backends[dirName] = backend
+	}
+}
+
 // TestObservabilityConfigParsing verifies that observability config is parsed correctly
 // as an add-on to existing MSFS config without breaking anything.
 func TestObservabilityConfigParsing(t *testing.T) {
@@ -702,6 +709,221 @@ backends: [
 	start, limit = globals.physChildDirEntryMap.getIndexRange(FUSERootDirInodeNumber)
 	if (limit - start) != 0 {
 		t.Fatalf("globals.physChildDirEntryMap.getIndexRange(FUSERootDirInodeNumber) should have returned [i:i)")
+	}
+}
+
+// TestManifestGenBackendReference verifies that an AIStore backend's
+// manifest_gen_backend resolves to another configured backend.
+func TestManifestGenBackendReference(t *testing.T) {
+	var (
+		err error
+	)
+
+	initGlobals(testOsArgs(testGlobals.testConfigFilePathMap[".yaml"]))
+
+	err = os.WriteFile(globals.configFilePath, []byte(`
+msfs_version: 1
+backends: [
+  {
+    dir_name: ais,
+    bucket_container_name: test,
+    prefix: "p/",
+    backend_type: AIStore,
+    AIStore: {
+      endpoint: "http://10.0.0.1:51080",
+      provider: s3,
+      manifest_gen_backend: s3src,
+    },
+  },
+  {
+    dir_name: s3src,
+    bucket_container_name: test,
+    prefix: "p/",
+    backend_type: S3,
+    S3: {
+      region: us-east-1,
+      endpoint: "http://minio:9000",
+      access_key_id: minioadmin,
+      secret_access_key: minioadmin,
+    },
+  },
+]
+`), 0o600)
+	if err != nil {
+		t.Fatalf("os.WriteFile() failed: %v", err)
+	}
+
+	err = checkConfigFile()
+	if err != nil {
+		t.Fatalf("checkConfigFile() unexpectedly failed: %v", err)
+	}
+
+	// On first load, checkConfigFile() moves backends into globals.backendsToMount.
+	aisBackend, ok := globals.backendsToMount["ais"]
+	if !ok {
+		t.Fatalf("expected backend \"ais\" to be configured")
+	}
+	aisCfg, ok := aisBackend.backendTypeSpecifics.(*backendConfigAIStoreStruct)
+	if !ok {
+		t.Fatalf("expected backend \"ais\" backendTypeSpecifics to be *backendConfigAIStoreStruct")
+	}
+	if aisCfg.manifestGenBackendName != "s3src" {
+		t.Errorf("expected manifestGenBackendName \"s3src\", got %q", aisCfg.manifestGenBackendName)
+	}
+	if aisCfg.manifestGenBackend == nil {
+		t.Fatalf("expected manifest_gen_backend to resolve, got nil")
+	}
+	if aisCfg.manifestGenBackend.dirName != "s3src" {
+		t.Errorf("expected resolved manifest_gen_backend dirName \"s3src\", got %q", aisCfg.manifestGenBackend.dirName)
+	}
+	if aisCfg.manifestGenBackend.backendType != "S3" {
+		t.Errorf("expected resolved manifest_gen_backend backendType \"S3\", got %q", aisCfg.manifestGenBackend.backendType)
+	}
+
+	activateBackendsToMountForTest()
+
+	err = os.WriteFile(globals.configFilePath, []byte(`
+msfs_version: 1
+backends: [
+  {
+    dir_name: ais,
+    bucket_container_name: test,
+    prefix: "p/",
+    backend_type: AIStore,
+    AIStore: {
+      endpoint: "http://10.0.0.1:51080",
+      provider: s3,
+    },
+  },
+  {
+    dir_name: s3src,
+    bucket_container_name: test,
+    prefix: "p/",
+    backend_type: S3,
+    S3: {
+      region: us-east-1,
+      endpoint: "http://minio:9000",
+      access_key_id: minioadmin,
+      secret_access_key: minioadmin,
+    },
+  },
+]
+`), 0o600)
+	if err != nil {
+		t.Fatalf("os.WriteFile() failed: %v", err)
+	}
+
+	err = checkConfigFile()
+	if err == nil {
+		t.Fatalf("checkConfigFile() unexpectedly allowed changing manifest_gen_backend via reload")
+	}
+}
+
+// TestManifestGenBackendMissing verifies that referencing a non-existent backend
+// via manifest_gen_backend is rejected.
+func TestManifestGenBackendMissing(t *testing.T) {
+	var (
+		err error
+	)
+
+	initGlobals(testOsArgs(testGlobals.testConfigFilePathMap[".yaml"]))
+
+	err = os.WriteFile(globals.configFilePath, []byte(`
+msfs_version: 1
+backends: [
+  {
+    dir_name: ais,
+    bucket_container_name: test,
+    backend_type: AIStore,
+    AIStore: {
+      endpoint: "http://10.0.0.1:51080",
+      provider: s3,
+      manifest_gen_backend: does_not_exist,
+    },
+  },
+]
+`), 0o600)
+	if err != nil {
+		t.Fatalf("os.WriteFile() failed: %v", err)
+	}
+
+	err = checkConfigFile()
+	if err == nil {
+		t.Fatalf("checkConfigFile() unexpectedly succeeded with a dangling manifest_gen_backend reference")
+	}
+
+	initGlobals(testOsArgs(testGlobals.testConfigFilePathMap[".yaml"]))
+
+	err = os.WriteFile(globals.configFilePath, []byte(`
+msfs_version: 1
+backends: [
+  {
+    dir_name: ais,
+    bucket_container_name: test,
+    backend_type: AIStore,
+    AIStore: {
+      endpoint: "http://10.0.0.1:51080",
+      provider: s3,
+      manifest_gen_backend: s3src,
+    },
+  },
+  {
+    dir_name: s3src,
+    bucket_container_name: test,
+    backend_type: S3,
+    S3: {
+      region: us-east-1,
+      endpoint: "http://minio:9000",
+      access_key_id: minioadmin,
+      secret_access_key: minioadmin,
+    },
+  },
+]
+`), 0o600)
+	if err != nil {
+		t.Fatalf("os.WriteFile() failed: %v", err)
+	}
+
+	err = checkConfigFile()
+	if err != nil {
+		t.Fatalf("checkConfigFile() unexpectedly failed: %v", err)
+	}
+
+	activateBackendsToMountForTest()
+
+	err = os.WriteFile(globals.configFilePath, []byte(`
+msfs_version: 1
+backends: [
+  {
+    dir_name: ais,
+    bucket_container_name: test,
+    backend_type: AIStore,
+    AIStore: {
+      endpoint: "http://10.0.0.1:51080",
+      provider: s3,
+      manifest_gen_backend: does_not_exist,
+    },
+  },
+  {
+    dir_name: s3src,
+    bucket_container_name: test,
+    backend_type: S3,
+    S3: {
+      region: us-east-1,
+      endpoint: "http://minio:9000",
+      access_key_id: minioadmin,
+      secret_access_key: minioadmin,
+    },
+  },
+]
+`), 0o600)
+	if err != nil {
+		t.Fatalf("os.WriteFile() failed: %v", err)
+	}
+
+	err = checkConfigFile()
+	if err == nil {
+		t.Fatalf("checkConfigFile() unexpectedly allowed a missing manifest_gen_backend via reload")
 	}
 }
 

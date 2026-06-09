@@ -146,6 +146,7 @@ the following table:
 | authnTokenFile              | string               | "${AIS_AUTHN_TOKEN_FILE:=~/.config/ais/cli/auth.token}" | If != "", specifies location of AUTHN Token file                       |
 | provider                    | string               |                                                    "s3" | IF != "ais", specifies the backend of which bucket contents are cached |
 | timeout                     | decimal milliseconds |                                                   30000 | Limit on allowed duration of requests (including retries)              |
+| manifest_gen_backend        | string               |                                                      "" | IF != "", `dir_name` of another (non-AIStore) backend used for LIST/STAT-DIR (manifest generation, readdir); object reads still go via AIS. Lets listing hit the underlying store (e.g. S3) directly while reads benefit from AIS caching. The referenced backend should target the same bucket/prefix. |
 
 ### GCS Backend Configuration
 

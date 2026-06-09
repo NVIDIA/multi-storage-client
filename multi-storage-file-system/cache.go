@@ -421,6 +421,7 @@ func (dataCacheLineTracker *dataCacheLineTrackerStruct) free() {
 	dataCacheLineTracker.inodeNumber = 0 // not yet applicable
 	dataCacheLineTracker.lineNumber = 0  // not yet applicable
 	dataCacheLineTracker.eTag = ""       // not yet applicable
+	dataCacheLineTracker.fetchFailed = false
 	dataCacheLineTracker.waiters = make([]*sync.WaitGroup, 0, 1)
 	globals.dataCacheLineFreeLRU.pushTail(dataCacheLineTracker)
 }
@@ -490,11 +491,19 @@ func (dataCacheLineTracker *dataCacheLineTrackerStruct) fetch() {
 	dataCacheLineTracker.contentGeneration++
 
 	if err != nil {
-		globals.logger.Printf("[WARN] [TODO] (*dataCacheLineTrackerStruct) fetch() needs to handle error reading cache line")
+		// The backend read failed. Mark the line as failed and move it to the
+		// Clean LRU so waiters are released and the state machine stays consistent;
+		// DoRead detects .fetchFailed, surfaces EIO to the caller, and evicts the
+		// line (so a subsequent read re-fetches rather than serving empty content).
+		// Leaving it un-flagged caused DoRead to compute an inverted slice
+		// (contentLength==0 < offset) and panic while holding the global lock.
+		globals.logger.Printf("[WARN] (*dataCacheLineTrackerStruct) fetch() backend read failed for inode %d line %d: %v", dataCacheLineTracker.inodeNumber, dataCacheLineTracker.lineNumber, err)
 		dataCacheLineTracker.contentLength = 0
 		dataCacheLineTracker.eTag = ""
+		dataCacheLineTracker.fetchFailed = true
 	} else {
 		dataCacheLineTracker.eTag = readFileOutput.eTag
+		dataCacheLineTracker.fetchFailed = false
 	}
 
 	globals.dataCacheLineCleanLRU.pushTail(dataCacheLineTracker)

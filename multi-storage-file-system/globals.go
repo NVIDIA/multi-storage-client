@@ -31,6 +31,16 @@ type backendConfigAIStoreStruct struct {
 	authnTokenFile           string        //      JSON/YAML "authn_token_file"               default:"${AIS_AUTHN_TOKEN_FILE:=~/.config/ais/cli/auth.token}"
 	provider                 string        //      JSON/YAML "provider"                       default:"s3"
 	timeout                  time.Duration //      JSON/YAML "timeout"                        default:30000
+	// `manifestGenBackendName` (JSON/YAML "manifest_gen_backend", default "") names
+	// another backend defined in this config (by its dir_name). When set, the AIStore
+	// backend routes LIST/STAT-DIR operations (manifest generation, readdir) to that
+	// backend's context (e.g. direct S3/GCS) while object reads (readFile/statFile)
+	// still flow through AIS so its caching/fast-tier applies. This avoids AIS's slow
+	// cold cross-cloud listing without re-declaring the source backend's credentials.
+	manifestGenBackendName string
+	// `manifestGenBackend` is the resolved pointer to the backend named by
+	// manifestGenBackendName (set in a post-parse resolution pass). Runtime state.
+	manifestGenBackend *backendStruct
 }
 
 // `backendConfigGCSStruct` describes a backend's GCS-specific settings.
@@ -332,6 +342,7 @@ type dataCacheLineTrackerStruct struct {
 	inodeNumber       uint64            // Reference to an inodeStruct.inodeNumber
 	lineNumber        uint64            // Identifies file/object range covered by content as up to [lineNumber * globals.config.cacheLineSize:(lineNumber + 1) * global.config.cacheLineSize)
 	eTag              string            // If state == CacheLineClean, value of inodeStruct.eTag when when fetched from backend; Otherwise, == ""
+	fetchFailed       bool              // Set when the backend read populating this line failed; DoRead surfaces this as EIO and evicts the line instead of serving empty/short content
 }
 
 // `inodeStruct` contains the state of an inode.
