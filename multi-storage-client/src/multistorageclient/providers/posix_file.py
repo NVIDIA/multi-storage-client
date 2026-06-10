@@ -337,7 +337,13 @@ class PosixFileStorageProvider(BaseStorageProvider):
                             f"to dereference or symlink_handling=SKIP to ignore."
                         )
 
-                    relative_target = ObjectMetadata.encode_symlink_target(full_path, real_target)
+                    raw_link = os.readlink(full_path)
+                    immediate_target = (
+                        raw_link
+                        if os.path.isabs(raw_link)
+                        else os.path.normpath(os.path.join(os.path.dirname(full_path), raw_link))
+                    )
+                    relative_target = ObjectMetadata.encode_symlink_target(full_path, immediate_target)
 
                     target_type = "directory" if os.path.isdir(full_path) else "file"
 
