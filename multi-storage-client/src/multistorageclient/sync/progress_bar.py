@@ -65,6 +65,11 @@ class ProgressBar:
         self._last_total_update_time = time.time()
 
     def update_total(self, new_total: int) -> None:
+        """
+        Update the progress bar total.
+
+        :param new_total: Total item count to assign to the progress bar.
+        """
         if self.pbar is not None:
             self.pbar.total = new_total
             # Custom throttling for update_total since it doesn't go through update()
@@ -89,6 +94,13 @@ class ProgressBar:
     def set_postfix_str(self, s: str, refresh: bool = False) -> None:
         if self.pbar is not None:
             self.pbar.set_postfix_str(s, refresh)
+
+    def refresh(self) -> None:
+        """
+        Refresh the progress bar display without changing its counters.
+        """
+        if self.pbar is not None:
+            self.pbar.refresh()
 
     def close(self) -> None:
         if self.pbar is not None:

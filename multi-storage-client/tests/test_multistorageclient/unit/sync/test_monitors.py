@@ -16,17 +16,23 @@
 import queue
 import threading
 import time
+from datetime import datetime
 from typing import Optional, cast
 
 from multistorageclient.client import StorageClient
 from multistorageclient.sync.monitors import ErrorMonitorThread, ResultMonitorThread
+from multistorageclient.sync.producer import ProducerThread
 from multistorageclient.sync.progress_bar import ProgressBar
 from multistorageclient.sync.types import ErrorInfo, OperationType
+from multistorageclient.types import ObjectMetadata
 
 
 class MockStorageClient:
     def list(self, **kwargs):
         raise Exception("No Such Method")
+
+    def list_recursive(self, **kwargs):
+        return self.list(**kwargs)
 
     def commit_metadata(self, prefix: Optional[str] = None) -> None:
         pass
@@ -113,3 +119,71 @@ def test_error_consumer_thread_fail_fast():
     error_queue.put(None)
     error_consumer.join(timeout=1)
     assert not error_consumer.is_alive()
+
+
+def test_result_monitor_refreshes_progress_while_producer_listing_blocks():
+    source_client = MockStorageClient()
+    target_client = MockStorageClient()
+    file_queue = queue.Queue()
+    result_queue = queue.Queue()
+    shutdown_event = threading.Event()
+    sleep_started = threading.Event()
+    refresh_times = []
+
+    first = ObjectMetadata(key="file0.txt", content_length=100, last_modified=datetime(2025, 1, 1))
+    second = ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1))
+
+    def slow_source_iter():
+        yield first
+        sleep_started.set()
+        time.sleep(10.0)
+        yield second
+
+    source_client.list = lambda **kwargs: slow_source_iter()  # type: ignore[method-assign]
+    target_client.list = lambda **kwargs: iter(())  # type: ignore[method-assign]
+
+    progress = ProgressBar(desc="Syncing", show_progress=True)
+    assert progress.pbar is not None
+
+    original_refresh = progress.pbar.refresh
+
+    def recording_refresh(*args, **kwargs):
+        refresh_times.append(time.monotonic())
+        return original_refresh(*args, **kwargs)
+
+    progress.pbar.refresh = recording_refresh
+
+    producer_thread = ProducerThread(
+        source_client=cast(StorageClient, source_client),
+        source_path="",
+        target_client=cast(StorageClient, target_client),
+        target_path="",
+        progress=progress,
+        file_queue=file_queue,
+        num_workers=1,
+        shutdown_event=shutdown_event,
+    )
+    result_monitor_thread = ResultMonitorThread(
+        target_client=cast(StorageClient, target_client),
+        target_path="",
+        progress=progress,
+        result_queue=result_queue,
+    )
+
+    result_monitor_thread.start()
+    producer_thread.start()
+    assert sleep_started.wait(timeout=2.0)
+
+    sleep_start = time.monotonic()
+    producer_thread.join(timeout=15.0)
+    sleep_end = time.monotonic()
+    result_queue.put((OperationType.STOP, None, None))
+    result_monitor_thread.join(timeout=2.0)
+    progress.close()
+
+    refreshes_during_sleep = [t for t in refresh_times if sleep_start <= t <= sleep_end]
+
+    assert producer_thread.error is None
+    assert not producer_thread.is_alive()
+    assert not result_monitor_thread.is_alive()
+    assert len(refreshes_during_sleep) >= 8

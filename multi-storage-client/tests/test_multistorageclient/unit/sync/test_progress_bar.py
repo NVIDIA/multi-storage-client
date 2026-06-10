@@ -27,6 +27,27 @@ def test_progress_bar_capped_percentage():
     assert "99.9%" in str(progress.pbar)
 
 
+def test_refresh_updates_display_without_changing_counters():
+    progress = ProgressBar(desc="Syncing", show_progress=True, total_items=0)
+    assert progress.pbar is not None
+
+    refresh_count = {"count": 0}
+    original_refresh = progress.pbar.refresh
+
+    def counting_refresh(*args, **kwargs):
+        refresh_count["count"] += 1
+        return original_refresh(*args, **kwargs)
+
+    progress.pbar.refresh = counting_refresh
+    progress.refresh()
+
+    assert progress.pbar.total == 0
+    assert progress.pbar.n == 0
+    assert refresh_count["count"] == 1
+
+    progress.close()
+
+
 def test_progress_update_interval():
     progress = ProgressBar(desc="Syncing", show_progress=True, total_items=2000)
     assert progress.pbar is not None
