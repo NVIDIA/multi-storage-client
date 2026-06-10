@@ -71,6 +71,17 @@ class MockStorageClient:
         return False
 
 
+class RecordingProgress:
+    def __init__(self):
+        self.total_updates: list[int] = []
+
+    def update_total(self, new_total: int) -> None:
+        self.total_updates.append(new_total)
+
+    def update_progress(self, items_completed: int = 1) -> None:
+        pass
+
+
 def test_match_file_metadata_seconds_resolution():
     """_match_file_metadata compares last_modified at seconds resolution."""
     source_client = MockStorageClient()
@@ -397,6 +408,37 @@ def test_producer_thread_error():
 
     assert not producer_thread.is_alive()
     assert producer_thread.error is not None
+
+
+def test_producer_updates_final_total():
+    source_client = MockStorageClient()
+    target_client = MockStorageClient()
+
+    source_files = [
+        ObjectMetadata(key="file0.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+    ]
+
+    source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
+    target_client.list = lambda **kwargs: iter(())  # type: ignore
+
+    progress = RecordingProgress()
+    producer_thread = ProducerThread(
+        source_client=cast(StorageClient, source_client),
+        source_path="",
+        target_client=cast(StorageClient, target_client),
+        target_path="",
+        progress=cast(ProgressBar, progress),
+        file_queue=queue.Queue(),
+        num_workers=1,
+        shutdown_event=threading.Event(),
+    )
+
+    producer_thread.start()
+    producer_thread.join()
+
+    assert producer_thread.error is None
+    assert progress.total_updates[-1] == len(source_files)
 
 
 def test_progress_bar_update_in_producer_thread_without_deletion():

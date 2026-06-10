@@ -15,6 +15,7 @@
 
 import contextlib
 import logging
+import queue
 import threading
 from typing import TYPE_CHECKING, Optional
 
@@ -60,7 +61,11 @@ class ResultMonitorThread(threading.Thread):
     def run(self):
         try:
             while True:
-                op, target_file_path, physical_metadata = self.result_queue.get()
+                try:
+                    op, target_file_path, physical_metadata = self.result_queue.get(timeout=1.0)
+                except queue.Empty:
+                    self.progress.refresh()
+                    continue
 
                 logger.debug(
                     f"ResultMonitorThread: {op}, target_file_path: {target_file_path}, physical_metadata: {physical_metadata}"
