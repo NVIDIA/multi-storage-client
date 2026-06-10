@@ -438,7 +438,8 @@ class ManifestMetadataProvider(MetadataProvider):
             if not manifest_obj:
                 return ResolvedPath(physical_path=current, state=ResolvedPathState.UNTRACKED, profile=None)
             if not manifest_obj.symlink_target:
-                assert manifest_obj.physical_path is not None
+                if manifest_obj.physical_path is None:
+                    raise ValueError(f"Manifest entry for '{current}' has no physical path")
                 return ResolvedPath(
                     physical_path=manifest_obj.physical_path, state=ResolvedPathState.EXISTS, profile=None
                 )

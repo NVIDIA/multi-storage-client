@@ -215,7 +215,8 @@ async def upload_config(config_file: UploadFile = File(...)):
         content = await config_file.read()
 
         # Try to parse as JSON first
-        assert config_file.filename is not None
+        if config_file.filename is None:
+            raise HTTPException(status_code=400, detail="Uploaded file must have a filename")
 
         if config_file.filename.endswith(".json"):
             config = json.loads(content)

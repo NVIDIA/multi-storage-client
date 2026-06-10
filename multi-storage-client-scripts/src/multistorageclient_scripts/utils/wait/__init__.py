@@ -33,8 +33,10 @@ def wait(
 
     For handling storage services with eventually consistent operations.
     """
-    assert max_attempts >= 1
-    assert attempt_interval_seconds >= 0
+    if max_attempts < 1:
+        raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
+    if attempt_interval_seconds < 0:
+        raise ValueError(f"attempt_interval_seconds must be >= 0, got {attempt_interval_seconds}")
 
     for attempt in range(max_attempts):
         value = waitable()

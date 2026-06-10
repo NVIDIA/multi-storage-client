@@ -128,9 +128,8 @@ def add_argument_partial(
     # {"a": int}
     # ```
     arguments_type_hints = get_type_hints(obj=arguments_type, include_extras=False)
-    assert hasattr(arguments_type, argument_key) or argument_key in arguments_type_hints, (
-        f"{arguments_type.__name__} doesn't contain {argument_key}!"
-    )
+    if not (hasattr(arguments_type, argument_key) or argument_key in arguments_type_hints):
+        raise ValueError(f"{arguments_type.__name__} doesn't contain {argument_key}!")
 
     # Default arguments without type hints to `Any`.
     argument_type_universe: set = {arguments_type_hints.get(argument_key, Any)}
@@ -298,7 +297,8 @@ def run_cli(parser: argparse.ArgumentParser) -> NoReturn:
     arguments = parser.parse_args(args=sys.argv[1:])
 
     # Check for a command function.
-    assert hasattr(arguments, _COMMAND_FUNCTION_ARGUMENT_KEY), "Command has no command function!"
+    if not hasattr(arguments, _COMMAND_FUNCTION_ARGUMENT_KEY):
+        raise RuntimeError("Command has no command function!")
 
     # Call command function.
     sys.exit(vars(arguments)[_COMMAND_FUNCTION_ARGUMENT_KEY](arguments=arguments))

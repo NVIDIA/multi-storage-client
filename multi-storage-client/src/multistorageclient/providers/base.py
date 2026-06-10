@@ -416,7 +416,8 @@ class BaseStorageProvider(StorageProvider):
         :param error_type: The type of error that occurred
         :return: Attributes dictionary with status
         """
-        assert base_attributes is not None, "Base attributes must not be None"
+        if base_attributes is None:
+            raise ValueError("Base attributes must not be None")
         return {
             **base_attributes,
             BaseStorageProvider._AttributeName.STATUS.value: (
@@ -428,7 +429,8 @@ class BaseStorageProvider(StorageProvider):
 
     def _metrics_worker_loop(self) -> None:
         """Background thread that processes queued metrics."""
-        assert self._metrics_queue is not None, "Metrics queue must be initialized"
+        if self._metrics_queue is None:
+            raise RuntimeError("Metrics queue must be initialized")
         while not self._metrics_worker_shutdown.is_set():
             try:
                 metric_data = self._metrics_queue.get(timeout=1.0)

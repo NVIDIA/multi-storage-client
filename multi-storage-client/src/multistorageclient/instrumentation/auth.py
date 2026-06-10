@@ -238,7 +238,8 @@ class VaultCertificateProvider(CertificateProvider):
         :return: Vault client token
         :raises RuntimeError: If authentication fails
         """
-        assert hvac is not None
+        if hvac is None:
+            raise ImportError("hvac package is required for Vault authentication")
         client = hvac.Client(url=self._vault_endpoint, namespace=self._vault_namespace)
 
         retry_count = 0
@@ -274,7 +275,8 @@ class VaultCertificateProvider(CertificateProvider):
         :return: Dictionary containing certificate data
         :raises RuntimeError: If fetching certificates fails
         """
-        assert hvac is not None
+        if hvac is None:
+            raise ImportError("hvac package is required for Vault authentication")
         client = hvac.Client(url=self._vault_endpoint, namespace=self._vault_namespace, token=client_token)
 
         retry_count = 0
