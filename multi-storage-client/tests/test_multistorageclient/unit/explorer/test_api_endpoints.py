@@ -96,6 +96,22 @@ def test_list_files_invalid_profile_returns_error(test_client):
     assert "not found" in response.json()["detail"].lower()
 
 
+def test_get_msc_client_and_path_normalizes_duplicate_slashes(mock_msc_config):
+    """Test that Explorer URL parsing uses normalized MSC paths."""
+    app_module.msc_config = mock_msc_config
+    cached_client = object()
+    app_module._client_cache["test-s3"] = cached_client
+
+    try:
+        client, path = app_module.get_msc_client_and_path("msc://test-s3/path//to///object.bin")
+    finally:
+        app_module.msc_config = None
+        app_module._client_cache.clear()
+
+    assert client is cached_client
+    assert path == "path/to/object.bin"
+
+
 # Tests for Pydantic models
 
 

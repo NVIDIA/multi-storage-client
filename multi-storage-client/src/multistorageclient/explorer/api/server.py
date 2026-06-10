@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from multistorageclient import StorageClient, StorageClientConfig
+from multistorageclient.shortcuts import _resolve_msc_url
 
 from .models import (
     ConfigUploadResponse,
@@ -156,13 +157,10 @@ def get_msc_client_and_path(url: str) -> tuple[Any, str]:
             status_code=400, detail="MSC configuration not loaded. Please upload a configuration first."
         )
 
-    # Extract profile and path from URL (format: msc://profile/path)
     if not url.startswith("msc://"):
         raise HTTPException(status_code=400, detail="URL must start with msc://")
 
-    parts = url[6:].split("/", 1)  # Remove 'msc://' and split
-    profile = parts[0]
-    path = parts[1] if len(parts) > 1 else ""  # Extract path after profile
+    profile, path = _resolve_msc_url(url)
 
     if profile not in msc_config.get("profiles", {}):
         raise HTTPException(status_code=400, detail=f"Profile '{profile}' not found in configuration")
