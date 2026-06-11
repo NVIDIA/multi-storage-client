@@ -380,7 +380,7 @@ class ManifestMetadataProvider(MetadataProvider):
                 existing_directory = directories.get(directory_key)
                 if existing_directory is None:
                     directories[directory_key] = ObjectMetadata(
-                        key=directory_name,
+                        key=directory_key,
                         type="directory",
                         last_modified=obj_metadata.last_modified,
                         content_length=0,
