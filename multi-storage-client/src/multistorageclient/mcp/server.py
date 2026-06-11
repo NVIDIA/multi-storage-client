@@ -75,7 +75,8 @@ def register_handlers():
     from . import prompts, tools
 
     # Ensure modules are loaded for their side effects of tool registration
-    assert prompts and tools
+    if not hasattr(prompts, "msc_help") or not hasattr(tools, "msc_list"):
+        raise RuntimeError("MCP handler modules (prompts, tools) failed to load")
 
 
 logger = logging.getLogger(__name__)

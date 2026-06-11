@@ -75,7 +75,8 @@ class CloudFrontURLSigner(URLSigner):
 
     def _get_private_key(self) -> Any:
         if self._private_key is None:
-            assert load_pem_private_key is not None
+            if load_pem_private_key is None:
+                raise ImportError("cryptography package is required for CloudFront signed URLs")
             with open(self._private_key_path, "rb") as f:
                 self._private_key = load_pem_private_key(f.read(), password=None)
         return self._private_key

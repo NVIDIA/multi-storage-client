@@ -951,7 +951,8 @@ class CacheManager:
         configured_cache_line_size = (
             self._cache_line_size
         )  # Type checker knows this is not None due to range_cache_enabled check
-        assert configured_cache_line_size is not None  # For type checker
+        if configured_cache_line_size is None:
+            raise RuntimeError("Cache line size is not configured")
 
         # Calculate needed chunks
         start_chunk = byte_range.offset // configured_cache_line_size

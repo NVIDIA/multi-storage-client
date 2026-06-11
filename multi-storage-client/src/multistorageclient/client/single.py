@@ -257,7 +257,8 @@ class SingleStorageClient(AbstractStorageClient):
         :return: The physical storage path.
         :raises FileNotFoundError: If the file does not exist in the metadata provider.
         """
-        assert self._metadata_provider is not None
+        if self._metadata_provider is None:
+            raise RuntimeError("Metadata provider is not configured")
         resolved = self._metadata_provider.realpath(logical_path)
         if not resolved.exists:
             raise FileNotFoundError(f"The file at path '{logical_path}' was not found by metadata provider.")
@@ -273,7 +274,8 @@ class SingleStorageClient(AbstractStorageClient):
         :return: The physical storage path to write to.
         :raises FileExistsError: If the file exists and overwrites are not allowed.
         """
-        assert self._metadata_provider is not None
+        if self._metadata_provider is None:
+            raise RuntimeError("Metadata provider is not configured")
         resolved = self._metadata_provider.realpath(logical_path)
         if resolved.state in (ResolvedPathState.EXISTS, ResolvedPathState.DELETED):
             if not self._metadata_provider.allow_overwrites():
@@ -298,7 +300,8 @@ class SingleStorageClient(AbstractStorageClient):
         .. note::
             TODO(NGCDP-3016): Handle eventual consistency of Swiftstack, without wait.
         """
-        assert self._metadata_provider is not None
+        if self._metadata_provider is None:
+            raise RuntimeError("Metadata provider is not configured")
         obj_metadata = self._storage_provider.get_object_metadata(physical_path)
         if attributes:
             obj_metadata.metadata = (obj_metadata.metadata or {}) | attributes
