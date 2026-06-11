@@ -335,6 +335,71 @@ class ManifestMetadataProvider(MetadataProvider):
             create_attribute_filter_evaluator(attribute_filter_expression) if attribute_filter_expression else None
         )
 
+        if include_directories:
+            # Match delimiter-style providers such as S3: list the immediate child
+            # directories first, then the immediate files. The manifest only stores
+            # object keys, so this view is built on demand for the requested path.
+            directories: dict[str, ObjectMetadata] = {}
+            synthetic_directories: set[str] = set()
+            files: list[ObjectMetadata] = []
+
+            for key, obj_metadata in sorted(self._files.items()):
+                if not key.startswith(path) or (
+                    evaluator is not None and not matches_attribute_filter_expression(obj_metadata, evaluator)
+                ):
+                    continue
+
+                relative = key[len(path) :].lstrip("/")
+
+                if "/" not in relative:
+                    if (start_after is not None and key <= start_after) or (end_at is not None and end_at < key):
+                        continue
+
+                    if obj_metadata.type == "directory":
+                        # Prefer explicit directory entries from the manifest when present.
+                        directory_key = obj_metadata.key.rstrip("/")
+                        directories[directory_key] = ObjectMetadata(
+                            key=directory_key,
+                            type="directory",
+                            last_modified=obj_metadata.last_modified,
+                            content_length=0,
+                            content_type=obj_metadata.content_type,
+                            etag=obj_metadata.etag,
+                            storage_class=obj_metadata.storage_class,
+                            metadata=obj_metadata.metadata,
+                            symlink_target=obj_metadata.symlink_target,
+                        )
+                        synthetic_directories.discard(directory_key)
+                    else:
+                        files.append(obj_metadata)
+                    continue
+
+                # Nested files imply an immediate child directory under the listed path.
+                directory_name = f"{path}{relative.split('/', 1)[0]}"
+                directory_key = directory_name.rstrip("/")
+                existing_directory = directories.get(directory_key)
+                if existing_directory is None:
+                    directories[directory_key] = ObjectMetadata(
+                        key=directory_name,
+                        type="directory",
+                        last_modified=obj_metadata.last_modified,
+                        content_length=0,
+                    )
+                    synthetic_directories.add(directory_key)
+                else:
+                    if directory_key in synthetic_directories:
+                        existing_directory.last_modified = max(
+                            existing_directory.last_modified, obj_metadata.last_modified
+                        )
+
+            yield from (
+                directories[key]
+                for key in sorted(directories)
+                if (start_after is None or start_after < key) and (end_at is None or key <= end_at)
+            )
+            yield from sorted(files, key=lambda obj: obj.key)
+            return
+
         # Note that this is a generator, not a tuple (there's no tuple comprehension).
         keys = (
             key
@@ -347,36 +412,8 @@ class ManifestMetadataProvider(MetadataProvider):
             )  # filter by evaluator if present
         )
 
-        pending_directory: Optional[ObjectMetadata] = None
         for key in sorted(keys):
-            if include_directories:
-                relative = key[len(path) :].lstrip("/")
-                subdirectory = relative.split("/", 1)[0] if "/" in relative else None
-
-                if subdirectory:
-                    directory_name = f"{path}{subdirectory}/"
-
-                    if pending_directory and pending_directory.key != directory_name:
-                        yield pending_directory
-
-                    obj_metadata = self.get_object_metadata(key)
-                    if not pending_directory or pending_directory.key != directory_name:
-                        pending_directory = ObjectMetadata(
-                            key=directory_name,
-                            type="directory",
-                            last_modified=obj_metadata.last_modified,
-                            content_length=0,
-                        )
-                    else:
-                        pending_directory.last_modified = max(
-                            pending_directory.last_modified, obj_metadata.last_modified
-                        )
-                    continue  # Skip yielding this key as it's part of a directory
-
             yield self._files[key]
-
-        if include_directories and pending_directory:
-            yield pending_directory
 
     def get_object_metadata(self, path: str, include_pending: bool = False) -> ObjectMetadata:
         if path in self._files:

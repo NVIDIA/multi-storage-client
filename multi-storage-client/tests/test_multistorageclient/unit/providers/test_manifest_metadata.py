@@ -193,7 +193,7 @@ def test_manifest_metadata(temp_data_store_type: type[tempdatastore.TemporaryDat
         # Test listing with directories
         with_dirs = list(data_with_manifest_storage_client.list(path=base_path, include_directories=True))
         assert len(with_dirs) == 1
-        assert with_dirs[0].key == file_directory + "/"
+        assert with_dirs[0].key == file_directory
 
 
 def test_nonexistent_and_read_only():
@@ -993,6 +993,96 @@ def _make_manifest_provider(files: dict[str, ManifestObjectMetadata]) -> Manifes
     )
     provider._files = files
     return provider
+
+
+def test_list_objects_includes_directory_without_trailing_slash():
+    now = datetime.now(tz=timezone.utc)
+    provider = _make_manifest_provider(
+        {
+            "dataset/images/0001.jpg": ManifestObjectMetadata(
+                key="dataset/images/0001.jpg",
+                content_length=100,
+                last_modified=now,
+            )
+        }
+    )
+
+    objects = list(provider.list_objects("dataset", include_directories=True))
+
+    assert len(objects) == 1
+    assert objects[0].key == "dataset/images"
+    assert objects[0].type == "directory"
+
+
+def test_list_objects_uses_existing_directory_metadata_without_duplicate():
+    now = datetime.now(tz=timezone.utc)
+    provider = _make_manifest_provider(
+        {
+            "dataset/images": ManifestObjectMetadata(
+                key="dataset/images",
+                content_length=0,
+                last_modified=now,
+                type="directory",
+            ),
+            "dataset/images/0001.jpg": ManifestObjectMetadata(
+                key="dataset/images/0001.jpg",
+                content_length=100,
+                last_modified=now,
+            ),
+            "dataset/labels/0001.txt": ManifestObjectMetadata(
+                key="dataset/labels/0001.txt",
+                content_length=20,
+                last_modified=now,
+            ),
+            "dataset/a.txt": ManifestObjectMetadata(
+                key="dataset/a.txt",
+                content_length=10,
+                last_modified=now,
+            ),
+            "dataset/b/0001.txt": ManifestObjectMetadata(
+                key="dataset/b/0001.txt",
+                content_length=30,
+                last_modified=now,
+            ),
+            "dataset/readme.txt": ManifestObjectMetadata(
+                key="dataset/readme.txt",
+                content_length=10,
+                last_modified=now,
+            ),
+        }
+    )
+
+    objects = list(provider.list_objects("dataset", include_directories=True))
+
+    assert [(obj.key, obj.type) for obj in objects] == [
+        ("dataset/b", "directory"),
+        ("dataset/images", "directory"),
+        ("dataset/labels", "directory"),
+        ("dataset/a.txt", "file"),
+        ("dataset/readme.txt", "file"),
+    ]
+
+
+def test_list_objects_filters_synthetic_directories_by_directory_key():
+    now = datetime.now(tz=timezone.utc)
+    provider = _make_manifest_provider(
+        {
+            "dataset/b/0001.txt": ManifestObjectMetadata(
+                key="dataset/b/0001.txt",
+                content_length=30,
+                last_modified=now,
+            ),
+            "dataset/c/0001.txt": ManifestObjectMetadata(
+                key="dataset/c/0001.txt",
+                content_length=40,
+                last_modified=now,
+            ),
+        }
+    )
+
+    objects = list(provider.list_objects("dataset", end_at="dataset/b", include_directories=True))
+
+    assert [(obj.key, obj.type) for obj in objects] == [("dataset/b", "directory")]
 
 
 def test_realpath_follows_symlink_chain():
