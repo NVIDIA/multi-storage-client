@@ -197,6 +197,8 @@ They only support file-based configuration.
 
 Shortcuts use ``msc://{profile name}/{file/object path relative to the storage provider's base path}``
 URLs for file/object paths.
+Repeated slashes in the object path are normalized, so ``msc://profile/path//to/object.bin``
+is resolved as ``msc://profile/path/to/object.bin``.
 
 See :py:mod:`multistorageclient` for all shortcut methods.
 

@@ -67,8 +67,11 @@ def test_resolve_storage_client(file_storage_config):
     _, p6 = msc.resolve_storage_client("msc:/__filesystem__/etc/resolv.conf")
     assert p6 == "etc/resolv.conf"
 
-    _, p7 = msc.resolve_storage_client("./workspace/datasets")
-    assert p7 == os.path.realpath("workspace/datasets")
+    _, p7 = msc.resolve_storage_client("msc://__filesystem__/tmp//data///object.bin")
+    assert p7 == "tmp/data/object.bin"
+
+    _, p8 = msc.resolve_storage_client("./workspace/datasets")
+    assert p8 == os.path.realpath("workspace/datasets")
 
     # Multithreading test to verify the storage_client instance is the same
     tempdirs = []

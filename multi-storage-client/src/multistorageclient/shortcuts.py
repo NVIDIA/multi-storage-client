@@ -15,6 +15,7 @@
 
 import logging
 import os
+import re
 import threading
 from collections.abc import Callable, Iterator
 from typing import Any, Optional, Union
@@ -132,6 +133,8 @@ def _resolve_msc_url(url: str) -> tuple[str, str]:
     """
     pr = urlparse(url)
     profile = pr.netloc
+    # Normalize only the object path so the msc:// scheme separator and profile stay intact.
+    pr = pr._replace(path=re.sub(r"/+", "/", pr.path))
     path = _build_full_path(url, pr)
     if path.startswith("/"):
         path = path[1:]
