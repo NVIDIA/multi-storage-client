@@ -609,6 +609,59 @@ def test_list_recursive_symlinks_from_posix_with_follow_raises_on_broken_target(
             list(storage_client.list_recursive(path="", symlink_handling=SymlinkHandling.FOLLOW))
 
 
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[[tempdatastore.TemporaryPOSIXDirectory]],
+)
+def test_list_chained_symlinks_from_posix_with_preserve(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """
+    ``symlink_handling=SymlinkHandling.PRESERVE`` must record the *immediate*
+    (one-hop) target for each symlink, not the fully-resolved leaf target.
+
+    Regression test for the bug where ``os.path.realpath`` was used to compute
+    ``symlink_target``, which silently flattened chains: given
+    ``link_a → link_b → file.txt``, both ``link_a`` and ``link_b`` would
+    report ``file.txt`` as their target instead of ``link_b.txt`` and
+    ``file.txt`` respectively.
+
+    Layout::
+
+        base_dir/
+        ├── file.txt
+        ├── link_b.txt  ->  file.txt    (one hop)
+        └── link_a.txt  ->  link_b.txt  (two hops — the intermediate must be preserved)
+    """
+    with temp_data_store_type() as temp_data_store:
+        profile = "data"
+        profile_config = temp_data_store.profile_config_dict()
+        base_path = os.path.realpath(profile_config["storage_provider"]["options"]["base_path"])
+        profile_config["storage_provider"]["options"]["base_path"] = base_path
+        config_dict = {"profiles": {profile: profile_config}}
+        storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
+
+        storage_client.write(path="file.txt", body=b"content")
+        # Create the chain directly via os.symlink so the on-disk structure is
+        # an actual symlink-to-symlink, not two independent symlinks.
+        os.symlink("file.txt", os.path.join(base_path, "link_b.txt"))
+        os.symlink("link_b.txt", os.path.join(base_path, "link_a.txt"))
+
+        objects = list(storage_client.list(prefix="", symlink_handling=SymlinkHandling.PRESERVE))
+        by_key = {o.key: o for o in objects}
+
+        assert set(by_key.keys()) == {"file.txt", "link_b.txt", "link_a.txt"}
+
+        assert by_key["file.txt"].symlink_target is None
+
+        # link_b points directly at file.txt — one hop, always correct
+        assert by_key["link_b.txt"].symlink_target == "file.txt"
+
+        # link_a points at link_b, NOT at file.txt — this is the regression
+        assert by_key["link_a.txt"].symlink_target == "link_b.txt", (
+            f"Expected link_a.txt -> link_b.txt but got {by_key['link_a.txt'].symlink_target!r}; "
+            "symlink chain was flattened (realpath used instead of readlink)"
+        )
+
+
 @pytest.mark.serial
 def test_sync_from_posix_to_s3_to_posix_preserves_symlinks():
     """
