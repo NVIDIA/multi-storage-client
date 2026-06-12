@@ -23,7 +23,7 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Optional
 
 import pytest
 import yaml
@@ -34,8 +34,8 @@ from multistorageclient.types import ObjectMetadata
 
 
 def create_test_files_with_random_structure(
-    source_dir: str, num_files: int = 200, file_extensions: Optional[List[str]] = None
-) -> List[Tuple[str, str, str, str]]:
+    source_dir: str, num_files: int = 200, file_extensions: Optional[list[str]] = None
+) -> list[tuple[str, str, str, str]]:
     """
     Create test files with random 2-level directory structure.
 

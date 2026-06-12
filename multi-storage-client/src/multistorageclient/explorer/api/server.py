@@ -20,7 +20,7 @@ import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 import yaml
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -143,11 +143,11 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # Global state
-msc_config: Optional[Dict[str, Any]] = None
+msc_config: Optional[dict[str, Any]] = None
 executor = ThreadPoolExecutor(max_workers=4)
 
 # Cache for StorageClient instances per profile
-_client_cache: Dict[str, Any] = {}
+_client_cache: dict[str, Any] = {}
 
 
 def get_msc_client_and_path(url: str) -> tuple[Any, str]:

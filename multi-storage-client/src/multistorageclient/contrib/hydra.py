@@ -21,7 +21,7 @@ configuration files from remote storage systems using Multi-Storage Client.
 """
 
 import logging
-from typing import List, Optional
+from typing import Optional
 
 from hydra.core.config_search_path import ConfigSearchPath, SearchPathElement
 from hydra.core.object_type import ObjectType
@@ -167,7 +167,7 @@ class MSCConfigSource(ConfigSource):
         except Exception:
             return False
 
-    def list(self, config_path: str, results_filter: Optional[ObjectType]) -> List[str]:
+    def list(self, config_path: str, results_filter: Optional[ObjectType]) -> list[str]:
         """
         List items under the specified config path.
 
@@ -176,7 +176,7 @@ class MSCConfigSource(ConfigSource):
         :return: List of config names and group names under the specified path.
         """
         full_url = self._resolve_full_url(config_path)
-        files: List[str] = []
+        files: list[str] = []
 
         try:
             # Use MSC to resolve client and list items directly

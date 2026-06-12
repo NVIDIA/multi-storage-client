@@ -17,7 +17,7 @@ import os
 import tempfile
 import time
 import uuid
-from typing import Any, Dict, Tuple, Union
+from typing import Any, Union
 from unittest.mock import patch
 
 import pytest
@@ -28,7 +28,7 @@ from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.utils.wait import wait
 
 # Type alias for configuration dictionary to avoid complex nested types
-ConfigDict = Dict[str, Any]
+ConfigDict = dict[str, Any]
 
 
 def create_basic_replica_config(
@@ -91,7 +91,7 @@ def create_cache_config(base_config: ConfigDict) -> ConfigDict:
 
 def create_test_clients(
     config: ConfigDict, origin_profile: str = "origin", origin_with_replica_profile: str = "origin_with_replica"
-) -> Tuple[StorageClient, StorageClient]:
+) -> tuple[StorageClient, StorageClient]:
     """Create origin and replica-aware clients from config."""
     origin_client = StorageClient(config=StorageClientConfig.from_dict(config, profile=origin_profile))
     origin_with_replica_client = StorageClient(

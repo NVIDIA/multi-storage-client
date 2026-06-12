@@ -15,7 +15,7 @@
 
 """Shared utilities and helpers for Multi-Storage Client MCP server."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.types import ObjectMetadata
@@ -23,7 +23,7 @@ from multistorageclient.types import ObjectMetadata
 from .server import mcp_wrapper
 
 
-def metadata_to_dict(metadata: ObjectMetadata) -> Dict[str, Any]:
+def metadata_to_dict(metadata: ObjectMetadata) -> dict[str, Any]:
     """
     Convert ObjectMetadata to a dictionary for JSON serialization.
 
@@ -42,7 +42,7 @@ def metadata_to_dict(metadata: ObjectMetadata) -> Dict[str, Any]:
     }
 
 
-def get_msc_config_paths() -> Optional[List[str]]:
+def get_msc_config_paths() -> Optional[list[str]]:
     """
     Get MSC configuration file paths using MCP server configuration.
 

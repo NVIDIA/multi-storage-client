@@ -18,7 +18,7 @@ import tempfile
 import time
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Dict
+from typing import Any
 
 import xattr
 
@@ -28,7 +28,7 @@ from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.unit.utils.tempdatastore import create_test_data
 
 # Type alias for configuration dictionary
-ConfigDict = Dict[str, Any]
+ConfigDict = dict[str, Any]
 
 
 def create_partial_caching_config(

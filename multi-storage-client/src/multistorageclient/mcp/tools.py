@@ -17,7 +17,7 @@
 
 import json
 import logging
-from typing import List, Optional
+from typing import Optional
 
 from .server import mcp
 from .utils import get_storage_client_for_url, metadata_to_dict
@@ -426,7 +426,7 @@ def msc_sync(
 @mcp.tool
 def msc_sync_replicas(
     source_url: str,
-    replica_indices: Optional[List[int]] = None,
+    replica_indices: Optional[list[int]] = None,
     delete_unmatched_files: bool = False,
 ) -> str:
     """

@@ -21,7 +21,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
-from typing import IO, Any, NamedTuple, Optional, Tuple, Union
+from typing import IO, Any, NamedTuple, Optional, Union
 
 from dateutil.parser import parse as dateutil_parser
 
@@ -921,7 +921,7 @@ class PatternType(Enum):
 
 
 # Type alias for pattern matching
-PatternList = list[Tuple[PatternType, str]]
+PatternList = list[tuple[PatternType, str]]
 
 
 @dataclass
