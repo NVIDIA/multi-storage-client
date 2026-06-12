@@ -176,7 +176,7 @@ class ProducerThread(threading.Thread):
         if source_info.symlink_target is not None or target_info.symlink_target is not None:
             return source_info.symlink_target == target_info.symlink_target
 
-        # Check file size is the same and the target's last_modified is newer than the source.
+        # Check file size is the same and the target's last_modified is not older than the source.
         # Compare timestamps at seconds resolution to avoid spurious mismatches from sub-second differences.
         source_sec = source_info.last_modified.replace(microsecond=0)
         target_sec = target_info.last_modified.replace(microsecond=0)

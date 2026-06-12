@@ -48,7 +48,7 @@ DEFAULT_PAGE_SIZE = 1000
 
 class StaticAISCredentialProvider(CredentialsProvider):
     """
-    A concrete implementation of the :py:class:`multistorageclient.types.CredentialsProvider` that provides static S3 credentials.
+    A concrete implementation of the :py:class:`multistorageclient.types.CredentialsProvider` that provides static AIStore credentials.
     """
 
     _username: Optional[str]
@@ -124,7 +124,6 @@ class AIStoreStorageProvider(BaseStorageProvider):
             for both connect/read timeouts (e.g., ``5.0``), a tuple for separate connect/read
             timeouts (e.g., ``(3.0, 10.0)``), or ``None`` to disable timeout.
         :param retry: ``urllib3.util.Retry`` parameters.
-        :param token: Authorization token. If not provided, the ``AIS_AUTHN_TOKEN`` environment variable will be used.
         :param base_path: The root prefix path within the bucket where all operations will be scoped.
         :param credentials_provider: The provider to retrieve AIStore credentials.
         :param config_dict: Resolved MSC config.

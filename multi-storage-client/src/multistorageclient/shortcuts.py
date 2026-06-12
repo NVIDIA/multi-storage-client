@@ -84,7 +84,7 @@ if hasattr(os, "register_at_fork"):
 
 def get_telemetry_provider() -> Optional[Callable[[], Telemetry]]:
     """
-    Get the function used to create :py:class:``Telemetry`` instances for storage clients created by shortcuts.
+    Get the function used to create :py:class:`Telemetry` instances for storage clients created by shortcuts.
 
     :return: A function that provides a telemetry instance.
     """
@@ -95,7 +95,7 @@ def get_telemetry_provider() -> Optional[Callable[[], Telemetry]]:
 
 def set_telemetry_provider(telemetry_provider: Optional[Callable[[], Telemetry]]) -> None:
     """
-    Set the function used to create :py:class:``Telemetry`` instances for storage clients created by shortcuts.
+    Set the function used to create :py:class:`Telemetry` instances for storage clients created by shortcuts.
 
     :param telemetry_provider: A function that provides a telemetry instance. The function must be defined at the top level of a module to work with pickling.
     """
