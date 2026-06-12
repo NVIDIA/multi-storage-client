@@ -1085,6 +1085,37 @@ def test_list_objects_filters_synthetic_directories_by_directory_key():
     assert [(obj.key, obj.type) for obj in objects] == [("dataset/b", "directory")]
 
 
+def test_list_objects_excludes_existing_directories_when_not_requested():
+    now = datetime.now(tz=timezone.utc)
+    provider = _make_manifest_provider(
+        {
+            "dataset/images": ManifestObjectMetadata(
+                key="dataset/images",
+                content_length=0,
+                last_modified=now,
+                type="directory",
+            ),
+            "dataset/images/0001.jpg": ManifestObjectMetadata(
+                key="dataset/images/0001.jpg",
+                content_length=100,
+                last_modified=now,
+            ),
+            "dataset/readme.txt": ManifestObjectMetadata(
+                key="dataset/readme.txt",
+                content_length=10,
+                last_modified=now,
+            ),
+        }
+    )
+
+    objects = list(provider.list_objects("dataset", include_directories=False))
+
+    assert [(obj.key, obj.type) for obj in objects] == [
+        ("dataset/images/0001.jpg", "file"),
+        ("dataset/readme.txt", "file"),
+    ]
+
+
 def test_realpath_follows_symlink_chain():
     now = datetime.now(tz=timezone.utc)
     files = {

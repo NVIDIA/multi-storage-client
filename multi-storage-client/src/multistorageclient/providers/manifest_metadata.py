@@ -405,6 +405,7 @@ class ManifestMetadataProvider(MetadataProvider):
             key
             for key, obj_metadata in self._files.items()
             if key.startswith(path)
+            and obj_metadata.type != "directory"
             and (start_after is None or start_after < key)
             and (end_at is None or key <= end_at)
             and (
