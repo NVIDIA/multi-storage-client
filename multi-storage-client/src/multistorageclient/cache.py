@@ -49,7 +49,7 @@ class CacheManager:
 
     def __init__(self, profile: str, cache_config: CacheConfig):
         """
-        Initializes the :py:class:`FileSystemBackend` with the given profile and configuration.
+        Initializes the :py:class:`CacheManager` with the given profile and configuration.
 
         :param profile: The profile name for the cache.
         :param cache_config: The cache configuration settings.

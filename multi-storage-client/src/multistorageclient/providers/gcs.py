@@ -88,7 +88,7 @@ class GoogleIdentityPoolCredentialsProvider(CredentialsProvider):
 
     def __init__(self, audience: str, token_supplier: str):
         """
-        Initializes the :py:class:`GoogleIdentityPoolCredentials` with the audience and token supplier.
+        Initializes the :py:class:`GoogleIdentityPoolCredentialsProvider` with the audience and token supplier.
 
         :param audience: The audience for the Google Identity Pool.
         :param token_supplier: The token supplier for the Google Identity Pool.
