@@ -24,8 +24,13 @@ from urllib.parse import urlparse
 from azure.core import MatchConditions
 from azure.core.exceptions import AzureError, HttpResponseError
 from azure.identity import DefaultAzureCredential
-from azure.storage.blob import BlobPrefix, BlobServiceClient, generate_blob_sas
-from azure.storage.blob._models import BlobSasPermissions
+from azure.storage.blob import (
+    BlobPrefix,
+    BlobSasPermissions,
+    BlobServiceClient,
+    PartialBatchErrorException,
+    generate_blob_sas,
+)
 
 from ..constants import DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT
 from ..signers.base import URLSigner
@@ -483,7 +488,17 @@ class AzureBlobStorageProvider(BaseStorageProvider):
                 container_client = self._blob_service_client.get_container_client(container=container_name)
                 for i in range(0, len(blob_names), AZURE_BATCH_LIMIT):
                     chunk = blob_names[i : i + AZURE_BATCH_LIMIT]
-                    container_client.delete_blobs(*chunk)
+                    try:
+                        responses = container_client.delete_blobs(*chunk, raise_on_any_failure=False)
+                    except PartialBatchErrorException as error:
+                        responses = error.parts
+                    for response in responses:
+                        status_code = response.status_code
+                        if 200 <= status_code < 300 or status_code == 404:
+                            continue
+                        raise RuntimeError(
+                            f"Azure batch delete failed with status_code: {status_code}, response: {response.text}"
+                        )
 
         container_desc = "(" + "|".join(by_container) + ")"
         blob_desc = "(" + "|".join(str(len(blob_names)) for blob_names in by_container.values()) + " keys)"

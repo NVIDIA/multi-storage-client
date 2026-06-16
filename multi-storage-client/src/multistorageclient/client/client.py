@@ -404,6 +404,7 @@ class StorageClient(AbstractStorageClient):
     def delete_many(self, paths: list[str]) -> None:
         """
         Delete multiple files at the specified paths. Only files are supported; directories are not deleted.
+        Paths that do not exist are treated as successful no-ops.
 
         :param paths: List of logical paths of the files to delete.
         :raises NotImplementedError: If delete operations are not supported (e.g., CompositeStorageClient).

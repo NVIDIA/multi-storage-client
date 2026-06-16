@@ -743,11 +743,13 @@ class SingleStorageClient(AbstractStorageClient):
         :param paths: List of logical paths of the files to delete.
         """
         physical_paths_to_delete: list[str] = []
+        metadata_paths_to_remove: set[str] = set()
         for path in paths:
             if self._metadata_provider:
                 resolved = self._metadata_provider.realpath(path)
                 if not resolved.exists:
-                    raise FileNotFoundError(f"The file at path '{path}' was not found.")
+                    continue
+                metadata_paths_to_remove.add(path)
                 if not self._metadata_provider.should_use_soft_delete():
                     physical_paths_to_delete.append(resolved.physical_path)
             else:
@@ -758,7 +760,7 @@ class SingleStorageClient(AbstractStorageClient):
 
         for path in paths:
             virtual_path = path
-            if self._metadata_provider:
+            if self._metadata_provider and virtual_path in metadata_paths_to_remove:
                 with self._metadata_provider_lock or contextlib.nullcontext():
                     self._metadata_provider.remove_file(virtual_path)
             if self._is_cache_enabled():

@@ -41,4 +41,7 @@ class GoogleS3StorageProvider(S3StorageProvider):
         GCS S3 does not support bulk deletion, so we delete one object at a time.
         """
         for path in paths:
-            self._delete_object(path)
+            try:
+                self._delete_object(path)
+            except FileNotFoundError:
+                continue

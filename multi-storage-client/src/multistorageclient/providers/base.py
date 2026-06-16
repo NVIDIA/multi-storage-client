@@ -713,6 +713,7 @@ class BaseStorageProvider(StorageProvider):
 
         Default implementation iterates through paths and deletes each object individually.
         Subclasses may override this to use bulk delete APIs for better performance.
+        Missing objects are ignored by bulk delete operations.
 
         :param paths: A list of paths of objects to delete.
         """
@@ -763,11 +764,15 @@ class BaseStorageProvider(StorageProvider):
     def _delete_objects(self, paths: list[str]) -> None:
         """
         Deletes multiple objects from the storage provider.
+        Missing objects are ignored by bulk delete operations.
 
         :param paths: A list of paths of objects to delete.
         """
         for path in paths:
-            self._delete_object(path)
+            try:
+                self._delete_object(path)
+            except FileNotFoundError:
+                continue
 
     def get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         path = self._prepend_base_path(path)

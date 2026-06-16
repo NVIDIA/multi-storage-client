@@ -41,6 +41,18 @@ from multistorageclient.types import PreconditionFailedError, Range
 from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
 from test_multistorageclient.utils.wait import wait_for_is_file
 
+DELETE_MANY_IDEMPOTENCY_DATA_STORES = [
+    tempdatastore.TemporaryPOSIXDirectory,
+    tempdatastore.TemporaryAWSS3Bucket,
+    tempdatastore.TemporaryAzureBlobStorageContainer,
+    # Native GCS uses the batch delete API, which fake-gcs-server does not support.
+    # Real GCS coverage comes from the shared e2e storage client test.
+    tempdatastore.TemporaryGoogleCloudStorageS3Bucket,
+    tempdatastore.TemporarySwiftStackBucket,
+    tempdatastore.TemporaryAIStoreBucket,
+    tempdatastore.TemporaryAIStoreS3Bucket,
+]
+
 
 @pytest.mark.parametrize(
     argnames=["temp_data_store_type", "with_cache"],
@@ -321,6 +333,34 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
 
         if with_cache:
             shutil.rmtree(cache_location, ignore_errors=True)
+
+
+@pytest.mark.parametrize("temp_data_store_type", DELETE_MANY_IDEMPOTENCY_DATA_STORES)
+def test_delete_many_missing_objects_is_idempotent(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    with temp_data_store_type() as temp_data_store:
+        profile = "data"
+        storage_client = StorageClient(
+            config=StorageClientConfig.from_dict(
+                config_dict={"profiles": {profile: temp_data_store.profile_config_dict()}},
+                profile=profile,
+            )
+        )
+
+        prefix = uuid.uuid4().hex
+        existing_path = f"{prefix}/existing.txt"
+        missing_path = f"{prefix}/missing.txt"
+        another_missing_path = f"{prefix}/another-missing.txt"
+
+        storage_client.write(path=existing_path, body=b"payload")
+        wait_for_is_file(storage_client=storage_client, path=existing_path, is_file=True)
+
+        storage_client.delete_many([missing_path, existing_path, another_missing_path])
+        wait_for_is_file(storage_client=storage_client, path=existing_path, is_file=False)
+        wait_for_is_file(storage_client=storage_client, path=missing_path, is_file=False)
+        assert not storage_client.is_file(path=existing_path)
+        assert not storage_client.is_file(path=missing_path)
+
+        storage_client.delete_many([missing_path, existing_path, another_missing_path])
 
 
 @pytest.mark.parametrize(
