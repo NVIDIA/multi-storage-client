@@ -228,8 +228,8 @@ CONFIG_SCHEMA = {
         "opentelemetry": OTEL_SCHEMA,
         "path_mapping": PATH_MAPPING_SCHEMA,
         "posix": POSIX_SCHEMA,
-        "additionalProperties": False,
     },
+    "additionalProperties": False,
 }
 
 BENCHMARK_SCHEMA = {
