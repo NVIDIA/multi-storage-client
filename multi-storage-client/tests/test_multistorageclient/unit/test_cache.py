@@ -247,6 +247,60 @@ def test_cache_manager_read_delete_file(profile_name, tmpdir, cache_manager):
     assert not os.path.exists(lock_path)
 
 
+def test_cache_manager_delete_rejects_absolute_path(profile_name, tmpdir, cache_manager):
+    """Test that CacheManager rejects absolute delete paths."""
+    outside_file = tmpdir.join("outside.txt")
+    outside_file.write("outside data")
+    absolute_key = str(outside_file)
+
+    cache_manager.set(absolute_key, b"cached data")
+    cached_path = cache_manager._get_cache_file_path(absolute_key)
+    assert os.path.exists(cached_path)
+
+    with pytest.raises(ValueError, match="relative to the profile cache root"):
+        cache_manager.delete(absolute_key)
+
+    assert outside_file.read() == "outside data"
+    assert os.path.exists(cached_path)
+
+
+def test_cache_manager_delete_rejects_path_outside_profile_root(profile_name, tmpdir, cache_manager):
+    """Test that CacheManager rejects delete paths that escape the profile cache root."""
+    sibling_dir = tmpdir.mkdir("other-profile")
+    sibling_file = sibling_dir.join("victim.txt")
+    sibling_file.write("victim data")
+
+    with pytest.raises(ValueError, match="escapes the profile cache root"):
+        cache_manager.delete_file(os.path.join("..", "other-profile", "victim.txt"))
+
+    assert sibling_file.read() == "victim data"
+
+
+def test_cache_manager_delete_rejects_symlink_escape(profile_name, tmpdir, cache_manager):
+    """Test that CacheManager rejects delete paths that escape through a symlinked directory."""
+    sibling_dir = tmpdir.mkdir("symlink-target")
+    sibling_file = sibling_dir.join("victim.txt")
+    sibling_file.write("victim data")
+
+    escape_link = os.path.join(str(tmpdir), profile_name, "escape-link")
+    os.symlink(str(sibling_dir), escape_link)
+
+    with pytest.raises(ValueError, match="escapes the profile cache root"):
+        cache_manager.delete_file(os.path.join("escape-link", "victim.txt"))
+
+    assert sibling_file.read() == "victim data"
+
+
+def test_cache_manager_delete_normalizes_safe_relative_path(profile_name, tmpdir, cache_manager):
+    """Test that CacheManager allows normalized relative delete paths that stay within the profile cache root."""
+    key = "bucket/test_file.txt"
+    cache_manager.set(key, b"cached data")
+
+    cache_manager.delete_file(os.path.join("bucket", "nested", "..", "test_file.txt"))
+
+    assert not os.path.exists(cache_manager._get_cache_file_path(key))
+
+
 def test_cache_manager_open_file(profile_name, tmpdir, cache_manager):
     """Test that CacheManager can open a file from the cache."""
     file = tmpdir.join(profile_name, "test_file.txt")

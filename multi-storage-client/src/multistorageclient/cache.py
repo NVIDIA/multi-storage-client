@@ -116,18 +116,42 @@ class CacheManager:
 
     def delete_file(self, file_path: str) -> None:
         """
-        Delete a file from the cache directory.
+        Delete a file from the profile cache directory.
 
-        :param file_path: Path to the file relative to cache directory
+        :param file_path: Path to the file relative to the profile cache directory
         """
-        try:
-            # Construct absolute path using cache directory as base
-            abs_path = os.path.join(self._get_cache_dir(), file_path)
-            os.unlink(abs_path)
+        abs_path = self._resolve_profile_cache_delete_path(file_path)
+        self._delete_cache_file_at_path(abs_path)
 
-            # Handle lock file - keep it in same directory as the file
-            lock_name = f".{os.path.basename(file_path)}.lock"
-            lock_path = os.path.join(os.path.dirname(abs_path), lock_name)
+    def _resolve_profile_cache_delete_path(self, file_path: str) -> str:
+        """Resolve a profile-relative delete path and ensure it stays within the profile cache root."""
+        if os.path.isabs(file_path):
+            raise ValueError(f"Cache delete path must be relative to the profile cache root: {file_path}")
+
+        normalized_path = os.path.normpath(file_path)
+        if normalized_path in ("", "."):
+            raise ValueError("Cache delete path must reference a file under the profile cache root.")
+
+        cache_root = os.path.realpath(self._get_cache_dir())
+        abs_path = os.path.realpath(os.path.join(cache_root, normalized_path))
+        try:
+            if os.path.commonpath([cache_root, abs_path]) != cache_root or abs_path == cache_root:
+                raise ValueError(f"Cache delete path escapes the profile cache root: {file_path}")
+        except ValueError as exc:
+            raise ValueError(f"Cache delete path escapes the profile cache root: {file_path}") from exc
+
+        return abs_path
+
+    def _delete_cache_file_at_path(self, abs_path: str) -> None:
+        """Delete a cached file and its sibling lock file using an absolute cache path."""
+        try:
+            os.unlink(abs_path)
+        except OSError:
+            pass
+
+        lock_name = f".{os.path.basename(abs_path)}.lock"
+        lock_path = os.path.join(os.path.dirname(abs_path), lock_name)
+        try:
             os.unlink(lock_path)
         except OSError:
             pass
@@ -172,9 +196,7 @@ class CacheManager:
         cache = OrderedDict()
         cache_size = 0
         for item in cache_items:
-            # Use the relative path from cache directory
-            rel_path = os.path.relpath(item.file_path, self._cache_path)
-            cache[rel_path] = item.file_size
+            cache[item.file_path] = item.file_size
             cache_size += item.file_size
         logging.debug(f"Total cache size: {cache_size}, Max allowed: {self._max_cache_size}")
 
@@ -196,7 +218,7 @@ class CacheManager:
                 file_to_evict, file_size = cache.popitem(last=False)
                 cache_size -= file_size
                 logging.debug(f"Evicting file: {file_to_evict}, size: {file_size}, remaining: {cache_size}")
-                self.delete_file(file_to_evict)
+                self._delete_cache_file_at_path(file_to_evict)
 
         logging.debug("\nFinal cache contents:")
         for file_path in cache.keys():
