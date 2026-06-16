@@ -517,9 +517,18 @@ class GoogleStorageProvider(BaseStorageProvider):
                 bucket_obj = self._gcs_client.bucket(bucket)
                 for i in range(0, len(keys), GCS_BATCH_LIMIT):
                     chunk = keys[i : i + GCS_BATCH_LIMIT]
-                    with self._gcs_client.batch():
+                    with self._gcs_client.batch(raise_exception=False) as batch:
                         for k in chunk:
                             bucket_obj.blob(k).delete()
+                    if not hasattr(batch, "_responses"):
+                        raise RuntimeError("GCS batch delete did not expose responses.")
+                    for response in batch._responses:
+                        status_code = response.status_code
+                        if 200 <= status_code < 300 or status_code == 404:
+                            continue
+                        raise RuntimeError(
+                            f"GCS batch delete failed with status_code: {status_code}, response: {response.text}"
+                        )
 
         bucket_desc = "(" + "|".join(by_bucket) + ")"
         key_desc = "(" + "|".join(str(len(keys)) for keys in by_bucket.values()) + " keys)"

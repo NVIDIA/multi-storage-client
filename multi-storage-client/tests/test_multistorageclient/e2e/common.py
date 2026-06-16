@@ -331,11 +331,13 @@ def verify_storage_provider(storage_client: msc.StorageClient, prefix: str) -> N
             with open(local_path, "rb") as f:
                 assert f.read() == b"x"
 
-    storage_client.delete_many(remote_paths)
+    missing_remote_paths = [f"{batch_prefix}/missing_{i:04d}" for i in range(2)]
+    storage_client.delete_many([missing_remote_paths[0], *remote_paths, missing_remote_paths[1]])
     wait(
         waitable=lambda: storage_client.list(batch_prefix),
         should_wait=len_should_wait(expected_len=0),
     )
+    storage_client.delete_many([missing_remote_paths[0], *remote_paths, missing_remote_paths[1]])
 
     # Test symlinks
     symlink_prefix = f"{prefix}/symlinks"

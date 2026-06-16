@@ -17,6 +17,7 @@ import copy
 import os
 import tempfile
 import time
+import uuid
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
@@ -265,6 +266,42 @@ def test_nonexistent_and_read_only():
         # Attempt a delete.
         with pytest.raises(RuntimeError):
             data_with_read_only_manifest_storage_client.delete(path=file_path)
+
+
+def test_manifest_delete_many_missing_objects_is_idempotent():
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        profile = "data_with_manifest"
+        profile_config_dict = temp_data_store.profile_config_dict() | {
+            "metadata_provider": {
+                "type": "manifest",
+                "options": {
+                    "manifest_path": DEFAULT_MANIFEST_BASE_DIR,
+                    "writable": True,
+                },
+            }
+        }
+        storage_client = StorageClient(
+            config=StorageClientConfig.from_dict(
+                config_dict={"profiles": {profile: profile_config_dict}},
+                profile=profile,
+            )
+        )
+
+        prefix = uuid.uuid4().hex
+        existing_path = f"{prefix}/existing.txt"
+        missing_path = f"{prefix}/missing.txt"
+        another_missing_path = f"{prefix}/another-missing.txt"
+
+        storage_client.write(path=existing_path, body=b"payload")
+        storage_client.commit_metadata()
+        assert len(storage_client.glob(pattern=existing_path)) == 1
+
+        storage_client.delete_many([missing_path, existing_path, another_missing_path])
+        storage_client.commit_metadata()
+
+        assert len(storage_client.glob(pattern=existing_path)) == 0
+        assert len(storage_client.glob(pattern=missing_path)) == 0
+        storage_client.delete_many([missing_path, existing_path, another_missing_path])
 
 
 @pytest.mark.parametrize(
