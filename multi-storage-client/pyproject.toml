@@ -66,12 +66,12 @@ cloudfront = [
 
 # MCP.
 mcp = [
-    "fastmcp>=3.2.3,<4"
+    "fastmcp>=3.4.2,<4"
 ]
 
 # Explorer web UI.
 explorer = [
-    "fastapi>=0.128.3,<1",
+    "fastapi>=0.133,<1",
     "uvicorn[standard]>=0.39,<1",
     "aiofiles>=23.2.1",
 ]
@@ -115,7 +115,7 @@ ray = [
     "ray>=2.55,<3"
 ]
 torch = [
-    "torch>=2.11,<3"
+    "torch>=2.12.1,<3"
 ]
 xarray = [
     "xarray>=2024.07.0"
