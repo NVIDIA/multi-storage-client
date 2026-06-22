@@ -14,7 +14,7 @@ classifiers = [
 dependencies = [
     "multi-storage-client",
     "dulwich>=1.2.6,<2",
-    "githubkit>=0.15.5,<1",
+    "githubkit>=0.16.0,<1",
     "httpx-retries>=0.5,<1",
     "packaging>=26.2,<27"
 ]
