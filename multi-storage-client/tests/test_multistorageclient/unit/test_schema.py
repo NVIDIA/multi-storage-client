@@ -534,3 +534,17 @@ def test_validate_include():
                 },
             }
         )
+
+
+def test_validate_unknown_top_level_key():
+    default_storage_provider = {"storage_provider": {"type": "s3", "options": {"base_path": "bucket/prefix"}}}
+
+    with pytest.raises(RuntimeError):
+        validate_config(
+            {
+                "profiles": {
+                    "default": default_storage_provider,
+                },
+                "typo": True,
+            }
+        )
