@@ -3,18 +3,34 @@
 #   1) As the Dockerfile referenced in docker-compose.yaml in support of a dev/test environment
 #   2) As the Dockerfile used to build .deb and .rpm packages for both AMD64 and ARM64 architectures
 
+# Note:
+#   A regression had previously been reported in moving from Golang 1.25 to 1.26
+#   leading to the pinning of Golang at 1.25.10 and AIStore at v1.4.3... Several
+#   subsequent dependencies were required to be rolled back that themselves
+#   depended on Golang 1.26 as well.
+
+ARG AIStoreVersion=v1.4.7
+ARG GolangVersion=1.26.4
+ARG RustVersion=1.93.0
+ARG TimeZone=America/Los_Angeles
+
 FROM ubuntu:24.04 AS base
+
+ARG TimeZone
 
 RUN    apt-get update \
     && apt-get dist-upgrade -y
 
-ARG TimeZone=America/Los_Angeles
 RUN ln -snf /usr/share/zoneinfo/${TimeZone} /etc/localtime
 RUN echo ${TimeZone} > /etc/timezone
 
 RUN DEBIAN_FRONTEND="noninteractive" apt-get install -y tzdata
 
 FROM base AS buildable
+
+ARG GolangVersion
+ARG RustVersion
+ARG TARGETARCH
 
 RUN    apt-get update \
     && apt-get install -y \
@@ -49,15 +65,20 @@ RUN    apt-get update \
 
 RUN echo "user_allow_other" >> /etc/fuse.conf
 
-# Note: Rolling back to Golang 1.25.10 to avoid performance regression in 1.26 line
-ARG GolangVersion=1.25.10
-ARG TARGETARCH
 WORKDIR /tmp
-RUN GolangBasename="go${GolangVersion}.linux-${TARGETARCH}.tar.gz"; \
-    GolangURL="https://golang.org/dl/${GolangBasename}"; \
-    wget -nv ${GolangURL}; \
-    tar -C /usr/local -xzf ${GolangBasename}
-ENV PATH=$PATH:/usr/local/go/bin
+RUN GO_ARCH="${TARGETARCH:-$(dpkg --print-architecture)}" && \
+    case "${GO_ARCH}" in \
+        amd64|arm64) ;; \
+        *) echo "Unsupported Go architecture: ${GO_ARCH}" >&2; exit 1 ;; \
+    esac && \
+    GolangBasename="go${GolangVersion}.linux-${GO_ARCH}.tar.gz" && \
+    wget -nv -O "${GolangBasename}" "https://go.dev/dl/${GolangBasename}" && \
+    tar -C /usr/local -xzf "${GolangBasename}" && \
+    rm -f "${GolangBasename}"
+ENV PATH=$PATH:/usr/local/go/bin:/root/go/bin
+ENV GOPATH=/root/go
+ENV GOBIN=/root/go/bin
+ENV GOTOOLCHAIN=local
 
 # WORKDIR /tmp
 # RUN git clone --depth 1 --branch master https://github.com/go-delve/delve
@@ -65,10 +86,20 @@ ENV PATH=$PATH:/usr/local/go/bin
 # RUN go build github.com/go-delve/delve/cmd/dlv
 # RUN cp dlv /usr/local/go/bin/.
 
-ARG RustVersion=1.93.0
 WORKDIR /tmp
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain $RustVersion
+RUN wget -nv -O rustup-init.sh https://sh.rustup.rs && \
+    sh rustup-init.sh -y --default-toolchain "${RustVersion}" && \
+    rm -f rustup-init.sh
 ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Pre-install the `stable` toolchain (with the components rust-toolchain.toml
+# requests) at build time. The repo's rust-toolchain.toml pins `channel =
+# "stable"`, so an in-repo `cargo` invocation would otherwise trigger a runtime
+# rustup download on first use — and that download is fragile on the container's
+# overlay filesystem (it broke, mid-rename, after a host Docker/Colima upgrade).
+# Baking it into the image keeps builds fully offline. The pinned ${RustVersion}
+# stays the explicit default toolchain.
+RUN rustup toolchain install stable --profile minimal --component rustfmt --component clippy
 
 # WORKDIR /tmp
 # RUN git clone --depth 1 https://github.com/breuner/elbencho.git
@@ -115,10 +146,10 @@ RUN rm -rf /multi-storage-client
 
 FROM buildable AS ais
 
+ARG AIStoreVersion
+
 WORKDIR /
 
-# Note: Rolling back to AIStore v1.4.3 to avoid dependency on Golang 1.26 line
-ARG AIStoreVersion=v1.4.3
 RUN git clone --depth 1 --branch $AIStoreVersion https://github.com/NVIDIA/aistore.git
 WORKDIR /aistore
 RUN (. /root/.bashrc_additions && make cli)
