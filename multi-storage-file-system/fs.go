@@ -173,10 +173,16 @@ func processToMountList() {
 	for dirName, backend = range globals.backendsToMount {
 		delete(globals.backendsToMount, dirName)
 
-		err = backend.setupContext()
-		if err != nil {
-			globals.logger.Printf("[WARN] unable to setup backend context: %s (err: %v) [skipping]", dirName, err)
-			continue
+		// Skip if already set up. An AIStore backend referencing this one via
+		// manifest_gen_backend may have set up its context already (lazy setup);
+		// re-running setupContext would build a duplicate client and replace the
+		// context the AIStore backend already captured.
+		if backend.context == nil {
+			err = backend.setupContext()
+			if err != nil {
+				globals.logger.Printf("[WARN] unable to set up a backend context; skipping (check the backend's credentials/endpoint/prefix)")
+				continue
+			}
 		}
 
 		backend.nonce = fetchNonce()

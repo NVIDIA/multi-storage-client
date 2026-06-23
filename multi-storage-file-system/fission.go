@@ -961,6 +961,10 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 		cacheLineWaiter                 sync.WaitGroup
 		cacheLineWaits                  uint64
 		cacheLinesToPotentiallyPrefetch uint64
+		copyDstStart                    int    // len(readOut.Data) snapshot for optimistic-copy rollback
+		copyGeneration                  uint64 // dataCacheLineTracker.contentGeneration snapshot
+		copyLength                      uint64
+		copySrcStart                    uint64
 		curOffset                       = readIn.Offset
 		dataCacheLineNumber             uint64
 		dataCacheLineNumbers            []uint64
@@ -1287,6 +1291,19 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 			globals.logger.Fatalf("[FATAL] dataCacheLineTracker.state(%v) != CacheLineClean(%v)", dataCacheLineTracker.state, CacheLineClean)
 		}
 
+		if dataCacheLineTracker.fetchFailed {
+			// The backend read that was supposed to populate this cache line
+			// failed. Surface EIO to the caller rather than serving empty/short
+			// content (which previously produced an inverted slice and panicked),
+			// and evict the line so a subsequent read re-fetches it.
+			delete(inode.cacheMap, cacheLineNumber)
+			globals.dataCacheLineCleanLRU.popThis(dataCacheLineTracker)
+			dataCacheLineTracker.free()
+			globalsUnlock()
+			errno = syscall.EIO
+			return
+		}
+
 		cacheLineHits++ // Note that this is the fall-thru condition that counts resolved (cacheLine)Misses & (cacheLine)Waits as (subsequent) Hits
 
 		dataCacheLineTracker.touch()
@@ -1301,18 +1318,47 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 			cacheLineOffsetLimit = dataCacheLineTracker.contentLength
 		}
 
-		if cacheLineOffsetLimit == cacheLineOffsetStart {
-			// We have reached EOF
+		if cacheLineOffsetLimit <= cacheLineOffsetStart {
+			// We have reached EOF (==) or, defensively, a short/empty cache line
+			// where the limit fell below the start (<). Never slice with lo > hi.
 
 			globalsUnlock()
 
 			break
 		}
 
-		readOut.Data = append(readOut.Data, globals.dataCacheLinesContent[dataCacheLineTracker.contentStart+cacheLineOffsetStart:dataCacheLineTracker.contentStart+cacheLineOffsetLimit]...)
-		curOffset += cacheLineOffsetLimit - cacheLineOffsetStart
+		// Optimistic-lock copy: perform the cache-line -> reply memcpy WITHOUT
+		// holding the global lock, so concurrent warm reads do not serialize on
+		// it (the copy-under-lock was the warm-read throughput ceiling at high
+		// thread counts). globals.dataCacheLinesContent (the cache-line content buffer) and
+		// globals.dataCacheLinesTracker are fixed allocations for the life of the
+		// mount, so reading from them after unlock is memory-safe. The only hazard
+		// is that this line is evicted/refetched mid-copy (yielding wrong bytes);
+		// .contentGeneration is bumped on every free()/fetch(), so we snapshot it
+		// under the lock, copy unlocked, then re-validate under the lock and retry
+		// the same offset on mismatch.
+		copyGeneration = dataCacheLineTracker.contentGeneration
+		copySrcStart = dataCacheLineTracker.contentStart + cacheLineOffsetStart
+		copyLength = cacheLineOffsetLimit - cacheLineOffsetStart
+		copyDstStart = len(readOut.Data)
 
 		globalsUnlock()
+
+		readOut.Data = append(readOut.Data, globals.dataCacheLinesContent[copySrcStart:copySrcStart+copyLength]...)
+
+		globalsLock("fission.go:DoRead:optimistic-copy-revalidate")
+
+		if dataCacheLineTracker.contentGeneration != copyGeneration {
+			// The cache line was evicted/refetched while we copied; discard the
+			// bytes we appended and retry this same offset.
+			readOut.Data = readOut.Data[:copyDstStart]
+			globalsUnlock()
+			continue
+		}
+
+		globalsUnlock()
+
+		curOffset += copyLength
 	}
 
 	errno = 0
