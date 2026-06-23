@@ -1,12 +1,9 @@
-import logging
 import os
 import sys
 import time
 from typing import Any
 
 from tqdm import tqdm
-
-logger = logging.getLogger(__name__)
 
 
 class CappedProgressBar(tqdm):
@@ -33,17 +30,8 @@ class CappedProgressBar(tqdm):
 
 class ProgressBar:
     def __init__(self, desc: str, show_progress: bool, total_items: int = 0):
-        # If the env var is defined, always suppress the progress bar
-        legacy_msc_suppress = os.getenv("SUPPRESS_PROGRESS_BAR") is not None
-        msc_suppress = os.getenv("MSC_SUPPRESS_PROGRESS_BAR") is not None
-
-        if msc_suppress or legacy_msc_suppress:
+        if os.getenv("MSC_SUPPRESS_PROGRESS_BAR") is not None:
             show_progress = False
-
-        if legacy_msc_suppress:
-            logger.warning(
-                "Env var 'SUPPRESS_PROGRESS_BAR' is deprecated and will be removed; use 'MSC_SUPPRESS_PROGRESS_BAR'."
-            )
 
         if not show_progress:
             self.pbar = None
