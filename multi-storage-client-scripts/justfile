@@ -36,5 +36,9 @@ analyze: prepare-toolchain
     # Type check.
     uv run pyright
 
+# Run unit tests.
+run-unit-tests: prepare-toolchain
+    uv run pytest tests
+
 # Release build.
-build: analyze
+build: analyze run-unit-tests

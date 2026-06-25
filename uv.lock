@@ -2257,6 +2257,11 @@ dependencies = [
     { name = "packaging" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "dulwich", specifier = ">=1.2.6,<2" },
@@ -2265,6 +2270,9 @@ requires-dist = [
     { name = "multi-storage-client", editable = "multi-storage-client" },
     { name = "packaging", specifier = ">=26.2,<27" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.1.1,<10" }]
 
 [[package]]
 name = "networkx"

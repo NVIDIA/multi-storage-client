@@ -18,6 +18,7 @@ import logging
 
 # Imports have side effects (registers commands).
 import multistorageclient_scripts.cli as cli
+import multistorageclient_scripts.cli.check_python_api_compat  # noqa: F401
 import multistorageclient_scripts.cli.publish_documentation  # noqa: F401
 import multistorageclient_scripts.cli.publish_release  # noqa: F401
 import multistorageclient_scripts.cli.publish_wheels  # noqa: F401
