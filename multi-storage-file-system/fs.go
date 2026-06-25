@@ -248,7 +248,7 @@ func processToMountList() {
 // `processToUnmountList` is called to remove each backend subdirectory of the FUSE
 // file system's root directory found on the globals.backendsToUnmount list.
 func processToUnmountList() {
-	globalsLock("fs.go:245:2:processToUnmountList")
+	globalsLock("fs.go:251:2:processToUnmountList")
 	processToUnmountListAlreadyLocked()
 	globalsUnlock()
 }
@@ -828,7 +828,7 @@ func inodeEvictor() {
 	for {
 		select {
 		case <-ticker.C:
-			globalsLock("fs.go:825:4:inodeEvictor")
+			globalsLock("fs.go:831:4:inodeEvictor")
 
 			// Scan globals.inodeEvictionLRU looking for expired inodes to evict
 
@@ -1107,7 +1107,7 @@ func prefetchDirectory(dirInodeNumber uint64) {
 		startTime               = time.Now()
 	)
 
-	globalsLock("fs.go:1104:2:prefetchDirectory")
+	globalsLock("fs.go:1110:2:prefetchDirectory")
 
 	dirInode, ok = globals.inodeMap.get(dirInodeNumber)
 	if !ok {
@@ -1136,7 +1136,7 @@ func prefetchDirectory(dirInodeNumber uint64) {
 			globals.logger.Printf("[WARN] listDirectoryWrapper(dirInode.backend.context, listDirectoryInput) failed: %v", err)
 		}
 
-		globalsLock("fs.go:1133:3:prefetchDirectory")
+		globalsLock("fs.go:1139:3:prefetchDirectory")
 
 		dirInode, ok = globals.inodeMap.get(dirInodeNumber)
 		if !ok {
@@ -1302,7 +1302,7 @@ func dumpFS(w io.Writer) {
 		rootDirInode *inodeStruct
 	)
 
-	globalsLock("fs.go:1299:2:dumpFS")
+	globalsLock("fs.go:1305:2:dumpFS")
 
 	rootDirInode, ok = globals.inodeMap.get(FUSERootDirInodeNumber)
 	if !ok {
@@ -1466,7 +1466,7 @@ func (thisInode *inodeStruct) finishPendingDelete() {
 
 Restart:
 
-	globalsLock("fs.go:1463:2:(*inodeStruct).finishPendingDelete")
+	globalsLock("fs.go:1469:2:(*inodeStruct).finishPendingDelete")
 
 	// Let's just drop cache lines that are either "clean" io "dirty"
 

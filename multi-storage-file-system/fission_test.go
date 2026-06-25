@@ -1779,10 +1779,10 @@ func TestFissionDoReadFetchFailureReturnsEIO(t *testing.T) {
 	// (contentLength == 0) — exactly the state fetch() leaves on a backend error.
 	// Setting it up directly keeps the subsequent read on the cache-hit path and
 	// avoids depending on a flaky backend.
-	globals.Lock()
+	globalsLock("fission_test.go:1782:2:TestFissionDoReadFetchFailureReturnsEIO")
 	inode, ok = globals.inodeMap.get(fileBIno)
 	if !ok {
-		globals.Unlock()
+		globalsUnlock()
 		t.Fatalf("inodeMap.get(fileBIno) returned !ok")
 	}
 	if inode.cacheMap == nil {
@@ -1790,7 +1790,7 @@ func TestFissionDoReadFetchFailureReturnsEIO(t *testing.T) {
 	}
 	tracker = globals.dataCacheLineFreeLRU.popHead()
 	if tracker == nil {
-		globals.Unlock()
+		globalsUnlock()
 		t.Fatalf("dataCacheLineFreeLRU.popHead() returned nil (no free cache lines)")
 	}
 	tracker.inodeNumber = inode.inodeNumber
@@ -1800,7 +1800,7 @@ func TestFissionDoReadFetchFailureReturnsEIO(t *testing.T) {
 	tracker.fetchFailed = true
 	inode.cacheMap[0] = tracker.pos
 	globals.dataCacheLineCleanLRU.pushTail(tracker)
-	globals.Unlock()
+	globalsUnlock()
 
 	// Read line 0. Before the fix this panicked while holding the global lock and
 	// deadlocked the whole filesystem; it must now cleanly return EIO.
@@ -1811,9 +1811,9 @@ func TestFissionDoReadFetchFailureReturnsEIO(t *testing.T) {
 	}
 
 	// The failed line must have been evicted so a later read re-fetches it.
-	globals.Lock()
+	globalsLock("fission_test.go:1814:2:TestFissionDoReadFetchFailureReturnsEIO")
 	_, ok = inode.cacheMap[0]
-	globals.Unlock()
+	globalsUnlock()
 	if ok {
 		t.Fatalf("failed cache line was not evicted from inode.cacheMap after EIO")
 	}
