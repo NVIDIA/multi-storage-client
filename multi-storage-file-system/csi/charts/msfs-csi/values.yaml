@@ -92,5 +92,24 @@ staticCredentials:
 auth:
   mode: irsa
 
+  # -- Per-workload IRSA (opt-in). When enabled, the CSIDriver object declares
+  # tokenRequests + requiresRepublish so the kubelet mints a projected
+  # ServiceAccount token for each *workload* pod and delivers it on
+  # NodePublishVolume. The driver writes that token to a per-mount file and
+  # points the msfs child at it (AWS_WEB_IDENTITY_TOKEN_FILE), assuming the role
+  # from each PV's volumeAttributes.roleArn — so every workload uses its own IAM
+  # role instead of the shared msfs-csi-node SA role.
+  #
+  # Default false: leaving it off preserves today's driver-SA IRSA behavior and
+  # avoids breaking existing IRSA mounts whose PVs do not set roleArn.
+  perWorkloadIrsa:
+    enabled: false
+    # Token audience requested from the kubelet. For AWS STS leave this as
+    # sts.amazonaws.com — the driver matches tokens on this audience.
+    audience: sts.amazonaws.com
+    # Projected token lifetime in seconds; the kubelet republishes to refresh
+    # the token before it expires. Some clusters enforce a minimum (~600s).
+    tokenExpirationSeconds: 3600
+
 # -- Common labels added to every rendered object.
 commonLabels: {}

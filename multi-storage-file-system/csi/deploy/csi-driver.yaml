@@ -8,3 +8,15 @@ spec:
   volumeLifecycleModes:
     - Ephemeral
     - Persistent
+  # Per-workload IRSA (opt-in). Uncomment the block below to have the kubelet
+  # mint a projected ServiceAccount token for each *workload* pod and deliver it
+  # on NodePublishVolume; the driver then assumes the role from the PV's
+  # volumeAttributes.roleArn instead of the shared msfs-csi-node SA role.
+  # requiresRepublish lets the kubelet refresh the token before it expires.
+  # Leave commented for the default driver-SA IRSA / static behavior. The Helm
+  # chart renders this automatically when auth.perWorkloadIrsa.enabled=true.
+  #
+  # tokenRequests:
+  #   - audience: sts.amazonaws.com
+  #     expirationSeconds: 3600
+  # requiresRepublish: true

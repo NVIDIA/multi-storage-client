@@ -229,7 +229,10 @@ The Dockerfile is at `multi-storage-file-system/Dockerfile.csi` (build context n
 1. Kubelet calls `NodePublishVolume` with `targetPath`, `volumeAttributes`, and `secrets`.
 2. The plugin resolves the credential mode from `volumeAttributes.authType` (`auto` / `static` / `irsa`).
 3. The plugin writes a temporary `msfs.yaml` config from `volumeAttributes` (bucket, region, prefix, etc.). In `static` mode the config includes `${AWS_ACCESS_KEY_ID}` / `${AWS_SECRET_ACCESS_KEY}` placeholders; in `irsa` mode they are omitted so the AWS SDK falls through to its credential chain (projected SA token).
-4. In `static` mode, AWS credentials from the K8s Secret (`nodePublishSecretRef`) are exported as env vars on the msfs process. In `irsa` mode no AWS env vars are injected — EKS-set `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE` reach msfs unchanged.
+4. Credentials are supplied to msfs according to the mode:
+   - **`static`** — AWS keys from the K8s Secret (`nodePublishSecretRef`) are exported as env vars on the msfs process.
+   - **`irsa` (driver-SA, default)** — no AWS env vars are injected; the EKS-set `AWS_ROLE_ARN` / `AWS_WEB_IDENTITY_TOKEN_FILE` of the **driver** pod reach msfs unchanged, so every mount shares the driver's IAM role.
+   - **`irsa` (per-workload)** — when the chart sets `auth.perWorkloadIrsa.enabled=true` (CSIDriver `tokenRequests`), the kubelet passes the **workload** pod's projected token in `volume_context`. The plugin writes it to `<config-dir>/aws-web-identity-token` (mode `0600`) and overrides `AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN` (from `volumeAttributes.roleArn`) so the mount assumes the workload's own role. With `requiresRepublish`, the kubelet re-publishes periodically and the plugin rewrites the token file in place — msfs is not restarted.
 5. The plugin execs `msfs <config-path>`. MSFS creates a FUSE mount at `targetPath`.
 6. Kubelet bind-mounts `targetPath` into the app pod.
 
@@ -244,15 +247,25 @@ The Dockerfile is at `multi-storage-file-system/Dockerfile.csi` (build context n
 
 | Key | Required | Default | Description |
 |-----|----------|---------|-------------|
-| `bucketName` | Yes | - | S3 bucket name |
+| `bucketName` | Yes | - | Bucket name / AIStore bucket name |
+| `backendType` | No | `S3` | MSFS backend emitted by the CSI driver: `S3` or `AIStore` |
+| `dirName` | No | `s3` / `ais` | Directory name exposed under the MSFS mount for the generated backend |
 | `authType` | No | `auto` | Credential mode: `auto` (static if Secret provided, else IRSA), `static`, `irsa` (alias `wif`) |
-| `region` | No | `us-east-1` | AWS region |
-| `endpoint` | No | `https://s3.<region>.amazonaws.com` | S3 endpoint URL |
+| `roleArn` | No | - | IAM role ARN the mount assumes under **per-workload IRSA** (`auth.perWorkloadIrsa.enabled=true`). Required in that mode; ignored otherwise. |
+| `region` | No | `us-east-1` | AWS region (`backendType=S3`) |
+| `endpoint` | No | `https://s3.<region>.amazonaws.com` | S3 endpoint URL (`backendType=S3`) |
 | `prefix` | No | `""` | Object key prefix (with trailing `/` if non-empty) |
 | `readonly` | No | `true` | Mount as read-only |
 | `manifestPath` | No | - | Path for manifest generation output |
 | `manifestGenWorkers` | No | - | Number of parallel listing workers |
 | `flatDirConfirmationPages` | No | - | Flat directory confirmation pages |
+| `aisEndpoint` | No | `${AIS_ENDPOINT}` | Native AIStore endpoint (`backendType=AIStore`) |
+| `aisProvider` | No | `s3` | AIStore bucket provider (`ais`, `aws`, `gcp`, `azure`, etc.) |
+| `aisAuthnTokenFile` | No | `${AIS_AUTHN_TOKEN_FILE:-${HOME}/.config/ais/cli/auth.token}` | AIStore auth token file read by MSFS at mount setup |
+| `aisAuthnToken` | No | `${AIS_AUTHN_TOKEN}` | Inline AIStore auth token; prefer `aisAuthnTokenFile` or env/secret projection |
+| `aisSkipTLSCertificateVerify` | No | `false` | Skip AIStore endpoint TLS verification |
+| `aisTimeout` | No | `30000` | AIStore client timeout in milliseconds |
+| `aisManifestGenBackend` | No | - | Existing backend name used by MSFS for AIStore LIST/STAT-DIR delegation |
 
 ## Secret keys reference
 

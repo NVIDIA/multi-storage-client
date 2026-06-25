@@ -10,3 +10,14 @@ spec:
   volumeLifecycleModes:
     - Ephemeral
     - Persistent
+  {{- if .Values.auth.perWorkloadIrsa.enabled }}
+  # Per-workload IRSA (opt-in): kubelet mints a projected ServiceAccount token
+  # for the *workload* pod and delivers it to NodePublishVolume; requiresRepublish
+  # makes kubelet re-publish periodically so the driver can refresh the token
+  # before it expires. The driver assumes the role from the PV's
+  # volumeAttributes.roleArn. See auth.perWorkloadIrsa in values.yaml.
+  tokenRequests:
+    - audience: {{ .Values.auth.perWorkloadIrsa.audience | quote }}
+      expirationSeconds: {{ .Values.auth.perWorkloadIrsa.tokenExpirationSeconds | int }}
+  requiresRepublish: true
+  {{- end }}
