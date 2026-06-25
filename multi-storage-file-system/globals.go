@@ -176,7 +176,7 @@ type configStruct struct {
 	virtualDirTTL                             time.Duration              // JSON/YAML "virtual_dir_ttl"                                   default:1000000 (in milliseconds)
 	virtualFileTTL                            time.Duration              // JSON/YAML "virtual_file_ttl"                                  default:1000000 (in milliseconds)
 	ttlCheckInterval                          time.Duration              // JSON/YAML "ttl_check_interval"                                default:250 (in milliseconds)
-	mappedCache                               bool                       // JSON/YAML "mapped_cache"                                      default:true
+	cacheStorage                              string                     // JSON/YAML "cache_storage" ("ram"|"mapped-file"|"per-inode-file") default:"mapped-file" (mapped_cache/cache_backend are deprecated aliases)
 	cacheLineSize                             uint64                     // JSON/YAML "cache_line_size"                                   default:10485760 (10Mi)
 	cacheLines                                uint64                     // JSON/YAML "cache_lines"                                       default:128
 	cacheLinesToPrefetch                      uint64                     // JSON/YAML "cache_lines_to_prefetch"                           default:4
@@ -343,11 +343,14 @@ type dataCacheLineTrackerStruct struct {
 	waiters           []*sync.WaitGroup // List of those awaiting a state change
 	contentStart      uint64            // Starting offset in globals.dataCacheLinesContent
 	contentLength     uint64            // If <pos> is the position of this struct in globals.dataCacheLinesTracker, valid content is [:.contentLen] of globals.datdataCacheLinesContent[<pos>*globals.config.cacheLineSize:(<pos>+1)*globals.config.cacheLineSize]
-	contentGeneration uint64            // Incremented each modification so as to enable unlocked reading of content
+	contentGeneration atomic.Uint64     // Incremented each modification so as to enable unlocked reading of content (atomic: re-read locklessly in DoRead's optimistic re-check)
 	inodeNumber       uint64            // Reference to an inodeStruct.inodeNumber
 	lineNumber        uint64            // Identifies file/object range covered by content as up to [lineNumber * globals.config.cacheLineSize:(lineNumber + 1) * global.config.cacheLineSize)
 	eTag              string            // If state == CacheLineClean, value of inodeStruct.eTag when when fetched from backend; Otherwise, == ""
 	fetchFailed       bool              // Set when the backend read populating this line failed; DoRead surfaces this as EIO and evicts the line instead of serving empty/short content
+	diskFile          *os.File          // [cache_storage == "per-inode-file"] per-inode backing file this line was written to (== globals.inodeDiskCacheFiles[inodeNumber].file); nil in memory mode
+	diskOffset        int64             // [cache_storage == "per-inode-file"] byte offset of this line within diskFile (== lineNumber * cacheLineSize)
+	diskLength        int64             // [cache_storage == "per-inode-file"] number of valid bytes written at diskOffset (== contentLength)
 }
 
 // `inodeStruct` contains the state of an inode.
@@ -400,7 +403,7 @@ type globalsStruct struct {
 	inodeEvictorContext      context.Context                                         //
 	inodeEvictorCancelFunc   context.CancelFunc                                      //
 	inodeEvictorWaitGroup    sync.WaitGroup                                          //
-	dataCacheLinesFile       *os.File                                                // When config.mappedCache: backing file for .dataCacheLinesContent mmap; otherwise nil
+	dataCacheLinesFile       *os.File                                                // When config.cacheStorage == "mapped-file": backing file for .dataCacheLinesContent mmap; otherwise nil
 	dataCacheLinesContent    []byte                                                  // Holds the content of each data cache line who's state is at the equivalent position in .dataCacheLinesTracker
 	dataCacheLinesTracker    []dataCacheLineTrackerStruct                            // Holds the state of each data cache line who's content is at the equivalent position in .dataCacheLinesContent
 	dataCacheLineFreeLRU     dataCacheLineLRUStruct                                  // LRU-ordered doubly linked list of dataCacheLineTrackerStruct where .state == CacheLineFree
@@ -409,6 +412,7 @@ type globalsStruct struct {
 	dataCacheLineOutboundLRU dataCacheLineLRUStruct                                  // LRU-ordered doubly linked list of dataCacheLineTrackerStruct where .state == CacheLineOutbound
 	dataCacheLineDirtyLRU    dataCacheLineLRUStruct                                  // LRU-ordered doubly linked list of dataCacheLineTrackerStruct where .state == CacheLineDirty
 	dataCacheActivityWG      sync.WaitGroup                                          //
+	inodeDiskCacheFiles      map[uint64]*inodeDiskCacheFileStruct                    // [cache_storage == "per-inode-file"] Key == inodeStruct.inodeNumber; per-inode contiguous backing file + resident-line refcount
 	fhMap                    map[uint64]*fhStruct                                    // Key == fhStruct.nonce
 	fissionMetrics           *fissionMetricsStruct                                   //
 	backendMetrics           *backendMetricsStruct                                   //

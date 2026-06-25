@@ -12,6 +12,14 @@ const (
 	DataCacheFileName = "MSFS_data_cache"
 )
 
+// cache_storage values — where a cache line physically lives. These supersede
+// the deprecated mapped_cache (bool) and cache_backend (memory|disk) knobs.
+const (
+	cacheStorageRAM          = "ram"            // anonymous mmap (RAM only)
+	cacheStorageMappedFile   = "mapped-file"    // single shared memory-mapped file
+	cacheStoragePerInodeFile = "per-inode-file" // per-inode files served via pread
+)
+
 func dataCacheUp() (err error) {
 	var (
 		dataCacheLineContentSize uint64
@@ -21,7 +29,23 @@ func dataCacheUp() (err error) {
 
 	dataCacheLineContentSize = globals.config.cacheLines * globals.config.cacheLineSize
 
-	if globals.config.mappedCache {
+	switch globals.config.cacheStorage {
+	case cacheStoragePerInodeFile:
+		// Per-inode-file backend: no shared content arena. Each inode has one backing
+		// file, <cacheDir>/cachelines/inode_<N>.bin; a cache line is the byte
+		// range [lineNumber*cacheLineSize, +cacheLineSize) within it, so a
+		// file's lines are physically contiguous and kernel readahead helps.
+		// The file is sparse — evicted lines are released via
+		// fallocate(PUNCH_HOLE|KEEP_SIZE), preserving surviving lines' offsets.
+		// Reads are served via pread straight into the FUSE reply buffer. The
+		// tracker/LRU machinery below is unchanged and bounds the number of
+		// resident lines exactly as in memory mode.
+		globals.dataCacheLinesFile = nil
+		globals.dataCacheLinesContent = nil
+		if err = diskCacheUp(); err != nil {
+			return
+		}
+	case cacheStorageMappedFile:
 		globals.dataCacheLinesFile, err = os.OpenFile(filepath.Join(globals.cacheDir, DataCacheFileName), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
 			err = fmt.Errorf("os.OpenFile(filepath.Join(globals.cacheDir, DataCacheFileName), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600) failed: %v", err)
@@ -42,7 +66,7 @@ func dataCacheUp() (err error) {
 			err = fmt.Errorf("syscall.Mmap(int(globals.dataCacheLinesFile.Fd()),,,,,) failed: %v", err)
 			return
 		}
-	} else {
+	default:
 		// RAM-backed cache: use an anonymous private mmap (fd=-1, MAP_ANON) instead
 		// of `make([]byte, N)`. The kernel only commits physical pages on first
 		// touch, so workloads that never read file data (e.g. pure manifest ingest
@@ -77,11 +101,11 @@ func dataCacheUp() (err error) {
 		dataCacheLineTracker.state = CacheLineNotNotOnLRU
 		dataCacheLineTracker.waiters = make([]*sync.WaitGroup, 0, 1)
 		dataCacheLineTracker.contentStart = dataCacheLineIndex * globals.config.cacheLineSize
-		dataCacheLineTracker.contentLength = 0     // not yet applicable
-		dataCacheLineTracker.contentGeneration = 0 // not yet applicable
-		dataCacheLineTracker.inodeNumber = 0       // not yet applicable
-		dataCacheLineTracker.lineNumber = 0        // not yet applicable
-		dataCacheLineTracker.eTag = ""             // not yet applicable
+		dataCacheLineTracker.contentLength = 0 // not yet applicable
+		dataCacheLineTracker.contentGeneration.Store(0)
+		dataCacheLineTracker.inodeNumber = 0 // not yet applicable
+		dataCacheLineTracker.lineNumber = 0  // not yet applicable
+		dataCacheLineTracker.eTag = ""       // not yet applicable
 
 		globals.dataCacheLineFreeLRU.pushTail(dataCacheLineTracker)
 	}
@@ -120,9 +144,13 @@ func dataCacheUp() (err error) {
 func dataCacheDown() (err error) {
 	globals.dataCacheActivityWG.Wait()
 
-	// Both mapped_cache=true (file-backed) and mapped_cache=false (anonymous) paths
-	// use mmap-allocated memory, so Munmap covers both. The file fd is only present
-	// for the mapped_cache=true case.
+	if globals.config.cacheStorage == cacheStoragePerInodeFile {
+		diskCacheDown()
+	}
+
+	// Both the mapped-file and ram cache_storage modes use mmap-allocated memory,
+	// so Munmap covers both. The backing file fd is only present for the
+	// mapped-file mode.
 	if globals.dataCacheLinesContent != nil {
 		err = syscall.Munmap(globals.dataCacheLinesContent)
 		if err != nil {
@@ -364,6 +392,15 @@ func allocateDataCacheLines(count uint64) (cacheLineNumbers []uint64, neededToBl
 				globals.logger.Fatalf("[FATAL] globals.inodeMap.get(dataCacheLineTracker.inodeNumber[%v]) returned !ok", dataCacheLineTracker.inodeNumber)
 			}
 
+			if globals.config.cacheStorage == cacheStoragePerInodeFile {
+				// Slot is being recycled for a different (inode, line): release
+				// the evicted line's disk bytes. Bump the generation first so any
+				// in-flight unlocked optimistic reader fails its post-copy
+				// re-check and retries rather than accepting now-punched bytes.
+				dataCacheLineTracker.contentGeneration.Add(1)
+				dataCacheLineTracker.punchHoleDisk()
+			}
+
 			delete(inode.cacheMap, dataCacheLineTracker.lineNumber)
 
 			cacheLineNumbers = append(cacheLineNumbers, dataCacheLineTracker.pos)
@@ -393,7 +430,7 @@ func allocateDataCacheLines(count uint64) (cacheLineNumbers []uint64, neededToBl
 
 		cacheLineWaiter.Wait()
 
-		globalsLock("cache.go:396:3:allocateDataCacheLines")
+		globalsLock("cache.go:433:3:allocateDataCacheLines")
 	}
 }
 
@@ -416,8 +453,11 @@ func releaseDataCacheLines(cacheLineNumbers []uint64) {
 // `free` resets a data cache line that is not currently on any LRU and returns
 // it to the Free LRU. The caller must hold the globals lock.
 func (dataCacheLineTracker *dataCacheLineTrackerStruct) free() {
+	if globals.config.cacheStorage == cacheStoragePerInodeFile {
+		dataCacheLineTracker.punchHoleDisk() // no-op if this line had no disk backing
+	}
 	dataCacheLineTracker.contentLength = 0
-	dataCacheLineTracker.contentGeneration++
+	dataCacheLineTracker.contentGeneration.Add(1)
 	dataCacheLineTracker.inodeNumber = 0 // not yet applicable
 	dataCacheLineTracker.lineNumber = 0  // not yet applicable
 	dataCacheLineTracker.eTag = ""       // not yet applicable
@@ -442,7 +482,7 @@ func (dataCacheLineTracker *dataCacheLineTrackerStruct) fetch() {
 
 	defer globals.dataCacheActivityWG.Done()
 
-	globalsLock("cache.go:444:2:(*dataCacheLineTrackerStruct).fetch")
+	globalsLock("cache.go:485:2:(*dataCacheLineTrackerStruct).fetch")
 
 	inode, ok = globals.inodeMap.get(dataCacheLineTracker.inodeNumber)
 	if !ok {
@@ -469,12 +509,12 @@ func (dataCacheLineTracker *dataCacheLineTrackerStruct) fetch() {
 	globalsUnlock()
 
 	readFileOutput, err = readFileWrapper(backend.context, readFileInput)
-	if err == nil {
+	if err == nil && globals.config.cacheStorage != cacheStoragePerInodeFile {
 		content = globals.dataCacheLinesContent[dataCacheLineTracker.contentStart : dataCacheLineTracker.contentStart+globals.config.cacheLineSize]
 		dataCacheLineTracker.contentLength = uint64(copy(content, readFileOutput.buf))
 	}
 
-	globalsLock("cache.go:476:2:(*dataCacheLineTrackerStruct).fetch")
+	globalsLock("cache.go:517:2:(*dataCacheLineTrackerStruct).fetch")
 	inode, ok = globals.inodeMap.get(dataCacheLineTracker.inodeNumber)
 	if ok {
 		inode.inboundCacheLineCount--
@@ -488,9 +528,10 @@ func (dataCacheLineTracker *dataCacheLineTrackerStruct) fetch() {
 	}
 
 	globals.dataCacheLineInboundLRU.popThis(dataCacheLineTracker)
-	dataCacheLineTracker.contentGeneration++
+	dataCacheLineTracker.contentGeneration.Add(1)
 
-	if err != nil {
+	switch {
+	case err != nil:
 		// The backend read failed. Mark the line as failed and move it to the
 		// Clean LRU so waiters are released and the state machine stays consistent;
 		// DoRead detects .fetchFailed, surfaces EIO to the caller, and evicts the
@@ -501,7 +542,20 @@ func (dataCacheLineTracker *dataCacheLineTrackerStruct) fetch() {
 		dataCacheLineTracker.contentLength = 0
 		dataCacheLineTracker.eTag = ""
 		dataCacheLineTracker.fetchFailed = true
-	} else {
+	case globals.config.cacheStorage == cacheStoragePerInodeFile:
+		// Write the fetched bytes through to the inode's backing file under
+		// the lock (matches the memory path, which set contentLength above).
+		dataCacheLineTracker.contentLength = dataCacheLineTracker.storeContentDisk(readFileOutput.buf)
+		if len(readFileOutput.buf) > 0 && dataCacheLineTracker.contentLength == 0 {
+			// storeContentDisk failed (open/WriteAt error) on a non-empty read:
+			// treat as a fetch failure so DoRead surfaces EIO instead of EOF.
+			dataCacheLineTracker.eTag = ""
+			dataCacheLineTracker.fetchFailed = true
+		} else {
+			dataCacheLineTracker.eTag = readFileOutput.eTag
+			dataCacheLineTracker.fetchFailed = false
+		}
+	default:
 		dataCacheLineTracker.eTag = readFileOutput.eTag
 		dataCacheLineTracker.fetchFailed = false
 	}

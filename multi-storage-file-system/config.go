@@ -223,6 +223,71 @@ func parseFlatDirHints(backendMap map[string]interface{}) []flatDirHintStruct {
 // dflt is provided, the dflt value will be used. In either case of
 // a value to be returned, it will be expanded with environment variable
 // substitutions, if any, before being returned.
+// resolveCacheStorage determines the cache_storage setting, honoring the
+// deprecated mapped_cache and cache_backend keys as aliases. Precedence:
+// cache_storage (canonical) > cache_backend > mapped_cache > default.
+func resolveCacheStorage(configFileMap map[string]interface{}) (string, error) {
+	_, hasCacheStorage := configFileMap["cache_storage"]
+	_, hasCacheBackend := configFileMap["cache_backend"]
+	_, hasMappedCache := configFileMap["mapped_cache"]
+
+	switch {
+	case hasCacheStorage:
+		cacheStorage, ok := parseString(configFileMap, "cache_storage", cacheStorageMappedFile)
+		if !ok {
+			return "", errors.New("bad cache_storage value")
+		}
+		switch cacheStorage {
+		case cacheStorageRAM, cacheStorageMappedFile, cacheStoragePerInodeFile:
+		default:
+			return "", fmt.Errorf("bad cache_storage value (%q): must be %q, %q, or %q",
+				cacheStorage, cacheStorageRAM, cacheStorageMappedFile, cacheStoragePerInodeFile)
+		}
+		if hasMappedCache || hasCacheBackend {
+			logDeprecation("mapped_cache / cache_backend are ignored when cache_storage is set; remove them")
+		}
+		return cacheStorage, nil
+	case hasCacheBackend:
+		logDeprecation("cache_backend is deprecated; use cache_storage (ram|mapped-file|per-inode-file)")
+		cacheBackend, ok := parseString(configFileMap, "cache_backend", "memory")
+		if !ok {
+			return "", errors.New("bad cache_backend value")
+		}
+		switch cacheBackend {
+		case "disk":
+			return cacheStoragePerInodeFile, nil
+		case "memory":
+			// "memory" == shared arena; mapped_cache then chose file vs RAM.
+			if mappedCache, _ := parseBool(configFileMap, "mapped_cache", true); mappedCache {
+				return cacheStorageMappedFile, nil
+			}
+			return cacheStorageRAM, nil
+		default:
+			return "", fmt.Errorf("bad cache_backend value (%q): must be \"memory\" or \"disk\"", cacheBackend)
+		}
+	case hasMappedCache:
+		logDeprecation("mapped_cache is deprecated; use cache_storage (ram|mapped-file|per-inode-file)")
+		mappedCache, ok := parseBool(configFileMap, "mapped_cache", true)
+		if !ok {
+			return "", errors.New("bad mapped_cache value")
+		}
+		if mappedCache {
+			return cacheStorageMappedFile, nil
+		}
+		return cacheStorageRAM, nil
+	default:
+		return cacheStorageMappedFile, nil // preserve prior default (mapped_cache=true)
+	}
+}
+
+// logDeprecation emits a one-line config deprecation warning when the logger is
+// available (it may be nil during the very first parse).
+func logDeprecation(msg string) {
+	if globals.logger != nil {
+		globals.logger.Printf("[WARN] %s", msg)
+	}
+}
+
 func parseString(m map[string]interface{}, key string, dflt interface{}) (s string, ok bool) {
 	var (
 		err error
@@ -768,12 +833,6 @@ func checkConfigFile() (err error) {
 		return
 	}
 
-	config.mappedCache, ok = parseBool(configFileMap, "mapped_cache", true)
-	if !ok {
-		err = errors.New("bad mapped_cache value")
-		return
-	}
-
 	config.cacheLineSize, ok = parseUint64(configFileMap, "cache_line_size", uint64(10485760))
 	if !ok {
 		err = errors.New("bad cache_line_size value")
@@ -825,6 +884,14 @@ func checkConfigFile() (err error) {
 	config.cacheDirPath, ok = parseString(configFileMap, "cache_dir_path", "")
 	if !ok {
 		err = errors.New("bad cache_dir_path value")
+		return
+	}
+
+	// cache_storage selects where each cache line physically lives. It
+	// supersedes the deprecated mapped_cache (bool) and cache_backend
+	// (memory|disk) keys, which are still honored as aliases.
+	config.cacheStorage, err = resolveCacheStorage(configFileMap)
+	if err != nil {
 		return
 	}
 
@@ -1916,11 +1983,6 @@ func checkConfigFile() (err error) {
 			return
 		}
 
-		if globals.config.mappedCache != config.mappedCache {
-			err = errors.New("cannot change mapped_cache via SIGHUP")
-			return
-		}
-
 		if globals.config.cacheLineSize != config.cacheLineSize {
 			err = errors.New("cannot change cache_line_size via SIGHUP")
 			return
@@ -1948,6 +2010,11 @@ func checkConfigFile() (err error) {
 
 		if globals.config.cacheDirPath != config.cacheDirPath {
 			err = errors.New("cannot change cache_dir_path via SIGHUP")
+			return
+		}
+
+		if globals.config.cacheStorage != config.cacheStorage {
+			err = errors.New("cannot change cache_storage via SIGHUP")
 			return
 		}
 
@@ -2200,6 +2267,11 @@ func checkConfigFile() (err error) {
 
 					if backendAsStructOld.backendTypeSpecifics.(*backendConfigAIStoreStruct).timeout != backendAsStructNew.backendTypeSpecifics.(*backendConfigAIStoreStruct).timeout {
 						err = fmt.Errorf("cannot change AIStore.timeout in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigAIStoreStruct).manifestGenBackendName != backendAsStructNew.backendTypeSpecifics.(*backendConfigAIStoreStruct).manifestGenBackendName {
+						err = fmt.Errorf("cannot change AIStore.manifest_gen_backend in backends[\"%s\"]", dirName)
 						return
 					}
 				case "GCS":

@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"math"
+	"os"
 	"sync"
 	"syscall"
 	"time"
@@ -42,6 +44,19 @@ const (
 	openOutFlags = uint32(0) |
 		fission.FOpenResponseDirectIO
 )
+
+// computeOpenOutFlags returns the FOPEN flags for the DoOpen response. In the
+// per-inode-file cache backend (cache_storage: "per-inode-file") DirectIO is
+// dropped so the kernel page cache can absorb repeated warm reads of the FUSE
+// replies (matching s3fs, which sets no FOPEN flags). In the arena modes (ram /
+// mapped-file) DirectIO stays on so every read round-trips to MSFS and the
+// in-process cache is the sole authority.
+func computeOpenOutFlags() uint32 {
+	if globals.config != nil && globals.config.cacheStorage == cacheStoragePerInodeFile {
+		return uint32(0)
+	}
+	return openOutFlags
+}
 
 // `performFissionMount` is called to do the single FUSE mount at startup.
 func performFissionMount() (err error) {
@@ -157,7 +172,7 @@ func (*globalsStruct) DoLookup(inHeader *fission.InHeader, lookupIn *fission.Loo
 
 	defer func() {
 		latency = time.Since(startTime).Seconds()
-		globalsLock("fission.go:160:3:funcLit@158")
+		globalsLock("fission.go:175:3:funcLit@173")
 		if errno == 0 {
 			globals.fissionMetrics.LookupSuccesses.Inc()
 			globals.fissionMetrics.LookupSuccessLatencies.Observe(latency)
@@ -176,7 +191,7 @@ func (*globalsStruct) DoLookup(inHeader *fission.InHeader, lookupIn *fission.Loo
 		globalsUnlock()
 	}()
 
-	globalsLock("fission.go:179:2:(*globalsStruct).DoLookup")
+	globalsLock("fission.go:194:2:(*globalsStruct).DoLookup")
 
 	parentInode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
@@ -298,7 +313,7 @@ func (*globalsStruct) DoGetAttr(inHeader *fission.InHeader, getAttrIn *fission.G
 
 	defer func() {
 		latency = time.Since(startTime).Seconds()
-		globalsLock("fission.go:301:3:funcLit@299")
+		globalsLock("fission.go:316:3:funcLit@314")
 		if errno == 0 {
 			globals.fissionMetrics.GetAttrSuccesses.Inc()
 			globals.fissionMetrics.GetAttrSuccessLatencies.Observe(latency)
@@ -317,7 +332,7 @@ func (*globalsStruct) DoGetAttr(inHeader *fission.InHeader, getAttrIn *fission.G
 		globalsUnlock()
 	}()
 
-	globalsLock("fission.go:320:2:(*globalsStruct).DoGetAttr")
+	globalsLock("fission.go:335:2:(*globalsStruct).DoGetAttr")
 
 	thisInode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
@@ -438,7 +453,7 @@ func (*globalsStruct) DoMkDir(inHeader *fission.InHeader, mkDirIn *fission.MkDir
 
 	defer func() {
 		latency = time.Since(startTime).Seconds()
-		globalsLock("fission.go:441:3:funcLit@439")
+		globalsLock("fission.go:456:3:funcLit@454")
 		if errno == 0 {
 			globals.fissionMetrics.MkDirSuccesses.Inc()
 			globals.fissionMetrics.MkDirSuccessLatencies.Observe(latency)
@@ -457,7 +472,7 @@ func (*globalsStruct) DoMkDir(inHeader *fission.InHeader, mkDirIn *fission.MkDir
 		globalsUnlock()
 	}()
 
-	globalsLock("fission.go:460:2:(*globalsStruct).DoMkDir")
+	globalsLock("fission.go:475:2:(*globalsStruct).DoMkDir")
 
 	parentInode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
@@ -561,7 +576,7 @@ func (*globalsStruct) DoUnlink(inHeader *fission.InHeader, unlinkIn *fission.Unl
 	// Record metrics on function exit
 	defer func() {
 		latency = time.Since(startTime).Seconds()
-		globalsLock("fission.go:564:3:funcLit@562")
+		globalsLock("fission.go:579:3:funcLit@577")
 		if errno == 0 {
 			globals.fissionMetrics.UnlinkSuccesses.Inc()
 			globals.fissionMetrics.UnlinkSuccessLatencies.Observe(latency)
@@ -580,7 +595,7 @@ func (*globalsStruct) DoUnlink(inHeader *fission.InHeader, unlinkIn *fission.Unl
 		globalsUnlock()
 	}()
 
-	globalsLock("fission.go:583:2:(*globalsStruct).DoUnlink")
+	globalsLock("fission.go:598:2:(*globalsStruct).DoUnlink")
 
 	parentInode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
@@ -677,7 +692,7 @@ func (*globalsStruct) DoRmDir(inHeader *fission.InHeader, rmDirIn *fission.RmDir
 
 	defer func() {
 		latency = time.Since(startTime).Seconds()
-		globalsLock("fission.go:680:3:funcLit@678")
+		globalsLock("fission.go:695:3:funcLit@693")
 		if errno == 0 {
 			globals.fissionMetrics.RmDirSuccesses.Inc()
 			globals.fissionMetrics.RmDirSuccessLatencies.Observe(latency)
@@ -696,7 +711,7 @@ func (*globalsStruct) DoRmDir(inHeader *fission.InHeader, rmDirIn *fission.RmDir
 		globalsUnlock()
 	}()
 
-	globalsLock("fission.go:699:2:(*globalsStruct).DoRmDir")
+	globalsLock("fission.go:714:2:(*globalsStruct).DoRmDir")
 
 	parentInode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
@@ -843,7 +858,7 @@ func (*globalsStruct) DoOpen(inHeader *fission.InHeader, openIn *fission.OpenIn)
 
 	defer func() {
 		latency = time.Since(startTime).Seconds()
-		globalsLock("fission.go:846:3:funcLit@844")
+		globalsLock("fission.go:861:3:funcLit@859")
 		if errno == 0 {
 			globals.fissionMetrics.OpenSuccesses.Inc()
 			globals.fissionMetrics.OpenSuccessLatencies.Observe(latency)
@@ -862,7 +877,7 @@ func (*globalsStruct) DoOpen(inHeader *fission.InHeader, openIn *fission.OpenIn)
 		globalsUnlock()
 	}()
 
-	globalsLock("fission.go:865:2:(*globalsStruct).DoOpen")
+	globalsLock("fission.go:880:2:(*globalsStruct).DoOpen")
 
 	inode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
@@ -938,7 +953,7 @@ func (*globalsStruct) DoOpen(inHeader *fission.InHeader, openIn *fission.OpenIn)
 
 	openOut = &fission.OpenOut{
 		FH:        fh.nonce,
-		OpenFlags: openOutFlags,
+		OpenFlags: computeOpenOutFlags(),
 		Padding:   0,
 	}
 
@@ -965,6 +980,9 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 		copyGeneration                  uint64 // dataCacheLineTracker.contentGeneration snapshot
 		copyLength                      uint64
 		copySrcStart                    uint64
+		copyDiskFile                    *os.File // [cache_storage == "per-inode-file"] snapshot of the line's backing file for unlocked pread
+		copyDiskOffset                  int64    // [cache_storage == "per-inode-file"] byte offset within copyDiskFile to pread from
+		diskReadErr                     error
 		curOffset                       = readIn.Offset
 		dataCacheLineNumber             uint64
 		dataCacheLineNumbers            []uint64
@@ -983,7 +1001,12 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 
 	defer func() {
 		latency = time.Since(startTime).Seconds()
-		globalsLock("fission.go:982:3:funcLit@980")
+		// No global lock here: every field updated below is a goroutine-safe
+		// Prometheus Counter/Histogram (self-synchronized), and backend/readOut/
+		// errno are this call's locals. globals.fissionMetrics is init-once and a
+		// captured backend's .fissionMetrics is set before it is published to
+		// backendMap, so both pointers are stable. Dropping this per-read metrics
+		// lock takes a warm read from two global-lock acquisitions to one.
 		if errno == 0 {
 			globals.fissionMetrics.ReadSuccesses.Inc()
 			globals.fissionMetrics.ReadSuccessLatencies.Observe(latency)
@@ -1039,7 +1062,6 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 				backend.fissionMetrics.ReadCachePrefetches.Add(float64(prefetchCacheLinesIssued))
 			}
 		}
-		globalsUnlock()
 	}()
 
 	readOut = &fission.ReadOut{
@@ -1047,7 +1069,7 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 	}
 
 	for len(readOut.Data) < cap(readOut.Data) {
-		globalsLock("fission.go:1046:3:(*globalsStruct).DoRead")
+		globalsLock("fission.go:1072:3:(*globalsStruct).DoRead")
 
 		inode, ok = globals.inodeMap.get(inHeader.NodeID)
 		if !ok {
@@ -1138,7 +1160,7 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 
 			dataCacheLineNumbers, _ = allocateDataCacheLines(1 + uint64(len(prefetchCacheLineNumbers)))
 
-			globalsLock("fission.go:1137:4:(*globalsStruct).DoRead")
+			globalsLock("fission.go:1163:4:(*globalsStruct).DoRead")
 
 			inode, ok = globals.inodeMap.get(inHeader.NodeID)
 			if !ok {
@@ -1213,7 +1235,7 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 			dataCacheLineTracker.waiters = make([]*sync.WaitGroup, 1)
 			dataCacheLineTracker.waiters[0] = &cacheLineWaiter
 			dataCacheLineTracker.contentLength = 0
-			dataCacheLineTracker.contentGeneration++
+			dataCacheLineTracker.contentGeneration.Add(1)
 			dataCacheLineTracker.inodeNumber = inode.inodeNumber
 			dataCacheLineTracker.lineNumber = cacheLineNumber
 			dataCacheLineTracker.eTag = ""
@@ -1240,7 +1262,7 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 
 				dataCacheLineTracker.waiters = make([]*sync.WaitGroup, 0, 1)
 				dataCacheLineTracker.contentLength = 0
-				dataCacheLineTracker.contentGeneration++
+				dataCacheLineTracker.contentGeneration.Add(1)
 				dataCacheLineTracker.inodeNumber = inode.inodeNumber
 				dataCacheLineTracker.lineNumber = prefetchCacheLineNumber
 				dataCacheLineTracker.eTag = ""
@@ -1334,29 +1356,56 @@ func (*globalsStruct) DoRead(inHeader *fission.InHeader, readIn *fission.ReadIn)
 		// globals.dataCacheLinesTracker are fixed allocations for the life of the
 		// mount, so reading from them after unlock is memory-safe. The only hazard
 		// is that this line is evicted/refetched mid-copy (yielding wrong bytes);
-		// .contentGeneration is bumped on every free()/fetch(), so we snapshot it
-		// under the lock, copy unlocked, then re-validate under the lock and retry
-		// the same offset on mismatch.
-		copyGeneration = dataCacheLineTracker.contentGeneration
-		copySrcStart = dataCacheLineTracker.contentStart + cacheLineOffsetStart
+		// .contentGeneration is bumped (atomically) on every free()/fetch(), so we
+		// snapshot it under the lock, copy unlocked, then re-validate it with a
+		// lock-free atomic load (no second global-lock acquire) and retry the same
+		// offset on mismatch.
+		copyGeneration = dataCacheLineTracker.contentGeneration.Load()
 		copyLength = cacheLineOffsetLimit - cacheLineOffsetStart
 		copyDstStart = len(readOut.Data)
-
-		globalsUnlock()
-
-		readOut.Data = append(readOut.Data, globals.dataCacheLinesContent[copySrcStart:copySrcStart+copyLength]...)
-
-		globalsLock("fission.go:DoRead:optimistic-copy-revalidate")
-
-		if dataCacheLineTracker.contentGeneration != copyGeneration {
-			// The cache line was evicted/refetched while we copied; discard the
-			// bytes we appended and retry this same offset.
-			readOut.Data = readOut.Data[:copyDstStart]
-			globalsUnlock()
-			continue
+		if globals.config.cacheStorage == cacheStoragePerInodeFile {
+			copyDiskFile = dataCacheLineTracker.diskFile
+			copyDiskOffset = dataCacheLineTracker.diskOffset + int64(cacheLineOffsetStart)
+		} else {
+			copySrcStart = dataCacheLineTracker.contentStart + cacheLineOffsetStart
 		}
 
 		globalsUnlock()
+
+		if copyDiskFile != nil {
+			// Disk backend: pread straight into the reply buffer's backing array
+			// (no intermediate memcpy), outside the lock. A concurrent eviction
+			// bumps contentGeneration (re-checked below); and a stable generation
+			// means this very line is still resident, so its inode file cannot
+			// have been closed under us.
+			readOut.Data = readOut.Data[:copyDstStart+int(copyLength)]
+			_, diskReadErr = copyDiskFile.ReadAt(readOut.Data[copyDstStart:copyDstStart+int(copyLength)], copyDiskOffset)
+		} else {
+			readOut.Data = append(readOut.Data, globals.dataCacheLinesContent[copySrcStart:copySrcStart+copyLength]...)
+		}
+
+		// Lock-free optimistic re-check: re-read .contentGeneration with an atomic
+		// load instead of re-acquiring the global lock -- that second per-read
+		// acquire was the warm-read throughput ceiling at high thread counts. The
+		// evictor atomically bumps .contentGeneration *before* it punches/recycles
+		// the slot (cache.go allocateDataCacheLines/free), so an unchanged
+		// generation here means no eviction touched this line during the unlocked
+		// copy and the bytes are valid; a changed generation means we may have
+		// copied torn/punched bytes, so we discard and retry. The disk pread is a
+		// syscall (full barrier); the arena memcpy precedes this load on amd64.
+		if dataCacheLineTracker.contentGeneration.Load() != copyGeneration {
+			// Evicted/refetched mid-copy: discard and retry this same offset. Any
+			// diskReadErr was a casualty of that eviction, so ignore it.
+			readOut.Data = readOut.Data[:copyDstStart]
+			continue
+		}
+
+		if diskReadErr != nil && diskReadErr != io.EOF {
+			// Generation stable but the pread genuinely failed -> surface EIO.
+			readOut.Data = readOut.Data[:copyDstStart]
+			errno = syscall.EIO
+			return
+		}
 
 		curOffset += copyLength
 	}
@@ -1374,7 +1423,7 @@ func (*globalsStruct) DoWrite(inHeader *fission.InHeader, writeIn *fission.Write
 
 // `DoStatFS` implements the package fission callback to fetch statistics about this FUSE file system.
 func (*globalsStruct) DoStatFS(inHeader *fission.InHeader) (statFSOut *fission.StatFSOut, errno syscall.Errno) {
-	globalsLock("fission.go:1331:2:(*globalsStruct).DoStatFS")
+	globalsLock("fission.go:1426:2:(*globalsStruct).DoStatFS")
 
 	statFSOut = &fission.StatFSOut{
 		KStatFS: fission.KStatFS{
@@ -1412,7 +1461,7 @@ func (*globalsStruct) DoRelease(inHeader *fission.InHeader, releaseIn *fission.R
 
 	defer func() {
 		latency = time.Since(startTime).Seconds()
-		globalsLock("fission.go:1369:3:funcLit@1367")
+		globalsLock("fission.go:1464:3:funcLit@1462")
 		if errno == 0 {
 			globals.fissionMetrics.ReleaseSuccesses.Inc()
 			globals.fissionMetrics.ReleaseSuccessLatencies.Observe(latency)
@@ -1431,7 +1480,7 @@ func (*globalsStruct) DoRelease(inHeader *fission.InHeader, releaseIn *fission.R
 		globalsUnlock()
 	}()
 
-	globalsLock("fission.go:1388:2:(*globalsStruct).DoRelease")
+	globalsLock("fission.go:1483:2:(*globalsStruct).DoRelease")
 
 	inode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
@@ -1571,7 +1620,7 @@ func (*globalsStruct) DoOpenDir(inHeader *fission.InHeader, openDirIn *fission.O
 
 	defer func() {
 		latency = time.Since(startTime).Seconds()
-		globalsLock("fission.go:1528:3:funcLit@1526")
+		globalsLock("fission.go:1623:3:funcLit@1621")
 		if errno == 0 {
 			globals.fissionMetrics.OpenDirSuccesses.Inc()
 			globals.fissionMetrics.OpenDirSuccessLatencies.Observe(latency)
@@ -1590,7 +1639,7 @@ func (*globalsStruct) DoOpenDir(inHeader *fission.InHeader, openDirIn *fission.O
 		globalsUnlock()
 	}()
 
-	globalsLock("fission.go:1547:2:(*globalsStruct).DoOpenDir")
+	globalsLock("fission.go:1642:2:(*globalsStruct).DoOpenDir")
 
 	inode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
@@ -1731,7 +1780,7 @@ func (*globalsStruct) DoReadDir(inHeader *fission.InHeader, readDirIn *fission.R
 		}
 
 		latency = time.Since(startTime).Seconds()
-		globalsLock("fission.go:1688:3:funcLit@1681")
+		globalsLock("fission.go:1783:3:funcLit@1776")
 		if errno == 0 {
 			globals.fissionMetrics.ReadDirSuccesses.Inc()
 			globals.fissionMetrics.ReadDirSuccessLatencies.Observe(latency)
@@ -1769,7 +1818,7 @@ func (*globalsStruct) DoReadDir(inHeader *fission.InHeader, readDirIn *fission.R
 	curReadDirOutSize = 0
 	curOffset = readDirIn.Offset
 
-	globalsLock("fission.go:1726:2:(*globalsStruct).DoReadDir")
+	globalsLock("fission.go:1821:2:(*globalsStruct).DoReadDir")
 
 Restart:
 
@@ -1892,7 +1941,7 @@ Restart:
 
 			listDirectoryOutput, err = listDirectoryWrapper(backend.context, listDirectoryInput)
 
-			globalsLock("fission.go:1849:4:(*globalsStruct).DoReadDir")
+			globalsLock("fission.go:1944:4:(*globalsStruct).DoReadDir")
 
 			fh.listDirectoryInProgress = false
 
@@ -2008,7 +2057,7 @@ func (*globalsStruct) DoReleaseDir(inHeader *fission.InHeader, releaseDirIn *fis
 
 	defer func() {
 		latency = time.Since(startTime).Seconds()
-		globalsLock("fission.go:1965:3:funcLit@1963")
+		globalsLock("fission.go:2060:3:funcLit@2058")
 		if errno == 0 {
 			globals.fissionMetrics.ReleaseDirSuccesses.Inc()
 			globals.fissionMetrics.ReleaseDirSuccessLatencies.Observe(latency)
@@ -2027,7 +2076,7 @@ func (*globalsStruct) DoReleaseDir(inHeader *fission.InHeader, releaseDirIn *fis
 		globalsUnlock()
 	}()
 
-	globalsLock("fission.go:1984:2:(*globalsStruct).DoReleaseDir")
+	globalsLock("fission.go:2079:2:(*globalsStruct).DoReleaseDir")
 
 	inode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
@@ -2132,7 +2181,7 @@ func (*globalsStruct) DoCreate(inHeader *fission.InHeader, createIn *fission.Cre
 
 	defer func() {
 		latency = time.Since(startTime).Seconds()
-		globalsLock("fission.go:2089:3:funcLit@2087")
+		globalsLock("fission.go:2184:3:funcLit@2182")
 		if errno == 0 {
 			globals.fissionMetrics.CreateSuccesses.Inc()
 			globals.fissionMetrics.CreateSuccessLatencies.Observe(latency)
@@ -2151,7 +2200,7 @@ func (*globalsStruct) DoCreate(inHeader *fission.InHeader, createIn *fission.Cre
 		globalsUnlock()
 	}()
 
-	globalsLock("fission.go:2108:2:(*globalsStruct).DoCreate")
+	globalsLock("fission.go:2203:2:(*globalsStruct).DoCreate")
 
 	parentInode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {
@@ -2353,7 +2402,7 @@ func (*globalsStruct) DoReadDirPlus(inHeader *fission.InHeader, readDirPlusIn *f
 		}
 
 		latency = time.Since(startTime).Seconds()
-		globalsLock("fission.go:2310:3:funcLit@2303")
+		globalsLock("fission.go:2405:3:funcLit@2398")
 		if errno == 0 {
 			globals.fissionMetrics.ReadDirPlusSuccesses.Inc()
 			globals.fissionMetrics.ReadDirPlusSuccessLatencies.Observe(latency)
@@ -2393,7 +2442,7 @@ func (*globalsStruct) DoReadDirPlus(inHeader *fission.InHeader, readDirPlusIn *f
 
 	entryAttrValidSec, entryAttrValidNSec = timeDurationToAttrDuration(globals.config.entryAttrTTL)
 
-	globalsLock("fission.go:2350:2:(*globalsStruct).DoReadDirPlus")
+	globalsLock("fission.go:2445:2:(*globalsStruct).DoReadDirPlus")
 
 Restart:
 
@@ -2678,7 +2727,7 @@ Restart:
 
 			listDirectoryOutput, err = listDirectoryWrapper(backend.context, listDirectoryInput)
 
-			globalsLock("fission.go:2635:4:(*globalsStruct).DoReadDirPlus")
+			globalsLock("fission.go:2730:4:(*globalsStruct).DoReadDirPlus")
 
 			fh.listDirectoryInProgress = false
 
@@ -2815,7 +2864,7 @@ func (*globalsStruct) DoStatX(inHeader *fission.InHeader, statXIn *fission.StatX
 
 	defer func() {
 		latency = time.Since(startTime).Seconds()
-		globalsLock("fission.go:2772:3:funcLit@2770")
+		globalsLock("fission.go:2867:3:funcLit@2865")
 		if errno == 0 {
 			globals.fissionMetrics.StatXSuccesses.Inc()
 			globals.fissionMetrics.StatXSuccessLatencies.Observe(latency)
@@ -2834,7 +2883,7 @@ func (*globalsStruct) DoStatX(inHeader *fission.InHeader, statXIn *fission.StatX
 		globalsUnlock()
 	}()
 
-	globalsLock("fission.go:2791:2:(*globalsStruct).DoStatX")
+	globalsLock("fission.go:2886:2:(*globalsStruct).DoStatX")
 
 	thisInode, ok = globals.inodeMap.get(inHeader.NodeID)
 	if !ok {

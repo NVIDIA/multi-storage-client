@@ -779,7 +779,6 @@ backends: [
 	if aisCfg.manifestGenBackend.backendType != "S3" {
 		t.Errorf("expected resolved manifest_gen_backend backendType \"S3\", got %q", aisCfg.manifestGenBackend.backendType)
 	}
-
 	activateBackendsToMountForTest()
 
 	err = os.WriteFile(globals.configFilePath, []byte(`
@@ -851,7 +850,6 @@ backends: [
 	if err == nil {
 		t.Fatalf("checkConfigFile() unexpectedly succeeded with a dangling manifest_gen_backend reference")
 	}
-
 	initGlobals(testOsArgs(testGlobals.testConfigFilePathMap[".yaml"]))
 
 	err = os.WriteFile(globals.configFilePath, []byte(`
@@ -927,6 +925,83 @@ backends: [
 	}
 }
 
+// TestManifestGenBackendSelfReference verifies that manifest_gen_backend cannot
+// point back to the same AIStore backend.
+func TestManifestGenBackendSelfReference(t *testing.T) {
+	var (
+		err error
+	)
+
+	initGlobals(testOsArgs(testGlobals.testConfigFilePathMap[".yaml"]))
+
+	err = os.WriteFile(globals.configFilePath, []byte(`
+msfs_version: 1
+backends: [
+  {
+    dir_name: ais,
+    bucket_container_name: test,
+    backend_type: AIStore,
+    AIStore: {
+      endpoint: "http://10.0.0.1:51080",
+      provider: s3,
+      manifest_gen_backend: ais,
+    },
+  },
+]
+`), 0o600)
+	if err != nil {
+		t.Fatalf("os.WriteFile() failed: %v", err)
+	}
+
+	err = checkConfigFile()
+	if err == nil {
+		t.Fatalf("checkConfigFile() unexpectedly succeeded with a self-referential manifest_gen_backend")
+	}
+}
+
+// TestManifestGenBackendRejectsAIStoreTarget verifies that manifest_gen_backend
+// can only delegate listing to a non-AIStore backend.
+func TestManifestGenBackendRejectsAIStoreTarget(t *testing.T) {
+	var (
+		err error
+	)
+
+	initGlobals(testOsArgs(testGlobals.testConfigFilePathMap[".yaml"]))
+
+	err = os.WriteFile(globals.configFilePath, []byte(`
+msfs_version: 1
+backends: [
+  {
+    dir_name: ais,
+    bucket_container_name: test,
+    backend_type: AIStore,
+    AIStore: {
+      endpoint: "http://10.0.0.1:51080",
+      provider: s3,
+      manifest_gen_backend: ais_src,
+    },
+  },
+  {
+    dir_name: ais_src,
+    bucket_container_name: test,
+    backend_type: AIStore,
+    AIStore: {
+      endpoint: "http://10.0.0.2:51080",
+      provider: s3,
+    },
+  },
+]
+`), 0o600)
+	if err != nil {
+		t.Fatalf("os.WriteFile() failed: %v", err)
+	}
+
+	err = checkConfigFile()
+	if err == nil {
+		t.Fatalf("checkConfigFile() unexpectedly succeeded with an AIStore manifest_gen_backend target")
+	}
+}
+
 func TestConfigFileBadConfigFileUpdate(t *testing.T) {
 	var (
 		err error
@@ -975,5 +1050,51 @@ backends: [
 	err = checkConfigFile()
 	if err == nil {
 		t.Fatalf("checkConfigFile() unexpectedly succeeded")
+	}
+}
+
+// --- cache_storage resolution (three-way selector + deprecated aliases) ------
+
+func TestResolveCacheStorage(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  map[string]interface{}
+		want string
+	}{
+		{"default", map[string]interface{}{}, cacheStorageMappedFile},
+		{"explicit_ram", map[string]interface{}{"cache_storage": "ram"}, cacheStorageRAM},
+		{"explicit_mapped_file", map[string]interface{}{"cache_storage": "mapped-file"}, cacheStorageMappedFile},
+		{"explicit_per_inode_file", map[string]interface{}{"cache_storage": "per-inode-file"}, cacheStoragePerInodeFile},
+		{"alias_mapped_cache_true", map[string]interface{}{"mapped_cache": true}, cacheStorageMappedFile},
+		{"alias_mapped_cache_false", map[string]interface{}{"mapped_cache": false}, cacheStorageRAM},
+		{"alias_cache_backend_disk", map[string]interface{}{"cache_backend": "disk"}, cacheStoragePerInodeFile},
+		{"alias_cache_backend_memory_defaults_mapped_file", map[string]interface{}{"cache_backend": "memory"}, cacheStorageMappedFile},
+		{"alias_cache_backend_memory_with_mapped_cache_false", map[string]interface{}{"cache_backend": "memory", "mapped_cache": false}, cacheStorageRAM},
+		{"cache_storage_wins_over_aliases", map[string]interface{}{"cache_storage": "per-inode-file", "mapped_cache": true, "cache_backend": "memory"}, cacheStoragePerInodeFile},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveCacheStorage(tc.cfg)
+			if err != nil {
+				t.Fatalf("resolveCacheStorage(%v) returned error: %v", tc.cfg, err)
+			}
+			if got != tc.want {
+				t.Fatalf("resolveCacheStorage(%v) = %q, want %q", tc.cfg, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveCacheStorage_Invalid(t *testing.T) {
+	cases := map[string]map[string]interface{}{
+		"bad_cache_storage": {"cache_storage": "bogus"},
+		"bad_cache_backend": {"cache_backend": "bogus"},
+	}
+	for name, cfg := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := resolveCacheStorage(cfg); err == nil {
+				t.Fatalf("resolveCacheStorage(%v) expected error, got nil", cfg)
+			}
+		})
 	}
 }
