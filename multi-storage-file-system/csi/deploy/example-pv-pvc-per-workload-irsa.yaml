@@ -1,0 +1,95 @@
+# Per-workload IRSA PV/PVC example (NGCDP-8824).
+#
+# Unlike example-pv-pvc-irsa.yaml (which uses the shared msfs-csi-node SA role),
+# this gives the *workload* pod its own IAM role. Each PV names the role via
+# volumeAttributes.roleArn, and the kubelet hands the driver a projected token
+# minted for the workload pod's ServiceAccount.
+#
+# Prerequisites:
+#   - Install the chart with per-workload IRSA enabled:
+#       helm install msfs-csi ./charts/msfs-csi \
+#         --set auth.perWorkloadIrsa.enabled=true
+#     (or uncomment the tokenRequests/requiresRepublish block in
+#      deploy/csi-driver.yaml for the raw-manifest install).
+#   - An IAM role (here: team-a-s3-role) whose trust policy allows
+#     AssumeRoleWithWebIdentity for the cluster OIDC provider scoped to THIS
+#     workload's ServiceAccount (system:serviceaccount:msfs:team-a), and whose
+#     permissions policy grants least-privilege S3 access to the bucket/prefix.
+#   - No nodePublishSecretRef — credentials come from the workload token + role.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: team-a
+  namespace: msfs
+  annotations:
+    # Optional but recommended for clarity/tooling parity; the driver sources
+    # the role from volumeAttributes.roleArn below, not this annotation.
+    eks.amazonaws.com/role-arn: arn:aws:iam::<account-id>:role/team-a-s3-role
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: msfs-s3-data-team-a
+spec:
+  capacity:
+    storage: 1Ti
+  accessModes:
+    - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: msfs-s3
+  csi:
+    driver: msfs.csi.nvidia.com
+    volumeHandle: msfs-s3-data-team-a
+    volumeAttributes:
+      authType: irsa
+      # Role this workload's mount assumes (must match the workload SA's trust).
+      roleArn: arn:aws:iam::<account-id>:role/team-a-s3-role
+      bucketName: <your-bucket-name>
+      prefix: team-a/
+      region: us-west-2
+      endpoint: "https://s3.us-west-2.amazonaws.com"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: msfs-s3-claim-team-a
+  namespace: msfs
+spec:
+  accessModes:
+    - ReadOnlyMany
+  storageClassName: msfs-s3
+  resources:
+    requests:
+      storage: 1Ti
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: msfs-pvc-test-app-team-a
+  namespace: msfs
+spec:
+  # The pod must run as the workload ServiceAccount whose token the kubelet
+  # mints and the IAM role trusts.
+  serviceAccountName: team-a
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+  containers:
+    - name: app
+      image: busybox:latest
+      command: ["sleep", "infinity"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      volumeMounts:
+        - name: s3-data
+          mountPath: /mnt/storage
+          readOnly: true
+  volumes:
+    - name: s3-data
+      persistentVolumeClaim:
+        claimName: msfs-s3-claim-team-a

@@ -2,6 +2,7 @@ package driver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -42,6 +43,39 @@ const (
 	credentialModeStatic credentialMode = "static"
 	credentialModeIRSA   credentialMode = "irsa"
 )
+
+// Canonical backend types accepted in volumeAttributes.backendType.
+const (
+	backendTypeS3      = "S3"
+	backendTypeAIStore = "AIStore"
+)
+
+const (
+	// serviceAccountTokensVolCtxKey is the volume_context key the kubelet
+	// populates with the workload pod's projected ServiceAccount token(s) when
+	// the CSIDriver object declares tokenRequests (per-workload IRSA). The
+	// value is a JSON object keyed by token audience.
+	serviceAccountTokensVolCtxKey = "csi.storage.k8s.io/serviceAccount.tokens"
+
+	// stsAudience is the token audience used for AWS STS
+	// AssumeRoleWithWebIdentity. It must match the audience the chart requests
+	// in CSIDriver.tokenRequests (auth.perWorkloadIrsa.audience, default
+	// sts.amazonaws.com).
+	stsAudience = "sts.amazonaws.com"
+
+	// webIdentityTokenFileName is the per-mount file the workload token is
+	// written to inside the mount's temp config dir. It lives alongside
+	// msfs.yaml so the existing NodeUnpublishVolume cleanup removes it.
+	webIdentityTokenFileName = "aws-web-identity-token"
+)
+
+// serviceAccountToken mirrors one entry of the kubelet-provided
+// serviceAccount.tokens JSON map:
+// {"<audience>": {"token": "...", "expirationTimestamp": "..."}}.
+type serviceAccountToken struct {
+	Token               string `json:"token"`
+	ExpirationTimestamp string `json:"expirationTimestamp"`
+}
 
 type mountEntry struct {
 	cmd       *exec.Cmd
@@ -84,8 +118,30 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 	// reserved entry has a nil cmd; we replace it with the real mount info on
 	// success, or delete it on any failure path.
 	ns.mu.Lock()
-	if _, ok := ns.mounts[targetPath]; ok {
+	if existing, ok := ns.mounts[targetPath]; ok {
 		ns.mu.Unlock()
+		// Already mounted (or a publish is in flight). When per-workload IRSA
+		// is enabled the CSIDriver sets requiresRepublish, so the kubelet
+		// re-invokes NodePublishVolume periodically with a freshly minted
+		// workload token in volume_context. In that case rewrite the per-mount
+		// token file in place; never re-spawn msfs (the AWS SDK re-reads the
+		// file on credential refresh). Static and driver-SA IRSA mounts carry
+		// no per-workload token and fall through to the original idempotent
+		// no-op below, unchanged.
+		if existing.cmd != nil && existing.configDir != "" && volCtx[serviceAccountTokensVolCtxKey] != "" {
+			mode, err := resolveCredentialMode(volCtx, secrets)
+			if err != nil {
+				return nil, err
+			}
+			tokenFile, _, err := ns.resolveWorkloadIdentity(existing.configDir, volCtx, mode)
+			if err != nil {
+				return nil, err
+			}
+			if tokenFile != "" {
+				klog.Infof("refreshed workload identity token for %s (republish)", targetPath)
+				return &csi.NodePublishVolumeResponse{}, nil
+			}
+		}
 		klog.Infof("volume already mounted at %s", targetPath)
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
@@ -115,8 +171,19 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 		return nil, status.Errorf(codes.Internal, "failed to write msfs config: %v", err)
 	}
 
+	// Per-workload IRSA: if the kubelet delivered the workload pod's projected
+	// ServiceAccount token, persist it next to msfs.yaml and assume the PV's
+	// roleArn. No-op for static mode or when no token was supplied (driver-SA
+	// IRSA / older kubelet), preserving existing behavior.
+	tokenFile, roleArn, err := ns.resolveWorkloadIdentity(configDir, volCtx, mode)
+	if err != nil {
+		os.RemoveAll(configDir)
+		releaseReservation()
+		return nil, err
+	}
+
 	cmd := exec.Command(ns.msfsBinary, configPath)
-	cmd.Env = ns.buildEnv(secrets, mode)
+	cmd.Env = ns.buildEnv(secrets, mode, tokenFile, roleArn)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -257,10 +324,61 @@ func resolveCredentialMode(volCtx, secrets map[string]string) (credentialMode, e
 	}
 }
 
+// resolveBackendType normalizes volumeAttributes.backendType to its canonical
+// form (backendTypeS3 or backendTypeAIStore), defaulting to S3. An unsupported
+// value is rejected so a misconfigured PV fails fast.
+func resolveBackendType(volCtx map[string]string) (string, error) {
+	switch strings.ToUpper(strings.TrimSpace(valOrDefault(volCtx, "backendType", backendTypeS3))) {
+	case "S3":
+		return backendTypeS3, nil
+	case "AISTORE":
+		return backendTypeAIStore, nil
+	default:
+		return "", fmt.Errorf("unsupported backendType %q (expected S3 or AIStore)", volCtx["backendType"])
+	}
+}
+
+// parseWorkloadToken extracts the projected ServiceAccount token for the given
+// audience from the kubelet-provided serviceAccount.tokens JSON in
+// volume_context (populated only when the CSIDriver declares tokenRequests).
+//
+// It returns ok=false with no error when the tokens key is absent — the signal
+// to fall back to today's driver-SA behavior (older kubelet, static mode, or
+// per-workload IRSA disabled). It returns an error when the key is present but
+// malformed or lacks the requested audience, so a misconfigured mount fails
+// fast rather than silently using the wrong identity.
+func parseWorkloadToken(volCtx map[string]string, audience string) (string, bool, error) {
+	raw := volCtx[serviceAccountTokensVolCtxKey]
+	if strings.TrimSpace(raw) == "" {
+		return "", false, nil
+	}
+	var byAudience map[string]serviceAccountToken
+	if err := json.Unmarshal([]byte(raw), &byAudience); err != nil {
+		return "", false, status.Errorf(codes.InvalidArgument,
+			"failed to parse %s: %v", serviceAccountTokensVolCtxKey, err)
+	}
+	tok, ok := byAudience[audience]
+	if !ok || tok.Token == "" {
+		return "", false, status.Errorf(codes.InvalidArgument,
+			"%s present but has no token for audience %q", serviceAccountTokensVolCtxKey, audience)
+	}
+	return tok.Token, true, nil
+}
+
 func (ns *nodeServer) writeConfig(targetPath string, volCtx, secrets map[string]string, requestReadonly bool, mode credentialMode) (string, string, error) {
 	configDir, err := os.MkdirTemp("", "msfs-csi-*")
 	if err != nil {
 		return "", "", fmt.Errorf("failed to create temp config dir: %w", err)
+	}
+
+	backendType, err := resolveBackendType(volCtx)
+	if err != nil {
+		os.RemoveAll(configDir)
+		return "", "", err
+	}
+	dirName := valOrDefault(volCtx, "dirName", strings.ToLower(backendType))
+	if backendType == backendTypeAIStore && dirName == "aistore" {
+		dirName = "ais"
 	}
 
 	region := valOrDefault(volCtx, "region", "us-east-1")
@@ -323,26 +441,51 @@ func (ns *nodeServer) writeConfig(targetPath string, volCtx, secrets map[string]
 	// placeholders with empty env vars would make the SDK think static creds
 	// were intended and fail with "missing credentials".
 	credentialBlock := ""
-	if mode == credentialModeStatic {
+	if backendType == backendTypeS3 && mode == credentialModeStatic {
 		credentialBlock = `      access_key_id: "${AWS_ACCESS_KEY_ID}"
       secret_access_key: "${AWS_SECRET_ACCESS_KEY}"
 `
+	}
+
+	var backendSpecific strings.Builder
+	switch backendType {
+	case backendTypeS3:
+		fmt.Fprintf(&backendSpecific, `    S3:
+      region: %q
+      endpoint: %q
+%s      virtual_hosted_style_request: false
+`, region, endpoint, credentialBlock)
+	case backendTypeAIStore:
+		aisOptionalQuoted := func(key, yamlField string) {
+			if v := volCtx[key]; v != "" {
+				fmt.Fprintf(&backendSpecific, "      %s: %q\n", yamlField, v)
+			}
+		}
+		aisOptionalStr := func(key, yamlField string) {
+			if v := volCtx[key]; v != "" {
+				fmt.Fprintf(&backendSpecific, "      %s: %s\n", yamlField, v)
+			}
+		}
+		backendSpecific.WriteString("    AIStore:\n")
+		aisOptionalQuoted("aisEndpoint", "endpoint")
+		aisOptionalStr("aisSkipTLSCertificateVerify", "skip_tls_certificate_verify")
+		aisOptionalQuoted("aisAuthnToken", "authn_token")
+		aisOptionalQuoted("aisAuthnTokenFile", "authn_token_file")
+		aisOptionalQuoted("aisProvider", "provider")
+		aisOptionalStr("aisTimeout", "timeout")
+		aisOptionalQuoted("aisManifestGenBackend", "manifest_gen_backend")
 	}
 
 	config := fmt.Sprintf(`msfs_version: 1
 endpoint: "http://0.0.0.0:0"
 mountpoint: %s
 %sbackends:
-  - dir_name: s3
+  - dir_name: %s
     bucket_container_name: %s
     prefix: %q
     readonly: %s
-%s    backend_type: S3
-    S3:
-      region: %q
-      endpoint: %q
-%s      virtual_hosted_style_request: false
-`, targetPath, globalExtra.String(), volCtx["bucketName"], volCtx["prefix"], readonlyStr, backendExtra.String(), region, endpoint, credentialBlock)
+%s    backend_type: %s
+%s`, targetPath, globalExtra.String(), dirName, volCtx["bucketName"], volCtx["prefix"], readonlyStr, backendExtra.String(), backendType, backendSpecific.String())
 
 	configPath := filepath.Join(configDir, "msfs.yaml")
 	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
@@ -352,24 +495,109 @@ mountpoint: %s
 	return configDir, configPath, nil
 }
 
-func (ns *nodeServer) buildEnv(secrets map[string]string, mode credentialMode) []string {
+// resolveWorkloadIdentity implements per-workload IRSA. For workload-identity
+// mounts where the kubelet supplied the workload pod's projected SA token, it
+// writes the token to a 0600 file in configDir and returns that path together
+// with the role ARN to assume (from volumeAttributes.roleArn). Rewriting an
+// existing file in place (republish) is intentional: the AWS SDK re-reads the
+// token file when it refreshes credentials.
+//
+// It returns ("", "", nil) when per-workload IRSA does not apply — static mode,
+// a non-S3 backend, or no workload token in volume_context — so the caller keeps
+// today's driver-SA behavior.
+func (ns *nodeServer) resolveWorkloadIdentity(configDir string, volCtx map[string]string, mode credentialMode) (string, string, error) {
+	if mode == credentialModeStatic {
+		return "", "", nil
+	}
+	// Per-workload IRSA assumes an AWS IAM role, so it only applies to S3
+	// mounts. AIStore (and any future non-S3 backend) needs no AWS identity;
+	// without this guard a tokenRequests-enabled CSIDriver would hand every
+	// mount a workload token and force AIStore PVs to set a meaningless
+	// volumeAttributes.roleArn.
+	backendType, err := resolveBackendType(volCtx)
+	if err != nil {
+		return "", "", status.Error(codes.InvalidArgument, err.Error())
+	}
+	if backendType != backendTypeS3 {
+		return "", "", nil
+	}
+	token, ok, err := parseWorkloadToken(volCtx, stsAudience)
+	if err != nil {
+		return "", "", err
+	}
+	if !ok {
+		return "", "", nil
+	}
+	roleArn := strings.TrimSpace(volCtx["roleArn"])
+	if roleArn == "" {
+		return "", "", status.Error(codes.InvalidArgument,
+			"volumeAttributes.roleArn is required for per-workload IRSA "+
+				"(CSIDriver tokenRequests is enabled and the kubelet supplied a workload ServiceAccount token)")
+	}
+	tokenFile := filepath.Join(configDir, webIdentityTokenFileName)
+	// Write to a temp file in the same dir and rename into place so a republish
+	// rewrite is atomic: a concurrent reader (the AWS SDK refreshing creds)
+	// observes either the complete old token or the complete new one, never a
+	// truncated/empty file.
+	tmpFile := tokenFile + ".tmp"
+	if err := os.WriteFile(tmpFile, []byte(token), 0600); err != nil {
+		return "", "", status.Errorf(codes.Internal, "failed to write workload token file: %v", err)
+	}
+	if err := os.Rename(tmpFile, tokenFile); err != nil {
+		_ = os.Remove(tmpFile)
+		return "", "", status.Errorf(codes.Internal, "failed to persist workload token file: %v", err)
+	}
+	return tokenFile, roleArn, nil
+}
+
+// setEnv returns env with exactly one KEY=value entry, dropping any inherited
+// occurrences first so the override wins regardless of how getenv() resolves
+// duplicates in the child process.
+func setEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env)+1)
+	for _, e := range env {
+		if !strings.HasPrefix(e, prefix) {
+			out = append(out, e)
+		}
+	}
+	return append(out, prefix+value)
+}
+
+func (ns *nodeServer) buildEnv(secrets map[string]string, mode credentialMode, webIdentityTokenFile, roleArn string) []string {
 	env := os.Environ()
-	// IRSA mode must not inject AWS_ACCESS_KEY_ID etc. — doing so short-
-	// circuits the SDK credential chain and prevents it from using the
-	// projected web identity token. Pass the host environment through
-	// unchanged so EKS-set vars (AWS_ROLE_ARN, AWS_WEB_IDENTITY_TOKEN_FILE,
-	// AWS_REGION) reach msfs.
-	if mode != credentialModeStatic {
+
+	// Static mode: inject the access keys from the Secret. (No web identity.)
+	if mode == credentialModeStatic {
+		if v, ok := secrets["access_key_id"]; ok {
+			env = append(env, "AWS_ACCESS_KEY_ID="+v)
+		}
+		if v, ok := secrets["secret_access_key"]; ok {
+			env = append(env, "AWS_SECRET_ACCESS_KEY="+v)
+		}
+		if v, ok := secrets["session_token"]; ok {
+			env = append(env, "AWS_SESSION_TOKEN="+v)
+		}
 		return env
 	}
-	if v, ok := secrets["access_key_id"]; ok {
-		env = append(env, "AWS_ACCESS_KEY_ID="+v)
-	}
-	if v, ok := secrets["secret_access_key"]; ok {
-		env = append(env, "AWS_SECRET_ACCESS_KEY="+v)
-	}
-	if v, ok := secrets["session_token"]; ok {
-		env = append(env, "AWS_SESSION_TOKEN="+v)
+
+	// IRSA mode must not inject AWS_ACCESS_KEY_ID etc. — doing so short-
+	// circuits the SDK credential chain and prevents it from using the
+	// projected web identity token.
+	//
+	// Per-workload IRSA: when the kubelet supplied the workload pod's token,
+	// point the msfs child at it (and the PV's role) instead of the driver
+	// pod's. Replace rather than append so an inherited
+	// AWS_WEB_IDENTITY_TOKEN_FILE / AWS_ROLE_ARN from the driver's own IRSA
+	// env cannot win. When no per-workload token was supplied, pass the host
+	// environment through unchanged so EKS-set vars (AWS_ROLE_ARN,
+	// AWS_WEB_IDENTITY_TOKEN_FILE, AWS_REGION) reach msfs — today's driver-SA
+	// behavior.
+	if webIdentityTokenFile != "" {
+		env = setEnv(env, "AWS_WEB_IDENTITY_TOKEN_FILE", webIdentityTokenFile)
+		if roleArn != "" {
+			env = setEnv(env, "AWS_ROLE_ARN", roleArn)
+		}
 	}
 	return env
 }

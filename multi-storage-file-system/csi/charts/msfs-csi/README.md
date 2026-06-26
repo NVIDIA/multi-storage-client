@@ -49,6 +49,8 @@ The driver supports three credential modes, selected per-volume via `volumeAttri
 
 The chart's `auth.mode` value only sets the default emitted in chart-rendered guidance — your PV/inline volume specs can still mix modes per-volume.
 
+**Per-workload IRSA (opt-in).** By default an `irsa` mount uses the *driver* ServiceAccount's IAM role, shared by every workload. Set `auth.perWorkloadIrsa.enabled=true` to instead give each workload pod its **own** role — see [Per-workload IRSA](#per-workload-irsa-each-workload-its-own-role) below.
+
 ## Prerequisites
 
 ### Cluster-side (required for the chart itself)
@@ -149,6 +151,29 @@ aws iam get-role --role-name msfs-csi --query 'Role.Arn' --output text
 
 Pass that ARN to `helm install` via `serviceAccount.annotations."eks\.amazonaws\.com/role-arn"`.
 
+## Per-workload IRSA (each workload its own role)
+
+By default every IRSA mount shares the `msfs-csi-node` driver role. On multi-tenant clusters where each workload should be scoped to its own bucket/prefix, enable per-workload IRSA so each pod assumes its own IAM role:
+
+```bash
+helm install msfs-csi ./csi/charts/msfs-csi \
+  --namespace msfs --create-namespace \
+  --set image.repository=<registry>/msfs-csi --set image.tag=v0.1.0 \
+  --set auth.perWorkloadIrsa.enabled=true
+```
+
+This makes the `CSIDriver` declare `tokenRequests` (audience `sts.amazonaws.com`) and `requiresRepublish: true`. At mount time the kubelet mints a projected token for the **workload** pod's ServiceAccount, and the driver assumes the role named in that PV's `volumeAttributes.roleArn`.
+
+What changes vs. driver-SA IRSA:
+
+- **Trust per workload.** Each IAM role's trust policy `:sub` claim must match the *workload* pod's ServiceAccount (e.g. `system:serviceaccount:msfs:team-a`), not `msfs-csi-node`. The `:aud` stays `sts.amazonaws.com`.
+- **PV carries the role.** Each PV / inline volume sets `volumeAttributes.roleArn=<workload-role-arn>` — required in this mode.
+- **Backward compatible.** Default is `false`. Existing driver-SA IRSA and static mounts are unaffected; only mounts whose PV sets `roleArn` and whose kubelet delivers a workload token use the new path.
+
+See [`deploy/example-pv-pvc-per-workload-irsa.yaml`](../../deploy/example-pv-pvc-per-workload-irsa.yaml) for a complete workload SA + PV/PVC + pod example.
+
+Tunables: `auth.perWorkloadIrsa.audience` (default `sts.amazonaws.com` — leave as-is for AWS) and `auth.perWorkloadIrsa.tokenExpirationSeconds` (default `3600`; the kubelet republishes to refresh before expiry).
+
 ## Static-secret fallback (when IRSA isn't an option)
 
 If you can't use IRSA (non-EKS cluster, no OIDC provider, IAM constraints), the chart still works in static mode. **The chart never inlines credential values** — you must create the Secret out of band:
@@ -206,7 +231,25 @@ For "creds in cluster but not in Git" patterns, layer one of these on top — th
 | `staticCredentials.existingSecretName` | `""` | Reference-only; chart never inlines values |
 | `staticCredentials.existingSecretNamespace` | `""` | Defaults to release namespace |
 | `auth.mode` | `irsa` | Default mode advertised in NOTES.txt |
+| `auth.perWorkloadIrsa.enabled` | `false` | Opt-in: `CSIDriver` gets `tokenRequests` + `requiresRepublish`; each mount assumes its PV's `roleArn` |
+| `auth.perWorkloadIrsa.audience` | `sts.amazonaws.com` | Token audience (leave as-is for AWS STS) |
+| `auth.perWorkloadIrsa.tokenExpirationSeconds` | `3600` | Projected token lifetime; kubelet republishes to refresh |
 | `commonLabels` | `{}` | Added to every rendered resource |
+
+## Native AIStore Backend
+
+By default the CSI driver emits an MSFS `S3` backend. To use the native AIStore API instead, set these per-volume attributes in your PV or inline CSI volume:
+
+```yaml
+volumeAttributes:
+  backendType: AIStore
+  bucketName: my-ais-bucket
+  aisEndpoint: https://ais.example.com
+  aisProvider: ais
+  aisAuthnTokenFile: /var/run/secrets/ais/token
+```
+
+The driver writes these into the generated `msfs.yaml` as `backend_type: AIStore`. AWS-specific `authType` / IRSA settings are only needed for S3-backed mounts.
 
 ## Verification after install
 
@@ -230,6 +273,7 @@ kubectl exec -n msfs msfs-pvc-test-app-irsa -- ls /mnt/storage/s3/
 | `WebIdentityErr: ... no identity-based policy allows` | IAM role / trust policy mismatch | Re-check the `:sub` claim matches the SA |
 | `MissingRegion` | Region not set anywhere | Add `region` to `volumeAttributes` or `AWS_REGION` env to driver |
 | `403 Forbidden` from S3 | Bucket policy blocks the role | Add the role ARN to the bucket policy or use a path the role policy allows |
+| `roleArn is required for per-workload IRSA` (`InvalidArgument`) | `auth.perWorkloadIrsa.enabled=true` but the PV has no `volumeAttributes.roleArn` | Add `roleArn` to the PV, or disable `auth.perWorkloadIrsa.enabled` |
 | `ImagePullBackOff` | Registry auth | Set `imagePullSecrets` |
 | `exec format error` | Image built for wrong CPU arch | Rebuild with `--platform linux/amd64` |
 

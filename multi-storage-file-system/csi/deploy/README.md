@@ -9,6 +9,7 @@
 - MSFS CSI image pushed to a registry accessible from the cluster
 - One of the following auth modes:
   - **Recommended on EKS:** IRSA wired to the `msfs-csi-node` ServiceAccount (no Secret needed). See the [Helm chart README's IRSA walkthrough](../charts/msfs-csi/README.md#aws-side-for-irsa-one-time-manual--by-design) for the IAM role + OIDC trust setup.
+  - **Multi-tenant (per-workload IRSA):** each workload pod assumes its own IAM role via `volumeAttributes.roleArn`. Opt in by uncommenting the `tokenRequests` / `requiresRepublish` block in `csi-driver.yaml` (the Helm chart renders it from `auth.perWorkloadIrsa.enabled=true`). See [Per-workload IRSA](../charts/msfs-csi/README.md#per-workload-irsa-each-workload-its-own-role) and `example-pv-pvc-per-workload-irsa.yaml`.
   - **Fallback:** AWS credentials Secret in the target namespace, referenced by `nodePublishSecretRef`.
 
 ## Deploy
