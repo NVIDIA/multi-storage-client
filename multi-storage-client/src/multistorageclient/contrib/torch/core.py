@@ -14,12 +14,14 @@
 # limitations under the License.
 
 import os
-from typing import IO, Any, Union
+from typing import IO, Any, Union, cast
 
-import torch as _torch
+import torch as _torch_module
 
 from ...pathlib import MultiStoragePath
 from ...shortcuts import open as msc_open
+
+_torch = cast(Any, _torch_module)
 
 
 def load(f: Union[str, os.PathLike[str], IO[bytes]], *args: Any, **kwargs: Any) -> Any:

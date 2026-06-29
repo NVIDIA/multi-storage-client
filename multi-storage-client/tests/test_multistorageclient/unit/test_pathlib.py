@@ -292,7 +292,7 @@ def test_path_ordering():
         "/tmp/z",
     ]
     with pytest.raises(TypeError):
-        msc.Path("/tmp/testfile") < "/tmp/other"
+        _ = msc.Path("/tmp/testfile") < "/tmp/other"
 
 
 def test_pickable_path():
