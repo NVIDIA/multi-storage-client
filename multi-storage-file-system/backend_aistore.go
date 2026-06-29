@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/NVIDIA/aistore/api"
@@ -32,6 +34,18 @@ type aistoreContextStruct struct {
 	// and dereference `.context` at call time so a later re-setup can't leave a stale
 	// pointer here.
 	listBackend *backendStruct
+
+	// AIS auth tokens (JWTs) are rotated on disk by an external process. When the
+	// token is sourced from a file (`authn_token_file`), `authnTokenFile` holds that
+	// path and `currentBaseParams` re-reads it whenever its mtime changes, so a
+	// rotated token is picked up live without restarting the mount (mirrors MSC's
+	// FileBasedCredentialsProvider). It is empty when the token is inline
+	// (`authn_token`, which always wins) or absent (anonymous), in which case the
+	// token is fixed at setup. `tokenMu` guards `baseParams.Token` and `tokenMTime`
+	// against concurrent backend operations.
+	authnTokenFile string
+	tokenMu        sync.Mutex
+	tokenMTime     time.Time
 }
 
 // `backendCommon` is called to return a pointer to the context's common `backendStruct`.
@@ -108,6 +122,16 @@ func (backend *backendStruct) setupAIStoreContext() (err error) {
 		bck:        bck,
 	}
 
+	// Enable live token reload only for file-based tokens. An inline authn_token
+	// (when set) is fixed and always wins, so it is never reloaded. Seed the
+	// baseline mtime so the file is re-read only after it actually changes.
+	if backendAIStore.authnToken == "" && backendAIStore.authnTokenFile != "" {
+		aisContext.authnTokenFile = backendAIStore.authnTokenFile
+		if fileInfo, statErr := os.Stat(backendAIStore.authnTokenFile); statErr == nil {
+			aisContext.tokenMTime = fileInfo.ModTime()
+		}
+	}
+
 	// If a manifest_gen_backend is configured, route LIST/STAT-DIR operations to it
 	// (reads still go via AIS). Ensure its context is set up (it may not have been
 	// set up yet, depending on backend mount ordering).
@@ -131,6 +155,37 @@ func (backend *backendStruct) setupAIStoreContext() (err error) {
 	}
 
 	return
+}
+
+// `currentBaseParams` returns a copy of the AIStore connection parameters with the
+// freshest auth token. When the token is sourced from a file (`authn_token_file`),
+// the file is re-read whenever its mtime changes so a rotated AIS JWT is picked up
+// live without restarting the mount — mirroring how MSC's FileBasedCredentialsProvider
+// refreshes on mtime change (see multi-storage-client/.../providers/file_credentials.py).
+// For inline (`authn_token`) or absent (anonymous) tokens, `authnTokenFile` is empty
+// and the parameters are returned unchanged. The stat performed here is on the
+// AIStore request path, which is only reached on a cache miss, so the overhead is
+// negligible relative to the network round-trip it precedes.
+func (aisContext *aistoreContextStruct) currentBaseParams() api.BaseParams {
+	if aisContext.authnTokenFile == "" {
+		return aisContext.baseParams
+	}
+
+	aisContext.tokenMu.Lock()
+	defer aisContext.tokenMu.Unlock()
+
+	if fileInfo, statErr := os.Stat(aisContext.authnTokenFile); statErr == nil {
+		if mtime := fileInfo.ModTime(); !mtime.Equal(aisContext.tokenMTime) {
+			// On a load error, keep the previous token and mtime so a later
+			// (complete) write is retried rather than blanking a valid token.
+			if token, loadErr := authn.LoadToken(aisContext.authnTokenFile); loadErr == nil {
+				aisContext.baseParams.Token = token
+				aisContext.tokenMTime = mtime
+			}
+		}
+	}
+
+	return aisContext.baseParams
 }
 
 // Note on Retry Logic:
@@ -157,7 +212,7 @@ func (aisContext *aistoreContextStruct) deleteFile(deleteFileInput *deleteFileIn
 	//       the AIStore SDK does not expose DeleteArgs where in the If-Match Header could be inserted.
 	if deleteFileInput.ifMatch != "" {
 		var props *cmn.ObjectProps
-		props, err = api.HeadObject(aisContext.baseParams, aisContext.bck, fullFilePath, api.HeadArgs{
+		props, err = api.HeadObject(aisContext.currentBaseParams(), aisContext.bck, fullFilePath, api.HeadArgs{
 			Silent: true,
 		})
 		if err != nil {
@@ -170,7 +225,7 @@ func (aisContext *aistoreContextStruct) deleteFile(deleteFileInput *deleteFileIn
 	}
 
 	// Delete the object
-	err = api.DeleteObject(aisContext.baseParams, aisContext.bck, fullFilePath)
+	err = api.DeleteObject(aisContext.currentBaseParams(), aisContext.bck, fullFilePath)
 
 	return
 }
@@ -207,8 +262,8 @@ func (aisContext *aistoreContextStruct) listDirectory(listDirectoryInput *listDi
 	}
 
 	// List objects (one page)
-	var lsoResult *cmn.LsoRes                                                                          // List Objects Result
-	lsoResult, err = api.ListObjectsPage(aisContext.baseParams, aisContext.bck, lsmsg, api.ListArgs{}) // List Objects Page
+	var lsoResult *cmn.LsoRes                                                                                   // List Objects Result
+	lsoResult, err = api.ListObjectsPage(aisContext.currentBaseParams(), aisContext.bck, lsmsg, api.ListArgs{}) // List Objects Page
 	if err != nil {
 		err = fmt.Errorf("[AIStore] listDirectory failed: %v", err)
 		return
@@ -286,8 +341,8 @@ func (aisContext *aistoreContextStruct) listObjects(listObjectsInput *listObject
 	}
 
 	// List objects (one page)
-	var lsoResult *cmn.LsoRes                                                                          // List Objects Result
-	lsoResult, err = api.ListObjectsPage(aisContext.baseParams, aisContext.bck, lsmsg, api.ListArgs{}) // List Objects Page
+	var lsoResult *cmn.LsoRes                                                                                   // List Objects Result
+	lsoResult, err = api.ListObjectsPage(aisContext.currentBaseParams(), aisContext.bck, lsmsg, api.ListArgs{}) // List Objects Page
 	if err != nil {
 		err = fmt.Errorf("[AIStore] ListObjectsPage failed: %v", err)
 		return
@@ -353,7 +408,7 @@ func (aisContext *aistoreContextStruct) readFile(readFileInput *readFileInputStr
 
 	// Get the object
 	var oah api.ObjAttrs
-	oah, err = api.GetObject(aisContext.baseParams, aisContext.bck, fullFilePath, getArgs)
+	oah, err = api.GetObject(aisContext.currentBaseParams(), aisContext.bck, fullFilePath, getArgs)
 	if err != nil {
 		return
 	}
@@ -389,7 +444,7 @@ func (aisContext *aistoreContextStruct) statDirectory(statDirectoryInput *statDi
 	// List with limit of 1 to check if directory is accessible
 	// Note: In object storage, directories are just prefixes and can be empty.
 	// We rely on the API error to determine if the bucket/prefix is inaccessible.
-	lsoResult, err = api.ListObjectsPage(aisContext.baseParams, aisContext.bck, lsmsg, api.ListArgs{})
+	lsoResult, err = api.ListObjectsPage(aisContext.currentBaseParams(), aisContext.bck, lsmsg, api.ListArgs{})
 	if err == nil {
 		if (lsoResult == nil) || (lsoResult.Entries == nil) || (len(lsoResult.Entries) == 0) {
 			err = errors.New("missing directory")
@@ -412,7 +467,7 @@ func (aisContext *aistoreContextStruct) statFile(statFileInput *statFileInputStr
 
 	// Head the object
 	var props *cmn.ObjectProps
-	props, err = api.HeadObject(aisContext.baseParams, aisContext.bck, fullFilePath, api.HeadArgs{
+	props, err = api.HeadObject(aisContext.currentBaseParams(), aisContext.bck, fullFilePath, api.HeadArgs{
 		Silent: true,
 	})
 	if err != nil {
