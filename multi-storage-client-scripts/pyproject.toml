@@ -19,6 +19,11 @@ dependencies = [
     "packaging>=26.2,<27"
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1,<10"
+]
+
 [project.scripts]
 msc-scripts = "multistorageclient_scripts.cli.__main__:main"
 
