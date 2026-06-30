@@ -736,6 +736,7 @@ class SingleStorageClient(AbstractStorageClient):
             else:
                 raise FileNotFoundError(f"The file at '{path}' was not found.")
 
+    @retry
     def delete_many(self, paths: list[str]) -> None:
         """
         Delete multiple files at the specified paths. Only files are supported; directories are not deleted.

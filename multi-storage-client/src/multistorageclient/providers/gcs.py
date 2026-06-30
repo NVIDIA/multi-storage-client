@@ -374,6 +374,8 @@ class GoogleStorageProvider(BaseStorageProvider):
                 raise RetryableError(
                     f"Failed to {operation} object(s) at {bucket}/{key}. {message}. status_code: {status_code}"
                 ) from error
+        except RetryableError:
+            raise
         except Exception as error:
             error_details = str(error)
             raise RuntimeError(
@@ -526,6 +528,10 @@ class GoogleStorageProvider(BaseStorageProvider):
                         status_code = response.status_code
                         if 200 <= status_code < 300 or status_code == 404:
                             continue
+                        if status_code in {408, 429} or 500 <= status_code < 600:
+                            raise RetryableError(
+                                f"GCS batch delete failed with status_code: {status_code}, response: {response.text}"
+                            )
                         raise RuntimeError(
                             f"GCS batch delete failed with status_code: {status_code}, response: {response.text}"
                         )

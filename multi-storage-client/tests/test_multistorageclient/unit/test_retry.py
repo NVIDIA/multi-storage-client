@@ -13,12 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, cast
+from typing import Any, Optional, cast
 from unittest.mock import patch
 
 import pytest
 
 from multistorageclient import StorageClient, StorageClientConfig
+from multistorageclient.providers.gcs import GoogleStorageProvider
 from multistorageclient.retry import batch_retry, retry
 from multistorageclient.types import BatchTransferError, BatchTransferFailure, Range, RetryableError, StorageProvider
 
@@ -50,6 +51,17 @@ class FakeStorageProvider:
         if self.attempts < self.error_count:
             raise RetryableError("Simulated connection time out error.")
         return b"File content"
+
+
+class FakeDeleteManyStorageProvider:
+    def __init__(self, error_count):
+        self.attempts = 0
+        self.error_count = error_count
+
+    def delete_objects(self, paths: list[str]) -> None:
+        self.attempts += 1
+        if self.attempts < self.error_count:
+            raise RetryableError("Simulated delete_many transient error.")
 
 
 def test_retry_decorator_in_storage_client():
@@ -89,6 +101,62 @@ def test_retry_decorator_in_storage_client():
 
     assert "Simulated connection time out error." in str(e), f"Unexpected error message: {str(e)}"
     assert storage_provider.attempts == 3
+
+
+def test_delete_many_retries_retryable_errors():
+    config = StorageClientConfig.from_json(
+        """{
+        "profiles": {
+            "default": {
+                "storage_provider": {
+                    "type": "file",
+                    "options": {
+                        "base_path": "/"
+                    }
+                }
+            }
+        }
+    }"""
+    )
+    storage_client = StorageClient(config)
+    storage_provider = FakeDeleteManyStorageProvider(error_count=2)
+    storage_client._storage_provider = cast(StorageProvider, storage_provider)
+
+    with patch("time.sleep"):
+        storage_client.delete_many(["some_path"])
+
+    assert storage_provider.attempts == 2
+
+
+def test_gcs_batch_delete_service_unavailable_response_is_retryable():
+    class FakeBatch:
+        _responses = [type("Response", (), {"status_code": 503, "text": "server(s) are not responding"})()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    class FakeBucket:
+        def blob(self, key):
+            return type("Blob", (), {"delete": lambda self: None})()
+
+    class FakeGCSClient:
+        def bucket(self, bucket):
+            return FakeBucket()
+
+        def batch(self, raise_exception=False):
+            return FakeBatch()
+
+    storage_provider = cast(Any, GoogleStorageProvider.__new__(GoogleStorageProvider))
+    storage_provider._gcs_client = FakeGCSClient()
+    storage_provider._refresh_gcs_client_if_needed = lambda: None
+
+    with pytest.raises(RetryableError) as exc_info:
+        storage_provider._delete_objects(["bucket/key"])
+
+    assert "status_code: 503" in str(exc_info.value)
 
 
 def test_retry_decorator_outside_storage_client():

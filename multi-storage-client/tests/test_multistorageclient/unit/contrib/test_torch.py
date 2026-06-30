@@ -14,14 +14,17 @@
 # limitations under the License.
 
 import uuid
+from typing import Any, cast
 
 import pytest
-import torch
+import torch as torch_module
 import torch.distributed.checkpoint as dcp
 
 import multistorageclient as msc
 from multistorageclient.types import MSC_PROTOCOL
 from test_multistorageclient.unit.utils import config, tempdatastore
+
+torch = cast(Any, torch_module)
 
 
 @pytest.fixture
@@ -213,6 +216,7 @@ def test_torch_save_with_attributes(temp_data_store_type: type[tempdatastore.Tem
 
         test_uuid = str(uuid.uuid4())
         file_path = f"test-torch-attributes-{test_uuid}.pt"
+        file_path2 = f"test-torch-attributes-path-{test_uuid}.pt"
         tensor = torch.tensor([1, 2, 3, 4])
 
         test_attributes = {
@@ -240,7 +244,6 @@ def test_torch_save_with_attributes(temp_data_store_type: type[tempdatastore.Tem
                     assert metadata.metadata[key] == value, f"Attribute '{key}' has incorrect value"
 
             # Test save with attributes using MultiStoragePath
-            file_path2 = f"test-torch-attributes-path-{test_uuid}.pt"
             msc.torch.save(tensor, msc.Path(f"{MSC_PROTOCOL}test/{file_path2}"), attributes=test_attributes)
 
             result = msc.torch.load(msc.Path(f"{MSC_PROTOCOL}test/{file_path2}"))
