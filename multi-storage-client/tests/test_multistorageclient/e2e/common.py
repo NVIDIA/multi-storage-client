@@ -32,7 +32,7 @@ MB = 1024 * 1024
 
 
 def delete_files(storage_client: msc.StorageClient, prefix: str) -> None:
-    for object in storage_client.list(prefix=prefix):
+    for object in storage_client.list(path=prefix):
         try:
             storage_client.delete(object.key)
         except FileNotFoundError:
@@ -200,12 +200,12 @@ def verify_storage_provider(storage_client: msc.StorageClient, prefix: str) -> N
         assert storage_client.info(path=f"{prefix}/dir1/dir2").type == "directory"
         assert storage_client.info(path=f"{prefix}/dir1/dir2").content_length == 0
 
-        directories = list(storage_client.list(prefix=f"{prefix}/dir1/", include_directories=True))
+        directories = list(storage_client.list(path=f"{prefix}/dir1/", include_directories=True))
         assert len(directories) == 1
         assert directories[0].key == f"{prefix}/dir1/dir2"
         assert directories[0].type == "directory"
 
-        directories = list(storage_client.list(prefix=f"{prefix}/dir1/", include_directories=False))
+        directories = list(storage_client.list(path=f"{prefix}/dir1/", include_directories=False))
         assert len(directories) == 0
 
         # delete directory with recursive flag will return an ValueError
@@ -229,7 +229,7 @@ def verify_storage_provider(storage_client: msc.StorageClient, prefix: str) -> N
         should_wait=len_should_wait(expected_len=3),
     )
 
-    immediate_children = list(storage_client.list(prefix=f"{prefix}/dir1/", include_directories=True))
+    immediate_children = list(storage_client.list(path=f"{prefix}/dir1/", include_directories=True))
     immediate_keys = [obj.key.replace(f"{prefix}/dir1/", "") for obj in immediate_children]
 
     assert len(immediate_children) == 3, f"Actual list: {immediate_children}"
@@ -243,7 +243,7 @@ def verify_storage_provider(storage_client: msc.StorageClient, prefix: str) -> N
     dir2_obj = next(obj for obj in immediate_children if obj.key.endswith("dir2"))
     assert dir2_obj.type == "directory"
 
-    all_files = list(storage_client.list(prefix=f"{prefix}/dir1/", include_directories=False))
+    all_files = list(storage_client.list(path=f"{prefix}/dir1/", include_directories=False))
     all_file_keys = [obj.key.replace(f"{prefix}/dir1/", "") for obj in all_files]
 
     assert len(all_files) == 3
@@ -349,7 +349,7 @@ def verify_storage_provider(storage_client: msc.StorageClient, prefix: str) -> N
     assert storage_client.info(path=symlink_path).symlink_target == "target.txt"
 
     # list() should populate symlink_target on symlink objects
-    objects = list(storage_client.list(prefix=symlink_prefix))
+    objects = list(storage_client.list(path=symlink_prefix))
     objects_by_suffix = {obj.key.split("/")[-1]: obj for obj in objects}
     assert objects_by_suffix["symlink.txt"].symlink_target == "target.txt"
     assert objects_by_suffix["target.txt"].symlink_target is None
@@ -1280,7 +1280,7 @@ def test_sync_from_preserves_symlinks(profile: str) -> None:
                 symlink_handling=SymlinkHandling.PRESERVE,
             )
 
-            cloud_objects_by_key = {entry.key: entry for entry in cloud_client.list(prefix=cloud_prefix)}
+            cloud_objects_by_key = {entry.key: entry for entry in cloud_client.list(path=cloud_prefix)}
             expected_cloud_keys = {
                 f"{cloud_prefix}/c.txt": (b"c content", None),
                 f"{cloud_prefix}/dir1/a.txt": (b"a content", None),

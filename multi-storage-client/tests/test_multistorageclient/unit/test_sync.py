@@ -30,7 +30,7 @@ from multistorageclient.config import StorageClientConfig
 from multistorageclient.constants import MEMORY_LOAD_LIMIT
 from multistorageclient.providers.base import BaseStorageProvider
 from multistorageclient.providers.manifest_metadata import DEFAULT_MANIFEST_BASE_DIR
-from multistorageclient.types import ExecutionMode, ObjectMetadata, PatternType, SyncError
+from multistorageclient.types import ExecutionMode, ObjectMetadata, PatternType, SymlinkHandling, SyncError
 from test_multistorageclient.unit.utils import config, tempdatastore
 
 
@@ -57,7 +57,7 @@ def verify_sync_and_contents(target_url: str, expected_files: dict):
         assert actual_content == expected_content, f"Mismatch in file {file}"
     # Ensure there is nothing in target that is not in expected_files
     target_client, target_path = msc.resolve_storage_client(target_url)
-    for targetf in target_client.list(prefix=target_path):
+    for targetf in target_client.list(path=target_path):
         key = targetf.key[len(target_path) :].lstrip("/")
         # Skip temporary files that start with a dot (like .plexihcg)
         if key.startswith(".") or os.path.basename(key).startswith("."):
@@ -446,7 +446,7 @@ def test_sync_replicas(temp_data_store_type: type[tempdatastore.TemporaryDataSto
 
         # Verify that the lock file is created and removed.
         target_client, target_path = msc.resolve_storage_client(replica_msc_url)
-        files = list(target_client.list(prefix=target_path))
+        files = list(target_client.list(path=target_path))
         assert len([f for f in files if f.key.endswith(".lock")]) == 0
 
 
@@ -753,7 +753,7 @@ def test_sync_from_symlink_files(temp_data_store_type: type[tempdatastore.Tempor
 
         target_msc_url = f"msc://{obj_profile}/synced-no-symlinks"
         target_client, target_path = msc.resolve_storage_client(target_msc_url)
-        target_client.sync_from(source_client, source_path, target_path, follow_symlinks=False)
+        target_client.sync_from(source_client, source_path, target_path, symlink_handling=SymlinkHandling.SKIP)
 
         time.sleep(1)
 

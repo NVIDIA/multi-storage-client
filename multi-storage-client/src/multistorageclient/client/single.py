@@ -47,7 +47,7 @@ from ..types import (
     SymlinkHandling,
     SyncResult,
 )
-from ..utils import NullStorageClient, PatternMatcher, join_paths, resolve_symlink_handling
+from ..utils import NullStorageClient, PatternMatcher, join_paths
 from .types import AbstractStorageClient
 
 logger = logging.getLogger(__name__)
@@ -865,7 +865,6 @@ class SingleStorageClient(AbstractStorageClient):
         max_workers: int = 32,
         look_ahead: int = 2,
         include_url_prefix: bool = False,
-        follow_symlinks: Optional[bool] = None,
         patterns: Optional[PatternList] = None,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
@@ -879,13 +878,10 @@ class SingleStorageClient(AbstractStorageClient):
         :param max_workers: Maximum concurrent workers for provider-level recursive listing.
         :param look_ahead: Prefixes to buffer per worker for provider-level recursive listing.
         :param include_url_prefix: Whether to include the URL prefix ``msc://profile`` in the result.
-        :param follow_symlinks: **Deprecated.** Use ``symlink_handling`` instead.
         :param patterns: PatternList for include/exclude filtering. If None, all files are included.
         :param symlink_handling: How to handle symbolic links during listing. Only applicable for POSIX file storage providers.
         :return: An iterator over ObjectMetadata for matching files.
         """
-        symlink_handling = resolve_symlink_handling(follow_symlinks, symlink_handling)
-
         pattern_matcher = PatternMatcher(patterns) if patterns else None
 
         single_file, effective_path = self._resolve_single_file(
@@ -1053,7 +1049,6 @@ class SingleStorageClient(AbstractStorageClient):
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
         patterns: Optional[PatternList] = None,
         preserve_source_attributes: bool = False,
-        follow_symlinks: Optional[bool] = None,
         source_files: Optional[list[str]] = None,
         ignore_hidden: bool = True,
         commit_metadata: bool = True,
@@ -1081,9 +1076,6 @@ class SingleStorageClient(AbstractStorageClient):
                 request for each object to retrieve attributes, which can significantly impact performance on large-scale
                 sync operations. For production use at scale, configure a ``metadata_provider`` in your storage profile.
 
-        :param follow_symlinks: **Deprecated.** Use ``symlink_handling`` instead. If the source StorageClient is PosixFile,
-            whether to follow symbolic links. ``True`` maps to :py:attr:`SymlinkHandling.FOLLOW`; ``False`` maps to
-            :py:attr:`SymlinkHandling.SKIP`. Cannot be combined with a non-default ``symlink_handling``.
         :param source_files: Optional list of file paths (relative to source_path) to sync. When provided, only these
             specific files will be synced, skipping enumeration of the source path. Cannot be used together with patterns.
         :param ignore_hidden: Whether to ignore hidden files and directories. Default is ``True``.
@@ -1098,14 +1090,11 @@ class SingleStorageClient(AbstractStorageClient):
             :py:attr:`SymlinkHandling.SKIP` excludes symlinks from the sync.
             :py:attr:`SymlinkHandling.PRESERVE` recreates symlinks on the target via :py:meth:`make_symlink`
             instead of copying bytes (required for round-trip preservation of symlinks).
-        :raises ValueError: If both source_files and patterns are provided, or if ``follow_symlinks`` is combined
-            with a non-default ``symlink_handling``.
+        :raises ValueError: If both source_files and patterns are provided.
         :raises RuntimeError: If errors occur during sync operations. The sync will stop on first error (fail-fast).
         """
         if source_files and patterns:
             raise ValueError("Cannot specify both 'source_files' and 'patterns'. Please use only one filtering method.")
-
-        symlink_handling = resolve_symlink_handling(follow_symlinks, symlink_handling)
 
         pattern_matcher = PatternMatcher(patterns) if patterns else None
 
@@ -1207,7 +1196,6 @@ class SingleStorageClient(AbstractStorageClient):
 
     def list(
         self,
-        prefix: str = "",
         path: str = "",
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
@@ -1215,53 +1203,28 @@ class SingleStorageClient(AbstractStorageClient):
         include_url_prefix: bool = False,
         attribute_filter_expression: Optional[str] = None,
         show_attributes: bool = False,
-        follow_symlinks: Optional[bool] = None,
         patterns: Optional[PatternList] = None,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         """
         List objects in the storage provider under the specified path.
 
-        **IMPORTANT**: Use the ``path`` parameter for new code. The ``prefix`` parameter is
-        deprecated and will be removed in a future version.
-
-        :param prefix: [DEPRECATED] Use ``path`` instead. The prefix to list objects under.
         :param path: The directory or file path to list objects under. This should be a
                     complete filesystem path (e.g., "my-bucket/documents/" or "data/2024/").
-                    Cannot be used together with ``prefix``.
         :param start_after: The key to start after (i.e. exclusive). An object with this key doesn't have to exist.
         :param end_at: The key to end at (i.e. inclusive). An object with this key doesn't have to exist.
         :param include_directories: Whether to include directories in the result. When ``True``, directories are returned alongside objects.
         :param include_url_prefix: Whether to include the URL prefix ``msc://profile`` in the result.
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
         :param show_attributes: Whether to return attributes in the result. WARNING: Depending on implementation, there may be a performance impact if this is set to ``True``.
-        :param follow_symlinks: **Deprecated.** Use ``symlink_handling`` instead.
         :param patterns: PatternList for include/exclude filtering. If None, all files are included.
         :param symlink_handling: How to handle symbolic links during listing. Only applicable for POSIX file storage providers.
         :return: An iterator over ObjectMetadata for matching objects.
-        :raises ValueError: If both ``path`` and ``prefix`` parameters are provided (both non-empty).
         """
-        symlink_handling = resolve_symlink_handling(follow_symlinks, symlink_handling)
-
-        # Parameter validation - either path or prefix, not both
-        if path and prefix:
-            raise ValueError(
-                f"Cannot specify both 'path' ({path!r}) and 'prefix' ({prefix!r}). "
-                f"Please use only the 'path' parameter for new code. "
-                f"Migration guide: Replace list(prefix={prefix!r}) with list(path={prefix!r})"
-            )
-        elif prefix:
-            logger.debug(
-                f"The 'prefix' parameter is deprecated and will be removed in a future version. "
-                f"Please use the 'path' parameter instead. "
-                f"Migration guide: Replace list(prefix={prefix!r}) with list(path={prefix!r})"
-            )
-
         pattern_matcher = PatternMatcher(patterns) if patterns else None
-        effective_path = path if path else prefix
 
         single_file, effective_path = self._resolve_single_file(
-            effective_path, start_after, end_at, include_url_prefix, pattern_matcher
+            path, start_after, end_at, include_url_prefix, pattern_matcher
         )
         if single_file is not None:
             yield single_file

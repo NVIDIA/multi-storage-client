@@ -829,7 +829,7 @@ class BaseStorageProvider(StorageProvider):
                 ),
             )
         except TypeError as exc:
-            if "symlink_handling" in str(exc) or "follow_symlinks" in str(exc):
+            if "symlink_handling" in str(exc):
                 logger.debug(
                     "Custom storage provider does not accept symlink_handling in _list_objects. "
                     "Please update your provider's interface."

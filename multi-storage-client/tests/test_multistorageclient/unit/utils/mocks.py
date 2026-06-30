@@ -70,11 +70,12 @@ class TestMetadataProvider(MetadataProvider):
 
     def list_objects(
         self,
-        prefix: str,
+        path: str,
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
         include_directories: bool = False,
         attribute_filter_expression: Optional[str] = None,
+        show_attributes: bool = False,
     ) -> Iterator[ObjectMetadata]:
         assert not include_directories, "Directories are not supported in the test metadata provider"
         return iter(

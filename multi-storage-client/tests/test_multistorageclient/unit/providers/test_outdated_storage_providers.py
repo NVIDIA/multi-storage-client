@@ -108,11 +108,11 @@ def test_outdated_provider_through_client_api():
     result = list(client.list("data/files"))
     assert len(result) == 2
 
-    # Test case 2: Application that still uses the prefix parameter (works)
-    result = list(client.list(prefix="data/files"))
+    # Test case 2: Application that uses the path keyword (works)
+    result = list(client.list(path="data/files"))
     assert len(result) == 2
 
-    # Test case 3: Application that uses the new path parameter (works)
+    # Test case 3: Repeated path keyword calls continue to work
     result = list(client.list(path="data/files"))
     assert len(result) == 2
 

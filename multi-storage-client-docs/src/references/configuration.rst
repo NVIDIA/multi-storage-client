@@ -286,13 +286,13 @@ The POSIX filesystem provider.
 
 Options: See parameters in :py:class:`multistorageclient.providers.posix_file.PosixFileStorageProvider`.
 
-MSC includes a default POSIX filesystem profile that is used when no configuration file is found. This profile provides basic local filesystem access:
+MSC includes a default POSIX filesystem profile named ``__filesystem__``. When that profile is requested and not explicitly defined in configuration, MSC synthesizes it so basic local filesystem access remains available:
 
 .. code-block:: yaml
    :caption: Example configuration.
 
    profiles:
-     default:
+     __filesystem__:
        storage_provider:
          type: file
          options:

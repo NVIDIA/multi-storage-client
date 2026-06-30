@@ -78,7 +78,6 @@ def create_implicit_profile_config(profile_name: str, protocol: str, base_path: 
     }
 
 
-LEGACY_POSIX_PROFILE_NAME = "default"
 RESERVED_POSIX_PROFILE_NAME = "__filesystem__"
 DEFAULT_POSIX_PROFILE = create_implicit_profile_config(RESERVED_POSIX_PROFILE_NAME, "file", "/")
 
@@ -417,22 +416,6 @@ def _find_config_file_paths() -> tuple[str]:
     )
 
     return tuple(paths)
-
-
-def _normalize_profile_name(profile: str, config_dict: dict[str, Any]) -> str:
-    """
-    Normalize the profile name to the reserved POSIX profile name if the legacy "default" POSIX profile is used.
-
-    :param profile: The profile name to normalize
-    :param config_dict: The configuration dictionary
-    :return: The normalized profile name
-    """
-    if profile == LEGACY_POSIX_PROFILE_NAME and profile not in config_dict.get("profiles", {}):
-        logger.warning(
-            f"The profile name '{LEGACY_POSIX_PROFILE_NAME}' is deprecated and will be removed in a future version. Please use '{RESERVED_POSIX_PROFILE_NAME}' instead."
-        )
-        return RESERVED_POSIX_PROFILE_NAME
-    return profile
 
 
 PACKAGE_NAME = "multistorageclient"
@@ -1444,7 +1427,7 @@ class StorageClientConfig:
         # Load config
         loader = StorageClientConfigLoader(
             config_dict=config_dict,
-            profile=_normalize_profile_name(profile, config_dict),
+            profile=profile,
             telemetry_provider=telemetry_provider,
         )
         config = loader.build_config()
@@ -1483,7 +1466,7 @@ class StorageClientConfig:
             )
         else:
             # Check if profile is the default POSIX profile or an implicit profile
-            if profile == RESERVED_POSIX_PROFILE_NAME or profile == LEGACY_POSIX_PROFILE_NAME:
+            if profile == RESERVED_POSIX_PROFILE_NAME:
                 implicit_profile_config = DEFAULT_POSIX_PROFILE
             elif profile.startswith("_"):
                 # Handle implicit profiles

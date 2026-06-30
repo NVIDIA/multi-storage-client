@@ -142,8 +142,8 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
             assert not storage_client.is_file(path=f"{lead}{file_path_fragments[0]}-nonexistent")
             assert not storage_client.is_file(path=f"{lead}{file_path_fragments[0]}")
 
-        assert len(list(storage_client.list(prefix=file_path_fragments[0]))) == 1
-        file_info_list = list(storage_client.list(prefix=os.path.join(*file_path_fragments[:2])))
+        assert len(list(storage_client.list(path=file_path_fragments[0]))) == 1
+        file_info_list = list(storage_client.list(path=os.path.join(*file_path_fragments[:2])))
         assert len(file_info_list) == 1
         listed_file_info = file_info_list[0]
         assert listed_file_info is not None
@@ -249,8 +249,8 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
         for path in [file_path, file_copy_path]:
             storage_client.delete(path=path)
             wait_for_is_file(storage_client=storage_client, path=path, is_file=False)
-        assert len(list(storage_client.list(prefix=file_path_fragments[0]))) == 0
-        assert len(list(storage_client.list(prefix=file_copy_path_fragments[0]))) == 0
+        assert len(list(storage_client.list(path=file_path_fragments[0]))) == 0
+        assert len(list(storage_client.list(path=file_copy_path_fragments[0]))) == 0
 
         # Open the file for appends (bytes).
         with storage_client.open(path=file_path, mode="ab", prefetch_file=True) as file:
@@ -303,7 +303,7 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
         # List the files (paginated).
         for i in file_numbers:
             files = list(
-                storage_client.list(prefix="", start_after=f"{i - 1}{file_extension}", end_at=f"{i}{file_extension}")
+                storage_client.list(path="", start_after=f"{i - 1}{file_extension}", end_at=f"{i}{file_extension}")
             )
             assert len(files) == 1
             assert files[0].key.endswith(f"{i}{file_extension}")
@@ -383,12 +383,12 @@ def test_storage_providers_list_directories(temp_data_store_type: type[tempdatas
         assert storage_client.info(path="dir1").content_length == 0
 
         # List directories
-        directories = list(storage_client.list(prefix="", include_directories=True))
+        directories = list(storage_client.list(path="", include_directories=True))
         assert len(directories) == 1
         assert directories[0].key == "dir1"
         assert directories[0].type == "directory"
 
-        directories = list(storage_client.list(prefix="", include_directories=False))
+        directories = list(storage_client.list(path="", include_directories=False))
         assert len(directories) == 0
 
 
@@ -685,7 +685,7 @@ def test_storage_with_root_base_path(temp_data_store_type: type[tempdatastore.Te
             storage_client.delete(path=fname)
             wait_for_is_file(storage_client=storage_client, path=fname, is_file=False)
 
-        assert len(list(storage_client.list(prefix=bucket))) == 0
+        assert len(list(storage_client.list(path=bucket))) == 0
 
 
 @pytest.mark.parametrize(

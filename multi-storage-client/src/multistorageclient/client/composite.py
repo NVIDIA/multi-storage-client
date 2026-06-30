@@ -304,7 +304,6 @@ class CompositeStorageClient(AbstractStorageClient):
         max_workers: int = 32,
         look_ahead: int = 2,
         include_url_prefix: bool = False,
-        follow_symlinks: Optional[bool] = None,
         patterns: Optional[PatternList] = None,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
@@ -314,7 +313,6 @@ class CompositeStorageClient(AbstractStorageClient):
             end_at=end_at,
             include_directories=False,
             include_url_prefix=include_url_prefix,
-            follow_symlinks=follow_symlinks,
             patterns=patterns,
             symlink_handling=symlink_handling,
         )
@@ -411,7 +409,6 @@ class CompositeStorageClient(AbstractStorageClient):
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
         patterns: Optional[PatternList] = None,
         preserve_source_attributes: bool = False,
-        follow_symlinks: Optional[bool] = None,
         source_files: Optional[list[str]] = None,
         ignore_hidden: bool = True,
         commit_metadata: bool = True,
@@ -441,7 +438,6 @@ class CompositeStorageClient(AbstractStorageClient):
 
     def list(
         self,
-        prefix: str = "",
         path: str = "",
         start_after: Optional[str] = None,
         end_at: Optional[str] = None,
@@ -449,27 +445,15 @@ class CompositeStorageClient(AbstractStorageClient):
         include_url_prefix: bool = False,
         attribute_filter_expression: Optional[str] = None,
         show_attributes: bool = False,
-        follow_symlinks: Optional[bool] = None,
         patterns: Optional[PatternList] = None,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
-        # Parameter validation - either path or prefix, not both
-        if path and prefix:
-            raise ValueError(
-                f"Cannot specify both 'path' ({path!r}) and 'prefix' ({prefix!r}). "
-                f"Please use only the 'path' parameter for new code. "
-                f"Migration guide: Replace list(prefix={prefix!r}) with list(path={prefix!r})"
-            )
-
-        # Use path if provided, otherwise fall back to prefix
-        effective_path = path if path else prefix
-
         # Apply patterns to the objects
         pattern_matcher = PatternMatcher(patterns) if patterns else None
 
         # Delegate to metadata provider (always present for CompositeStorageClient)
         for obj in self._metadata_provider.list_objects(
-            effective_path,
+            path,
             start_after=start_after,
             end_at=end_at,
             include_directories=include_directories,

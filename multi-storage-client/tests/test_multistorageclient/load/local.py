@@ -105,7 +105,7 @@ def test_storage_client(storage_client: StorageClient) -> None:
     storage_client.info(path=file_path)
 
     # List the prefix directory.
-    list(storage_client.list(prefix=os.path.join(*file_path_fragments[:1])))
+    list(storage_client.list(path=os.path.join(*file_path_fragments[:1])))
 
     # Copy the file.
     storage_client.copy(src_path=file_path, dest_path=file_copy_path)

@@ -56,7 +56,7 @@ def test_list_symlinks_from_object_storage(temp_data_store_type: type[tempdatast
         │   └── file.txt            (regular file inside subdir)
         └── symlink_to_subdir       (symlink object whose target is "subdir")
 
-    The flat listing ``list(prefix=<prefix>)`` yields exactly these four
+    The flat listing ``list(path=<prefix>)`` yields exactly these four
     entries (symlink objects appear alongside regular files, with their
     ``symlink_target`` populated):
 
@@ -70,7 +70,7 @@ def test_list_symlinks_from_object_storage(temp_data_store_type: type[tempdatast
     ================================  ===============  ====================
 
     The hierarchical listing
-    ``list(prefix=<prefix>/, include_directories=True)`` yields exactly these
+    ``list(path=<prefix>/, include_directories=True)`` yields exactly these
     four entries -- the real ``subdir`` is collapsed into a single
     ``directory`` entry, but both symlink objects stay visible as their own
     entries (directory symlinks are **not** collapsed into the directory
@@ -122,7 +122,7 @@ def test_list_symlinks_from_object_storage(temp_data_store_type: type[tempdatast
         # Flat listing returns all underlying objects under the prefix: the
         # two regular files plus the two symlink objects. Only the symlinks
         # carry a non-None symlink_target.
-        objects = list(storage_client.list(prefix=symlink_prefix))
+        objects = list(storage_client.list(path=symlink_prefix))
         objects_by_key = {o.key: o for o in objects}
         assert len(objects) == 4
         assert objects_by_key[target_file_path].type == "file"
@@ -138,7 +138,7 @@ def test_list_symlinks_from_object_storage(temp_data_store_type: type[tempdatast
         # returns the real subdir as a directory entry and the two symlink
         # objects (including the directory symlink) as separate file entries
         # that still carry their symlink targets.
-        entries = list(storage_client.list(prefix=f"{symlink_prefix}/", include_directories=True))
+        entries = list(storage_client.list(path=f"{symlink_prefix}/", include_directories=True))
         entries_by_key = {e.key: e for e in entries}
         assert len(entries) == 4
         assert entries_by_key[subdir].type == "directory"
@@ -296,12 +296,12 @@ def test_list_symlinks_from_posix_with_follow(temp_data_store_type: type[tempdat
     ======================  ===============  =========================
 
     This is the backward-compatible behavior that matches the legacy
-    ``follow_symlinks=True`` listing semantics.
+    ``SymlinkHandling.FOLLOW`` listing semantics.
     """
     with temp_data_store_type() as temp_data_store:
         storage_client = _build_posix_storage_client_with_symlink_tree(temp_data_store)
 
-        objects = list(storage_client.list(prefix="", symlink_handling=SymlinkHandling.FOLLOW))
+        objects = list(storage_client.list(path="", symlink_handling=SymlinkHandling.FOLLOW))
         objects_by_key = {o.key: o for o in objects}
 
         assert set(objects_by_key.keys()) == {
@@ -339,12 +339,12 @@ def test_list_symlinks_from_posix_with_skip(temp_data_store_type: type[tempdatas
     ``dir2/b.txt``          ``file``         ``None``
     ======================  ===============  =========================
 
-    This matches the legacy ``follow_symlinks=False`` listing semantics.
+    This matches the ``SymlinkHandling.SKIP`` listing semantics.
     """
     with temp_data_store_type() as temp_data_store:
         storage_client = _build_posix_storage_client_with_symlink_tree(temp_data_store)
 
-        objects = list(storage_client.list(prefix="", symlink_handling=SymlinkHandling.SKIP))
+        objects = list(storage_client.list(path="", symlink_handling=SymlinkHandling.SKIP))
         objects_by_key = {o.key: o for o in objects}
 
         assert set(objects_by_key.keys()) == {"c.txt", "dir1/a.txt", "dir2/b.txt"}
@@ -382,7 +382,7 @@ def test_list_symlinks_from_posix_with_preserve(temp_data_store_type: type[tempd
     with temp_data_store_type() as temp_data_store:
         storage_client = _build_posix_storage_client_with_symlink_tree(temp_data_store)
 
-        objects = list(storage_client.list(prefix="", symlink_handling=SymlinkHandling.PRESERVE))
+        objects = list(storage_client.list(path="", symlink_handling=SymlinkHandling.PRESERVE))
         objects_by_key = {o.key: o for o in objects}
 
         assert set(objects_by_key.keys()) == {
@@ -424,7 +424,7 @@ def test_list_recursive_symlinks_from_posix_matches_list(
     with temp_data_store_type() as temp_data_store:
         storage_client = _build_posix_storage_client_with_symlink_tree(temp_data_store)
 
-        list_objects = list(storage_client.list(prefix="", symlink_handling=symlink_handling))
+        list_objects = list(storage_client.list(path="", symlink_handling=symlink_handling))
         recursive_objects = list(storage_client.list_recursive(path="", symlink_handling=symlink_handling))
 
         assert [(o.key, o.type, o.symlink_target) for o in recursive_objects] == [
@@ -486,7 +486,7 @@ def test_list_symlinks_from_posix_with_preserve_raises_on_external_target(
             os.symlink(outside_file, os.path.join(base_path, "escaping"))
 
             with pytest.raises(ValueError, match="points outside the base directory"):
-                list(storage_client.list(prefix="", symlink_handling=SymlinkHandling.PRESERVE))
+                list(storage_client.list(path="", symlink_handling=SymlinkHandling.PRESERVE))
 
 
 @pytest.mark.parametrize(
@@ -538,7 +538,7 @@ def test_list_symlinks_from_posix_with_preserve_raises_on_broken_target(
         os.symlink(os.path.join(base_path, "missing.txt"), os.path.join(base_path, "dangling"))
 
         with pytest.raises(FileNotFoundError, match="Broken symlink"):
-            list(storage_client.list(prefix="", symlink_handling=SymlinkHandling.PRESERVE))
+            list(storage_client.list(path="", symlink_handling=SymlinkHandling.PRESERVE))
 
 
 @pytest.mark.parametrize(
@@ -590,7 +590,7 @@ def test_list_symlinks_from_posix_with_follow_raises_on_broken_target(
         os.symlink(os.path.join(base_path, "missing.txt"), os.path.join(base_path, "dangling"))
 
         with pytest.raises(FileNotFoundError, match="Broken symlink"):
-            list(storage_client.list(prefix="", symlink_handling=SymlinkHandling.FOLLOW))
+            list(storage_client.list(path="", symlink_handling=SymlinkHandling.FOLLOW))
 
 
 @pytest.mark.parametrize(
@@ -645,7 +645,7 @@ def test_list_chained_symlinks_from_posix_with_preserve(temp_data_store_type: ty
         os.symlink("file.txt", os.path.join(base_path, "link_b.txt"))
         os.symlink("link_b.txt", os.path.join(base_path, "link_a.txt"))
 
-        objects = list(storage_client.list(prefix="", symlink_handling=SymlinkHandling.PRESERVE))
+        objects = list(storage_client.list(path="", symlink_handling=SymlinkHandling.PRESERVE))
         by_key = {o.key: o for o in objects}
 
         assert set(by_key.keys()) == {"file.txt", "link_b.txt", "link_a.txt"}
@@ -760,7 +760,7 @@ def test_sync_from_posix_to_s3_to_posix_preserves_symlinks():
             symlink_handling=SymlinkHandling.PRESERVE,
         )
 
-        s3_objects_by_key = {entry.key: entry for entry in s3_client.list(prefix=s3_prefix)}
+        s3_objects_by_key = {entry.key: entry for entry in s3_client.list(path=s3_prefix)}
         expected_s3_keys = {
             f"{s3_prefix}/c.txt": (b"c content", None),
             f"{s3_prefix}/dir1/a.txt": (b"a content", None),

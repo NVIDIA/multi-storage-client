@@ -118,24 +118,24 @@ def test_override_default_profile() -> None:
     assert 'Cannot override "__filesystem__" profile with different settings.' in str(ex.value)
 
 
-def test_legacy_posix_profile(file_storage_config) -> None:
+def test_default_posix_profile_no_longer_accepts_legacy_default_alias(file_storage_config) -> None:
     config = StorageClientConfig.from_file()
     assert config.profile == "__filesystem__"
 
-    config = StorageClientConfig.from_file(profile="default")
-    assert config.profile == "__filesystem__"
+    with pytest.raises(ValueError, match='Profile "default" not found'):
+        StorageClientConfig.from_file(profile="default")
 
     config = StorageClientConfig.from_json("{}")
     assert config.profile == "__filesystem__"
 
-    config = StorageClientConfig.from_json("{}", profile="default")
-    assert config.profile == "__filesystem__"
+    with pytest.raises(ValueError, match="Profile default not found"):
+        StorageClientConfig.from_json("{}", profile="default")
 
     config = StorageClientConfig.from_yaml("")
     assert config.profile == "__filesystem__"
 
-    config = StorageClientConfig.from_yaml("", profile="default")
-    assert config.profile == "__filesystem__"
+    with pytest.raises(ValueError, match="Profile default not found"):
+        StorageClientConfig.from_yaml("", profile="default")
 
 
 def test_credentials_provider() -> None:

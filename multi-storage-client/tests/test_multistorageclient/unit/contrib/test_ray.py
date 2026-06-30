@@ -202,7 +202,7 @@ def test_storage_client_sync_with_files(ray_cluster):
 
         # Verify sync worked by checking target has the same files
         synced_files = [
-            f.key.removeprefix("target/") for f in list(target_client.list(prefix="target/")) if f.key.endswith(".txt")
+            f.key.removeprefix("target/") for f in list(target_client.list(path="target/")) if f.key.endswith(".txt")
         ]
         assert set(synced_files) == set(source_files), f"Expected {source_files}, found {synced_files}"
         assert len(synced_files) == 500, f"Expected 500 synced files, found {len(synced_files)}"
@@ -245,12 +245,12 @@ def test_storage_client_sync_replicas(ray_cluster):
 
         # Verify sync worked by checking replica1 has the same files
         replica1 = StorageClient(StorageClientConfig.from_dict(config_dict=config_dict, profile="replica1"))
-        synced_files = [f.key.removeprefix("source/") for f in list(replica1.list(prefix="")) if f.key.endswith(".txt")]
+        synced_files = [f.key.removeprefix("source/") for f in list(replica1.list(path="")) if f.key.endswith(".txt")]
         assert set(synced_files) == set(source_files), f"Expected {source_files}, found {synced_files}"
         assert len(synced_files) == 500, f"Expected 500 synced files, found {len(synced_files)}"
 
         # Verify sync worked by checking replica2 has the same files
         replica2 = StorageClient(StorageClientConfig.from_dict(config_dict=config_dict, profile="replica2"))
-        synced_files = [f.key.removeprefix("source/") for f in list(replica2.list(prefix="")) if f.key.endswith(".txt")]
+        synced_files = [f.key.removeprefix("source/") for f in list(replica2.list(path="")) if f.key.endswith(".txt")]
         assert set(synced_files) == set(source_files), f"Expected {source_files}, found {synced_files}"
         assert len(synced_files) == 500, f"Expected 500 synced files, found {len(synced_files)}"
