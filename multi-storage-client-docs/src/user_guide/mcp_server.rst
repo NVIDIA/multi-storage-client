@@ -56,9 +56,6 @@ You can also start the server manually for testing or debugging:
    # Start with a specific configuration file
    msc mcp-server start --config /path/to/config.yaml
 
-   # Start with verbose logging for debugging
-   msc mcp-server start --config /path/to/config.yaml --verbose
-
 .. _cursor-configuration:
 
 *************
@@ -508,4 +505,3 @@ The AI assistant can help you identify the right files, confirm the operation, a
    * :doc:`/references/configuration` - Complete configuration reference
 
    * `Model Context Protocol <https://modelcontextprotocol.io/>`_ - Official MCP documentation
-

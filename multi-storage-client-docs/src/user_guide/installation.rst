@@ -16,7 +16,6 @@ into MSC's operations and performance, making it harder to debug issues and opti
 
    pip install multi-storage-client[observability-otel]
 
-
 .. code-block:: shell
    :caption: Install MSC with storage provider dependencies.
 
