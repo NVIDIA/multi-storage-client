@@ -23,13 +23,13 @@ The ``msc help`` command displays general help information and available command
    msc help <command>
 
    commands:
-   config    MSC configuration management commands
+   config   Configuration management commands
    explorer  Start the MSC Explorer application for browsing files
-   glob      Find files using Unix-style wildcard patterns with optional attribute filtering
-   help      Display help for commands
-   ls        List files and directories with optional attribute filtering
-   rm        Delete files with a given prefix
-   sync      Synchronize files from the source storage to the target storage
+   help     Display help for commands
+   ls       List files and directories with optional attribute filtering
+   mcp-server Start the Multi-Storage Client MCP (Model Context Protocol) server
+   rm       Delete files or directories
+   sync     Synchronize files from the source storage to the target storage
 
 
 ******
@@ -179,9 +179,40 @@ The ``msc explorer`` command starts the MSC Explorer web application, providing 
 The Explorer will start on ``http://127.0.0.1:8888``. Open this URL in your browser to access the interface.
 
 .. note::
-   Requires optional dependencies: ``pip install multistorageclient[explorer]``
+   Requires optional dependencies: ``pip install "multi-storage-client[explorer]"``
 
 For complete details about the MSC Explorer and its features, see :doc:`/user_guide/explorer`.
+
+**************
+msc mcp-server
+**************
+
+The ``msc mcp-server`` command starts the MSC Model Context Protocol (MCP) server for AI assistants and other MCP-compatible clients.
+
+.. code-block:: text
+  :caption: mcp-server command help output
+
+  $ msc help mcp-server
+  usage: msc mcp-server {start} ...
+
+  Start the Multi-Storage Client MCP (Model Context Protocol) server
+
+  positional arguments:
+    {start}  MCP server commands
+      start  Start the MCP server
+
+.. code-block:: shell
+
+  $ msc mcp-server start
+
+.. code-block:: shell
+
+  $ msc mcp-server start --config /path/to/config.yaml
+
+.. note::
+   Requires optional dependencies: ``pip install "multi-storage-client[mcp]"``
+
+For complete details about configuring and using the MCP server, see :doc:`/user_guide/mcp_server`.
 
 ******
 msc rm
