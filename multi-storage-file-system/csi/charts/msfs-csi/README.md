@@ -39,13 +39,14 @@ There is no Controller Deployment / StatefulSet — see `../../README.md#archite
 
 ## Auth modes
 
-The driver supports three credential modes, selected per-volume via `volumeAttributes.authType`:
+The driver supports four credential modes, selected per-volume via `volumeAttributes.authType`:
 
 | Mode | Behavior | Needs Secret? |
 |---|---|---|
 | `auto` (default) | Static when a `nodePublishSecretRef` is provided, otherwise IRSA | Optional |
 | `static` | Read keys from `nodePublishSecretRef`; reject if incomplete | **Required** |
 | `irsa` (alias `wif`) | Skip secret injection; let the AWS SDK use the projected SA token | No |
+| `none` (alias `anonymous`) | Connect with no credentials at all: S3 issues unsigned requests (`anonymous: true`), AIStore connects with an empty token (e.g. a local AIS cluster or a public bucket) | No |
 
 The chart's `auth.mode` value only sets the default emitted in chart-rendered guidance — your PV/inline volume specs can still mix modes per-volume.
 

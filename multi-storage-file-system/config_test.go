@@ -1098,3 +1098,87 @@ func TestResolveCacheStorage_Invalid(t *testing.T) {
 		})
 	}
 }
+
+// TestS3AnonymousBackend verifies an S3 backend can be configured for anonymous
+// (unsigned) access with no access_key_id / secret_access_key.
+func TestS3AnonymousBackend(t *testing.T) {
+	initGlobals(testOsArgs(testGlobals.testConfigFilePathMap[".yaml"]))
+
+	err := os.WriteFile(globals.configFilePath, []byte(`
+msfs_version: 1
+backends: [
+  {
+    dir_name: s3pub,
+    bucket_container_name: public-bucket,
+    prefix: "p/",
+    backend_type: S3,
+    S3: {
+      region: us-east-1,
+      endpoint: "http://minio:9000",
+      anonymous: true,
+    },
+  },
+]
+`), 0o600)
+	if err != nil {
+		t.Fatalf("os.WriteFile() failed: %v", err)
+	}
+
+	if err = checkConfigFile(); err != nil {
+		t.Fatalf("checkConfigFile() unexpectedly failed for anonymous S3: %v", err)
+	}
+
+	backend, ok := globals.backendsToMount["s3pub"]
+	if !ok {
+		t.Fatalf("expected backend \"s3pub\" to be configured")
+	}
+	s3cfg, ok := backend.backendTypeSpecifics.(*backendConfigS3Struct)
+	if !ok {
+		t.Fatalf("expected backend \"s3pub\" backendTypeSpecifics to be *backendConfigS3Struct")
+	}
+	if !s3cfg.anonymous {
+		t.Errorf("expected anonymous=true")
+	}
+	if s3cfg.accessKeyID != "" || s3cfg.secretAccessKey != "" {
+		t.Errorf("expected empty access keys for anonymous S3, got accessKeyID=%q secretAccessKey=%q", s3cfg.accessKeyID, s3cfg.secretAccessKey)
+	}
+}
+
+// TestS3AnonymousClearsUseCredentialsEnv verifies that anonymous wins over
+// use_credentials_env: the flag is normalized to false so setupS3Context does
+// not load a shared credentials profile.
+func TestS3AnonymousClearsUseCredentialsEnv(t *testing.T) {
+	initGlobals(testOsArgs(testGlobals.testConfigFilePathMap[".yaml"]))
+
+	err := os.WriteFile(globals.configFilePath, []byte(`
+msfs_version: 1
+backends: [
+  {
+    dir_name: s3pub,
+    bucket_container_name: public-bucket,
+    backend_type: S3,
+    S3: {
+      region: us-east-1,
+      endpoint: "http://minio:9000",
+      anonymous: true,
+      use_credentials_env: true,
+    },
+  },
+]
+`), 0o600)
+	if err != nil {
+		t.Fatalf("os.WriteFile() failed: %v", err)
+	}
+
+	if err = checkConfigFile(); err != nil {
+		t.Fatalf("checkConfigFile() unexpectedly failed: %v", err)
+	}
+
+	s3cfg := globals.backendsToMount["s3pub"].backendTypeSpecifics.(*backendConfigS3Struct)
+	if !s3cfg.anonymous {
+		t.Errorf("expected anonymous=true")
+	}
+	if s3cfg.useCredentialsEnv {
+		t.Errorf("expected useCredentialsEnv cleared when anonymous, got true")
+	}
+}

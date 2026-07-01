@@ -36,12 +36,18 @@ const (
 //   - credentialModeAuto: pick static when a secret with at least the two
 //     required keys is present, otherwise IRSA. This is the default so
 //     existing manifests keep working unchanged.
+//   - credentialModeNone: connect with no credentials at all — no Secret and no
+//     IRSA. Injects no AWS_* env vars and emits no credential placeholders. For
+//     S3 it emits anonymous: true (unsigned requests, for public / no-auth
+//     endpoints); for AIStore it leaves the token empty (anonymous access, e.g.
+//     a local AIS cluster).
 type credentialMode string
 
 const (
 	credentialModeAuto   credentialMode = "auto"
 	credentialModeStatic credentialMode = "static"
 	credentialModeIRSA   credentialMode = "irsa"
+	credentialModeNone   credentialMode = "none"
 )
 
 // Canonical backend types accepted in volumeAttributes.backendType.
@@ -295,6 +301,8 @@ func hasStaticSecretKeys(secrets map[string]string) bool {
 //     referenced Secret; partial credentials are rejected.
 //   - "irsa" / "wif" never require a Secret. Either alias resolves to
 //     credentialModeIRSA.
+//   - "none" / "anonymous" never require a Secret and supply no credentials at
+//     all (no IRSA, no access keys). Either alias resolves to credentialModeNone.
 //   - "auto" (or unset) picks static if a complete Secret was provided,
 //     otherwise IRSA. This preserves backward compatibility with existing
 //     static-secret manifests while letting new IRSA-based PVs omit
@@ -318,9 +326,11 @@ func resolveCredentialMode(volCtx, secrets map[string]string) (credentialMode, e
 		return credentialModeStatic, nil
 	case string(credentialModeIRSA), "wif":
 		return credentialModeIRSA, nil
+	case string(credentialModeNone), "anonymous":
+		return credentialModeNone, nil
 	default:
 		return "", status.Errorf(codes.InvalidArgument,
-			"unsupported authType %q (expected one of: auto, static, irsa, wif)", requested)
+			"unsupported authType %q (expected one of: auto, static, irsa, wif, none, anonymous)", requested)
 	}
 }
 
@@ -434,17 +444,25 @@ func (ns *nodeServer) writeConfig(targetPath string, volCtx, secrets map[string]
 		fmt.Fprintf(&globalExtra, "allow_other: %s\n", v)
 	}
 
-	// In IRSA mode we deliberately omit the access_key_id / secret_access_key
-	// placeholders so the AWS SDK falls through to its credential chain and
-	// picks up the projected ServiceAccount token (AWS_ROLE_ARN +
-	// AWS_WEB_IDENTITY_TOKEN_FILE) that EKS sets on the pod. Including the
-	// placeholders with empty env vars would make the SDK think static creds
-	// were intended and fail with "missing credentials".
+	// The S3 block's credential lines depend on the mode:
+	//   - static: emit access_key_id / secret_access_key placeholders bound to
+	//     the AWS_* env vars buildEnv injects from the Secret.
+	//   - none: emit anonymous: true so the S3 backend issues unsigned requests
+	//     (public / no-auth endpoints) — no Secret, no IRSA.
+	//   - IRSA: emit nothing so the AWS SDK falls through to its credential chain
+	//     and picks up the projected ServiceAccount token (AWS_ROLE_ARN +
+	//     AWS_WEB_IDENTITY_TOKEN_FILE). Emitting empty placeholders here would
+	//     make the SDK think static creds were intended and fail.
 	credentialBlock := ""
-	if backendType == backendTypeS3 && mode == credentialModeStatic {
-		credentialBlock = `      access_key_id: "${AWS_ACCESS_KEY_ID}"
+	if backendType == backendTypeS3 {
+		switch mode {
+		case credentialModeStatic:
+			credentialBlock = `      access_key_id: "${AWS_ACCESS_KEY_ID}"
       secret_access_key: "${AWS_SECRET_ACCESS_KEY}"
 `
+		case credentialModeNone:
+			credentialBlock = "      anonymous: true\n"
+		}
 	}
 
 	var backendSpecific strings.Builder
@@ -469,8 +487,12 @@ func (ns *nodeServer) writeConfig(targetPath string, volCtx, secrets map[string]
 		backendSpecific.WriteString("    AIStore:\n")
 		aisOptionalQuoted("aisEndpoint", "endpoint")
 		aisOptionalStr("aisSkipTLSCertificateVerify", "skip_tls_certificate_verify")
-		aisOptionalQuoted("aisAuthnToken", "authn_token")
-		aisOptionalQuoted("aisAuthnTokenFile", "authn_token_file")
+		// none (anonymous) mode uses no credentials, so any supplied AIStore
+		// token is ignored — the backend connects with an empty token.
+		if mode != credentialModeNone {
+			aisOptionalQuoted("aisAuthnToken", "authn_token")
+			aisOptionalQuoted("aisAuthnTokenFile", "authn_token_file")
+		}
 		aisOptionalQuoted("aisProvider", "provider")
 		aisOptionalStr("aisTimeout", "timeout")
 		aisOptionalQuoted("aisManifestGenBackend", "manifest_gen_backend")
@@ -502,11 +524,12 @@ mountpoint: %s
 // existing file in place (republish) is intentional: the AWS SDK re-reads the
 // token file when it refreshes credentials.
 //
-// It returns ("", "", nil) when per-workload IRSA does not apply — static mode,
-// a non-S3 backend, or no workload token in volume_context — so the caller keeps
-// today's driver-SA behavior.
+// It returns ("", "", nil) when per-workload IRSA does not apply — static or
+// no-credentials mode, a non-S3 backend, or no workload token in volume_context
+// — so the caller keeps today's driver-SA behavior.
 func (ns *nodeServer) resolveWorkloadIdentity(configDir string, volCtx map[string]string, mode credentialMode) (string, string, error) {
-	if mode == credentialModeStatic {
+	// Static and no-credentials mounts never use a projected workload token.
+	if mode == credentialModeStatic || mode == credentialModeNone {
 		return "", "", nil
 	}
 	// Per-workload IRSA assumes an AWS IAM role, so it only applies to S3
