@@ -99,3 +99,5 @@ No privileged pods, no SYS_ADMIN, no mount propagation needed in the app pod.
 | `manifestPath` | No | - | Path for manifest generation output |
 | `manifestGenWorkers` | No | - | Number of manifest generation workers |
 | `flatDirConfirmationPages` | No | - | Flat directory confirmation pages |
+
+> Multiple backends in one volume (multi-bucket / multi-backend via `backendsJson`) and the full per-backend tuning field set are documented in the [CSI driver README](../README.md#multiple-backends-in-one-volume). Note: under CSI a `manifestPath` manifest is regenerated on every (re)mount — the driver does not persist it (follow-up: NGCDP-9116).

@@ -115,8 +115,8 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 	secrets := req.GetSecrets()
 
 	bucketName := volCtx["bucketName"]
-	if bucketName == "" {
-		return nil, status.Error(codes.InvalidArgument, "volumeAttributes.bucketName is required")
+	if bucketName == "" && strings.TrimSpace(volCtx["backendsJson"]) == "" {
+		return nil, status.Error(codes.InvalidArgument, "volumeAttributes.bucketName (or backendsJson) is required")
 	}
 
 	// Reservation pattern: check-and-insert under one lock so two concurrent
@@ -174,6 +174,14 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 	configDir, configPath, err := ns.writeConfig(targetPath, volCtx, secrets, req.GetReadonly(), mode)
 	if err != nil {
 		releaseReservation()
+		// Preserve a gRPC status code already set by writeConfig — e.g.
+		// InvalidArgument from parseVolumeBackends for a malformed or
+		// duplicate-manifest_path backendsJson — so a misconfigured volume
+		// fails fast with the correct code instead of a generic Internal.
+		// Only unclassified I/O errors (temp dir / file write) are wrapped.
+		if _, ok := status.FromError(err); ok {
+			return nil, err
+		}
 		return nil, status.Errorf(codes.Internal, "failed to write msfs config: %v", err)
 	}
 
@@ -193,7 +201,11 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	klog.Infof("starting msfs: %s %s (mountpoint=%s, bucket=%s, authMode=%s)", ns.msfsBinary, configPath, targetPath, bucketName, mode)
+	bucketLabel := bucketName
+	if strings.TrimSpace(volCtx["backendsJson"]) != "" {
+		bucketLabel = "(backendsJson)"
+	}
+	klog.Infof("starting msfs: %s %s (mountpoint=%s, bucket=%s, authMode=%s)", ns.msfsBinary, configPath, targetPath, bucketLabel, mode)
 	if err := cmd.Start(); err != nil {
 		os.RemoveAll(configDir)
 		releaseReservation()
@@ -338,13 +350,21 @@ func resolveCredentialMode(volCtx, secrets map[string]string) (credentialMode, e
 // form (backendTypeS3 or backendTypeAIStore), defaulting to S3. An unsupported
 // value is rejected so a misconfigured PV fails fast.
 func resolveBackendType(volCtx map[string]string) (string, error) {
-	switch strings.ToUpper(strings.TrimSpace(valOrDefault(volCtx, "backendType", backendTypeS3))) {
-	case "S3":
+	return normalizeBackendType(volCtx["backendType"])
+}
+
+// normalizeBackendType maps a raw backendType value to its canonical form
+// (backendTypeS3 or backendTypeAIStore). An empty value defaults to S3; an
+// unsupported value is an error. Shared by the single-backend flat attributes
+// and the per-entry backendsJson path.
+func normalizeBackendType(raw string) (string, error) {
+	switch strings.ToUpper(strings.TrimSpace(raw)) {
+	case "", "S3":
 		return backendTypeS3, nil
 	case "AISTORE":
 		return backendTypeAIStore, nil
 	default:
-		return "", fmt.Errorf("unsupported backendType %q (expected S3 or AIStore)", volCtx["backendType"])
+		return "", fmt.Errorf("unsupported backendType %q (expected S3 or AIStore)", raw)
 	}
 }
 
@@ -375,86 +395,305 @@ func parseWorkloadToken(volCtx map[string]string, audience string) (string, bool
 	return tok.Token, true, nil
 }
 
-func (ns *nodeServer) writeConfig(targetPath string, volCtx, secrets map[string]string, requestReadonly bool, mode credentialMode) (string, string, error) {
-	configDir, err := os.MkdirTemp("", "msfs-csi-*")
-	if err != nil {
-		return "", "", fmt.Errorf("failed to create temp config dir: %w", err)
+// csiBackend is one resolved backend for a CSI volume — produced either from the
+// single-backend flat volumeAttributes or from one entry of backendsJson.
+type csiBackend struct {
+	dirName     string
+	backendType string // backendTypeS3 | backendTypeAIStore
+	bucketName  string
+	prefix      string
+	readonly    bool
+	// S3
+	region   string
+	endpoint string
+	// AIStore
+	aisEndpoint                 string
+	aisProvider                 string
+	aisAuthnToken               string
+	aisAuthnTokenFile           string
+	aisSkipTLSCertificateVerify string
+	aisTimeout                  string
+	aisManifestGenBackend       string
+	// manifestPath is the raw per-backend manifest_path value (also rendered into
+	// `extra`); kept as a field so duplicate-path validation can read it.
+	manifestPath string
+	// extra holds pre-rendered per-backend tuning lines shared by the flat and
+	// backendsJson paths. Each line already carries its 4-space indent and
+	// trailing newline.
+	extra string
+}
+
+// volumeBackendJSON is the on-the-wire shape of one entry in
+// volumeAttributes.backendsJson (a JSON array). It mirrors the flat
+// single-backend volumeAttributes, including the optional per-backend tuning
+// fields (manifest_path, uid, perms, upload tuning, ...) which are rendered via
+// the shared renderBackendTuningExtra helper. All values are strings (k8s
+// volumeAttributes are strings); numeric knobs are passed as strings, e.g.
+// "uid": "1000", "manifestGenWorkers": "200".
+type volumeBackendJSON struct {
+	DirName                     string `json:"dirName"`
+	BackendType                 string `json:"backendType"`
+	BucketName                  string `json:"bucketName"`
+	Prefix                      string `json:"prefix"`
+	Readonly                    *bool  `json:"readonly"`
+	Region                      string `json:"region"`
+	Endpoint                    string `json:"endpoint"`
+	AisEndpoint                 string `json:"aisEndpoint"`
+	AisProvider                 string `json:"aisProvider"`
+	AisAuthnToken               string `json:"aisAuthnToken"`
+	AisAuthnTokenFile           string `json:"aisAuthnTokenFile"`
+	AisSkipTLSCertificateVerify string `json:"aisSkipTLSCertificateVerify"`
+	AisTimeout                  string `json:"aisTimeout"`
+	AisManifestGenBackend       string `json:"aisManifestGenBackend"`
+	// Per-backend tuning (optional; mirror the flat single-backend attributes).
+	ManifestPath                string `json:"manifestPath"`
+	ManifestGenWorkers          string `json:"manifestGenWorkers"`
+	FlatDirConfirmationPages    string `json:"flatDirConfirmationPages"`
+	TraceLevel                  string `json:"traceLevel"`
+	DirectoryPageSize           string `json:"directoryPageSize"`
+	Uid                         string `json:"uid"`
+	Gid                         string `json:"gid"`
+	DirPerm                     string `json:"dirPerm"`
+	FilePerm                    string `json:"filePerm"`
+	FlushOnClose                string `json:"flushOnClose"`
+	MultipartCacheLineThreshold string `json:"multipartCacheLineThreshold"`
+	UploadPartCacheLines        string `json:"uploadPartCacheLines"`
+	UploadPartConcurrency       string `json:"uploadPartConcurrency"`
+}
+
+// defaultDirName returns the mount subdirectory name used when a backend does
+// not specify dirName ("ais" for AIStore, "s3" for S3).
+func defaultDirName(backendType string) string {
+	if backendType == backendTypeAIStore {
+		return "ais"
+	}
+	return strings.ToLower(backendType)
+}
+
+// parseVolumeBackends resolves the list of backends for a volume. When
+// volumeAttributes.backendsJson is present it is parsed as a JSON array (one
+// MSFS backend per entry); otherwise a single backend is built from the flat
+// volumeAttributes, preserving today's exact behavior. dir_names must be unique.
+func parseVolumeBackends(volCtx map[string]string, requestReadonly bool) ([]csiBackend, error) {
+	// Volume-level readonly default (kubelet request flag wins; otherwise honor
+	// volumeAttributes["readonly"]; default read-only). Each backend inherits
+	// this unless it overrides readonly itself.
+	volumeReadonly := true
+	if !requestReadonly && volCtx["readonly"] == "false" {
+		volumeReadonly = false
 	}
 
+	var backends []csiBackend
+	if raw := strings.TrimSpace(volCtx["backendsJson"]); raw != "" {
+		var entries []volumeBackendJSON
+		if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "failed to parse backendsJson: %v", err)
+		}
+		if len(entries) == 0 {
+			return nil, status.Error(codes.InvalidArgument, "backendsJson must contain at least one backend")
+		}
+		for i := range entries {
+			b, err := backendFromJSON(entries[i], volumeReadonly)
+			if err != nil {
+				return nil, status.Errorf(codes.InvalidArgument, "backendsJson[%d]: %v", i, err)
+			}
+			// A read-only publish is a hard floor: a per-backend "readonly": false
+			// must not be able to make a read-only mount writable.
+			if requestReadonly {
+				b.readonly = true
+			}
+			backends = append(backends, b)
+		}
+	} else {
+		b, err := singleBackendFromVolCtx(volCtx, volumeReadonly)
+		if err != nil {
+			// Mirror the backendsJson path: surface flat parse/validation
+			// failures (e.g. an unsupported backendType) as InvalidArgument
+			// rather than letting the caller wrap them as a generic Internal.
+			if _, ok := status.FromError(err); ok {
+				return nil, err
+			}
+			return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+		}
+		backends = append(backends, b)
+	}
+
+	seen := make(map[string]bool, len(backends))
+	seenManifestPath := make(map[string]string, len(backends))
+	for _, b := range backends {
+		if seen[b.dirName] {
+			return nil, status.Errorf(codes.InvalidArgument, "duplicate backend dir_name %q", b.dirName)
+		}
+		seen[b.dirName] = true
+		// Reject duplicate manifest_path: manifest generation does a RemoveAll on
+		// the output path, so two backends sharing one would clobber each other.
+		// Normalize first so aliases like "/x/y" and "/x/y/" are treated as one.
+		if manifestPath := strings.TrimSpace(b.manifestPath); manifestPath != "" {
+			key := filepath.Clean(manifestPath)
+			if prev, ok := seenManifestPath[key]; ok {
+				return nil, status.Errorf(codes.InvalidArgument, "duplicate backend manifest_path %q (backends %q and %q)", manifestPath, prev, b.dirName)
+			}
+			seenManifestPath[key] = b.dirName
+		}
+	}
+	return backends, nil
+}
+
+// renderBackendTuningExtra renders the optional per-backend tuning fields into a
+// 4-space-indented block (each line ready to drop into a backend entry, before
+// `backend_type`). `get` returns the raw value for a camelCase volumeAttributes
+// key ("" when unset). This is the single source of truth for the field set,
+// order, and quoting, shared by the flat single-backend path and the
+// backendsJson path so the two cannot drift.
+func renderBackendTuningExtra(get func(key string) string) string {
+	var extra strings.Builder
+	optionalStr := func(key, yamlField string) {
+		if v := get(key); v != "" {
+			fmt.Fprintf(&extra, "    %s: %s\n", yamlField, v)
+		}
+	}
+	optionalQuoted := func(key, yamlField string) {
+		if v := get(key); v != "" {
+			fmt.Fprintf(&extra, "    %s: %q\n", yamlField, v)
+		}
+	}
+	optionalQuoted("manifestPath", "manifest_path")
+	optionalStr("manifestGenWorkers", "manifest_gen_workers")
+	optionalStr("flatDirConfirmationPages", "flat_dir_confirmation_pages")
+	optionalStr("traceLevel", "trace_level")
+	optionalStr("directoryPageSize", "directory_page_size")
+	optionalStr("uid", "uid")
+	optionalStr("gid", "gid")
+	optionalQuoted("dirPerm", "dir_perm")
+	optionalQuoted("filePerm", "file_perm")
+	optionalStr("flushOnClose", "flush_on_close")
+	optionalStr("multipartCacheLineThreshold", "multipart_cache_line_threshold")
+	optionalStr("uploadPartCacheLines", "upload_part_cache_lines")
+	optionalStr("uploadPartConcurrency", "upload_part_concurrency")
+	return extra.String()
+}
+
+// backendFromJSON converts one backendsJson entry into a csiBackend, applying
+// defaults (dirName, S3 region/endpoint) and validating required fields.
+func backendFromJSON(e volumeBackendJSON, volumeReadonly bool) (csiBackend, error) {
+	backendType, err := normalizeBackendType(e.BackendType)
+	if err != nil {
+		return csiBackend{}, err
+	}
+	if strings.TrimSpace(e.BucketName) == "" {
+		return csiBackend{}, fmt.Errorf("bucketName is required")
+	}
+	dirName := strings.TrimSpace(e.DirName)
+	if dirName == "" {
+		dirName = defaultDirName(backendType)
+	}
+	readonly := volumeReadonly
+	if e.Readonly != nil {
+		readonly = *e.Readonly
+	}
+	b := csiBackend{
+		dirName:                     dirName,
+		backendType:                 backendType,
+		bucketName:                  e.BucketName,
+		prefix:                      e.Prefix,
+		readonly:                    readonly,
+		region:                      e.Region,
+		endpoint:                    e.Endpoint,
+		aisEndpoint:                 e.AisEndpoint,
+		aisProvider:                 e.AisProvider,
+		aisAuthnToken:               e.AisAuthnToken,
+		aisAuthnTokenFile:           e.AisAuthnTokenFile,
+		aisSkipTLSCertificateVerify: e.AisSkipTLSCertificateVerify,
+		aisTimeout:                  e.AisTimeout,
+		aisManifestGenBackend:       e.AisManifestGenBackend,
+	}
+	if backendType == backendTypeS3 {
+		if b.region == "" {
+			b.region = "us-east-1"
+		}
+		if b.endpoint == "" {
+			b.endpoint = fmt.Sprintf("https://s3.%s.amazonaws.com", b.region)
+		}
+	}
+	b.manifestPath = e.ManifestPath
+	attrs := map[string]string{
+		"manifestPath":                e.ManifestPath,
+		"manifestGenWorkers":          e.ManifestGenWorkers,
+		"flatDirConfirmationPages":    e.FlatDirConfirmationPages,
+		"traceLevel":                  e.TraceLevel,
+		"directoryPageSize":           e.DirectoryPageSize,
+		"uid":                         e.Uid,
+		"gid":                         e.Gid,
+		"dirPerm":                     e.DirPerm,
+		"filePerm":                    e.FilePerm,
+		"flushOnClose":                e.FlushOnClose,
+		"multipartCacheLineThreshold": e.MultipartCacheLineThreshold,
+		"uploadPartCacheLines":        e.UploadPartCacheLines,
+		"uploadPartConcurrency":       e.UploadPartConcurrency,
+	}
+	b.extra = renderBackendTuningExtra(func(key string) string { return attrs[key] })
+	return b, nil
+}
+
+// singleBackendFromVolCtx builds the one backend described by the flat
+// volumeAttributes. It renders the per-backend tuning fields into `extra` so the
+// generated config is byte-identical to the pre-multi-backend behavior.
+func singleBackendFromVolCtx(volCtx map[string]string, volumeReadonly bool) (csiBackend, error) {
 	backendType, err := resolveBackendType(volCtx)
 	if err != nil {
-		os.RemoveAll(configDir)
-		return "", "", err
+		return csiBackend{}, err
 	}
 	dirName := valOrDefault(volCtx, "dirName", strings.ToLower(backendType))
 	if backendType == backendTypeAIStore && dirName == "aistore" {
 		dirName = "ais"
 	}
-
 	region := valOrDefault(volCtx, "region", "us-east-1")
 	endpoint := valOrDefault(volCtx, "endpoint", fmt.Sprintf("https://s3.%s.amazonaws.com", region))
 
-	// Honor the CSI request's readonly flag (set by kubelet from the PV's
-	// access mode). Fall back to volumeAttributes["readonly"] only when the
-	// request flag is false. Default is read-only.
-	readonlyStr := "true"
-	if !requestReadonly && volCtx["readonly"] == "false" {
-		readonlyStr = "false"
-	}
+	extra := renderBackendTuningExtra(func(key string) string { return volCtx[key] })
 
-	var backendExtra strings.Builder
-	optionalBackendStr := func(key, yamlField string) {
-		if v := volCtx[key]; v != "" {
-			fmt.Fprintf(&backendExtra, "    %s: %s\n", yamlField, v)
+	return csiBackend{
+		dirName:                     dirName,
+		backendType:                 backendType,
+		bucketName:                  volCtx["bucketName"],
+		prefix:                      volCtx["prefix"],
+		readonly:                    volumeReadonly,
+		region:                      region,
+		endpoint:                    endpoint,
+		aisEndpoint:                 volCtx["aisEndpoint"],
+		aisProvider:                 volCtx["aisProvider"],
+		aisAuthnToken:               volCtx["aisAuthnToken"],
+		aisAuthnTokenFile:           volCtx["aisAuthnTokenFile"],
+		aisSkipTLSCertificateVerify: volCtx["aisSkipTLSCertificateVerify"],
+		aisTimeout:                  volCtx["aisTimeout"],
+		aisManifestGenBackend:       volCtx["aisManifestGenBackend"],
+		manifestPath:                volCtx["manifestPath"],
+		extra:                       extra,
+	}, nil
+}
+
+// volumeHasS3Backend reports whether the volume contains at least one S3 backend
+// (per-workload IRSA only applies to S3). On a parse error it returns true so the
+// publish path surfaces the real error rather than silently skipping IRSA.
+func volumeHasS3Backend(volCtx map[string]string) bool {
+	backends, err := parseVolumeBackends(volCtx, false)
+	if err != nil {
+		return true
+	}
+	for _, b := range backends {
+		if b.backendType == backendTypeS3 {
+			return true
 		}
 	}
-	optionalBackendQuoted := func(key, yamlField string) {
-		if v := volCtx[key]; v != "" {
-			fmt.Fprintf(&backendExtra, "    %s: %q\n", yamlField, v)
-		}
-	}
+	return false
+}
 
-	optionalBackendQuoted("manifestPath", "manifest_path")
-	optionalBackendStr("manifestGenWorkers", "manifest_gen_workers")
-	optionalBackendStr("flatDirConfirmationPages", "flat_dir_confirmation_pages")
-	optionalBackendStr("traceLevel", "trace_level")
-	optionalBackendStr("directoryPageSize", "directory_page_size")
-	optionalBackendStr("uid", "uid")
-	optionalBackendStr("gid", "gid")
-	optionalBackendQuoted("dirPerm", "dir_perm")
-	optionalBackendQuoted("filePerm", "file_perm")
-	optionalBackendStr("flushOnClose", "flush_on_close")
-	optionalBackendStr("multipartCacheLineThreshold", "multipart_cache_line_threshold")
-	optionalBackendStr("uploadPartCacheLines", "upload_part_cache_lines")
-	optionalBackendStr("uploadPartConcurrency", "upload_part_concurrency")
-
-	var globalExtra strings.Builder
-	optionalGlobalStr := func(key, yamlField string) {
-		if v := volCtx[key]; v != "" {
-			fmt.Fprintf(&globalExtra, "%s: %s\n", yamlField, v)
-		}
-	}
-
-	optionalGlobalStr("cacheLineSize", "cache_line_size")
-	optionalGlobalStr("cacheLines", "cache_lines")
-	optionalGlobalStr("cacheLinesToPrefetch", "cache_lines_to_prefetch")
-	optionalGlobalStr("dirtyCacheLinesFlushTrigger", "dirty_cache_lines_flush_trigger")
-	optionalGlobalStr("dirtyCacheLinesMax", "dirty_cache_lines_max")
-	if v := volCtx["allowOther"]; v != "" {
-		fmt.Fprintf(&globalExtra, "allow_other: %s\n", v)
-	}
-
-	// The S3 block's credential lines depend on the mode:
-	//   - static: emit access_key_id / secret_access_key placeholders bound to
-	//     the AWS_* env vars buildEnv injects from the Secret.
-	//   - none: emit anonymous: true so the S3 backend issues unsigned requests
-	//     (public / no-auth endpoints) — no Secret, no IRSA.
-	//   - IRSA: emit nothing so the AWS SDK falls through to its credential chain
-	//     and picks up the projected ServiceAccount token (AWS_ROLE_ARN +
-	//     AWS_WEB_IDENTITY_TOKEN_FILE). Emitting empty placeholders here would
-	//     make the SDK think static creds were intended and fail.
+// renderMSFSBackend renders one MSFS `- dir_name:` backend block. The S3
+// credential lines follow the volume credential mode (static placeholders /
+// anonymous / IRSA-omit); AIStore fields come from the backend's ais* values.
+func renderMSFSBackend(b csiBackend, mode credentialMode) string {
 	credentialBlock := ""
-	if backendType == backendTypeS3 {
+	if b.backendType == backendTypeS3 {
 		switch mode {
 		case credentialModeStatic:
 			credentialBlock = `      access_key_id: "${AWS_ACCESS_KEY_ID}"
@@ -466,48 +705,90 @@ func (ns *nodeServer) writeConfig(targetPath string, volCtx, secrets map[string]
 	}
 
 	var backendSpecific strings.Builder
-	switch backendType {
+	switch b.backendType {
 	case backendTypeS3:
 		fmt.Fprintf(&backendSpecific, `    S3:
       region: %q
       endpoint: %q
 %s      virtual_hosted_style_request: false
-`, region, endpoint, credentialBlock)
+`, b.region, b.endpoint, credentialBlock)
 	case backendTypeAIStore:
-		aisOptionalQuoted := func(key, yamlField string) {
-			if v := volCtx[key]; v != "" {
+		aisQuoted := func(yamlField, v string) {
+			if v != "" {
 				fmt.Fprintf(&backendSpecific, "      %s: %q\n", yamlField, v)
 			}
 		}
-		aisOptionalStr := func(key, yamlField string) {
-			if v := volCtx[key]; v != "" {
+		aisStr := func(yamlField, v string) {
+			if v != "" {
 				fmt.Fprintf(&backendSpecific, "      %s: %s\n", yamlField, v)
 			}
 		}
 		backendSpecific.WriteString("    AIStore:\n")
-		aisOptionalQuoted("aisEndpoint", "endpoint")
-		aisOptionalStr("aisSkipTLSCertificateVerify", "skip_tls_certificate_verify")
+		aisQuoted("endpoint", b.aisEndpoint)
+		aisStr("skip_tls_certificate_verify", b.aisSkipTLSCertificateVerify)
 		// none (anonymous) mode uses no credentials, so any supplied AIStore
 		// token is ignored — the backend connects with an empty token.
 		if mode != credentialModeNone {
-			aisOptionalQuoted("aisAuthnToken", "authn_token")
-			aisOptionalQuoted("aisAuthnTokenFile", "authn_token_file")
+			aisQuoted("authn_token", b.aisAuthnToken)
+			aisQuoted("authn_token_file", b.aisAuthnTokenFile)
 		}
-		aisOptionalQuoted("aisProvider", "provider")
-		aisOptionalStr("aisTimeout", "timeout")
-		aisOptionalQuoted("aisManifestGenBackend", "manifest_gen_backend")
+		aisQuoted("provider", b.aisProvider)
+		aisStr("timeout", b.aisTimeout)
+		aisQuoted("manifest_gen_backend", b.aisManifestGenBackend)
+	}
+
+	readonlyStr := "true"
+	if !b.readonly {
+		readonlyStr = "false"
+	}
+
+	return fmt.Sprintf(`  - dir_name: %s
+    bucket_container_name: %s
+    prefix: %q
+    readonly: %s
+%s    backend_type: %s
+%s`, b.dirName, b.bucketName, b.prefix, readonlyStr, b.extra, b.backendType, backendSpecific.String())
+}
+
+func (ns *nodeServer) writeConfig(targetPath string, volCtx, secrets map[string]string, requestReadonly bool, mode credentialMode) (string, string, error) {
+	configDir, err := os.MkdirTemp("", "msfs-csi-*")
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create temp config dir: %w", err)
+	}
+
+	backends, err := parseVolumeBackends(volCtx, requestReadonly)
+	if err != nil {
+		os.RemoveAll(configDir)
+		return "", "", err
+	}
+
+	// Global (volume-level) tuning fields apply to the whole mount, not to an
+	// individual backend.
+	var globalExtra strings.Builder
+	optionalGlobalStr := func(key, yamlField string) {
+		if v := volCtx[key]; v != "" {
+			fmt.Fprintf(&globalExtra, "%s: %s\n", yamlField, v)
+		}
+	}
+	optionalGlobalStr("cacheLineSize", "cache_line_size")
+	optionalGlobalStr("cacheLines", "cache_lines")
+	optionalGlobalStr("cacheLinesToPrefetch", "cache_lines_to_prefetch")
+	optionalGlobalStr("dirtyCacheLinesFlushTrigger", "dirty_cache_lines_flush_trigger")
+	optionalGlobalStr("dirtyCacheLinesMax", "dirty_cache_lines_max")
+	if v := volCtx["allowOther"]; v != "" {
+		fmt.Fprintf(&globalExtra, "allow_other: %s\n", v)
+	}
+
+	var backendsBlock strings.Builder
+	for _, b := range backends {
+		backendsBlock.WriteString(renderMSFSBackend(b, mode))
 	}
 
 	config := fmt.Sprintf(`msfs_version: 1
 endpoint: "http://0.0.0.0:0"
 mountpoint: %s
 %sbackends:
-  - dir_name: %s
-    bucket_container_name: %s
-    prefix: %q
-    readonly: %s
-%s    backend_type: %s
-%s`, targetPath, globalExtra.String(), dirName, volCtx["bucketName"], volCtx["prefix"], readonlyStr, backendExtra.String(), backendType, backendSpecific.String())
+%s`, targetPath, globalExtra.String(), backendsBlock.String())
 
 	configPath := filepath.Join(configDir, "msfs.yaml")
 	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
@@ -532,16 +813,12 @@ func (ns *nodeServer) resolveWorkloadIdentity(configDir string, volCtx map[strin
 	if mode == credentialModeStatic || mode == credentialModeNone {
 		return "", "", nil
 	}
-	// Per-workload IRSA assumes an AWS IAM role, so it only applies to S3
-	// mounts. AIStore (and any future non-S3 backend) needs no AWS identity;
-	// without this guard a tokenRequests-enabled CSIDriver would hand every
-	// mount a workload token and force AIStore PVs to set a meaningless
-	// volumeAttributes.roleArn.
-	backendType, err := resolveBackendType(volCtx)
-	if err != nil {
-		return "", "", status.Error(codes.InvalidArgument, err.Error())
-	}
-	if backendType != backendTypeS3 {
+	// Per-workload IRSA assumes an AWS IAM role, so it only applies when the
+	// volume has at least one S3 backend. A pure-AIStore volume (or any future
+	// non-S3 backend) needs no AWS identity; without this guard a
+	// tokenRequests-enabled CSIDriver would hand every mount a workload token
+	// and force such PVs to set a meaningless volumeAttributes.roleArn.
+	if !volumeHasS3Backend(volCtx) {
 		return "", "", nil
 	}
 	token, ok, err := parseWorkloadToken(volCtx, stsAudience)
