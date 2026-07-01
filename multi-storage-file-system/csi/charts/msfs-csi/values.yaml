@@ -88,7 +88,7 @@ staticCredentials:
 
 # -- Default credential mode written into example manifests rendered by this
 # chart. Volume specs you author yourself can override per-volume via
-# volumeAttributes.authType. Allowed values: auto, static, irsa, wif.
+# volumeAttributes.authType. Allowed values: auto, static, irsa, wif, none, anonymous.
 auth:
   mode: irsa
 

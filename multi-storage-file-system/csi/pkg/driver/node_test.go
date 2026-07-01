@@ -69,6 +69,20 @@ func TestResolveCredentialMode_IrsaDoesNotRequireSecret(t *testing.T) {
 	}
 }
 
+func TestResolveCredentialMode_NoneAndAnonymous(t *testing.T) {
+	for _, alias := range []string{"none", "NONE", "anonymous", " none "} {
+		t.Run(alias, func(t *testing.T) {
+			mode, err := resolveCredentialMode(map[string]string{"authType": alias}, map[string]string{})
+			if err != nil {
+				t.Fatalf("unexpected error for authType=%q: %v", alias, err)
+			}
+			if mode != credentialModeNone {
+				t.Fatalf("mode = %q, want %q", mode, credentialModeNone)
+			}
+		})
+	}
+}
+
 func TestResolveCredentialMode_RejectsUnknownAuthType(t *testing.T) {
 	_, err := resolveCredentialMode(map[string]string{"authType": "magic"}, map[string]string{})
 	if err == nil {
@@ -158,6 +172,71 @@ func TestWriteConfig_AIStoreBackend(t *testing.T) {
 	}
 }
 
+func TestWriteConfig_NoneModeS3EmitsAnonymous(t *testing.T) {
+	ns := newNodeServer("node-test", "/usr/local/bin/msfs")
+	dir, configPath := writeConfigOrFatal(t, ns,
+		map[string]string{"bucketName": "public-bucket"},
+		map[string]string{},
+		credentialModeNone,
+	)
+	defer os.RemoveAll(dir)
+
+	body := readFileOrFatal(t, configPath)
+	if !strings.Contains(body, "anonymous: true") {
+		t.Fatalf("none mode S3 config should set anonymous: true; got:\n%s", body)
+	}
+	if strings.Contains(body, "access_key_id") || strings.Contains(body, "secret_access_key") {
+		t.Fatalf("none mode config must NOT contain static credential placeholders; got:\n%s", body)
+	}
+}
+
+func TestWriteConfig_NoneModeAIStoreOmitsAnonymousAndCreds(t *testing.T) {
+	ns := newNodeServer("node-test", "/usr/local/bin/msfs")
+	dir, configPath := writeConfigOrFatal(t, ns,
+		map[string]string{
+			"backendType": "AIStore",
+			"bucketName":  "ais-bucket",
+			"aisEndpoint": "https://ais.example.com",
+		},
+		map[string]string{},
+		credentialModeNone,
+	)
+	defer os.RemoveAll(dir)
+
+	body := readFileOrFatal(t, configPath)
+	if !strings.Contains(body, "backend_type: AIStore") {
+		t.Fatalf("expected AIStore backend; got:\n%s", body)
+	}
+	// anonymous is an S3-only field; for AIStore, no-credentials means an empty
+	// token, so neither an anonymous flag nor a token should be emitted.
+	if strings.Contains(body, "anonymous:") || strings.Contains(body, "authn_token") {
+		t.Fatalf("none mode AIStore config must not emit anonymous/token; got:\n%s", body)
+	}
+}
+
+func TestWriteConfig_NoneModeAIStoreIgnoresTokenInputs(t *testing.T) {
+	ns := newNodeServer("node-test", "/usr/local/bin/msfs")
+	// Even when AIStore token attributes are supplied, none (anonymous) mode
+	// must not emit them — the backend connects with an empty token.
+	dir, configPath := writeConfigOrFatal(t, ns,
+		map[string]string{
+			"backendType":       "AIStore",
+			"bucketName":        "ais-bucket",
+			"aisEndpoint":       "https://ais.example.com",
+			"aisAuthnToken":     "inline-token",
+			"aisAuthnTokenFile": "/var/run/secrets/ais/token",
+		},
+		map[string]string{},
+		credentialModeNone,
+	)
+	defer os.RemoveAll(dir)
+
+	body := readFileOrFatal(t, configPath)
+	if strings.Contains(body, "authn_token") {
+		t.Fatalf("none mode must ignore AIStore token inputs; got:\n%s", body)
+	}
+}
+
 func TestWriteConfig_RejectsUnsupportedBackendType(t *testing.T) {
 	ns := newNodeServer("node-test", "/usr/local/bin/msfs")
 	dir, _, err := ns.writeConfig("/tmp/csi-target-test",
@@ -220,6 +299,22 @@ func TestBuildEnv_WorkloadIdentityOmitsStaticAwsEnvVars(t *testing.T) {
 	} {
 		if envHasPrefix(env, stale) {
 			t.Errorf("IRSA mode must NOT inject stale secret value %s; got env %v", stale, env)
+		}
+	}
+}
+
+func TestBuildEnv_NoneOmitsAwsEnvVars(t *testing.T) {
+	ns := newNodeServer("node-test", "/usr/local/bin/msfs")
+	base := os.Environ()
+	// none mode must not inject any AWS credential env vars, even if a secret
+	// was somehow supplied.
+	env := ns.buildEnv(map[string]string{
+		"access_key_id":     "AKIA-ignored",
+		"secret_access_key": "ignored-secret",
+	}, credentialModeNone, "", "")
+	for _, key := range []string{"AWS_ACCESS_KEY_ID=", "AWS_SECRET_ACCESS_KEY=", "AWS_SESSION_TOKEN="} {
+		if got, want := envCount(env, key), envCount(base, key); got != want {
+			t.Errorf("none mode must not add %s entries; before=%d after=%d", key, want, got)
 		}
 	}
 }
@@ -414,6 +509,22 @@ func TestResolveWorkloadIdentity_AIStoreBackendBypassesWorkloadIdentity(t *testi
 	}
 	if _, statErr := os.Stat(filepath.Join(configDir, webIdentityTokenFileName)); !os.IsNotExist(statErr) {
 		t.Fatalf("no token file should be written for AIStore; stat err = %v", statErr)
+	}
+}
+
+func TestResolveWorkloadIdentity_NoneModeIsNoop(t *testing.T) {
+	ns := newNodeServer("node-test", "/usr/local/bin/msfs")
+	configDir := t.TempDir()
+	// none mode never assumes a role, even if the kubelet supplied a token.
+	volCtx := map[string]string{
+		serviceAccountTokensVolCtxKey: `{"sts.amazonaws.com":{"token":"ignored"}}`,
+	}
+	tokenFile, roleArn, err := ns.resolveWorkloadIdentity(configDir, volCtx, credentialModeNone)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tokenFile != "" || roleArn != "" {
+		t.Fatalf("none mode must be a no-op; got tokenFile=%q roleArn=%q", tokenFile, roleArn)
 	}
 }
 

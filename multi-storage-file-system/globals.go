@@ -107,6 +107,7 @@ type backendConfigS3Struct struct {
 	credentialsFilePath       string        //     JSON/YAML "credentials_file_path"          default:"${AWS_SHARED_CREDENTIALS_FILE:-~/.aws/credentials}"
 	accessKeyID               string        //     JSON/YAML "access_key_id"                  default:"${AWS_ACCESS_KEY_ID}"
 	secretAccessKey           string        //     JSON/YAML "secret_access_key"              default:"${AWS_SECRET_ACCESS_KEY}"
+	anonymous                 bool          //     JSON/YAML "anonymous"                      default:false
 	skipTLSCertificateVerify  bool          //     JSON/YAML "skip_tls_certificate_verify"    default:false
 	virtualHostedStyleRequest bool          //     JSON/YAML "virtual_hosted_style_request"   default:false
 	unsignedPayload           bool          //     JSON/YAML "unsigned_payload"               default:false

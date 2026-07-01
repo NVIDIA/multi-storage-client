@@ -56,9 +56,14 @@ func (backend *backendStruct) setupS3Context() (err error) {
 		configOptions = append(configOptions, config.WithSharedConfigFiles(nil), config.WithRegion(backendS3.region))
 	}
 
-	if backendS3.useCredentialsEnv {
+	switch {
+	case backendS3.anonymous:
+		// Anonymous access: install the sentinel provider so the SDK skips
+		// request signing entirely (public / no-auth S3-compatible endpoints).
+		configOptions = append(configOptions, config.WithSharedCredentialsFiles(nil), config.WithCredentialsProvider(aws.AnonymousCredentials{}))
+	case backendS3.useCredentialsEnv:
 		configOptions = append(configOptions, config.WithSharedCredentialsFiles(([]string{backendS3.credentialsFilePath})))
-	} else {
+	default:
 		configOptions = append(configOptions, config.WithSharedCredentialsFiles(nil), config.WithCredentialsProvider(credentials.StaticCredentialsProvider{
 			Value: aws.Credentials{
 				AccessKeyID:     backendS3.accessKeyID,

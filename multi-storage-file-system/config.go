@@ -1767,7 +1767,24 @@ func checkConfigFile() (err error) {
 					return
 				}
 
-				if backendConfigS3AsStruct.useCredentialsEnv {
+				backendConfigS3AsStruct.anonymous, ok = parseBool(backendConfigS3AsMap, "anonymous", false)
+				if !ok {
+					err = fmt.Errorf("bad S3.anonymous at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					return
+				}
+
+				switch {
+				case backendConfigS3AsStruct.anonymous:
+					// Anonymous access: no credentials are used (unsigned requests).
+					// Ignore any credentials file / access keys, and clear
+					// useCredentialsEnv so setupS3Context does not load a shared
+					// credentials profile. A public or no-auth endpoint can then
+					// be configured without them.
+					backendConfigS3AsStruct.useCredentialsEnv = false
+					backendConfigS3AsStruct.credentialsFilePath = ""
+					backendConfigS3AsStruct.accessKeyID = ""
+					backendConfigS3AsStruct.secretAccessKey = ""
+				case backendConfigS3AsStruct.useCredentialsEnv:
 					backendConfigS3AsStruct.credentialsFilePath, ok = parseString(backendConfigS3AsMap, "credentials_file_path", "${AWS_SHARED_CREDENTIALS_FILE:-${HOME}/.aws/credentials}")
 					if !ok {
 						err = fmt.Errorf("bad S3.credentials_file_path at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
@@ -1776,7 +1793,7 @@ func checkConfigFile() (err error) {
 
 					backendConfigS3AsStruct.accessKeyID = ""
 					backendConfigS3AsStruct.secretAccessKey = ""
-				} else {
+				default:
 					backendConfigS3AsStruct.credentialsFilePath = ""
 
 					backendConfigS3AsStruct.accessKeyID, ok = parseString(backendConfigS3AsMap, "access_key_id", "${AWS_ACCESS_KEY_ID}")
@@ -2457,6 +2474,11 @@ func checkConfigFile() (err error) {
 
 					if backendAsStructOld.backendTypeSpecifics.(*backendConfigS3Struct).virtualHostedStyleRequest != backendAsStructNew.backendTypeSpecifics.(*backendConfigS3Struct).virtualHostedStyleRequest {
 						err = fmt.Errorf("cannot change S3.virtual_hosted_style_request in backends[\"%s\"]", dirName)
+						return
+					}
+
+					if backendAsStructOld.backendTypeSpecifics.(*backendConfigS3Struct).anonymous != backendAsStructNew.backendTypeSpecifics.(*backendConfigS3Struct).anonymous {
+						err = fmt.Errorf("cannot change S3.anonymous in backends[\"%s\"]", dirName)
 						return
 					}
 
