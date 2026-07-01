@@ -50,6 +50,7 @@ from ..utils import (
     split_path,
     validate_attributes,
 )
+from ._cuobj import CuObjEngine
 from .base import BaseStorageProvider
 
 _T = TypeVar("_T")
@@ -62,6 +63,11 @@ MULTIPART_CHUNKSIZE = 32 * MiB
 IO_CHUNKSIZE = 32 * MiB
 PYTHON_MAX_CONCURRENCY = 8
 MAX_POOL_CONNECTIONS = DEFAULT_MAX_POOL_CONNECTIONS
+
+# When RDMA is enabled, cuObject transfers the whole registered buffer in a
+# single shot, so multipart is disabled by raising the threshold past any
+# practical object size and routing all transfers through the single-shot path.
+RDMA_SINGLE_SHOT_THRESHOLD = 1 << 62
 
 PROVIDER = "s3"
 
@@ -211,14 +217,32 @@ class S3StorageProvider(BaseStorageProvider):
         self._verify = verify
 
         self._signature_version = kwargs.get("signature_version", "s3v4")
+
+        # S3-over-RDMA (NVIDIA cuObject) data plane. Mutually exclusive with the
+        # Rust client; forces the empty-body, unsigned-payload, no-checksum wire
+        # contract the RDMA endpoint expects.
+        self._rdma_options = kwargs.get("rdma")
+        if self._rdma_options is not None and "rust_client" in kwargs:
+            raise ValueError("The 's3' provider options 'rdma' and 'rust_client' are mutually exclusive.")
+        request_checksum_calculation = kwargs.get("request_checksum_calculation")
+        response_checksum_validation = kwargs.get("response_checksum_validation")
+        s3_config = kwargs.get("s3")
+        if self._rdma_options is not None:
+            overrides = CuObjEngine.client_config_overrides()
+            request_checksum_calculation = overrides["request_checksum_calculation"]
+            response_checksum_validation = overrides["response_checksum_validation"]
+            # Only the empty-body wire contract (payload_signing_enabled=False) is
+            # enforced; addressing style stays user-controlled via the `s3` option.
+            s3_config = {**(s3_config or {}), **overrides["s3"]}
+
         self._s3_client = self._create_s3_client(
-            request_checksum_calculation=kwargs.get("request_checksum_calculation"),
-            response_checksum_validation=kwargs.get("response_checksum_validation"),
+            request_checksum_calculation=request_checksum_calculation,
+            response_checksum_validation=response_checksum_validation,
             max_pool_connections=kwargs.get("max_pool_connections", MAX_POOL_CONNECTIONS),
             connect_timeout=kwargs.get("connect_timeout", DEFAULT_CONNECT_TIMEOUT),
             read_timeout=kwargs.get("read_timeout", DEFAULT_READ_TIMEOUT),
             retries=kwargs.get("retries"),
-            s3=kwargs.get("s3"),
+            s3=s3_config,
         )
         self._transfer_config = TransferConfig(
             multipart_threshold=int(kwargs.get("multipart_threshold", MULTIPART_THRESHOLD)),
@@ -232,6 +256,13 @@ class S3StorageProvider(BaseStorageProvider):
         self._signer_cache: dict[tuple, URLSigner] = {}
 
         self._checksum_algorithm: Optional[str] = self._validate_checksum_algorithm(kwargs.get("checksum_algorithm"))
+
+        self._rdma_engine: Optional[CuObjEngine] = None
+        if self._rdma_options is not None:
+            self._rdma_engine = CuObjEngine()
+            self._rdma_engine.install_hooks(self._s3_client)
+            self._checksum_algorithm = None
+            self._multipart_threshold = RDMA_SINGLE_SHOT_THRESHOLD
 
         self._rust_client = None
         if "rust_client" in kwargs:
@@ -500,6 +531,47 @@ class S3StorageProvider(BaseStorageProvider):
                 f"Failed to {operation} object(s) at {bucket}/{key}, error type: {type(error).__name__}, error: {error}"
             ) from error
 
+    def _rdma_put(self, kwargs: dict[str, Any], body: bytes) -> int:
+        """Single-shot RDMA PUT: cuObject transfers the registered buffer; the HTTP body is empty."""
+        engine = self._rdma_engine
+        assert engine is not None
+        # cuObject pins a stable, writable region, so an immutable body is copied once.
+        buffer = body if isinstance(body, bytearray) else bytearray(body)
+        if len(buffer) == 0:
+            self._s3_client.put_object(**kwargs)
+            return 0
+        kwargs = {**kwargs, "Body": b""}
+        with engine.transfer(buffer, is_put=True):
+            response = self._s3_client.put_object(**kwargs)
+            engine.check_reply(response)
+        return len(buffer)
+
+    def _rdma_get(self, path: str, bucket: str, key: str, byte_range: Optional[Range]) -> bytearray:
+        """Single-shot RDMA GET into a registered buffer; returns the buffer."""
+        engine = self._rdma_engine
+        assert engine is not None
+        if byte_range is not None:
+            size = byte_range.size
+            bytes_range: Optional[str] = f"bytes={byte_range.offset}-{byte_range.offset + byte_range.size - 1}"
+        else:
+            size = self._get_object_metadata(path).content_length
+            bytes_range = None
+
+        def _invoke_api() -> bytearray:
+            buffer = bytearray(size)
+            if size == 0:
+                return buffer
+            get_kwargs: dict[str, Any] = {"Bucket": bucket, "Key": key}
+            if bytes_range is not None:
+                get_kwargs["Range"] = bytes_range
+            with engine.transfer(buffer, is_put=False):
+                response = self._s3_client.get_object(**get_kwargs)
+                response["Body"].read()
+                engine.check_reply(response)
+            return buffer
+
+        return self._translate_errors(_invoke_api, operation="GET", bucket=bucket, key=key)
+
     def _put_object(
         self,
         path: str,
@@ -535,6 +607,9 @@ class S3StorageProvider(BaseStorageProvider):
             if validated_attributes:
                 kwargs["Metadata"] = validated_attributes
 
+            if self._rdma_engine is not None:
+                return self._rdma_put(kwargs, body)
+
             # TODO(NGCDP-5804): Add support to update ContentType header in Rust client
             rust_unsupported_feature_keys = {"Metadata", "StorageClass", "IfMatch", "IfNoneMatch", "ContentType"}
             if (
@@ -555,6 +630,9 @@ class S3StorageProvider(BaseStorageProvider):
 
     def _get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
         bucket, key = split_path(path)
+
+        if self._rdma_engine is not None:
+            return self._rdma_get(path, bucket, key, byte_range)
 
         def _invoke_api() -> bytes:
             if byte_range:
