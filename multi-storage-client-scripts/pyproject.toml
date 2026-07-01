@@ -27,6 +27,17 @@ dev = [
 [project.scripts]
 msc-scripts = "multistorageclient_scripts.cli.__main__:main"
 
+[tool.pytest.ini_options]
+addopts = [
+    "--import-mode=importlib"
+]
+pythonpath = [
+    "tests"
+]
+testpaths = [
+    "tests"
+]
+
 [tool.ruff]
 extend = "../pyproject.toml"
 
