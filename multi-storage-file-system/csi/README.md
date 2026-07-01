@@ -248,7 +248,8 @@ The Dockerfile is at `multi-storage-file-system/Dockerfile.csi` (build context n
 
 | Key | Required | Default | Description |
 |-----|----------|---------|-------------|
-| `bucketName` | Yes | - | Bucket name / AIStore bucket name |
+| `bucketName` | Conditional | - | Bucket / AIStore bucket name. Required for a single-backend volume; omit when using `backendsJson`. |
+| `backendsJson` | No | - | JSON array of backend objects to expose **multiple** backends in one volume (multi-bucket / multi-backend). Each object: `dirName`, `backendType`, `bucketName` (required), `prefix`, `readonly`, plus S3 (`region`, `endpoint`) and AIStore (`aisEndpoint`, `aisProvider`, `aisAuthnToken`, `aisAuthnTokenFile`, `aisSkipTLSCertificateVerify`, `aisTimeout`, `aisManifestGenBackend`) fields, plus the per-backend tuning fields (`manifestPath`, `manifestGenWorkers`, `flatDirConfirmationPages`, `traceLevel`, `directoryPageSize`, `uid`, `gid`, `dirPerm`, `filePerm`, `flushOnClose`, `multipartCacheLineThreshold`, `uploadPartCacheLines`, `uploadPartConcurrency`) — numeric values passed as strings (e.g. `"uid": "1000"`). When set, the single-backend attributes below are ignored. Credentials (`authType` / Secret) are shared by all backends. |
 | `backendType` | No | `S3` | MSFS backend emitted by the CSI driver: `S3` or `AIStore` |
 | `dirName` | No | `s3` / `ais` | Directory name exposed under the MSFS mount for the generated backend |
 | `authType` | No | `auto` | Credential mode: `auto` (static if Secret provided, else IRSA), `static`, `irsa` (alias `wif`), `none` (alias `anonymous`; no credentials — unsigned S3 / empty AIStore token) |
@@ -267,6 +268,25 @@ The Dockerfile is at `multi-storage-file-system/Dockerfile.csi` (build context n
 | `aisSkipTLSCertificateVerify` | No | `false` | Skip AIStore endpoint TLS verification |
 | `aisTimeout` | No | `30000` | AIStore client timeout in milliseconds |
 | `aisManifestGenBackend` | No | - | Existing backend name used by MSFS for AIStore LIST/STAT-DIR delegation |
+
+## Multiple backends in one volume
+
+By default a volume exposes a single backend built from the flat attributes above. To expose **several** backends under one mount (e.g. two S3 buckets, or S3 + native AIStore), set `volumeAttributes.backendsJson` to a JSON array — each entry becomes one MSFS backend, mounted under its own `dirName` subdirectory. The single-backend attributes (`bucketName`, `backendType`, `region`, …) are ignored when `backendsJson` is present.
+
+```yaml
+    volumeAttributes:
+      authType: irsa            # credentials are shared by all backends
+      backendsJson: |
+        [
+          {"dirName": "images",  "backendType": "S3", "bucketName": "my-images", "prefix": "train/", "region": "us-west-2"},
+          {"dirName": "labels",  "backendType": "S3", "bucketName": "my-labels"},
+          {"dirName": "cache",   "backendType": "AIStore", "bucketName": "ds", "aisEndpoint": "http://ais:51080", "aisProvider": "ais"}
+        ]
+```
+
+This mounts `images/`, `labels/`, and `cache/` under the volume. `dirName` values must be unique; an unsupported `backendType`, a missing `bucketName`, or a duplicate `manifestPath` across entries is rejected. Credentials are volume-level: every S3 backend shares the one `authType` / `nodePublishSecretRef` (per-backend distinct AWS identities are out of scope). Per-backend tuning fields (`manifestPath`, `manifestGenWorkers`, `uid`, perms, …) are supported per entry (numeric values passed as strings).
+
+**`manifestPath` under CSI:** the `msfs` process runs inside the CSI node DaemonSet pod, so `manifestPath` resolves in that pod's filesystem (not the application pod) and is **not** persisted by the driver — the generated config dir is removed on `NodeUnpublishVolume`. As a result the manifest is **regenerated on every (re)mount**. Persisting it across mounts requires a DaemonSet-mounted volume and is tracked as a follow-up (NGCDP-9116). Note that manifest generation does a `RemoveAll` on `manifestPath`, which is why two backends in one volume may not share one.
 
 ## Secret keys reference
 

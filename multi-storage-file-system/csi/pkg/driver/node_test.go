@@ -1,10 +1,15 @@
 package driver
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/container-storage-interface/spec/lib/go/csi"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // --- credential-mode resolution ----------------------------------------------
@@ -245,12 +250,287 @@ func TestWriteConfig_RejectsUnsupportedBackendType(t *testing.T) {
 		false,
 		credentialModeIRSA,
 	)
+	defer os.RemoveAll(dir)
 	if err == nil {
-		defer os.RemoveAll(dir)
 		t.Fatalf("writeConfig unexpectedly accepted unsupported backendType")
 	}
 	if !strings.Contains(err.Error(), "unsupported backendType") {
 		t.Fatalf("error should mention unsupported backendType, got: %v", err)
+	}
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("flat unsupported backendType should be InvalidArgument, got %s: %v", status.Code(err), err)
+	}
+}
+
+// A read-only publish is a hard floor: a per-backend "readonly": false must not
+// be able to make a read-only mount writable.
+func TestWriteConfig_BackendsJsonReadonlyPublishForcesReadonly(t *testing.T) {
+	ns := newNodeServer("node-test", "/usr/local/bin/msfs")
+	backendsJSON := `[{"dirName":"a","backendType":"S3","bucketName":"bucket-a","readonly":false}]`
+	dir, configPath, err := ns.writeConfig("/tmp/csi-target-test",
+		map[string]string{"backendsJson": backendsJSON}, map[string]string{}, true, credentialModeIRSA)
+	if err != nil {
+		t.Fatalf("writeConfig returned error: %v", err)
+	}
+	defer os.RemoveAll(dir)
+	body := readFileOrFatal(t, configPath)
+	if !strings.Contains(body, "readonly: true") || strings.Contains(body, "readonly: false") {
+		t.Fatalf("read-only publish must force readonly: true (never false); got:\n%s", body)
+	}
+}
+
+// Aliased manifest paths ("/x/y" vs "/x/y/") must collide after normalization.
+func TestWriteConfig_BackendsJsonRejectsDuplicateManifestPathNormalized(t *testing.T) {
+	ns := newNodeServer("node-test", "/usr/local/bin/msfs")
+	backendsJSON := `[
+	  {"dirName":"a","backendType":"S3","bucketName":"bucket-a","manifestPath":"/var/lib/msfs/shared"},
+	  {"dirName":"b","backendType":"S3","bucketName":"bucket-b","manifestPath":"/var/lib/msfs/shared/"}
+	]`
+	dir, _, err := ns.writeConfig("/tmp/csi-target-test",
+		map[string]string{"backendsJson": backendsJSON}, map[string]string{}, false, credentialModeIRSA)
+	defer os.RemoveAll(dir)
+	if err == nil {
+		t.Fatalf("expected duplicate (normalized) manifest_path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "manifest_path") {
+		t.Fatalf("error should mention manifest_path, got: %v", err)
+	}
+}
+
+// --- multi-bucket / multi-backend (NGCDP-9024) -------------------------------
+
+func TestWriteConfig_BackendsJsonMultipleS3(t *testing.T) {
+	ns := newNodeServer("node-test", "/usr/local/bin/msfs")
+	backendsJSON := `[
+	  {"dirName":"a","backendType":"S3","bucketName":"bucket-a","prefix":"pa/","region":"us-east-1","endpoint":"https://s3.us-east-1.amazonaws.com"},
+	  {"dirName":"b","backendType":"S3","bucketName":"bucket-b","prefix":"pb/","region":"us-west-2","endpoint":"https://s3.us-west-2.amazonaws.com"}
+	]`
+	dir, configPath := writeConfigOrFatal(t, ns,
+		map[string]string{"backendsJson": backendsJSON},
+		map[string]string{},
+		credentialModeIRSA,
+	)
+	defer os.RemoveAll(dir)
+
+	body := readFileOrFatal(t, configPath)
+	for _, want := range []string{
+		"dir_name: a", "bucket_container_name: bucket-a", `prefix: "pa/"`, `region: "us-east-1"`,
+		"dir_name: b", "bucket_container_name: bucket-b", `prefix: "pb/"`, `region: "us-west-2"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("multi-S3 config missing %q; got:\n%s", want, body)
+		}
+	}
+	if n := strings.Count(body, "backend_type: S3"); n != 2 {
+		t.Fatalf("expected 2 S3 backends, got %d; config:\n%s", n, body)
+	}
+}
+
+func TestWriteConfig_BackendsJsonMixedS3AndAIStore(t *testing.T) {
+	ns := newNodeServer("node-test", "/usr/local/bin/msfs")
+	backendsJSON := `[
+	  {"dirName":"s3","backendType":"S3","bucketName":"bucket-a"},
+	  {"dirName":"ais","backendType":"AIStore","bucketName":"ds","aisEndpoint":"http://ais:51080","aisProvider":"ais"}
+	]`
+	dir, configPath := writeConfigOrFatal(t, ns,
+		map[string]string{"backendsJson": backendsJSON},
+		map[string]string{"access_key_id": "AKIA...", "secret_access_key": "secret"},
+		credentialModeStatic,
+	)
+	defer os.RemoveAll(dir)
+
+	body := readFileOrFatal(t, configPath)
+	for _, want := range []string{
+		"dir_name: s3", "backend_type: S3", `access_key_id: "${AWS_ACCESS_KEY_ID}"`,
+		"dir_name: ais", "backend_type: AIStore", `endpoint: "http://ais:51080"`, `provider: "ais"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("mixed S3+AIStore config missing %q; got:\n%s", want, body)
+		}
+	}
+}
+
+func TestWriteConfig_BackendsJsonRejectsDuplicateDirName(t *testing.T) {
+	ns := newNodeServer("node-test", "/usr/local/bin/msfs")
+	backendsJSON := `[{"dirName":"dup","bucketName":"a"},{"dirName":"dup","bucketName":"b"}]`
+	dir, _, err := ns.writeConfig("/tmp/csi-target-test",
+		map[string]string{"backendsJson": backendsJSON}, map[string]string{}, false, credentialModeIRSA)
+	defer os.RemoveAll(dir)
+	if err == nil {
+		t.Fatalf("expected duplicate dir_name to be rejected")
+	}
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("error should mention duplicate dir_name, got: %v", err)
+	}
+}
+
+func TestWriteConfig_BackendsJsonRejectsUnsupportedBackendType(t *testing.T) {
+	ns := newNodeServer("node-test", "/usr/local/bin/msfs")
+	backendsJSON := `[{"dirName":"x","backendType":"GCS","bucketName":"a"}]`
+	dir, _, err := ns.writeConfig("/tmp/csi-target-test",
+		map[string]string{"backendsJson": backendsJSON}, map[string]string{}, false, credentialModeIRSA)
+	defer os.RemoveAll(dir)
+	if err == nil {
+		t.Fatalf("expected unsupported backendType in backendsJson to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unsupported backendType") {
+		t.Fatalf("error should mention unsupported backendType, got: %v", err)
+	}
+}
+
+func TestWriteConfig_BackendsJsonRejectsMissingBucket(t *testing.T) {
+	ns := newNodeServer("node-test", "/usr/local/bin/msfs")
+	backendsJSON := `[{"dirName":"x","backendType":"S3"}]`
+	dir, _, err := ns.writeConfig("/tmp/csi-target-test",
+		map[string]string{"backendsJson": backendsJSON}, map[string]string{}, false, credentialModeIRSA)
+	defer os.RemoveAll(dir)
+	if err == nil {
+		t.Fatalf("expected missing bucketName to be rejected")
+	}
+	if !strings.Contains(err.Error(), "bucketName") {
+		t.Fatalf("error should mention bucketName, got: %v", err)
+	}
+}
+
+func TestWriteConfig_BackendsJsonRejectsMalformed(t *testing.T) {
+	ns := newNodeServer("node-test", "/usr/local/bin/msfs")
+	dir, _, err := ns.writeConfig("/tmp/csi-target-test",
+		map[string]string{"backendsJson": "not-json"}, map[string]string{}, false, credentialModeIRSA)
+	defer os.RemoveAll(dir)
+	if err == nil {
+		t.Fatalf("expected malformed backendsJson to be rejected")
+	}
+}
+
+// --- per-backend tuning fields in backendsJson (NGCDP-9024 follow-up) ---------
+
+func TestWriteConfig_BackendsJsonTuningFields(t *testing.T) {
+	ns := newNodeServer("node-test", "/usr/local/bin/msfs")
+	backendsJSON := `[
+	  {"dirName":"a","backendType":"S3","bucketName":"bucket-a","manifestPath":"/var/lib/msfs/m-a","manifestGenWorkers":"200","uid":"1000","gid":"1001","dirPerm":"775","traceLevel":"2"},
+	  {"dirName":"b","backendType":"S3","bucketName":"bucket-b","manifestPath":"/var/lib/msfs/m-b","flushOnClose":"false","filePerm":"640"}
+	]`
+	dir, configPath := writeConfigOrFatal(t, ns,
+		map[string]string{"backendsJson": backendsJSON},
+		map[string]string{},
+		credentialModeIRSA,
+	)
+	defer os.RemoveAll(dir)
+
+	body := readFileOrFatal(t, configPath)
+	for _, want := range []string{
+		`manifest_path: "/var/lib/msfs/m-a"`,
+		"manifest_gen_workers: 200",
+		"uid: 1000",
+		"gid: 1001",
+		`dir_perm: "775"`,
+		"trace_level: 2",
+		`manifest_path: "/var/lib/msfs/m-b"`,
+		"flush_on_close: false",
+		`file_perm: "640"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("tuning-fields config missing %q; got:\n%s", want, body)
+		}
+	}
+}
+
+func TestWriteConfig_BackendsJsonRejectsDuplicateManifestPath(t *testing.T) {
+	ns := newNodeServer("node-test", "/usr/local/bin/msfs")
+	backendsJSON := `[
+	  {"dirName":"a","backendType":"S3","bucketName":"bucket-a","manifestPath":"/var/lib/msfs/shared"},
+	  {"dirName":"b","backendType":"S3","bucketName":"bucket-b","manifestPath":"/var/lib/msfs/shared"}
+	]`
+	dir, _, err := ns.writeConfig("/tmp/csi-target-test",
+		map[string]string{"backendsJson": backendsJSON}, map[string]string{}, false, credentialModeIRSA)
+	defer os.RemoveAll(dir)
+	if err == nil {
+		t.Fatalf("expected duplicate manifest_path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "manifest_path") {
+		t.Fatalf("error should mention manifest_path, got: %v", err)
+	}
+}
+
+// NodePublishVolume must surface a bad backendsJson (here: duplicate
+// manifest_path) as gRPC InvalidArgument, not a generic Internal — the
+// duplicate check runs in writeConfig before any msfs exec, and its
+// InvalidArgument code must not be masked by the caller's error wrapping.
+func TestNodePublishVolume_DuplicateManifestPathIsInvalidArgument(t *testing.T) {
+	ns := newNodeServer("node-test", "/usr/local/bin/msfs")
+	backendsJSON := `[{"dirName":"a","backendType":"S3","bucketName":"bucket-a","manifestPath":"/var/lib/msfs/shared"},{"dirName":"b","backendType":"S3","bucketName":"bucket-b","manifestPath":"/var/lib/msfs/shared"}]`
+	_, err := ns.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId:   "vol-dup",
+		TargetPath: t.TempDir(),
+		VolumeContext: map[string]string{
+			"backendsJson": backendsJSON,
+			// irsa needs no secret, so resolveCredentialMode succeeds and the
+			// request reaches writeConfig (which rejects the duplicate).
+			"authType": "irsa",
+		},
+		VolumeCapability: &csi.VolumeCapability{
+			AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}},
+			AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected duplicate manifest_path to be rejected")
+	}
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %s: %v", status.Code(err), err)
+	}
+	if !strings.Contains(err.Error(), "manifest_path") {
+		t.Fatalf("error should mention manifest_path, got: %v", err)
+	}
+}
+
+func TestWriteConfig_BackendsJsonNoTuningFieldsBackCompat(t *testing.T) {
+	ns := newNodeServer("node-test", "/usr/local/bin/msfs")
+	backendsJSON := `[{"dirName":"a","backendType":"S3","bucketName":"bucket-a"}]`
+	dir, configPath := writeConfigOrFatal(t, ns,
+		map[string]string{"backendsJson": backendsJSON},
+		map[string]string{},
+		credentialModeIRSA,
+	)
+	defer os.RemoveAll(dir)
+
+	body := readFileOrFatal(t, configPath)
+	for _, unwanted := range []string{"manifest_path:", "uid:", "gid:", "trace_level:", "flush_on_close:"} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("entry without tuning fields should not emit %q; got:\n%s", unwanted, body)
+		}
+	}
+}
+
+// TestWriteConfig_SingleBackendTuningFieldsRendered guards the shared-renderer
+// refactor: the flat single-backend path must still emit the per-backend tuning
+// fields with the same quoting.
+func TestWriteConfig_SingleBackendTuningFieldsRendered(t *testing.T) {
+	ns := newNodeServer("node-test", "/usr/local/bin/msfs")
+	dir, configPath := writeConfigOrFatal(t, ns,
+		map[string]string{
+			"bucketName":         "bucket-a",
+			"backendType":        "S3",
+			"manifestPath":       "/var/lib/msfs/single",
+			"manifestGenWorkers": "200",
+			"uid":                "1000",
+			"dirPerm":            "775",
+		},
+		map[string]string{},
+		credentialModeIRSA,
+	)
+	defer os.RemoveAll(dir)
+
+	body := readFileOrFatal(t, configPath)
+	for _, want := range []string{
+		`manifest_path: "/var/lib/msfs/single"`,
+		"manifest_gen_workers: 200",
+		"uid: 1000",
+		`dir_perm: "775"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("single-backend tuning config missing %q; got:\n%s", want, body)
+		}
 	}
 }
 

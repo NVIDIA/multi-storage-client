@@ -252,6 +252,22 @@ volumeAttributes:
 
 The driver writes these into the generated `msfs.yaml` as `backend_type: AIStore`. AWS-specific `authType` / IRSA settings are only needed for S3-backed mounts.
 
+## Multiple backends in one volume
+
+To expose several backends under one mount (multi-bucket, or mixed S3 + AIStore), set `volumeAttributes.backendsJson` to a JSON array instead of the single-backend attributes — each entry is mounted under its own `dirName` subdirectory:
+
+```yaml
+volumeAttributes:
+  authType: irsa            # shared by all backends
+  backendsJson: |
+    [
+      {"dirName": "images", "backendType": "S3", "bucketName": "my-images", "prefix": "train/", "region": "us-west-2"},
+      {"dirName": "cache",  "backendType": "AIStore", "bucketName": "ds", "aisEndpoint": "http://ais:51080", "aisProvider": "ais"}
+    ]
+```
+
+`dirName` values must be unique; a missing `bucketName`, unsupported `backendType`, or duplicate `manifestPath` is rejected. Credentials are volume-level (one `authType` / Secret shared by all S3 backends). Per-backend tuning fields (`manifestPath`, `manifestGenWorkers`, `uid`, perms, …) may be set per entry (numeric values as strings); under CSI a `manifestPath` manifest is regenerated on every (re)mount (not persisted by the driver — see NGCDP-9116). See the [CSI README](../../README.md#multiple-backends-in-one-volume) for the full field list.
+
 ## Verification after install
 
 ```bash

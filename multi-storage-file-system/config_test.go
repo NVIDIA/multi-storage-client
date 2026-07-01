@@ -17,6 +17,7 @@ package main
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -1180,5 +1181,102 @@ backends: [
 	}
 	if s3cfg.useCredentialsEnv {
 		t.Errorf("expected useCredentialsEnv cleared when anonymous, got true")
+	}
+}
+
+// TestDuplicateManifestPathRejected verifies that two backends sharing the same
+// manifest_path are rejected: generateManifest does a RemoveAll on the output
+// path, so sharing it would clobber one backend's generated manifest.
+func TestDuplicateManifestPathRejected(t *testing.T) {
+	initGlobals(testOsArgs(testGlobals.testConfigFilePathMap[".yaml"]))
+
+	err := os.WriteFile(globals.configFilePath, []byte(`
+msfs_version: 1
+backends: [
+  {
+    dir_name: a,
+    bucket_container_name: test,
+    prefix: "pa/",
+    readonly: true,
+    manifest_path: "/tmp/msfs-test-manifest-shared",
+    backend_type: S3,
+    S3: {
+      region: us-east-1,
+      endpoint: "http://minio:9000",
+      access_key_id: minioadmin,
+      secret_access_key: minioadmin,
+    },
+  },
+  {
+    dir_name: b,
+    bucket_container_name: test,
+    prefix: "pb/",
+    readonly: true,
+    manifest_path: "/tmp/msfs-test-manifest-shared",
+    backend_type: S3,
+    S3: {
+      region: us-east-1,
+      endpoint: "http://minio:9000",
+      access_key_id: minioadmin,
+      secret_access_key: minioadmin,
+    },
+  },
+]
+`), 0o600)
+	if err != nil {
+		t.Fatalf("os.WriteFile() failed: %v", err)
+	}
+
+	if err = checkConfigFile(); err == nil {
+		t.Fatalf("checkConfigFile() unexpectedly allowed duplicate manifest_path")
+	} else if !strings.Contains(err.Error(), "manifest_path") {
+		t.Fatalf("error should mention manifest_path, got: %v", err)
+	}
+}
+
+// TestDistinctManifestPathsAccepted verifies that backends with distinct
+// manifest_path values are accepted.
+func TestDistinctManifestPathsAccepted(t *testing.T) {
+	initGlobals(testOsArgs(testGlobals.testConfigFilePathMap[".yaml"]))
+
+	err := os.WriteFile(globals.configFilePath, []byte(`
+msfs_version: 1
+backends: [
+  {
+    dir_name: a,
+    bucket_container_name: test,
+    prefix: "pa/",
+    readonly: true,
+    manifest_path: "/tmp/msfs-test-manifest-a",
+    backend_type: S3,
+    S3: {
+      region: us-east-1,
+      endpoint: "http://minio:9000",
+      access_key_id: minioadmin,
+      secret_access_key: minioadmin,
+    },
+  },
+  {
+    dir_name: b,
+    bucket_container_name: test,
+    prefix: "pb/",
+    readonly: true,
+    manifest_path: "/tmp/msfs-test-manifest-b",
+    backend_type: S3,
+    S3: {
+      region: us-east-1,
+      endpoint: "http://minio:9000",
+      access_key_id: minioadmin,
+      secret_access_key: minioadmin,
+    },
+  },
+]
+`), 0o600)
+	if err != nil {
+		t.Fatalf("os.WriteFile() failed: %v", err)
+	}
+
+	if err = checkConfigFile(); err != nil {
+		t.Fatalf("checkConfigFile() unexpectedly failed for distinct manifest_path: %v", err)
 	}
 }

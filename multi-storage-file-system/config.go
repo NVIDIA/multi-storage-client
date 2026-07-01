@@ -1910,6 +1910,22 @@ func checkConfigFile() (err error) {
 		aisCfg.manifestGenBackend = srcBackend
 	}
 
+	// Reject duplicate manifest_path across backends: manifest generation does a
+	// RemoveAll on the output path, so two backends sharing a manifest_path would
+	// clobber each other's generated manifest. Runs on initial load and SIGHUP
+	// reload, covering native configs as well as CSI-generated ones.
+	manifestPathOwner := make(map[string]string, len(config.backends))
+	for _, manifestBackend := range config.backends {
+		if manifestBackend.manifestPath == "" {
+			continue
+		}
+		if prev, found := manifestPathOwner[manifestBackend.manifestPath]; found {
+			err = fmt.Errorf("duplicate manifest_path %q at backends[\"%s\"] and [\"%s\"]", manifestBackend.manifestPath, prev, manifestBackend.dirName)
+			return
+		}
+		manifestPathOwner[manifestBackend.manifestPath] = manifestBackend.dirName
+	}
+
 	if globals.config == nil {
 		// Move all (local) config.backends to globals.backendsToMount
 
