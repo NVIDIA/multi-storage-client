@@ -16,10 +16,6 @@ The top-level configuration schema consists of six main sections:
 
   * Optional list of configuration file paths to include and merge. This enables modular configuration management by splitting settings across multiple files.
 
-* ``experimental_features``
-
-  * Optional dictionary to enable experimental features. When omitted, all experimental features are disabled.
-
 * ``profiles``
 
   * Dictionary containing profile configurations. Each profile defines storage, metadata, and credentials providers.
@@ -36,14 +32,15 @@ The top-level configuration schema consists of six main sections:
 
   * Configuration for mapping existing non-MSC URLs to existing MSC profiles.
 
+* ``posix``
+
+  * Configuration for POSIX filesystem mounts.
+
 .. code-block:: yaml
    :caption: Top-level schema.
 
    # Optional. List of config files to include
    include: <list_of_config_paths>
-
-   # Optional. Experimental features flags
-   experimental_features: <experimental_features_config>
 
    # Optional. Dictionary of profile configurations
    profiles: <profile_config>
@@ -56,6 +53,9 @@ The top-level configuration schema consists of six main sections:
 
    # Optional. Path mapping configuration
    path_mapping: <path_mapping_config>
+
+   # Optional. POSIX mount configuration
+   posix: <posix_config>
 
 *******************
 Multi-Configuration
@@ -129,51 +129,37 @@ Merge Rules
 
 * **Profiles**: Combined from all files. Identical profile definitions are allowed (idempotent). Different definitions for the same profile name raise an error.
 * **OpenTelemetry**: Metrics attributes are concatenated. Reader and exporter must be identical across all files or defined in only one file.
-* **Path Mapping / Experimental Features**: Entries are merged. Identical entries are allowed. Conflicting entries raise an error.
+* **Path Mapping**: Entries are merged. Identical entries are allowed. Conflicting entries raise an error.
 * **Cache / POSIX**: Must be identical across all files or defined in only one file.
 
-*********************
-Experimental Features
-*********************
+*****
+POSIX
+*****
 
-The ``experimental_features`` section allows you to enable experimental features that are under active development.
-These features may have breaking changes in future releases.
+The top-level ``posix`` section configures POSIX filesystem mounts when MSFS reads an MSC-compatible configuration file.
 
-.. warning::
-   Experimental features are not guaranteed to be stable and may change or be removed in future versions.
-   Use with caution in production environments.
+.. list-table::
+   :header-rows: 1
 
-Currently available experimental features:
+   * - Option
+     - Default
+     - Description
+   * - ``mountname``
+     - ``msfs``
+     - FUSE mount name that appears in commands such as ``mount`` and ``df``.
+   * - ``mountpoint``
+     - ``${MSFS_MOUNTPOINT:-/mnt}``
+     - Filesystem path where the FUSE mount is created.
+   * - ``allow_other``
+     - ``true``
+     - Allows users other than the one launching the tool to see the mountpoint.
+   * - ``auto_sighup_interval``
+     - ``0``
+     - Time in seconds between config re-reads. ``0`` requires an explicit ``SIGHUP``.
 
-* ``cache_mru_eviction``
+.. note::
 
-  * Enables the MRU (Most Recently Used) eviction policy for cache (boolean, default: not enabled)
-
-* ``cache_purge_factor``
-
-  * Enables the purge_factor parameter for controlling cache eviction aggressiveness (boolean, default: not enabled)
-
-.. code-block:: yaml
-   :caption: Example: Enable specific experimental features
-
-   experimental_features:
-     cache_mru_eviction: true
-     cache_purge_factor: true
-
-   cache:
-     size: "10G"
-     eviction_policy:
-       policy: mru           # Requires cache_mru_eviction: true
-       purge_factor: 50      # Requires cache_purge_factor: true
-
-If you attempt to use an experimental feature without enabling it, you'll receive a clear error message:
-
-.. code-block:: text
-
-   ValueError: MRU eviction policy is experimental and not enabled.
-   Enable it by adding to config:
-     experimental_features:
-       cache_mru_eviction: true
+   These defaults reflect MSFS runtime behavior after translating the MSC-compatible ``posix`` section into MSFS mount settings.
 
 *******
 Profile
@@ -588,14 +574,11 @@ Options: See parameters in :py:class:`multistorageclient.providers.huggingface.H
 
    For detailed configuration instructions, see the `HuggingFace documentation <https://huggingface.co/docs/huggingface_hub/en/guides/download#faster-downloads>`_.
 
-``rust_client`` (experimental)
-------------------------------
-
-.. warning::
-   The Rust client is an experimental feature starting from v0.24 and is subject to change in future releases.
+``rust_client``
+---------------
 
 Due to Python's Global Interpreter Lock (GIL), achieving optimal multi-threading performance within a single Python process is challenging.
-To address this limitation, MSC introduces an experimental Rust client, which aims to improve performance in multi-threaded scenarios.
+To address this limitation, MSC provides a Rust client, which aims to improve performance in multi-threaded scenarios.
 
 To enable the Rust client, add the ``rust_client`` option to your storage provider configuration.
 
@@ -982,12 +965,12 @@ Options:
 
     * ``"fifo"``: First In, First Out (stable)
     * ``"lru"``: Least Recently Used (stable)
-    * ``"mru"``: Most Recently Used (**experimental** - requires ``cache_mru_eviction: true``)
+    * ``"mru"``: Most Recently Used
     * ``"random"``: Random eviction (stable)
 
   * ``refresh_interval``: Interval in seconds to trigger cache eviction (optional, minimum: ``"1"``, default: ``"300"``)
 
-  * ``purge_factor``: (**experimental** - requires ``cache_purge_factor: true``) Percentage of cache to delete during eviction (0-100, optional, default: ``"0"``)
+  * ``purge_factor``: Percentage of cache to delete during eviction (0-100, optional, default: ``"0"``)
 
     * ``0`` = Delete only what's needed to stay under limit (default behavior)
     * ``20`` = Delete 20% of max cache size (keep 80%)
@@ -1022,10 +1005,7 @@ Options:
        refresh_interval: 3600
 
 .. code-block:: yaml
-   :caption: Example configuration with purge_factor to reduce eviction frequency (experimental).
-
-   experimental_features:
-     cache_purge_factor: true  # Enable experimental feature
+   :caption: Example configuration with purge_factor to reduce eviction frequency.
 
    cache:
      size: 500G
@@ -1036,11 +1016,7 @@ Options:
        purge_factor: 20  # Delete 20% during eviction (keep 400GB free space)
 
 .. code-block:: yaml
-   :caption: Example configuration with MRU eviction policy (experimental).
-
-   experimental_features:
-     cache_mru_eviction: true    # Enable experimental feature
-     cache_purge_factor: true    # Enable experimental feature
+   :caption: Example configuration with MRU eviction policy.
 
    cache:
      size: 500G

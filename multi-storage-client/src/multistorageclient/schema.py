@@ -217,10 +217,7 @@ CONFIG_SCHEMA = {
         },
         "experimental_features": {
             "type": "object",
-            "properties": {
-                "cache_mru_eviction": {"type": "boolean"},
-                "cache_purge_factor": {"type": "boolean"},
-            },
+            "properties": {},
             "additionalProperties": False,
         },
         "profiles": PROFILE_SCHEMA,
