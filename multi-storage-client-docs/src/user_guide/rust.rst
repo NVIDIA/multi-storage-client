@@ -2,10 +2,7 @@
 Rust Client
 ###########
 
-The MSC Rust Client is an experimental feature that provides enhanced performance for storage operations by leveraging Rust.
-
-.. warning::
-   The Rust Client is an experimental feature starting from v0.24 and is subject to change in future releases.
+The MSC Rust Client provides enhanced performance for storage operations by leveraging Rust.
 
 ********
 Overview

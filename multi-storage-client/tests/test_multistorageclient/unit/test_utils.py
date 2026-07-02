@@ -235,20 +235,13 @@ def test_merge_dictionaries_no_overwrite_allow_idempotent():
         "path_mapping": {
             "s3://bucket/data/": "msc://profile-a/",
             "gs://bucket/data/": "msc://profile-b/",
-        },
-        "experimental_features": {
-            "cache_mru_eviction": True,
-        },
+        }
     }
     dict_b = {
         "path_mapping": {
             "s3://bucket/data/": "msc://profile-a/",  # Identical - idempotent
             "s3://bucket2/data/": "msc://profile-c/",  # New key
-        },
-        "experimental_features": {
-            "cache_mru_eviction": True,  # Identical - idempotent
-            "cache_purge_factor": False,  # New key
-        },
+        }
     }
 
     merged, conflicts = merge_dictionaries_no_overwrite(dict_a, dict_b, allow_idempotent=True)
@@ -258,9 +251,6 @@ def test_merge_dictionaries_no_overwrite_allow_idempotent():
     assert len(merged["path_mapping"]) == 3
     assert merged["path_mapping"]["s3://bucket/data/"] == "msc://profile-a/"
     assert merged["path_mapping"]["s3://bucket2/data/"] == "msc://profile-c/"
-    assert len(merged["experimental_features"]) == 2
-    assert merged["experimental_features"]["cache_mru_eviction"] is True
-    assert merged["experimental_features"]["cache_purge_factor"] is False
 
     # Test case 2: Conflict - same key, different value, conflict even with allow_idempotent=True
     dict_a = {

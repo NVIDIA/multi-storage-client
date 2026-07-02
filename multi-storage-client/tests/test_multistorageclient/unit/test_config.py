@@ -2059,41 +2059,11 @@ def test_telemetry_init_automatic() -> None:
         assert config.telemetry_provider is not None
 
 
-# todo: remove test once experimental features are stable
-def test_experimental_features_mru_disabled():
-    """Test that MRU eviction policy requires experimental_features flag."""
+def test_mru_eviction_policy_does_not_require_experimental_feature():
+    """Test that MRU eviction policy is a stable cache feature."""
     with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
         profile = "data"
         config_dict = {
-            "profiles": {
-                profile: {
-                    **temp_data_store.profile_config_dict(),
-                    "caching_enabled": True,
-                }
-            },
-            "cache": {
-                "size": "10M",
-                "cache_line_size": "1M",  # Set explicitly to avoid default 64M exceeding cache size
-                "eviction_policy": {
-                    "policy": "mru",  # Experimental feature
-                },
-            },
-            # No experimental_features key
-        }
-
-        with pytest.raises(ValueError, match="MRU eviction policy is experimental"):
-            StorageClientConfig.from_dict(config_dict=config_dict, profile=profile)
-
-
-# todo: remove test once experimental features are stable
-def test_experimental_features_mru_enabled():
-    """Test that MRU eviction policy works when experimental_features flag is set."""
-    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
-        profile = "data"
-        config_dict = {
-            "experimental_features": {
-                "cache_mru_eviction": True,
-            },
             "profiles": {
                 profile: {
                     **temp_data_store.profile_config_dict(),
@@ -2114,42 +2084,11 @@ def test_experimental_features_mru_enabled():
         assert config.cache_config.eviction_policy.policy == "mru"
 
 
-# todo: remove test once experimental features are stable
-def test_experimental_features_purge_factor_disabled():
-    """Test that purge_factor requires experimental_features flag."""
+def test_purge_factor_does_not_require_experimental_feature():
+    """Test that purge_factor is a stable cache feature."""
     with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
         profile = "data"
         config_dict = {
-            "profiles": {
-                profile: {
-                    **temp_data_store.profile_config_dict(),
-                    "caching_enabled": True,
-                }
-            },
-            "cache": {
-                "size": "10M",
-                "cache_line_size": "1M",  # Set explicitly to avoid default 64M exceeding cache size
-                "eviction_policy": {
-                    "policy": "lru",
-                    "purge_factor": 50,  # Experimental feature
-                },
-            },
-            # No experimental_features key
-        }
-
-        with pytest.raises(ValueError, match="purge_factor is experimental"):
-            StorageClientConfig.from_dict(config_dict=config_dict, profile=profile)
-
-
-# todo: remove test once experimental features are stable
-def test_experimental_features_purge_factor_enabled():
-    """Test that purge_factor works when experimental_features flag is set."""
-    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
-        profile = "data"
-        config_dict = {
-            "experimental_features": {
-                "cache_purge_factor": True,
-            },
             "profiles": {
                 profile: {
                     **temp_data_store.profile_config_dict(),
@@ -2171,9 +2110,35 @@ def test_experimental_features_purge_factor_enabled():
         assert config.cache_config.eviction_policy.purge_factor == 50
 
 
-# todo: remove test once experimental features are stable
-def test_experimental_features_both_enabled():
-    """Test that both MRU and purge_factor work together."""
+def test_mru_and_purge_factor_do_not_require_experimental_features():
+    """Test that MRU and purge_factor can be used together without feature flags."""
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        profile = "data"
+        config_dict = {
+            "profiles": {
+                profile: {
+                    **temp_data_store.profile_config_dict(),
+                    "caching_enabled": True,
+                }
+            },
+            "cache": {
+                "size": "10M",
+                "cache_line_size": "1M",  # Set explicitly to avoid default 64M exceeding cache size
+                "eviction_policy": {
+                    "policy": "mru",
+                    "purge_factor": 50,
+                },
+            },
+        }
+
+        config = StorageClientConfig.from_dict(config_dict=config_dict, profile=profile)
+        assert config.cache_config is not None
+        assert config.cache_config.eviction_policy.policy == "mru"
+        assert config.cache_config.eviction_policy.purge_factor == 50
+
+
+def test_experimental_features_config_is_rejected():
+    """Test that removed experimental feature flags are no longer accepted."""
     with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
         profile = "data"
         config_dict = {
@@ -2197,10 +2162,52 @@ def test_experimental_features_both_enabled():
             },
         }
 
+        with pytest.raises(RuntimeError, match="Failed to validate the config file"):
+            StorageClientConfig.from_dict(config_dict=config_dict, profile=profile)
+
+
+def test_empty_experimental_features_config_is_allowed():
+    """Test that experimental_features remains available for future feature flags."""
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        profile = "data"
+        config_dict = {
+            "experimental_features": {},
+            "profiles": {
+                profile: {
+                    **temp_data_store.profile_config_dict(),
+                    "caching_enabled": True,
+                }
+            },
+            "cache": {
+                "size": "10M",
+                "cache_line_size": "1M",
+                "eviction_policy": {
+                    "policy": "mru",
+                    "purge_factor": 50,
+                },
+            },
+        }
+
         config = StorageClientConfig.from_dict(config_dict=config_dict, profile=profile)
         assert config.cache_config is not None
         assert config.cache_config.eviction_policy.policy == "mru"
         assert config.cache_config.eviction_policy.purge_factor == 50
+
+
+def test_empty_experimental_features_configs_merge():
+    """Test that empty experimental_features sections merge cleanly."""
+    base_config = {
+        "experimental_features": {},
+        "profiles": {},
+    }
+    new_config = {
+        "experimental_features": {},
+        "profiles": {},
+    }
+
+    merged = _merge_configs(base_config, new_config, "base.yaml", "new.yaml")
+
+    assert merged["experimental_features"] == {}
 
 
 def test_storage_client_config_validation_both_provider_types():

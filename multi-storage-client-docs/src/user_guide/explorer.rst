@@ -4,10 +4,6 @@ Web User Interface (MSC Explorer)
 
 The Multi-Storage Client (MSC) Explorer is a web-based user interface that provides a graphical way to browse and view files across multiple storage backends. It complements the CLI and Python SDK by offering a visual, read-only interface for users who prefer point-and-click interactions to explore their data.
 
-.. note::
-
-   The Web User Interface is currently an **experimental feature**. Functionality and interfaces may change in future releases.
-
 ********
 Overview
 ********
@@ -75,4 +71,3 @@ See :doc:`/references/configuration` for details on how to configure storage pro
    * :doc:`/user_guide/cli` - MSC Command Line Interface
    * :doc:`/user_guide/quickstart` - Getting started with MSC configuration
    * :doc:`/references/configuration` - Complete configuration reference
-
