@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
 import pickle
 import threading
 from datetime import datetime, timezone
@@ -235,6 +236,17 @@ def test_single_client_is_rust_client_enabled(single_backend_config):
     assert single._is_rust_client_enabled() is True
 
 
+def test_list_recursive_rejects_removed_follow_symlinks_parameter(single_backend_config):
+    client = StorageClient(single_backend_config)
+
+    with pytest.raises(TypeError):
+        client.list_recursive(path="/tmp/data", follow_symlinks=False)  # type: ignore[call-arg]
+
+
+def test_list_rejects_removed_prefix_parameter(single_backend_config):
+    assert "prefix" not in inspect.signature(StorageClient.list).parameters
+
+
 def test_list_recursive_delegates_to_single_client(single_backend_config):
     client = StorageClient(single_backend_config)
     expected = iter([])
@@ -245,7 +257,7 @@ def test_list_recursive_delegates_to_single_client(single_backend_config):
         max_workers=8,
         look_ahead=4,
         include_url_prefix=True,
-        follow_symlinks=False,
+        symlink_handling=SymlinkHandling.SKIP,
     )
 
     assert result is expected
@@ -256,9 +268,8 @@ def test_list_recursive_delegates_to_single_client(single_backend_config):
         max_workers=8,
         look_ahead=4,
         include_url_prefix=True,
-        follow_symlinks=False,
         patterns=None,
-        symlink_handling=SymlinkHandling.FOLLOW,
+        symlink_handling=SymlinkHandling.SKIP,
     )
 
 
@@ -277,7 +288,6 @@ def test_list_recursive_delegates_to_composite_client(multi_backend_config):
         max_workers=32,
         look_ahead=2,
         include_url_prefix=False,
-        follow_symlinks=None,
         patterns=None,
         symlink_handling=SymlinkHandling.FOLLOW,
     )

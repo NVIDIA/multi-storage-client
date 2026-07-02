@@ -30,7 +30,7 @@ from multistorageclient.file import ObjectFile
 from multistorageclient.providers.manifest_metadata import (
     DEFAULT_MANIFEST_BASE_DIR,
 )
-from multistorageclient.types import MSC_PROTOCOL, ObjectMetadata, PatternType, SourceVersionCheckMode
+from multistorageclient.types import MSC_PROTOCOL, ObjectMetadata, PatternType, SourceVersionCheckMode, SymlinkHandling
 from test_multistorageclient.unit.utils import config, tempdatastore
 
 MB = 1024 * 1024
@@ -189,7 +189,14 @@ def test_list(file_storage_config):
         assert len(results) == 0
 
 
-def test_list_follow_symlinks(file_storage_config):
+def test_list_rejects_removed_follow_symlinks_parameter(file_storage_config):
+    with tempfile.TemporaryDirectory() as tempdir:
+        url = f"{MSC_PROTOCOL}__filesystem__{tempdir}"
+        with pytest.raises(TypeError):
+            list(msc.list(url, follow_symlinks=True))  # type: ignore[call-arg]
+
+
+def test_list_symlink_handling(file_storage_config):
     with tempfile.TemporaryDirectory() as tempdir:
         real_path = os.path.join(tempdir, "real.txt")
         symlink_path = os.path.join(tempdir, "link.txt")
@@ -197,8 +204,8 @@ def test_list_follow_symlinks(file_storage_config):
             f.write("content")
         os.symlink(real_path, symlink_path)
         url = f"{MSC_PROTOCOL}__filesystem__{tempdir}"
-        with_follow = list(msc.list(url, follow_symlinks=True))
-        without_follow = list(msc.list(url, follow_symlinks=False))
+        with_follow = list(msc.list(url, symlink_handling=SymlinkHandling.FOLLOW))
+        without_follow = list(msc.list(url, symlink_handling=SymlinkHandling.SKIP))
         keys_with = {os.path.basename(k.key) for k in with_follow}
         keys_without = {os.path.basename(k.key) for k in without_follow}
         assert "real.txt" in keys_with
@@ -228,7 +235,14 @@ def test_list_recursive(file_storage_config):
         assert posix_keys == {"root.bin", "child.bin"}
 
 
-def test_list_recursive_follow_symlinks_and_patterns(file_storage_config):
+def test_list_recursive_rejects_removed_follow_symlinks_parameter(file_storage_config):
+    with tempfile.TemporaryDirectory() as tempdir:
+        url = f"{MSC_PROTOCOL}__filesystem__{tempdir}"
+        with pytest.raises(TypeError):
+            list(msc.list_recursive(url, follow_symlinks=True))  # type: ignore[call-arg]
+
+
+def test_list_recursive_symlink_handling_and_patterns(file_storage_config):
     with tempfile.TemporaryDirectory() as tempdir:
         real_path = os.path.join(tempdir, "real.bin")
         symlink_path = os.path.join(tempdir, "link.bin")
@@ -243,8 +257,8 @@ def test_list_recursive_follow_symlinks_and_patterns(file_storage_config):
         url = f"{MSC_PROTOCOL}__filesystem__{tempdir}"
         include_bins = [(PatternType.INCLUDE, "*.bin")]
 
-        with_follow = list(msc.list_recursive(url, follow_symlinks=True, patterns=include_bins))
-        without_follow = list(msc.list_recursive(url, follow_symlinks=False, patterns=include_bins))
+        with_follow = list(msc.list_recursive(url, symlink_handling=SymlinkHandling.FOLLOW, patterns=include_bins))
+        without_follow = list(msc.list_recursive(url, symlink_handling=SymlinkHandling.SKIP, patterns=include_bins))
 
         keys_with = {os.path.basename(k.key) for k in with_follow}
         keys_without = {os.path.basename(k.key) for k in without_follow}

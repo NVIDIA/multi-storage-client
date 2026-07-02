@@ -189,7 +189,7 @@ class MSCConfigSource(ConfigSource):
             list_path = path.rstrip("/") + "/" if path else ""
 
             # Get all items under this path
-            for item in client.list(prefix=list_path, include_directories=True):
+            for item in client.list(path=list_path, include_directories=True):
                 # Get the relative path from the base path
                 if item.key.startswith(list_path):
                     relative_path = item.key[len(list_path) :]
