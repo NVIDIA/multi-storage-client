@@ -550,8 +550,15 @@ class CacheManager:
             # Verify source revision against xattrs or an identity-bound sidecar.
             if not self._has_source_version(source_version):
                 return False
-            metadata = self._get_chunk_metadata(file_path, require_source_version=True)
-            return metadata is not None and metadata["source_version"] == source_version
+            try:
+                with open(file_path, "rb") as cached_file:
+                    return self._descriptor_matches_source_version(
+                        file_path,
+                        cached_file.fileno(),
+                        source_version,
+                    )
+            except OSError:
+                return False
 
         except Exception as e:
             logging.error(f"Error checking cache: {e}")

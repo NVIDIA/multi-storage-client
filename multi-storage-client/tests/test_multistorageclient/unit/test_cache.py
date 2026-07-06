@@ -1010,6 +1010,16 @@ def test_range_read_reuses_a_legacy_etag_only_full_cache_entry(tmpdir):
         cached_file.write(cached_data)
     xattr.setxattr(cache_path, "user.etag", source_version.encode("utf-8"))
 
+    assert cache_manager.contains(
+        key,
+        source_version=source_version,
+        check_source_version=SourceVersionCheckMode.ENABLE,
+    )
+    assert not cache_manager.contains(
+        key,
+        source_version="different-revision",
+        check_source_version=SourceVersionCheckMode.ENABLE,
+    )
     assert (
         cache_manager.read(
             key,
