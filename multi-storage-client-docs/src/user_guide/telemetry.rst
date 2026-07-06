@@ -88,7 +88,7 @@ If the default telemetry provider creation doesn't behave as desired, you can ma
    client.open("file.txt")
 
    # Set the telemetry provider to use when MSC shortcuts create storage clients.
-   multistorageclient.set_telemetry(telemetry_provider=telemetry_provider)
+   multistorageclient.set_telemetry_provider(telemetry_provider=telemetry_provider)
 
    # Use an MSC shortcut to create a storage client for a profile and open an object/file.
    multistorageclient.open("msc://data/file.txt")

@@ -78,8 +78,8 @@ This module provides ``load``, ``memmap``, and ``save`` methods for loading and 
 
    # Reuse the client for the data-s3-iad profile and save an array.
    msc.numpy.save(
-       numpy.array([1, 2, 3, 4, 5], dtype=numpy.int32),
-       "msc://data-s3-iad/numpy-arrays/ndarray-2.npz"
+       "msc://data-s3-iad/numpy-arrays/ndarray-2.npy",
+       numpy.array([1, 2, 3, 4, 5], dtype=numpy.int32)
    )
 
 *******
@@ -132,7 +132,7 @@ In addition to the ``load`` and ``save`` methods, the ``torch`` module provides 
 Xarray
 ******
 
-:py:mod:`multistorageclient.xz` aliases the :py:mod:`multistorageclient.contrib.xarray` module.
+:py:mod:`multistorageclient.xarray` aliases the :py:mod:`multistorageclient.contrib.xarray` module.
 
 This module provides ``open_zarr`` for reading Xarray datasets from Zarr files/objects.
 
@@ -142,7 +142,7 @@ This module provides ``open_zarr`` for reading Xarray datasets from Zarr files/o
    import multistorageclient as msc
 
    # Create a client for the data-s3-iad profile and load a Zarr array into an Xarray dataset.
-   xarray_dataset = msc.xz.open_zarr("msc://data-s3-iad/abc.zarr")
+   xarray_dataset = msc.xarray.open_zarr("msc://data-s3-iad/abc.zarr")
 
 Note: ``Xarray`` supports fsspec URLs natively, so you can use Xarray standard interface with ``msc://`` URLs.
 

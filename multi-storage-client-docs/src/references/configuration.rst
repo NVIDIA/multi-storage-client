@@ -664,7 +664,7 @@ than hardcoding them directly in configuration files. See `Environment Variables
 -----------------
 Static credentials provider for Amazon S3 and S3-compatible storage services.
 
-Options: See parameters in :py:class:`multistorageclient.providers.s3,StaticS3CredentialsProvider`.
+Options: See parameters in :py:class:`multistorageclient.providers.s3.StaticS3CredentialsProvider`.
 
 .. code-block:: yaml
    :caption: Example configuration.
@@ -951,9 +951,9 @@ Options:
 
   * Absolute filesystem path for storing cached files (optional, default: system temporary directory + ``"/msc_cache"``)
 
-* ``use_etag``
+* ``check_source_version``
 
-  * Use ETag for cache validation, it introduces a small overhead by checking the Etag agains the remote object on every read (optional, default: ``true``)
+  * Validate the remote object's source version before serving a cached copy (optional, default: ``true``). The legacy ``use_etag`` key is still accepted for backward compatibility, but ``check_source_version`` takes precedence when both are set.
 
 * ``prefetch_file``
 

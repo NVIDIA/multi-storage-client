@@ -24,7 +24,7 @@ You can also call ``generate_presigned_url`` directly on a :py:class:`~multistor
 
    from multistorageclient import StorageClient, StorageClientConfig
 
-   client = StorageClient(StorageClientConfig.from_file("my-s3-profile"))
+   client = StorageClient(StorageClientConfig.from_file(profile="my-s3-profile"))
    url = client.generate_presigned_url("datasets/model.bin")
 
 To generate a URL that allows the recipient to **upload** an object, pass ``method="PUT"``:

@@ -123,7 +123,8 @@ The schema is the same as file-based configurations.
                    }
                }
            }
-       }
+       },
+       profile="my-profile",
    )
 
    client = StorageClient(config=config)
@@ -157,11 +158,11 @@ MSC checks for rclone-based configurations with the following priority:
 
 .. note::
 
-   MSC :ref:`file-based` configuration uses different configuration keys than rclone. For example, MSC uses ``endpoint_url`` for :py:class:`multistorageclient.StorageClient.S3StorageProvider` but rclone expects ``endpoint``. MSC aligns with rclone defaults so that if you have a rclone configuration, you can use it with MSC without any modifications on existing keys.
+   MSC :ref:`file-based` configuration uses different configuration keys than rclone. For example, MSC uses ``endpoint_url`` for :py:class:`multistorageclient.providers.s3.S3StorageProvider` but rclone expects ``endpoint``. MSC aligns with rclone defaults so that if you have a rclone configuration, you can use it with MSC without any modifications on existing keys.
 
 .. note::
 
-   Rclone configuration primarily focus on storage access. Some MSC features such as caching and observability cannot be enabled with a rclone configuration. Therefore, MSC allows to use a rclone-based configuration for storage acceess alongside with a built-in :ref:`file-based` configuration for additional features. You can also use the built-in file-based configuration to add extra parameters to an individual profile such as ``metadata_provider``.
+   Rclone configuration primarily focus on storage access. Some MSC features such as caching and observability cannot be enabled with a rclone configuration. Therefore, MSC allows to use a rclone-based configuration for storage access alongside with a built-in :ref:`file-based` configuration for additional features. You can also use the built-in file-based configuration to add extra parameters to an individual profile such as ``metadata_provider``.
 
 .. _operations:
 
