@@ -119,7 +119,7 @@ Referencing Manifests in Configuration
 
 When you set a profile's ``metadata_provider`` to ``type: manifest``, you must also provide the ``manifest_path`` option, which refers to manifest path relative to the storage profile's ``base_path``.
 
-You can also specify the ``format`` option to control the format used when writing new manifests (defaults to ``jsonl``):
+You can also specify the ``manifest_format`` option to control the format used when writing new manifests (defaults to ``jsonl``):
 
 .. code-block:: yaml
    :linenos:
@@ -134,7 +134,7 @@ You can also specify the ``format`` option to control the format used when writi
          type: manifest
          options:
            manifest_path: .msc_manifests
-           format: parquet  # Optional: jsonl (default) or parquet
+           manifest_format: parquet  # Optional: jsonl (default) or parquet
 
 You can also store manifests in a **different** profile than your data. In that case, the ``metadata_provider`` will refer to storage profile using the ``storage_provider_profile`` option. Here's an example:
 
@@ -153,12 +153,12 @@ You can also store manifests in a **different** profile than your data. In that 
          type: s3
          options:
            base_path: my-bucket
-         metadata_provider:
-           type: manifest
-           options:
-             # Refer to the storage profile for the manifests
-             storage_provider_profile: my-manifest-profile
-             # The real path of manifests in this will be manifest-bucket/.msc_manifests
-             manifest_path: .msc_manifests
+       metadata_provider:
+         type: manifest
+         options:
+           # Refer to the storage profile for the manifests
+           storage_provider_profile: my-manifest-profile
+           # The real path of manifests in this will be manifest-bucket/.msc_manifests
+           manifest_path: .msc_manifests
 
 Once configured, MSC automatically uses the manifests to speed up listing or retrieving metadata for objects whenever you perform MSC operations on that profile.

@@ -82,8 +82,8 @@ Partial file caching is automatically enabled when using ``client.read()`` with 
    from multistorageclient.types import Range
    
    # Create a storage client with configuration
-   config = StorageClientConfig.from_file()  # or from_dict()
-   client = StorageClient(config=config, profile="your_profile")
+   config = StorageClientConfig.from_file(profile="your-profile")  # or from_dict(..., profile="your-profile")
+   client = StorageClient(config=config)
    
    # This will only download the necessary chunks for the specified range
    data = client.read("path/to/large_file.bin", 
