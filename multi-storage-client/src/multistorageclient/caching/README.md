@@ -19,7 +19,7 @@ from multistorageclient.caching.eviction_policy import LRU, FIFO, RANDOM
 cache_config = CacheConfig(
     location="/path/to/cache",
     size_mb=1000,  # 1GB cache
-    use_etag=True,
+    check_source_version=True,
     eviction_policy=FIFO  # Default is "fifo", can also use "lru" or "random"
 )
 

@@ -80,7 +80,7 @@ def create_cache_config(base_config: ConfigDict) -> ConfigDict:
     config = base_config.copy()
     config["cache"] = {
         "size": "10M",
-        "use_etag": True,
+        "check_source_version": True,
         "location": tempfile.mkdtemp(),
         "eviction_policy": {
             "policy": "random",

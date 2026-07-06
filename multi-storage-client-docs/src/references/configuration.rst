@@ -953,7 +953,7 @@ Options:
 
 * ``check_source_version``
 
-  * Validate the remote object's source version before serving a cached copy (optional, default: ``true``). The legacy ``use_etag`` key is still accepted for backward compatibility, but ``check_source_version`` takes precedence when both are set.
+  * Validate the remote object's source version before serving a cached copy (optional, default: ``true``). Configurations that still use ``use_etag`` will fail validation; replace that key with ``check_source_version``.
 
 * ``prefetch_file``
 

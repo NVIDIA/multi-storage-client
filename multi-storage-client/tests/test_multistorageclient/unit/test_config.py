@@ -1099,7 +1099,7 @@ def test_invalid_cache_config():
         },
         "cache": {
             "size": "invalid",  # Invalid size format
-            "use_etag": True,
+            "check_source_version": True,
             "location": "/tmp/msc_cache",
             "eviction_policy": {"policy": "lru", "refresh_interval": 300},
         },
@@ -1118,7 +1118,7 @@ def test_invalid_cache_config():
         },
         "cache": {
             "size": "200G",
-            "use_etag": True,
+            "check_source_version": True,
             "location": "relative/path",
         },
     }
@@ -1905,46 +1905,25 @@ def _minimal_cache_profile(cache_section: dict) -> dict:
     }
 
 
-def test_cache_config_both_flags_precedence() -> None:
-    """When both `check_source_version` and `use_etag` are set, the former wins."""
+def test_cache_config_rejects_use_etag_with_migration_message() -> None:
+    """cache.use_etag fails with a clear migration message."""
 
     with tempfile.TemporaryDirectory() as cache_dir:
         cfg_dict = _minimal_cache_profile(
             {
                 "size": "10M",
-                "cache_line_size": "1M",  # Set explicitly to avoid default 64M exceeding cache size
-                "location": cache_dir,
-                "check_source_version": False,
-                "use_etag": True,
-            }
-        )
-
-        sc_cfg = StorageClientConfig.from_dict(cfg_dict, profile="p")
-        assert sc_cfg.cache_config is not None
-        # Expect False because check_source_version overrides legacy value
-        assert sc_cfg.cache_config.check_source_version is False
-
-
-def test_cache_config_use_etag() -> None:
-    """only use_etag is set, check_source_version is not set"""
-
-    with tempfile.TemporaryDirectory() as cache_dir:
-        cfg_dict = _minimal_cache_profile(
-            {
-                "size": "10M",
-                "cache_line_size": "1M",  # Set explicitly to avoid default 64M exceeding cache size
+                "cache_line_size": "1M",
                 "location": cache_dir,
                 "use_etag": True,
             }
         )
 
-        sc_cfg = StorageClientConfig.from_dict(cfg_dict, profile="p")
-        assert sc_cfg.cache_config is not None
-        assert sc_cfg.cache_config.check_source_version is True
+        with pytest.raises(ValueError, match="cache.use_etag is no longer supported.*cache.check_source_version"):
+            StorageClientConfig.from_dict(cfg_dict, profile="p")
 
 
 def test_cache_config_check_source_version() -> None:
-    """only check_source_version is set, use_etag is not set, check_source_version is True"""
+    """check_source_version=True enables source version validation."""
 
     with tempfile.TemporaryDirectory() as cache_dir:
         cfg_dict = _minimal_cache_profile(
@@ -1962,7 +1941,7 @@ def test_cache_config_check_source_version() -> None:
 
 
 def test_cache_config_check_source_version_false() -> None:
-    """only check_source_version is set, use_etag is not set, check_source_version is False"""
+    """check_source_version=False disables source version validation."""
 
     with tempfile.TemporaryDirectory() as cache_dir:
         cfg_dict = _minimal_cache_profile(

@@ -913,7 +913,7 @@ def create_legacy_cache_config(profile_config, tmpdir):
     """Helper function to create legacy cache config."""
     return {
         "profiles": {"s3-local": profile_config},
-        "cache": {"size_mb": 10, "use_etag": False, "location": str(tmpdir), "eviction_policy": "fifo"},
+        "cache": {"size_mb": 10, "check_source_version": False, "location": str(tmpdir), "eviction_policy": "fifo"},
     }
 
 
@@ -925,7 +925,7 @@ def create_new_cache_config(profile_config, tmpdir):
         "cache": {
             "size": "10M",
             "cache_line_size": "1M",  # Set explicitly to avoid default 64M exceeding cache size
-            "use_etag": False,
+            "check_source_version": False,
             "eviction_policy": {"policy": "random", "refresh_interval": 300},
         },
     }
@@ -935,7 +935,11 @@ def create_mixed_cache_config(profile_config, tmpdir):
     """Helper function to create mixed cache config."""
     return {
         "profiles": {"s3-local": profile_config},
-        "cache": {"size_mb": 10, "use_etag": False, "eviction_policy": {"policy": "random", "refresh_interval": 300}},
+        "cache": {
+            "size_mb": 10,
+            "check_source_version": False,
+            "eviction_policy": {"policy": "random", "refresh_interval": 300},
+        },
     }
 
 

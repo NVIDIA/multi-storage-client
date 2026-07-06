@@ -836,7 +836,7 @@ def test_open_with_cache_config(temp_data_store_type: Type[tempdatastore.Tempora
     # Clear the instance cache to ensure that the config is not reused from the previous test
     msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
     with temp_data_store_type() as temp_data_store:
-        # Test with cache enabled and use_etag=True
+        # Test with cache enabled and check_source_version=True
         profile_config = temp_data_store.profile_config_dict()
         profile_config["caching_enabled"] = True
 
@@ -848,7 +848,7 @@ def test_open_with_cache_config(temp_data_store_type: Type[tempdatastore.Tempora
                     },
                     "cache": {
                         "location": cache_dir,
-                        "use_etag": True,
+                        "check_source_version": True,
                         "eviction_policy": {
                             "policy": "no_eviction",
                         },
@@ -868,7 +868,7 @@ def test_open_with_cache_config(temp_data_store_type: Type[tempdatastore.Tempora
                 with msc.open(f"{MSC_PROTOCOL}test/{filepath}", "rb") as fp:
                     assert fp.read() == body
 
-                # Test with cache enabled and use_etag=False
+                # Test with cache enabled and check_source_version=False
                 profile_config = temp_data_store.profile_config_dict()
                 profile_config["caching_enabled"] = True
 
@@ -879,7 +879,7 @@ def test_open_with_cache_config(temp_data_store_type: Type[tempdatastore.Tempora
                         },
                         "cache": {
                             "location": cache_dir,
-                            "use_etag": False,
+                            "check_source_version": False,
                             "eviction_policy": {
                                 "policy": "no_eviction",
                             },
