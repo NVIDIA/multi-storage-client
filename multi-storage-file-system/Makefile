@@ -2,9 +2,10 @@ quick: build
 
 all: fmt generate build lint test bench cover assets
 
-GIT_TAG := $(shell git describe --tags --always --dirty)
-BUILD_LDFLAGS := -ldflags="-X 'main.GitTag=$(GIT_TAG)'"
-TEST_LDFLAGS := -ldflags="-X 'github.com/NVIDIA/multi-storage-client/multi-storage-file-system/msfs.GitTag=$(GIT_TAG)'"
+VERSION := 0.100.0
+GIT_REVISION := $(shell git rev-parse HEAD)
+BUILD_LDFLAGS := -ldflags="-X 'main.Version=$(VERSION).$(GIT_REVISION)'"
+TEST_LDFLAGS := -ldflags="-X 'github.com/NVIDIA/multi-storage-client/multi-storage-file-system/msfs.VERSION=$(VERSION).$(GIT_REVISION)'"
 NATIVE_GOARCH := $(shell go env GOARCH)
 NATIVE_UNAMEM := $(shell uname -m)
 
@@ -119,7 +120,7 @@ assets: deb-packages rpm-packages
 
 # Debian package variables
 DEB_PACKAGE_NAME := msfs
-DEB_VERSION := $(GIT_TAG)
+DEB_VERSION := $(VERSION)
 DEB_MAINTAINER := NVIDIA <multi-storage-client@nvidia.com>
 DEB_DESCRIPTION := Multi-Storage-File-System
 DEB_BUILD_DIR := build/deb
@@ -192,8 +193,7 @@ clean-deb:
 
 # RPM package variables
 RPM_PACKAGE_NAME := msfs
-# RPM_VERSION := $(GIT_TAG)
-RPM_VERSION := $(shell echo $(GIT_TAG) | sed 's/-/_/g')
+RPM_VERSION := $(VERSION)
 RPM_RELEASE := 1
 RPM_MAINTAINER := NVIDIA <multi-storage-client@nvidia.com>
 RPM_SUMMARY := Multi-Storage-File-System

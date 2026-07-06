@@ -194,7 +194,7 @@ jobs:
       - id: build-cache
         uses: actions/cache@v5
         with:
-          key: multi-storage-file-system-${{ hashFiles('flake.lock', 'flake.nix', 'nix/**/*', 'multi-storage-client/pyproject.toml', 'multi-storage-file-system/**/*') }}
+          key: multi-storage-file-system-${{ hashFiles('flake.lock', 'flake.nix', 'nix/**/*', 'multi-storage-file-system/**/*') }}
           path: |
             -
             multi-storage-file-system/build/debian/archives/*.deb

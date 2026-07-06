@@ -17,7 +17,7 @@ While the Python Multi-Storage Client is designed for easy adoption of object st
 .. note::
 
    **Current Release Focus: Read Operations**
-   
+
    This release of MSFS fully supports the default read-only mode. If a backend has writes enabled, only a few modifying operations are currently supported (mkdir, rmdir, and unlink). The bulk of write support (i.e. file creation and file modification) is planned for a future release.
 
 Key Features
@@ -33,62 +33,33 @@ Key Features
 Installation
 ============
 
-Download from GitHub Releases
-=============================
+Download from GitHub Actions Artifacts
+======================================
 
-The easiest way to install MSFS is to download pre-built packages from the `GitHub releases page <https://github.com/NVIDIA/multi-storage-client/releases>`_.
+The easiest way to install MSFS is to download pre-built packages from our GitHub Actions artifacts.
 
-Download the release archive:
+Download the artifact archive:
 
-#. Navigate to the `releases page <https://github.com/NVIDIA/multi-storage-client/releases>`_
-#. Download either ``msfs.zip`` or ``msfs.tar.gz`` from the latest release assets
+#. Navigate to the `GitHub Actions Default Branch workflow <https://github.com/NVIDIA/multi-storage-client/actions/workflows/default_branch.yml>`_
+#. Select a workflow run for the desired commit
+#. Download the ``multi-storage-file-system`` artifact
 
 Extract the archive:
 
 .. code-block:: bash
-   :caption: Extract the release archive.
+   :caption: Extract the artifact archive.
 
-   # For ZIP archive
-   unzip msfs.zip
-
-   # For TAR.GZ archive
-   tar -xzf msfs.tar.gz
+   unzip multi-storage-file-system.zip
 
 The archive contains:
 
 - **RPM packages**: ``msfs-<version>-1.x86_64.rpm`` and ``msfs-<version>-1.aarch64.rpm``
 - **DEB packages**: ``msfs_<version>_amd64.deb`` and ``msfs_<version>_arm64.deb``
-- **Install script**: ``msfs_install.sh``
-- **Uninstall script**: ``msfs_uninstall.sh``
-
-Install MSFS:
-
-.. code-block:: bash
-   :caption: Install MSFS using the install script.
-
-   sudo ./msfs_install.sh
-
-The install script automatically:
-
-- **Detects your system architecture** (x86_64 or aarch64) using ``uname -m``
-- **Detects your package manager** (dpkg for Debian/Ubuntu or rpm for RHEL/CentOS/Fedora)
-- **Selects and installs the correct package** for your system
-
-You do not need to manually specify which package to install. The script handles architecture and package format detection automatically.
-
-Uninstall MSFS:
-
-.. code-block:: bash
-   :caption: Uninstall MSFS using the uninstall script.
-
-   sudo ./msfs_uninstall.sh
-
-The uninstall script automatically detects your package manager and removes MSFS accordingly.
 
 After installation, MSFS provides:
 
-- ``/usr/local/bin/msfs`` - The FUSE daemon binary
-- ``/usr/sbin/mount.msfs`` - Mount helper for standard ``mount`` command
+- ``/usr/bin/msfs`` - The FUSE daemon binary
+- ``/usr/bin/mount.msfs`` - Mount helper for standard ``mount`` command
 
 Build from Source
 =================
@@ -121,7 +92,7 @@ See :doc:`/references/configuration` for the complete MSC configuration schema.
 .. note::
 
    **Advanced Configuration Mode**
-   
+
    For advanced users requiring fine-grained control over FUSE behavior, caching parameters, and other low-level settings, MSFS provides an extended configuration mode (``msfs_version: 1``). This advanced mode is intended for specialized use cases and performance tuning. For details, see the `MSFS README <https://github.com/NVIDIA/multi-storage-client/blob/main/multi-storage-file-system/README.md>`_.
 
 Environment Variables
@@ -144,7 +115,7 @@ Configuration files support environment variable expansion using ``$VAR`` or ``$
 
 - ``MSC_CONFIG`` - Path to configuration file
 - ``MSFS_MOUNTPOINT`` - Mount point (overrides config file setting)
-- ``MSFS_BINARY`` - Path to msfs binary (default: ``/usr/local/bin/msfs``)
+- ``MSFS_BINARY`` - Path to msfs binary (default: ``/usr/bin/msfs``)
 - ``MSFS_LOG_DIR`` - Log directory (default: ``/var/log/msfs``)
 
 Usage
@@ -159,7 +130,7 @@ Manual mount/unmount using the MSFS binary directly:
 
    # Start MSFS daemon with config file
    export MSC_CONFIG=/path/to/config.yaml
-   /usr/local/bin/msfs
+   /usr/bin/msfs
 
    # In another terminal, verify mount
    mount | grep msfs
@@ -191,7 +162,7 @@ Mounting
 
 **How It Works:**
 
-When you run ``mount -t msfs <config> <mountpoint>``, the ``mount`` command automatically calls ``/usr/sbin/mount.msfs``, which:
+When you run ``mount -t msfs <config> <mountpoint>``, the ``mount`` command automatically calls ``/usr/bin/mount.msfs``, which:
 
 1. Exports ``MSC_CONFIG`` environment variable from the config file argument
 2. Exports ``MSFS_MOUNTPOINT`` environment variable from the mountpoint argument
@@ -202,7 +173,7 @@ When you run ``mount -t msfs <config> <mountpoint>``, the ``mount`` command auto
 .. note::
 
    The ``mount`` command behaves differently based on arguments:
-   
+
    - ``mount`` (no args) → Lists all mounted filesystems
    - ``mount -t msfs`` (type only) → Lists all MSFS filesystems (does NOT call mount.msfs)
    - ``mount -t msfs <config> <mountpoint>`` → Calls mount.msfs to perform the mount
@@ -240,7 +211,7 @@ MSFS filesystems can be automatically mounted at boot time using ``/etc/fstab``:
 2. **Mount Point** - Directory where the filesystem will be mounted
 3. **Type** - Filesystem type (``msfs``)
 4. **Options** - Mount options (comma-separated):
-   
+
    - ``defaults`` - Standard mount options
    - ``_netdev`` - Wait for network before mounting (recommended for remote storage)
    - ``noauto`` - Don't mount automatically at boot (mount manually)
@@ -255,7 +226,7 @@ After editing ``/etc/fstab``, test the configuration:
 
    # Mount all filesystems in fstab
    sudo mount -a
-   
+
    # Verify mount
    df -h /mnt/s3-data
 
@@ -417,13 +388,13 @@ Enable metrics collection by adding observability configuration:
                deployment.environment: production
          - type: host
          - type: process
-       
+
        reader:
          type: periodic
          options:
            collect_interval_millis: 1000
            export_interval_millis: 60000
-       
+
        exporter:
          type: otlp
          options:
@@ -551,7 +522,7 @@ Build optimized binaries for production deployment:
 .. code-block:: bash
 
    cd multi-storage-file-system
-   
+
    # Build for current platform
    make
 
@@ -572,15 +543,15 @@ Deploy MSFS using Docker containers:
    :caption: Dockerfile for MSFS deployment
 
    FROM ubuntu:22.04
-   
+
    RUN apt-get update && apt-get install -y fuse
-   
-   COPY msfs-linux-amd64 /usr/local/bin/msfs
-   COPY mount.msfs /usr/sbin/mount.msfs
-   
-   RUN chmod +x /usr/local/bin/msfs /usr/sbin/mount.msfs
-   
-   CMD ["/usr/local/bin/msfs"]
+
+   COPY msfs-linux-amd64 /usr/bin/msfs
+   COPY mount.msfs /usr/bin/mount.msfs
+
+   RUN chmod +x /usr/bin/msfs /usr/bin/mount.msfs
+
+   CMD ["/usr/bin/msfs"]
 
 .. code-block:: bash
 

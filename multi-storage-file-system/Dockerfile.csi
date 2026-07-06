@@ -6,13 +6,13 @@
 # Stage 1: Build the MSFS binary
 FROM golang:1.25.4-bookworm AS msfs-builder
 ARG TARGETARCH
-ARG GIT_TAG=dev
+ARG VERSION=dev
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -trimpath \
-    -ldflags="-s -w -X main.GitTag=${GIT_TAG}" \
+    -ldflags="-s -w -X main.Version=${VERSION}" \
     -o /out/msfs .
 
 # Stage 2: Build the CSI driver binary

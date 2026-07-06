@@ -4,9 +4,8 @@
 # https://just.systems/man/en
 #
 
-# MSFS matches the MSC version.
-version := `cd ../multi-storage-client && uv version --short`
-tag := `git describe --always --dirty`
+version := "0.100.0"
+git-revision := `git rev-parse HEAD`
 
 # List recipes.
 help:
@@ -34,7 +33,7 @@ compile:
     # Linux artifacts are a `/usr` directory overlay (e.g. `/usr/bin`, `/usr/share/man`, `/usr/lib/systemd`).
     set -e; \
     for ARCH in amd64 arm64; do \
-        CGO_ENABLED=0 GOARCH=${ARCH} GOOS=linux go build -ldflags "-X main.GitTag={{tag}}" -o build/generic/${ARCH}-linux/bin/msfs . && \
+        CGO_ENABLED=0 GOARCH=${ARCH} GOOS=linux go build -ldflags "-X main.Version='{{version}}.{{git-revision}}'" -o build/generic/${ARCH}-linux/bin/msfs . && \
         cp --target-directory build/generic/${ARCH}-linux/bin mount.msfs; \
     done
 
