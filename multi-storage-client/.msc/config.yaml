@@ -197,7 +197,7 @@ profiles:
         rust_client: {}
 cache:
   size: 20G
-  use_etag: true
+  check_source_version: true
   eviction_policy:
     policy: fifo
     refresh_interval: 300

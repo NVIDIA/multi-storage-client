@@ -37,12 +37,11 @@ an absolute filesystem path, and the size should be a positive integer with a un
      check_source_version: true   # validate remote object version before serving cached copy
      cache_line_size: 64M         # size of chunks for partial file caching
 
-``check_source_version`` replaces the older ``use_etag`` flag (still accepted
-for backward-compatibility).  The default is ``true`` (MSC validates the
-remote object’s current version — for example via ETag — before serving a
-cached copy).  Set it to ``false`` only if you want to skip that validation
-for performance reasons or when the storage backend lacks a versioning
-mechanism.
+The default is ``true`` (MSC validates the remote object's current version
+before serving a cached copy). Set it to ``false`` only if you want to skip
+that validation for performance reasons or when the storage backend lacks a
+versioning mechanism. Configurations that still use ``use_etag`` will fail
+validation; replace that key with ``check_source_version``.
 
 For detailed configuration options, see :doc:`/references/configuration`
 

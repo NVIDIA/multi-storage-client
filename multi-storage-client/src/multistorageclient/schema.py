@@ -60,7 +60,6 @@ CACHE_SCHEMA = {
         },
         "size_mb": {"type": "integer"},
         "location": {"type": "string"},
-        "use_etag": {"type": "boolean"},
         "check_source_version": {"type": "boolean"},
         "prefetch_file": {"type": "boolean"},
         "cache_line_size": {
@@ -240,7 +239,15 @@ BENCHMARK_SCHEMA = {
 }
 
 
+def _reject_deprecated_cache_keys(config_dict: dict[str, Any]) -> None:
+    cache_config = config_dict.get("cache")
+    if isinstance(cache_config, dict) and "use_etag" in cache_config:
+        raise ValueError("cache.use_etag is no longer supported. Use cache.check_source_version instead.")
+
+
 def validate_config(config_dict: dict[str, Any]) -> None:
+    _reject_deprecated_cache_keys(config_dict)
+
     try:
         validate(instance=config_dict, schema=CONFIG_SCHEMA)
     except Exception as e:

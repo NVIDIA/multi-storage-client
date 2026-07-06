@@ -189,7 +189,7 @@ def test_validate_cache():
             },
             "cache": {
                 "size": "50M",
-                "use_etag": True,
+                "check_source_version": True,
                 "location": "/path/to/cache",
                 "eviction_policy": {
                     "policy": "FIFO",
@@ -198,6 +198,20 @@ def test_validate_cache():
             },
         }
     )
+
+    with pytest.raises(ValueError, match="cache.use_etag is no longer supported.*cache.check_source_version"):
+        validate_config(
+            {
+                "profiles": {
+                    "default": default_storage_provider,
+                },
+                "cache": {
+                    "size": "50M",
+                    "use_etag": True,
+                    "location": "/path/to/cache",
+                },
+            }
+        )
 
     with pytest.raises(RuntimeError):
         validate_config(

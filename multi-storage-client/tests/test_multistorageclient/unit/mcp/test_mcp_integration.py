@@ -65,7 +65,7 @@ def mcp_server_parametrized(request):
             cache_location = tempfile.mkdtemp()
             config_dict["cache"] = {
                 "size": "10M",
-                "use_etag": True,
+                "check_source_version": True,
                 "location": cache_location,
                 "eviction_policy": {
                     "policy": "random",
@@ -133,7 +133,7 @@ def mcp_server_with_replicas(request):
             cache_location = tempfile.mkdtemp()
             config_dict["cache"] = {
                 "size": "10M",
-                "use_etag": True,
+                "check_source_version": True,
                 "location": cache_location,
                 "eviction_policy": {
                     "policy": "random",
