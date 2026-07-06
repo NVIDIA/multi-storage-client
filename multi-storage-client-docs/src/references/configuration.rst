@@ -258,6 +258,10 @@ Each profile in the configuration defines how to interact with storage services 
 
    * Profile names must not start with an underscore (_) to prevent collision with :ref:`implicit profiles <implicit-profiles>`.
 
+   * Profile names beginning with ``.tmp-`` are reserved because older MSC clients use ``<cache root>/.tmp-<profile>`` for in-progress downloads.
+
+   To migrate a legacy ``.tmp-`` profile, stop older clients that share its cache root, rename the profile to a non-reserved single component, then move or discard its cache directory only after separately identifying or clearing any legacy in-progress temporary-download data.
+
    * The ``caching_enabled`` field controls whether caching is enabled for this specific profile. When set to ``true``, the profile will use the global cache configuration if provided. When set to ``false`` or omitted, caching is disabled for this profile regardless of global cache settings.
 
 Storage Providers
@@ -530,6 +534,70 @@ Options: See parameters in :py:class:`multistorageclient.providers.ais_s3.AIStor
            password: ${AIS_PASSWORD}
            authn_endpoint: https://authn.example.com:52001
            ca_cert: /path/to/authn-ca.crt  # CA certificate for AuthN server (often same as above)
+
+``manifest``
+------------
+
+The ``manifest`` storage provider exposes a **single immutable Parquet virtual manifest v2** as a read-only logical dataset. It is distinct from the ``metadata_provider.type: manifest`` entry below, which is the older v1 metadata index/parts feature and does not provide file bytes.
+
+Install ``multi-storage-client[virtual-manifest]``. See :doc:`/user_guide/virtual_manifests` for the wire format, publication model, and complete contract.
+
+Required options:
+
+* ``manifest_storage_profile``: name of a direct storage profile holding the Parquet file;
+* ``manifest_path``: normalized relative path to exactly one ``.parquet`` file in that profile.
+
+Optional options:
+
+* ``max_workers``: maximum concurrently fetched touched chunks (default ``8``);
+* ``source_profiles``: mapping from manifest object aliases to ``profile`` and non-empty ``binding_revision``;
+* ``services``: mapping from service aliases to strict ``http`` service options.
+
+.. code-block:: yaml
+   :caption: Virtual-manifest storage provider configuration.
+
+   profiles:
+     manifest-store:
+       storage_provider:
+         type: s3
+         options:
+           base_path: dataset-control
+
+     objects:
+       storage_provider:
+         type: s3
+         options:
+           base_path: dataset-objects
+
+     virtual-dataset:
+       storage_provider:
+         type: manifest
+         options:
+           manifest_storage_profile: manifest-store
+           manifest_path: releases/catalog.parquet
+           max_workers: 8
+           source_profiles:
+             raw:
+               profile: objects
+               binding_revision: objects-r1
+           services:
+             render:
+               type: http
+               options:
+                 base_url: https://renderer.example.com/v1
+                 binding_revision: renderer-r4
+                 allowed_path_prefixes: [render]
+                 allowed_query_parameters: [format, frame]
+                 headers:
+                   Authorization: "Bearer ${RENDERER_TOKEN}"
+                 connect_timeout_seconds: 10
+                 read_timeout_seconds: 60
+                 verify_tls: true
+
+The manifest-store and object-source profiles must be direct profiles. They cannot be virtual manifests, composite ``storage_provider_profiles`` profiles, provider bundles, replica profiles, or profiles with a metadata provider. The virtual profile itself is read-only and cannot define a credentials provider, metadata provider, replicas, provider bundle, or autocommit settings.
+
+For HTTP services, ``base_url`` is HTTPS by default (plain HTTP requires ``allow_insecure_http: true``), and path/query allowlists are mandatory. The service configuration may also specify ``headers`` and ``verify_tls``. Do not configure protocol-controlled ``Range``, ``Accept-Encoding``, ``Host``, or ``Content-Length`` headers.
+
 .. _rust-client-reference:
 
 ``huggingface``

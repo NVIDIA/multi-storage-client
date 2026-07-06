@@ -42,7 +42,7 @@ def test_validate_profiles():
         )
 
     # Valid configurations
-    for provider in STORAGE_PROVIDER_MAPPING.keys():
+    for provider in STORAGE_PROVIDER_MAPPING.keys() - {"manifest"}:
         validate_config(
             {
                 "profiles": {
@@ -71,6 +71,196 @@ def test_validate_profiles():
                 }
             }
         )
+
+
+@pytest.mark.parametrize(
+    "profile_name",
+    [".range-cache-user", ".cache_refresh.lock", "project.v2+preview@west"],
+)
+def test_validate_profiles_accepts_legal_names_that_resemble_cache_internals(profile_name: str) -> None:
+    """Cache bookkeeping only reserves names that collide with actual cache paths."""
+    validate_config(
+        {"profiles": {profile_name: {"storage_provider": {"type": "file", "options": {"base_path": "/objects"}}}}}
+    )
+
+
+@pytest.mark.parametrize("profile_name", [".tmp-user", ".tmp-legacy-profile", ".tmp-"])
+def test_validate_profiles_rejects_names_reserved_for_legacy_temp_downloads(profile_name: str) -> None:
+    """Schema validation rejects names that collide with legacy temporary-download directories."""
+    with pytest.raises(RuntimeError, match="Failed to validate"):
+        validate_config(
+            {"profiles": {profile_name: {"storage_provider": {"type": "file", "options": {"base_path": "/objects"}}}}}
+        )
+
+
+@pytest.mark.parametrize(
+    "profile_name",
+    [".msc-cache-internal", "nested/profile", r"nested\\profile", "nested/./..", ".", ".."],
+)
+def test_validate_profiles_rejects_names_that_alias_cache_paths(profile_name: str) -> None:
+    """Configured profile keys must be safe single components outside the exact internal root."""
+    with pytest.raises(RuntimeError, match="Failed to validate"):
+        validate_config(
+            {"profiles": {profile_name: {"storage_provider": {"type": "file", "options": {"base_path": "/objects"}}}}}
+        )
+
+
+def _manifest_schema_config() -> dict:
+    return {
+        "profiles": {
+            "manifest-store": {"storage_provider": {"type": "file", "options": {"base_path": "/manifests"}}},
+            "objects": {"storage_provider": {"type": "file", "options": {"base_path": "/objects"}}},
+            "virtual": {
+                "storage_provider": {
+                    "type": "manifest",
+                    "options": {
+                        "manifest_storage_profile": "manifest-store",
+                        "manifest_path": "datasets/catalog.parquet",
+                        "max_workers": 8,
+                        "source_profiles": {"objects": {"profile": "objects", "binding_revision": "objects-r1"}},
+                        "services": {
+                            "renderer": {
+                                "type": "http",
+                                "options": {
+                                    "base_url": "https://renderer.example/v1/",
+                                    "binding_revision": "renderer-r1",
+                                    "allowed_path_prefixes": ["render/"],
+                                    "allowed_query_parameters": ["frame", "variant"],
+                                    "headers": {"Authorization": "Bearer ${RENDERER_TOKEN}"},
+                                    "connect_timeout_seconds": 2,
+                                    "read_timeout_seconds": 10,
+                                    "verify_tls": True,
+                                    "allow_insecure_http": False,
+                                },
+                            }
+                        },
+                    },
+                },
+                "caching_enabled": True,
+                "comment": "read-only virtual files",
+            },
+        }
+    }
+
+
+def test_validate_manifest_profile() -> None:
+    validate_config(_manifest_schema_config())
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("manifest_path", "/absolute/catalog.parquet"),
+        ("manifest_path", "./catalog.parquet"),
+        ("manifest_path", "../catalog.parquet"),
+        ("manifest_path", "datasets/./catalog.parquet"),
+        ("manifest_path", "datasets//catalog.parquet"),
+        ("manifest_path", "datasets\\catalog.parquet"),
+        ("manifest_path", "catalog.parquet\n"),
+        ("manifest_path", "datasets/\x00catalog.parquet"),
+        ("manifest_path", "datasets/catalog\t.parquet"),
+        ("manifest_path", "datasets/catalog.json"),
+        ("max_workers", 0),
+        ("rust_client", {"allow_http": True}),
+    ],
+)
+def test_validate_manifest_profile_rejects_invalid_options(option: str, value: object) -> None:
+    config = _manifest_schema_config()
+    config["profiles"]["virtual"]["storage_provider"]["options"][option] = value
+
+    with pytest.raises(RuntimeError):
+        validate_config(config)
+
+
+@pytest.mark.parametrize("manifest_path", ["catalog.parquet", "datasets/2026/catalog.parquet", "日本語/data.parquet"])
+def test_validate_manifest_profile_accepts_normalized_relative_parquet_paths(manifest_path: str) -> None:
+    config = _manifest_schema_config()
+    config["profiles"]["virtual"]["storage_provider"]["options"]["manifest_path"] = manifest_path
+
+    validate_config(config)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("credentials_provider", {"type": "S3Credentials"}),
+        ("metadata_provider", {"type": "manifest"}),
+        ("replicas", []),
+        ("storage_provider_profiles", ["objects"]),
+        ("provider_bundle", {"type": "module.ProviderBundle"}),
+        ("autocommit", {"at_exit": True}),
+    ],
+)
+def test_validate_manifest_profile_rejects_logical_routing_and_mutation_fields(field: str, value: object) -> None:
+    config = _manifest_schema_config()
+    config["profiles"]["virtual"][field] = value
+
+    with pytest.raises(RuntimeError):
+        validate_config(config)
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        {"profile": "objects"},
+        {"binding_revision": "objects-r1"},
+        {"profile": "objects", "binding_revision": ""},
+        {"profile": "objects", "binding_revision": "objects-r1", "secret": "not-allowed"},
+    ],
+)
+def test_validate_manifest_source_binding_requires_closed_revisioned_shape(binding: dict) -> None:
+    config = _manifest_schema_config()
+    config["profiles"]["virtual"]["storage_provider"]["options"]["source_profiles"] = {"objects": binding}
+
+    with pytest.raises(RuntimeError):
+        validate_config(config)
+
+
+@pytest.mark.parametrize(
+    "required_field",
+    ["base_url", "binding_revision", "allowed_path_prefixes", "allowed_query_parameters"],
+)
+def test_validate_manifest_http_service_requires_each_transport_contract_field(required_field: str) -> None:
+    config = _manifest_schema_config()
+    options = config["profiles"]["virtual"]["storage_provider"]["options"]["services"]["renderer"]["options"]
+    del options[required_field]
+
+    with pytest.raises(RuntimeError):
+        validate_config(config)
+
+
+def test_validate_manifest_http_service_requires_a_nonempty_path_allowlist() -> None:
+    config = _manifest_schema_config()
+    options = config["profiles"]["virtual"]["storage_provider"]["options"]["services"]["renderer"]["options"]
+    options["allowed_path_prefixes"] = []
+
+    with pytest.raises(RuntimeError):
+        validate_config(config)
+
+
+@pytest.mark.parametrize("binding_kind", ["source_profiles", "services"])
+@pytest.mark.parametrize(
+    "alias",
+    ["", ".", "..", "nested/alias", " leading", "trailing ", "objects\n", "objects\t", "objects\x00"],
+)
+def test_validate_manifest_binding_aliases_are_normalized_identifiers(binding_kind: str, alias: str) -> None:
+    config = _manifest_schema_config()
+    options = config["profiles"]["virtual"]["storage_provider"]["options"]
+    binding = options[binding_kind].pop("objects" if binding_kind == "source_profiles" else "renderer")
+    options[binding_kind][alias] = binding
+
+    with pytest.raises(RuntimeError):
+        validate_config(config)
+
+
+@pytest.mark.parametrize("alias", ["objects", "objects-primary", "objects.v2", "objects_2"])
+def test_validate_manifest_binding_aliases_accept_stable_identifier_characters(alias: str) -> None:
+    config = _manifest_schema_config()
+    options = config["profiles"]["virtual"]["storage_provider"]["options"]
+    binding = options["source_profiles"].pop("objects")
+    options["source_profiles"][alias] = binding
+
+    validate_config(config)
 
 
 def test_validate_storage_provider_profiles():

@@ -15,10 +15,13 @@
 
 import importlib
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .manifest_metadata import ManifestMetadataProvider
 from .posix_file import PosixFileStorageProvider
+
+if TYPE_CHECKING:
+    from .manifest import ManifestStorageProvider
 
 # Dictionary to hold lazy imported classes
 _imports: dict[str, Any] = {}
@@ -56,6 +59,8 @@ def __getattr__(name: str) -> Any:
         # HuggingFace
         "HuggingFaceStorageProvider": ".huggingface",
         "HuggingFaceCredentialsProvider": ".huggingface",
+        # Virtual manifest
+        "ManifestStorageProvider": ".manifest",
         # File-based credentials
         "FileBasedCredentialsProvider": ".file_credentials",
     }
@@ -117,5 +122,6 @@ def __getattr__(name: str) -> Any:
 
 __all__ = [
     "ManifestMetadataProvider",
+    "ManifestStorageProvider",
     "PosixFileStorageProvider",
 ]

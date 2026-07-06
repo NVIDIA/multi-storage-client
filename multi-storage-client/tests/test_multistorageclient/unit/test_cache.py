@@ -14,12 +14,14 @@
 # limitations under the License.
 
 import os
+import queue
 import shutil
 import tempfile
 import threading
 import time
 import uuid
 from datetime import datetime, timedelta
+from unittest.mock import MagicMock
 
 import pytest
 import xattr
@@ -32,6 +34,7 @@ from multistorageclient.caching.cache_config import (
     CacheConfig,
     EvictionPolicyConfig,
 )
+from multistorageclient.client.single import SingleStorageClient
 from multistorageclient.config import StorageClientConfig
 from multistorageclient.types import Range, SourceVersionCheckMode
 from test_multistorageclient.unit.utils.tempdatastore import create_test_data
@@ -190,6 +193,67 @@ def test_cache_manager_read_file_with_etag(profile_name, tmpdir, cache_manager_w
     # Test that reading without etag returns None
     key_without_etag = f"bucket/{test_uuid}/test_file.txt"
     assert cache_manager_with_etag.read(key_without_etag) is None
+
+
+def test_cache_manager_read_disable_reuses_version_tagged_entry(cache_manager_with_etag):
+    key = "bucket/virtual-file.bin"
+    content = b"cached virtual content"
+    cache_manager_with_etag.set(key, content, source_version="manifest-synthetic-etag")
+
+    assert cache_manager_with_etag.read(key, check_source_version=SourceVersionCheckMode.DISABLE) == content
+
+
+def test_cache_manager_read_enable_validates_synthetic_etag(cache_manager_with_etag):
+    key = "bucket/virtual-file.bin"
+    content = b"cached virtual content"
+    source_version = "manifest-synthetic-etag"
+    cache_manager_with_etag.set(key, content, source_version=source_version)
+
+    assert (
+        cache_manager_with_etag.read(
+            key,
+            source_version=source_version,
+            check_source_version=SourceVersionCheckMode.ENABLE,
+        )
+        == content
+    )
+    assert (
+        cache_manager_with_etag.read(
+            key,
+            source_version="different-etag",
+            check_source_version=SourceVersionCheckMode.ENABLE,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("check_source_version", "expected_source_version"),
+    [
+        pytest.param(SourceVersionCheckMode.DISABLE, None, id="disable"),
+        pytest.param(SourceVersionCheckMode.ENABLE, "manifest-synthetic-etag", id="enable"),
+        pytest.param(SourceVersionCheckMode.INHERIT, "manifest-synthetic-etag", id="inherit"),
+    ],
+)
+def test_single_client_full_cache_read_propagates_source_version_mode(
+    check_source_version: SourceVersionCheckMode,
+    expected_source_version: str | None,
+) -> None:
+    client = SingleStorageClient.__new__(SingleStorageClient)
+    client._metadata_provider = None
+    client._replica_manager = None
+    client._cache_manager = MagicMock()
+    client._cache_manager.check_source_version.return_value = True
+    client._cache_manager.read.return_value = b"cached virtual content"
+    client._storage_provider = MagicMock()
+    client._storage_provider.get_object_metadata.return_value.etag = "manifest-synthetic-etag"
+
+    assert client.read("virtual-file.bin", check_source_version=check_source_version) == b"cached virtual content"
+    client._cache_manager.read.assert_called_once_with(
+        "virtual-file.bin",
+        expected_source_version,
+        check_source_version=check_source_version,
+    )
 
 
 def test_cache_manager_read_delete_file_with_etag(profile_name, tmpdir, cache_manager_with_etag):
@@ -378,6 +442,169 @@ def test_partial_chunk_publish_is_atomic_without_source_version(tmpdir, monkeypa
     assert not [name for name in os.listdir(os.path.dirname(chunk_path)) if name.startswith(".chunk_tmp_")]
 
 
+def test_partial_chunk_lock_revalidates_a_newer_source_revision_before_reusing_a_published_chunk(tmpdir):
+    probe_path = os.path.join(str(tmpdir), "xattr-probe")
+    with open(probe_path, "wb") as probe_file:
+        probe_file.write(b"probe")
+    try:
+        xattr.setxattr(probe_path, "user.etag", b"probe")
+        xattr.getxattr(probe_path, "user.etag")
+    except OSError:
+        pytest.skip("xattr is not supported on this filesystem")
+    finally:
+        os.unlink(probe_path)
+
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir)),
+    )
+    key = "bucket/revisioned.bin"
+    byte_range = Range(offset=0, size=3)
+    old_data = b"old" + b"x" * (1024 * 1024 - 3)
+    new_data = b"new" + b"y" * (1024 * 1024 - 3)
+    old_fetch_started = threading.Event()
+    allow_old_fetch = threading.Event()
+    newer_attempt_started = threading.Event()
+
+    class BlockingOldProvider(RangeAwareStorageProvider):
+        def get_object(self, object_key: str, requested_range: Range | None = None) -> bytes:
+            old_fetch_started.set()
+            if not allow_old_fetch.wait(timeout=5):
+                raise TimeoutError("timed out waiting to publish the old revision")
+            return super().get_object(object_key, requested_range)
+
+    old_provider = BlockingOldProvider(old_data)
+    new_provider = RangeAwareStorageProvider(new_data)
+    original_acquire_lock = cache_manager.acquire_lock
+
+    def acquire_lock(lock_key: str):
+        if threading.current_thread().name == "newer-reader":
+            newer_attempt_started.set()
+        return original_acquire_lock(lock_key)
+
+    cache_manager.acquire_lock = acquire_lock  # type: ignore[method-assign]
+    results: dict[str, bytes | None] = {}
+    errors: list[BaseException] = []
+
+    def read_old_revision() -> None:
+        try:
+            results["old"] = cache_manager.read(
+                key,
+                source_version="revision-1",
+                byte_range=byte_range,
+                storage_provider=old_provider,
+                source_size=len(old_data),
+            )
+        except BaseException as error:  # pragma: no cover - asserted below
+            errors.append(error)
+
+    def read_new_revision() -> None:
+        try:
+            results["new"] = cache_manager.read(
+                key,
+                source_version="revision-2",
+                byte_range=byte_range,
+                storage_provider=new_provider,
+                source_size=len(new_data),
+            )
+        except BaseException as error:  # pragma: no cover - asserted below
+            errors.append(error)
+
+    older = threading.Thread(target=read_old_revision, name="older-reader")
+    newer = threading.Thread(target=read_new_revision, name="newer-reader")
+    older.start()
+    assert old_fetch_started.wait(timeout=5), "Older reader never acquired the chunk lock"
+    newer.start()
+    assert newer_attempt_started.wait(timeout=5), "Newer reader did not perform its pre-lock cache check"
+    allow_old_fetch.set()
+    older.join(timeout=5)
+    newer.join(timeout=5)
+
+    assert not errors
+    assert results == {"old": b"old", "new": b"new"}
+    assert old_provider.call_count == 1
+    assert new_provider.call_count == 1
+    chunk_path = cache_manager._get_chunk_path(cache_manager._get_cache_file_path(key), 0)
+    assert open(chunk_path, "rb").read() == new_data
+    assert xattr.getxattr(chunk_path, "user.etag") == b"revision-2"
+
+
+def test_partial_chunk_assembly_never_returns_a_concurrently_replaced_revision(tmpdir, monkeypatch):
+    probe_path = os.path.join(str(tmpdir), "xattr-probe")
+    with open(probe_path, "wb") as probe_file:
+        probe_file.write(b"probe")
+    try:
+        xattr.setxattr(probe_path, "user.etag", b"probe")
+        xattr.getxattr(probe_path, "user.etag")
+    except OSError:
+        pytest.skip("xattr is not supported on this filesystem")
+    finally:
+        os.unlink(probe_path)
+
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir)),
+    )
+    key = "bucket/concurrent-revisions.bin"
+    byte_range = Range(offset=0, size=3)
+    old_data = b"old" + b"x" * (1024 * 1024 - 3)
+    new_data = b"new" + b"y" * (1024 * 1024 - 3)
+    old_provider = RangeAwareStorageProvider(old_data)
+    new_provider = RangeAwareStorageProvider(new_data)
+    old_ready_to_assemble = threading.Event()
+    allow_old_assembly = threading.Event()
+    original_assemble = cache_manager._assemble_result_from_chunks
+
+    def controlled_assemble(*args, **kwargs):
+        if threading.current_thread().name == "older-reader":
+            old_ready_to_assemble.set()
+            if not allow_old_assembly.wait(timeout=5):
+                raise TimeoutError("timed out waiting to assemble the old revision")
+        return original_assemble(*args, **kwargs)
+
+    monkeypatch.setattr(cache_manager, "_assemble_result_from_chunks", controlled_assemble)
+    results: dict[str, bytes | None] = {}
+    errors: list[BaseException] = []
+
+    def read_revision(name: str, revision: str, provider: RangeAwareStorageProvider) -> None:
+        try:
+            results[name] = cache_manager.read(
+                key,
+                source_version=revision,
+                byte_range=byte_range,
+                storage_provider=provider,
+                source_size=len(provider._data),
+            )
+        except BaseException as error:  # pragma: no cover - asserted below
+            errors.append(error)
+
+    older = threading.Thread(
+        target=read_revision,
+        args=("old", "revision-1", old_provider),
+        name="older-reader",
+    )
+    newer = threading.Thread(
+        target=read_revision,
+        args=("new", "revision-2", new_provider),
+        name="newer-reader",
+    )
+    older.start()
+    assert old_ready_to_assemble.wait(timeout=5)
+    newer.start()
+    newer.join(timeout=5)
+    assert not newer.is_alive()
+    allow_old_assembly.set()
+    older.join(timeout=5)
+
+    assert not errors
+    assert results == {"new": b"new", "old": b"old"}
+    assert old_provider.call_count == 2
+    assert new_provider.call_count == 1
+    chunk_path = cache_manager._get_chunk_path(cache_manager._get_cache_file_path(key), 0)
+    assert open(chunk_path, "rb").read() == new_data
+    assert xattr.getxattr(chunk_path, "user.etag") == b"revision-2"
+
+
 def test_partial_chunk_metadata_is_set_before_publish(tmpdir, monkeypatch):
     probe_path = os.path.join(tmpdir, "xattr-probe")
     with open(probe_path, "wb") as probe_file:
@@ -487,17 +714,18 @@ def test_assemble_result_invalidates_corrupt_short_chunk(tmpdir):
     assert not os.path.exists(chunk_path), "Corrupt undersized chunk should be invalidated"
 
 
-def test_short_final_chunk_without_xattr_falls_back_to_remote_read(tmpdir, monkeypatch):
+def test_short_final_chunk_without_xattr_uses_portable_metadata_and_reuses_the_cached_chunk(tmpdir, monkeypatch):
     cache_manager = CacheManager(
         profile="test",
         cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir)),
     )
-    test_content = create_test_data(4)
+    test_content = b"a" * (3 * 1024 * 1024) + b"tail"
     storage_provider = RangeAwareStorageProvider(test_content)
     key = "bucket/no_xattr_edge_case.bin"
     cache_path = cache_manager._get_cache_file_path(key)
     chunk_path = cache_manager._get_chunk_path(cache_path, 3)
-    byte_range = Range(offset=len(test_content) - 512, size=1024)
+    metadata_path = cache_manager._get_chunk_metadata_path(chunk_path)
+    byte_range = Range(offset=len(test_content) - 2, size=4)
 
     def raise_xattr_error(*_args, **_kwargs):
         raise OSError("xattr unsupported")
@@ -505,7 +733,7 @@ def test_short_final_chunk_without_xattr_falls_back_to_remote_read(tmpdir, monke
     monkeypatch.setattr(cache_module.xattr, "setxattr", raise_xattr_error)
     monkeypatch.setattr(cache_module.xattr, "getxattr", raise_xattr_error)
 
-    result = cache_manager.read(
+    first_result = cache_manager.read(
         key,
         source_version="etag-123",
         byte_range=byte_range,
@@ -513,9 +741,1156 @@ def test_short_final_chunk_without_xattr_falls_back_to_remote_read(tmpdir, monke
         source_size=len(test_content),
     )
 
-    assert result == test_content[byte_range.offset : byte_range.offset + byte_range.size]
-    assert not os.path.exists(chunk_path), "Chunk should be invalidated when size metadata cannot be persisted"
-    assert storage_provider.call_count == 2, "Read should fall back to a direct remote range fetch"
+    assert first_result == b"il"
+    assert os.path.exists(chunk_path)
+    assert os.path.exists(metadata_path)
+    assert storage_provider.call_count == 1
+
+    assert (
+        cache_manager.read(
+            key,
+            source_version="etag-123",
+            byte_range=byte_range,
+            storage_provider=storage_provider,  # type: ignore[arg-type]
+            source_size=len(test_content),
+        )
+        == first_result
+    )
+    assert storage_provider.call_count == 1, "A portable metadata hit must not refetch the cache line"
+
+    changed_content = b"b" * (3 * 1024 * 1024) + b"next"
+    changed_provider = RangeAwareStorageProvider(changed_content)
+    changed_range = Range(offset=len(changed_content) - 2, size=4)
+    assert (
+        cache_manager.read(
+            key,
+            source_version="etag-456",
+            byte_range=changed_range,
+            storage_provider=changed_provider,  # type: ignore[arg-type]
+            source_size=len(changed_content),
+        )
+        == b"xt"
+    )
+    assert changed_provider.call_count == 1
+
+    cache_manager._invalidate_chunks(cache_path)
+    assert not os.path.exists(chunk_path)
+    assert not os.path.exists(metadata_path)
+    assert not os.path.exists(os.path.dirname(chunk_path))
+
+
+@pytest.mark.parametrize("operation", ["read", "open"])
+@pytest.mark.parametrize(
+    ("cache_checks_source_version", "check_source_version"),
+    [
+        pytest.param(True, SourceVersionCheckMode.INHERIT, id="inherit-enabled"),
+        pytest.param(False, SourceVersionCheckMode.ENABLE, id="explicit-enable"),
+    ],
+)
+def test_full_cache_operations_remain_bound_to_the_descriptor_validated_for_the_source_version(
+    tmpdir,
+    monkeypatch,
+    operation,
+    cache_checks_source_version,
+    check_source_version,
+):
+    """A replacement after version validation cannot change a full-cache result."""
+    probe_path = os.path.join(str(tmpdir), "xattr-probe")
+    with open(probe_path, "wb") as probe_file:
+        probe_file.write(b"probe")
+    try:
+        xattr.setxattr(probe_path, "user.etag", b"probe")
+        xattr.getxattr(probe_path, "user.etag")
+    except OSError:
+        pytest.skip("xattr is not supported on this filesystem")
+    finally:
+        os.unlink(probe_path)
+
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(
+            size="10M",
+            cache_line_size="1M",
+            check_source_version=cache_checks_source_version,
+            location=str(tmpdir),
+        ),
+    )
+    key = "bucket/full-cache-race.bin"
+    source_version = "revision-1"
+    old_data = b"old-full-cache"
+    new_data = b"new-full-cache"
+    cache_manager.set(key, old_data, source_version=source_version)
+    cache_path = cache_manager._get_cache_file_path(key)
+    replacement_path = os.path.join(os.path.dirname(cache_path), "replacement.bin")
+    with open(replacement_path, "wb") as replacement:
+        replacement.write(new_data)
+    xattr.setxattr(replacement_path, "user.etag", b"revision-2")
+
+    metadata_checked = threading.Event()
+    allow_read = threading.Event()
+    original_getxattr = cache_module.xattr.getxattr
+
+    def synchronize_etag(target, name, *args, **kwargs):
+        value = original_getxattr(target, name, *args, **kwargs)
+        if name == "user.etag" and not metadata_checked.is_set():
+            metadata_checked.set()
+            assert allow_read.wait(timeout=5), "timed out waiting to replace the cache entry"
+        return value
+
+    monkeypatch.setattr(cache_module.xattr, "getxattr", synchronize_etag)
+    result: list[bytes | None] = []
+    errors: list[BaseException] = []
+
+    def read_from_cache() -> None:
+        try:
+            if operation == "read":
+                result.append(
+                    cache_manager.read(
+                        key,
+                        source_version=source_version,
+                        check_source_version=check_source_version,
+                    )
+                )
+                return
+
+            cached_file = cache_manager.open(
+                key,
+                source_version=source_version,
+                check_source_version=check_source_version,
+            )
+            assert cached_file is not None
+            with cached_file:
+                result.append(cached_file.read())
+        except BaseException as exc:
+            errors.append(exc)
+
+    reader = threading.Thread(target=read_from_cache)
+    reader.start()
+    assert metadata_checked.wait(timeout=5), "full-cache operation did not validate the cached revision"
+    os.replace(replacement_path, cache_path)
+    allow_read.set()
+    reader.join(timeout=5)
+
+    assert not reader.is_alive()
+    assert not errors
+    assert result == [old_data]
+
+
+def test_full_cache_read_and_open_accept_a_promoted_portable_metadata_sidecar(tmpdir, monkeypatch):
+    """Full-cache APIs validate a no-xattr promoted entry against its identity-bound sidecar."""
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir)),
+    )
+    key = "bucket/promoted-portable-full-cache.bin"
+    source_version = "revision-1"
+    data = b"portable"
+
+    def raise_xattr_error(*_args, **_kwargs):
+        raise OSError("xattr unsupported")
+
+    monkeypatch.setattr(cache_module.xattr, "setxattr", raise_xattr_error)
+    monkeypatch.setattr(cache_module.xattr, "getxattr", raise_xattr_error)
+    assert (
+        cache_manager.read(
+            key,
+            source_version=source_version,
+            byte_range=Range(offset=0, size=len(data)),
+            storage_provider=RangeAwareStorageProvider(data),
+            source_size=len(data),
+        )
+        == data
+    )
+
+    cache_path = cache_manager._get_cache_file_path(key)
+    assert os.path.exists(cache_manager._get_chunk_metadata_path(cache_path))
+    assert (
+        cache_manager.read(
+            key,
+            source_version=source_version,
+            check_source_version=SourceVersionCheckMode.ENABLE,
+        )
+        == data
+    )
+    cached_file = cache_manager.open(
+        key,
+        source_version=source_version,
+        check_source_version=SourceVersionCheckMode.ENABLE,
+    )
+    assert cached_file is not None
+    with cached_file:
+        assert cached_file.read() == data
+
+
+def test_range_read_from_an_ordinary_full_cache_uses_the_file_validated_by_xattr(tmpdir, monkeypatch):
+    """Replacing a full cache path after metadata validation cannot change the returned revision."""
+    probe_path = os.path.join(str(tmpdir), "xattr-probe")
+    with open(probe_path, "wb") as probe_file:
+        probe_file.write(b"probe")
+    try:
+        xattr.setxattr(probe_path, "user.etag", b"probe")
+        xattr.getxattr(probe_path, "user.etag")
+    except OSError:
+        pytest.skip("xattr is not supported on this filesystem")
+    finally:
+        os.unlink(probe_path)
+
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir)),
+    )
+    key = "bucket/full-cache.bin"
+    old_data = b"old-full-cache"
+    new_data = b"new-full-cache"
+    cache_manager.set(key, old_data, source_version="revision-1")
+    cache_path = cache_manager._get_cache_file_path(key)
+    replacement_path = os.path.join(os.path.dirname(cache_path), "replacement.bin")
+    with open(replacement_path, "wb") as replacement:
+        replacement.write(new_data)
+    xattr.setxattr(replacement_path, "user.etag", b"revision-2")
+
+    metadata_checked = threading.Event()
+    allow_read = threading.Event()
+    original_getxattr = cache_module.xattr.getxattr
+
+    def synchronize_etag(target, name, *args, **kwargs):
+        value = original_getxattr(target, name, *args, **kwargs)
+        if name == "user.etag":
+            metadata_checked.set()
+            assert allow_read.wait(timeout=5), "timed out waiting to replace the cache entry"
+        return value
+
+    monkeypatch.setattr(cache_module.xattr, "getxattr", synchronize_etag)
+    result: list[bytes | None] = []
+
+    reader = threading.Thread(
+        target=lambda: result.append(
+            cache_manager.read(
+                key,
+                source_version="revision-1",
+                byte_range=Range(offset=0, size=len(old_data)),
+                storage_provider=RangeAwareStorageProvider(b"unexpected"),
+                source_size=len(old_data),
+            )
+        )
+    )
+    reader.start()
+    assert metadata_checked.wait(timeout=5), "range reader did not validate the cached revision"
+    os.replace(replacement_path, cache_path)
+    allow_read.set()
+    reader.join(timeout=5)
+
+    assert not reader.is_alive()
+    assert result == [old_data]
+
+
+def test_range_read_reuses_a_legacy_etag_only_full_cache_entry(tmpdir):
+    """A pre-range-cache full entry remains valid for range reads when its revision matches."""
+    probe_path = os.path.join(str(tmpdir), "xattr-probe")
+    with open(probe_path, "wb") as probe_file:
+        probe_file.write(b"probe")
+    try:
+        xattr.setxattr(probe_path, "user.etag", b"probe")
+        xattr.getxattr(probe_path, "user.etag")
+    except OSError:
+        pytest.skip("xattr is not supported on this filesystem")
+    finally:
+        os.unlink(probe_path)
+
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir)),
+    )
+    key = "bucket/legacy-full-cache.bin"
+    source_version = "legacy-revision"
+    cached_data = b"legacy full-cache content"
+    cache_path = cache_manager._get_cache_file_path(key)
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    with open(cache_path, "wb") as cached_file:
+        cached_file.write(cached_data)
+    xattr.setxattr(cache_path, "user.etag", source_version.encode("utf-8"))
+
+    assert (
+        cache_manager.read(
+            key,
+            source_version=source_version,
+            check_source_version=SourceVersionCheckMode.ENABLE,
+        )
+        == cached_data
+    )
+
+    provider = RangeAwareStorageProvider(b"unexpected remote data")
+    assert (
+        cache_manager.read(
+            key,
+            source_version=source_version,
+            byte_range=Range(offset=7, size=9),
+            storage_provider=provider,  # type: ignore[arg-type]
+            source_size=len(cached_data),
+            check_source_version=SourceVersionCheckMode.ENABLE,
+        )
+        == cached_data[7:16]
+    )
+    assert provider.call_count == 0
+
+
+def test_range_read_from_a_promoted_chunk_uses_the_file_validated_by_xattr(tmpdir, monkeypatch):
+    """A promoted chunk-zero entry remains bound to the descriptor validated for its revision."""
+    probe_path = os.path.join(str(tmpdir), "xattr-probe")
+    with open(probe_path, "wb") as probe_file:
+        probe_file.write(b"probe")
+    try:
+        xattr.setxattr(probe_path, "user.etag", b"probe")
+        xattr.getxattr(probe_path, "user.etag")
+    except OSError:
+        pytest.skip("xattr is not supported on this filesystem")
+    finally:
+        os.unlink(probe_path)
+
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir)),
+    )
+    key = "bucket/promoted-cache.bin"
+    old_data = b"old"
+    new_data = b"new"
+    cache_manager.read(
+        key,
+        source_version="revision-1",
+        byte_range=Range(offset=0, size=len(old_data)),
+        storage_provider=RangeAwareStorageProvider(old_data),
+        source_size=len(old_data),
+    )
+    cache_path = cache_manager._get_cache_file_path(key)
+    assert os.path.exists(cache_path)
+
+    replacement_path = os.path.join(os.path.dirname(cache_path), "replacement.bin")
+    with open(replacement_path, "wb") as replacement:
+        replacement.write(new_data)
+    xattr.setxattr(replacement_path, "user.etag", b"revision-2")
+    xattr.setxattr(replacement_path, "user.cache_line_size", str(1024 * 1024).encode("utf-8"))
+    xattr.setxattr(replacement_path, "user.size", str(len(new_data)).encode("utf-8"))
+
+    metadata_checked = threading.Event()
+    allow_read = threading.Event()
+    original_getxattr = cache_module.xattr.getxattr
+
+    def synchronize_etag(target, name, *args, **kwargs):
+        value = original_getxattr(target, name, *args, **kwargs)
+        if name == "user.etag":
+            metadata_checked.set()
+            assert allow_read.wait(timeout=5), "timed out waiting to replace the cache entry"
+        return value
+
+    monkeypatch.setattr(cache_module.xattr, "getxattr", synchronize_etag)
+    result: list[bytes | None] = []
+
+    reader = threading.Thread(
+        target=lambda: result.append(
+            cache_manager.read(
+                key,
+                source_version="revision-1",
+                byte_range=Range(offset=0, size=len(old_data)),
+                storage_provider=RangeAwareStorageProvider(b"unexpected"),
+                source_size=len(old_data),
+            )
+        )
+    )
+    reader.start()
+    assert metadata_checked.wait(timeout=5), "range reader did not validate the promoted revision"
+    os.replace(replacement_path, cache_path)
+    allow_read.set()
+    reader.join(timeout=5)
+
+    assert not reader.is_alive()
+    assert result == [old_data]
+
+
+def test_range_read_from_a_promoted_chunk_uses_the_file_validated_by_portable_sidecar(tmpdir, monkeypatch):
+    """A no-xattr promoted entry validates the descriptor rather than reopening its pathname."""
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir)),
+    )
+    key = "bucket/promoted-sidecar-cache.bin"
+    old_data = b"old"
+    new_data = b"new"
+
+    def raise_xattr_error(*_args, **_kwargs):
+        raise OSError("xattr unsupported")
+
+    monkeypatch.setattr(cache_module.xattr, "setxattr", raise_xattr_error)
+    monkeypatch.setattr(cache_module.xattr, "getxattr", raise_xattr_error)
+    cache_manager.read(
+        key,
+        source_version="revision-1",
+        byte_range=Range(offset=0, size=len(old_data)),
+        storage_provider=RangeAwareStorageProvider(old_data),
+        source_size=len(old_data),
+    )
+    cache_path = cache_manager._get_cache_file_path(key)
+    assert os.path.exists(cache_path)
+    assert not os.path.exists(f"{cache_path}.metadata")
+    assert os.path.exists(cache_manager._get_chunk_metadata_path(cache_path))
+
+    metadata_checked = threading.Event()
+    allow_read = threading.Event()
+    original_read_sidecar = cache_manager._read_chunk_metadata_sidecar
+
+    def synchronize_sidecar(*args, **kwargs):
+        metadata = original_read_sidecar(*args, **kwargs)
+        metadata_checked.set()
+        assert allow_read.wait(timeout=5), "timed out waiting to replace the cache entry"
+        return metadata
+
+    monkeypatch.setattr(cache_manager, "_read_chunk_metadata_sidecar", synchronize_sidecar)
+    result: list[bytes | None] = []
+
+    reader = threading.Thread(
+        target=lambda: result.append(
+            cache_manager.read(
+                key,
+                source_version="revision-1",
+                byte_range=Range(offset=0, size=len(old_data)),
+                storage_provider=RangeAwareStorageProvider(b"unexpected"),
+                source_size=len(old_data),
+            )
+        )
+    )
+    reader.start()
+    assert metadata_checked.wait(timeout=5), "range reader did not validate the portable metadata"
+    replacement_path = os.path.join(os.path.dirname(cache_path), "replacement.bin")
+    with open(replacement_path, "wb") as replacement:
+        replacement.write(new_data)
+    os.replace(replacement_path, cache_path)
+    allow_read.set()
+    reader.join(timeout=5)
+
+    assert not reader.is_alive()
+    assert result == [old_data]
+
+
+def test_range_cache_sidecars_do_not_collide_with_logical_metadata_keys(tmpdir, monkeypatch):
+    """A logical ``*.metadata`` cache key remains independent from portable range metadata."""
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir)),
+    )
+    key = "foo"
+    logical_metadata_key = ".foo#chunk0.metadata"
+    content = b"x" * (2 * 1024 * 1024)
+    storage_provider = RangeAwareStorageProvider(content)
+
+    def raise_xattr_error(*_args, **_kwargs):
+        raise OSError("xattr unsupported")
+
+    monkeypatch.setattr(cache_module.xattr, "setxattr", raise_xattr_error)
+    monkeypatch.setattr(cache_module.xattr, "getxattr", raise_xattr_error)
+    assert (
+        cache_manager.read(
+            key,
+            source_version="revision-1",
+            byte_range=Range(offset=0, size=3),
+            storage_provider=storage_provider,
+            source_size=len(content),
+        )
+        == b"xxx"
+    )
+
+    cache_path = cache_manager._get_cache_file_path(key)
+    chunk_path = cache_manager._get_chunk_path(cache_path, 0)
+    metadata_path = cache_manager._get_chunk_metadata_path(chunk_path)
+    logical_metadata_path = cache_manager._get_cache_file_path(logical_metadata_key)
+    assert metadata_path != logical_metadata_path
+    assert os.path.exists(metadata_path)
+
+    cache_manager.set(logical_metadata_key, b"logical metadata object")
+
+    assert (
+        cache_manager.read(logical_metadata_key, check_source_version=SourceVersionCheckMode.DISABLE)
+        == b"logical metadata object"
+    )
+    assert (
+        cache_manager.read(
+            key,
+            source_version="revision-1",
+            byte_range=Range(offset=0, size=3),
+            storage_provider=storage_provider,
+            source_size=len(content),
+        )
+        == b"xxx"
+    )
+    assert storage_provider.call_count == 1
+
+
+def test_range_chunk_lock_stripes_remain_bounded_after_access_eviction_and_invalidation(tmpdir):
+    """Private range locks use a stable bounded pool rather than one inode per logical chunk."""
+    cache_config = CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir))
+    cache_manager = CacheManager(profile="test", cache_config=cache_config)
+    stripe_count = cache_module._RANGE_CACHE_LOCK_STRIPE_COUNT
+    accessed_chunks: list[tuple[str, int]] = []
+
+    for index in range(stripe_count * 2):
+        cache_path = cache_manager._get_cache_file_path(f"bucket/object-{index // 16}.bin")
+        chunk_idx = index % 16
+        lock_key = cache_manager._get_chunk_lock_key(cache_path, chunk_idx)
+        assert lock_key == cache_manager._get_chunk_lock_key(cache_path, chunk_idx)
+        with cache_manager.acquire_lock(lock_key):
+            pass
+        accessed_chunks.append((cache_path, chunk_idx))
+
+    peer_cache_manager = CacheManager(profile="test", cache_config=cache_config)
+    for cache_path, chunk_idx in accessed_chunks[:16]:
+        assert peer_cache_manager._get_chunk_lock_key(cache_path, chunk_idx) == cache_manager._get_chunk_lock_key(
+            cache_path, chunk_idx
+        )
+        chunk_path = cache_manager._get_chunk_path(cache_path, chunk_idx)
+        with cache_manager.acquire_lock(cache_manager._get_chunk_lock_key(cache_path, chunk_idx)):
+            cache_manager._write_chunk_to_cache(
+                chunk_path,
+                b"x",
+                source_version="revision-1",
+                chunk_idx=chunk_idx,
+                cache_line_size=cache_manager._cache_line_size or 1,
+                source_size=None,
+            )
+
+    cache_manager._max_cache_size = 0
+    cache_manager.evict_files()
+    for cache_path, _ in accessed_chunks[:16]:
+        cache_manager._invalidate_chunks(cache_path)
+
+    lock_root = os.path.join(cache_manager._range_cache_dir, cache_module._RANGE_CACHE_LOCK_DIRECTORY)
+    observed_directories: list[str] = []
+    lock_files: list[str] = []
+    for root, directories, filenames in os.walk(lock_root):
+        observed_directories.extend(os.path.join(root, directory) for directory in directories)
+        lock_files.extend(os.path.join(root, filename) for filename in filenames)
+
+    assert not observed_directories
+    assert len(lock_files) <= stripe_count
+    assert all(os.path.dirname(lock_file) == lock_root for lock_file in lock_files)
+    assert all(
+        os.path.basename(lock_file).startswith(".stripe-") and lock_file.endswith(".lock") for lock_file in lock_files
+    )
+    assert cache_manager.cache_size() == 0
+
+
+def test_logical_metadata_files_are_quota_accounted_and_evicted(tmpdir):
+    """Only internal range sidecars are exempt from cache size and eviction accounting."""
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(
+            size="1M",
+            cache_line_size="1M",
+            check_source_version=False,
+            location=str(tmpdir),
+            eviction_policy=EvictionPolicyConfig(policy="fifo", purge_factor=0),
+        ),
+    )
+    metadata_key = ".foo#chunk0.metadata"
+    data_key = "second.bin"
+    cache_manager.set(metadata_key, b"m" * 1024 * 1024)
+    metadata_path = cache_manager._get_cache_file_path(metadata_key)
+    cache_manager._make_writable(metadata_path)
+    os.utime(metadata_path, ns=(1, 1))
+    cache_manager._make_readonly(metadata_path)
+    cache_manager.set(data_key, b"d" * 1024 * 1024)
+
+    assert cache_manager.cache_size() == 2 * 1024 * 1024
+
+    cache_manager.evict_files()
+
+    assert not os.path.exists(metadata_path)
+    assert cache_manager.cache_size() <= 1024 * 1024
+
+
+def test_cross_profile_eviction_removes_foreign_range_data_and_portable_sidecar(tmpdir, monkeypatch):
+    """A shared cache root evicts a foreign range chunk together with its metadata sidecar."""
+    cache_config = CacheConfig(
+        size="2M",
+        cache_line_size="1M",
+        check_source_version=True,
+        location=str(tmpdir),
+        eviction_policy=EvictionPolicyConfig(policy="fifo", purge_factor=0),
+    )
+    evictor = CacheManager(profile="evictor", cache_config=cache_config)
+    owner = CacheManager(profile="owner", cache_config=cache_config)
+    cache_line_size = 1024 * 1024
+
+    def raise_xattr_error(*_args, **_kwargs):
+        raise OSError("xattr unsupported")
+
+    monkeypatch.setattr(cache_module.xattr, "setxattr", raise_xattr_error)
+    monkeypatch.setattr(cache_module.xattr, "getxattr", raise_xattr_error)
+
+    owner_cache_path = owner._get_cache_file_path("range-only.bin")
+    owner_chunk_path = owner._get_chunk_path(owner_cache_path, 0)
+    owner._write_chunk_to_cache(
+        owner_chunk_path,
+        b"o" * cache_line_size,
+        source_version="owner-r1",
+        chunk_idx=0,
+        cache_line_size=cache_line_size,
+        source_size=cache_line_size,
+    )
+    owner_sidecar_path = owner._get_chunk_metadata_path(owner_chunk_path)
+    assert os.path.exists(owner_sidecar_path)
+    os.utime(owner_chunk_path, ns=(1, 1))
+    os.utime(owner_sidecar_path, ns=(1, 1))
+
+    evictor.set("newer.bin", b"e" * cache_line_size)
+    evictor._max_cache_size = 3 * cache_line_size // 2
+
+    assert evictor.cache_size() == 2 * cache_line_size
+    evictor.evict_files()
+
+    assert not os.path.exists(owner_chunk_path)
+    assert not os.path.exists(owner_sidecar_path)
+
+
+def test_cross_profile_full_entry_eviction_cleans_the_owning_range_namespace(tmpdir, monkeypatch):
+    """Evicting another profile's full entry removes its private promoted chunks and sidecars."""
+    cache_config = CacheConfig(
+        size="4M",
+        cache_line_size="1M",
+        check_source_version=True,
+        location=str(tmpdir),
+        eviction_policy=EvictionPolicyConfig(policy="fifo", purge_factor=0),
+    )
+    evictor = CacheManager(profile="evictor", cache_config=cache_config)
+    owner = CacheManager(profile="owner", cache_config=cache_config)
+    cache_line_size = 1024 * 1024
+
+    def raise_xattr_error(*_args, **_kwargs):
+        raise OSError("xattr unsupported")
+
+    monkeypatch.setattr(cache_module.xattr, "setxattr", raise_xattr_error)
+    monkeypatch.setattr(cache_module.xattr, "getxattr", raise_xattr_error)
+
+    owner_key = "object.bin"
+    owner.set(owner_key, b"o" * cache_line_size, source_version="owner-r1")
+    owner_cache_path = owner._get_cache_file_path(owner_key)
+    owner_chunk_path = owner._get_chunk_path(owner_cache_path, 0)
+    owner._write_chunk_to_cache(
+        owner_chunk_path,
+        b"r" * cache_line_size,
+        source_version="owner-r1",
+        chunk_idx=0,
+        cache_line_size=cache_line_size,
+        source_size=cache_line_size,
+    )
+    owner_sidecar_path = owner._get_chunk_metadata_path(owner_chunk_path)
+    assert os.path.exists(owner_sidecar_path)
+    owner._make_writable(owner_cache_path)
+    os.utime(owner_cache_path, ns=(1, 1))
+    owner._make_readonly(owner_cache_path)
+    os.utime(owner_chunk_path, ns=(2, 2))
+    os.utime(owner_sidecar_path, ns=(2, 2))
+
+    evictor.set("newer.bin", b"e" * cache_line_size)
+    evictor._max_cache_size = 5 * cache_line_size // 2
+
+    assert evictor._cache_refresh_lock_file.lock_file == owner._cache_refresh_lock_file.lock_file
+    assert evictor.cache_size() == 3 * cache_line_size
+    evictor.evict_files()
+
+    assert not os.path.exists(owner_cache_path)
+    assert not os.path.exists(owner_chunk_path)
+    assert not os.path.exists(owner_sidecar_path)
+
+
+def test_cross_profile_eviction_never_deletes_an_in_progress_foreign_temp_file(tmpdir):
+    """A profile's eviction pass excludes every cache-root temporary namespace."""
+    cache_config = CacheConfig(
+        size="1M",
+        cache_line_size="1M",
+        check_source_version=False,
+        location=str(tmpdir),
+        eviction_policy=EvictionPolicyConfig(policy="fifo", purge_factor=0),
+    )
+    evictor = CacheManager(profile="evictor", cache_config=cache_config)
+    owner = CacheManager(profile="owner", cache_config=cache_config)
+    temporary_path = os.path.join(owner._cache_temp_dir, "in-progress-download")
+    with open(temporary_path, "wb") as temporary:
+        temporary.write(b"in progress")
+
+    evictor._max_cache_size = 0
+    evictor.evict_files()
+
+    assert os.path.exists(temporary_path)
+    assert evictor.cache_size() == 0
+
+
+def test_cross_profile_eviction_preserves_a_legacy_in_progress_temp_download(tmpdir):
+    """New cache roots continue to exclude baseline ``.tmp-<profile>`` downloads from quota management."""
+    cache_config = CacheConfig(
+        size="1M",
+        cache_line_size="1M",
+        check_source_version=False,
+        location=str(tmpdir),
+        eviction_policy=EvictionPolicyConfig(policy="fifo", purge_factor=0),
+    )
+    legacy_temporary_dir = os.path.join(str(tmpdir), ".tmp-legacy-profile")
+    os.makedirs(legacy_temporary_dir)
+    legacy_temporary_path = os.path.join(legacy_temporary_dir, "in-progress-download")
+    with open(legacy_temporary_path, "wb") as temporary:
+        temporary.write(b"legacy in progress" * (128 * 1024))
+
+    evictor = CacheManager(profile="evictor", cache_config=cache_config)
+
+    evictor._max_cache_size = 0
+    assert evictor.cache_size() == 0
+    evictor.evict_files()
+
+    assert os.path.exists(legacy_temporary_path)
+
+
+@pytest.mark.parametrize("operation", ["read", "open"])
+def test_cache_manager_set_publishes_identity_bound_portable_metadata_without_xattrs(tmpdir, monkeypatch, operation):
+    """Full-cache set() entries remain reusable for validated reads without xattrs."""
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir)),
+    )
+    key = "bucket/no-xattr-full-cache.bin"
+    source_version = "revision-2"
+    data = b"portable full cache"
+
+    def raise_xattr_error(*_args, **_kwargs):
+        raise OSError("xattr unsupported")
+
+    monkeypatch.setattr(cache_module.xattr, "setxattr", raise_xattr_error)
+    monkeypatch.setattr(cache_module.xattr, "getxattr", raise_xattr_error)
+
+    cache_manager.set(key, data, source_version=source_version)
+    cache_path = cache_manager._get_cache_file_path(key)
+    metadata_path = cache_manager._get_chunk_metadata_path(cache_path)
+
+    assert os.path.exists(metadata_path)
+    metadata = cache_manager._read_chunk_metadata_sidecar(cache_path)
+    assert metadata is not None
+    assert metadata["source_version"] == source_version
+    assert metadata["object_size"] == len(data)
+
+    if operation == "read":
+        assert (
+            cache_manager.read(
+                key,
+                source_version=source_version,
+                check_source_version=SourceVersionCheckMode.ENABLE,
+            )
+            == data
+        )
+    else:
+        cached_file = cache_manager.open(
+            key,
+            source_version=source_version,
+            check_source_version=SourceVersionCheckMode.ENABLE,
+        )
+        assert cached_file is not None
+        with cached_file:
+            assert cached_file.read() == data
+
+
+def test_cache_manager_serializes_no_xattr_publication_for_concurrent_revisions(tmpdir, monkeypatch):
+    """The data replacement and portable metadata publication form one cache-root transition."""
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir)),
+    )
+    key = "bucket/concurrent-no-xattr.bin"
+    first_metadata_started = threading.Event()
+    second_started = threading.Event()
+    second_metadata_published = threading.Event()
+    errors: list[BaseException] = []
+
+    def raise_xattr_error(*_args, **_kwargs):
+        raise OSError("xattr unsupported")
+
+    monkeypatch.setattr(cache_module.xattr, "setxattr", raise_xattr_error)
+    monkeypatch.setattr(cache_module.xattr, "getxattr", raise_xattr_error)
+    original_write_sidecar = cache_manager._write_chunk_metadata_sidecar
+
+    def serialize_first_sidecar(*args, **kwargs):
+        source_version = kwargs.get("source_version", args[1])
+        if source_version == "revision-a":
+            first_metadata_started.set()
+            assert second_started.wait(timeout=5), "second writer did not start"
+            if not cache_manager._cache_refresh_lock_file.is_locked:
+                assert second_metadata_published.wait(timeout=5), "second writer did not publish metadata"
+        result = original_write_sidecar(*args, **kwargs)
+        if source_version == "revision-b":
+            second_metadata_published.set()
+        return result
+
+    monkeypatch.setattr(cache_manager, "_write_chunk_metadata_sidecar", serialize_first_sidecar)
+
+    def publish(data: bytes, revision: str, started: threading.Event | None = None) -> None:
+        try:
+            if started is not None:
+                started.set()
+            cache_manager.set(key, data, source_version=revision)
+        except BaseException as error:  # pragma: no cover - asserted below
+            errors.append(error)
+
+    first = threading.Thread(target=publish, args=(b"first", "revision-a"))
+    first.start()
+    assert first_metadata_started.wait(timeout=5), "first writer did not reach portable metadata publication"
+    second = threading.Thread(target=publish, args=(b"second", "revision-b", second_started))
+    second.start()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert not errors
+    assert (
+        cache_manager.read(key, source_version="revision-b", check_source_version=SourceVersionCheckMode.ENABLE)
+        == b"second"
+    )
+    assert (
+        cache_manager.read(key, source_version="revision-a", check_source_version=SourceVersionCheckMode.ENABLE) is None
+    )
+
+
+def test_range_chunk_serializes_no_xattr_publication_for_concurrent_revisions(tmpdir, monkeypatch):
+    """Private range chunks use the same publication coordinator as full cache entries."""
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir)),
+    )
+    cache_path = cache_manager._get_cache_file_path("bucket/concurrent-chunk.bin")
+    chunk_path = cache_manager._get_chunk_path(cache_path, 0)
+    first_metadata_started = threading.Event()
+    second_started = threading.Event()
+    second_metadata_published = threading.Event()
+    errors: list[BaseException] = []
+
+    def raise_xattr_error(*_args, **_kwargs):
+        raise OSError("xattr unsupported")
+
+    monkeypatch.setattr(cache_module.xattr, "setxattr", raise_xattr_error)
+    monkeypatch.setattr(cache_module.xattr, "getxattr", raise_xattr_error)
+    original_write_sidecar = cache_manager._write_chunk_metadata_sidecar
+
+    def serialize_first_sidecar(*args, **kwargs):
+        source_version = kwargs.get("source_version", args[1])
+        if source_version == "revision-a":
+            first_metadata_started.set()
+            assert second_started.wait(timeout=5), "second chunk writer did not start"
+            if not cache_manager._cache_refresh_lock_file.is_locked:
+                assert second_metadata_published.wait(timeout=5), "second chunk writer did not publish metadata"
+        result = original_write_sidecar(*args, **kwargs)
+        if source_version == "revision-b":
+            second_metadata_published.set()
+        return result
+
+    monkeypatch.setattr(cache_manager, "_write_chunk_metadata_sidecar", serialize_first_sidecar)
+
+    def publish(data: bytes, revision: str, started: threading.Event | None = None) -> None:
+        try:
+            if started is not None:
+                started.set()
+            cache_manager._write_chunk_to_cache(
+                chunk_path,
+                data,
+                source_version=revision,
+                chunk_idx=0,
+                cache_line_size=1024 * 1024,
+                source_size=len(data),
+            )
+        except BaseException as error:  # pragma: no cover - asserted below
+            errors.append(error)
+
+    first = threading.Thread(target=publish, args=(b"first", "revision-a"))
+    first.start()
+    assert first_metadata_started.wait(timeout=5), "first chunk writer did not reach portable metadata publication"
+    second = threading.Thread(target=publish, args=(b"second", "revision-b", second_started))
+    second.start()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert not errors
+    assert cache_manager._is_chunk_valid(
+        chunk_path,
+        "revision-b",
+        1024 * 1024,
+        require_source_version=True,
+    )
+    assert open(chunk_path, "rb").read() == b"second"
+
+
+def test_cache_manager_publication_survives_eviction_attempt_after_data_replace(tmpdir, monkeypatch):
+    """Eviction cannot see a data file before its portable metadata and cleanup are complete."""
+    cache_config = CacheConfig(
+        size="1M",
+        cache_line_size="1M",
+        check_source_version=True,
+        location=str(tmpdir),
+        eviction_policy=EvictionPolicyConfig(policy="fifo", purge_factor=0),
+    )
+    cache_manager = CacheManager(profile="test", cache_config=cache_config)
+    evictor = CacheManager(profile="test", cache_config=cache_config)
+    cache_manager._max_cache_size = 0
+    evictor._max_cache_size = 0
+    key = "bucket/evicted-publication.bin"
+    cache_path = cache_manager._get_cache_file_path(key)
+    eviction_started = threading.Event()
+    eviction_finished = threading.Event()
+    eviction_thread: list[threading.Thread] = []
+
+    def raise_xattr_error(*_args, **_kwargs):
+        raise OSError("xattr unsupported")
+
+    monkeypatch.setattr(cache_module.xattr, "setxattr", raise_xattr_error)
+    monkeypatch.setattr(cache_module.xattr, "getxattr", raise_xattr_error)
+    original_replace = cache_module.os.replace
+
+    def evict_after_data_replace(source: str, destination: str) -> None:
+        original_replace(source, destination)
+        if destination != cache_path:
+            return
+
+        def evict() -> None:
+            eviction_started.set()
+            evictor.evict_files()
+            eviction_finished.set()
+
+        thread = threading.Thread(target=evict)
+        eviction_thread.append(thread)
+        thread.start()
+        assert eviction_started.wait(timeout=5), "eviction did not begin"
+        if not cache_manager._cache_refresh_lock_file.is_locked:
+            assert eviction_finished.wait(timeout=5), "eviction did not run after data replacement"
+
+    monkeypatch.setattr(cache_module.os, "replace", evict_after_data_replace)
+
+    cache_manager.set(key, b"cached", source_version="revision-1")
+
+    assert eviction_thread
+    eviction_thread[0].join(timeout=5)
+    assert not eviction_thread[0].is_alive()
+    assert eviction_finished.is_set()
+    assert not os.path.exists(cache_path)
+    assert not os.path.exists(cache_manager._get_chunk_metadata_path(cache_path))
+
+
+def test_cache_manager_serializes_explicit_delete_with_no_xattr_publication(tmpdir, monkeypatch):
+    """An explicit delete cannot run between data replacement and portable-sidecar publication."""
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir)),
+    )
+    key = "bucket/explicit-delete-no-xattr.bin"
+    cache_path = cache_manager._get_cache_file_path(key)
+    transition: queue.Queue[str] = queue.Queue()
+    deletion_requested = threading.Event()
+    deletion_finished = threading.Event()
+    allow_delete = threading.Event()
+    errors: list[BaseException] = []
+    delete_threads: list[threading.Thread] = []
+
+    class RootPublicationLock:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+
+        def __enter__(self):
+            if threading.current_thread().name == "cache-explicit-delete":
+                transition.put("root")
+            self._lock.acquire()
+            return self
+
+        def __exit__(self, *_args) -> None:
+            self._lock.release()
+
+    def raise_xattr_error(*_args, **_kwargs):
+        raise OSError("xattr unsupported")
+
+    monkeypatch.setattr(cache_module.xattr, "setxattr", raise_xattr_error)
+    monkeypatch.setattr(cache_module.xattr, "getxattr", raise_xattr_error)
+    monkeypatch.setattr(cache_manager, "_cache_refresh_lock_file", RootPublicationLock())
+    original_delete = cache_manager._delete_cache_file_at_path
+    original_replace = cache_module.os.replace
+
+    def observe_delete(path: str) -> None:
+        transition.put("body")
+        assert allow_delete.wait(timeout=5), "delete was never allowed to continue"
+        original_delete(path)
+
+    monkeypatch.setattr(cache_manager, "_delete_cache_file_at_path", observe_delete)
+
+    def delete_cached_file() -> None:
+        try:
+            deletion_requested.set()
+            cache_manager.delete(key)
+        except BaseException as error:  # pragma: no cover - asserted below
+            errors.append(error)
+        finally:
+            deletion_finished.set()
+
+    def interleave_after_data_replace(source: str, destination: str) -> None:
+        original_replace(source, destination)
+        if destination != cache_path:
+            return
+
+        delete_thread = threading.Thread(target=delete_cached_file, name="cache-explicit-delete")
+        delete_threads.append(delete_thread)
+        delete_thread.start()
+        assert deletion_requested.wait(timeout=5), "delete did not start"
+        transition_kind = transition.get(timeout=5)
+        allow_delete.set()
+        if transition_kind == "body":
+            assert deletion_finished.wait(timeout=5), "unlocked delete did not complete before sidecar publication"
+
+    monkeypatch.setattr(cache_module.os, "replace", interleave_after_data_replace)
+
+    cache_manager.set(key, b"cached", source_version="revision-1")
+
+    assert len(delete_threads) == 1
+    delete_threads[0].join(timeout=5)
+    assert not delete_threads[0].is_alive()
+    assert not errors
+    assert not os.path.exists(cache_path)
+    assert not os.path.exists(cache_manager._get_chunk_metadata_path(cache_path))
+
+
+@pytest.mark.parametrize("source_version", [None, ""], ids=["none", "empty"])
+def test_required_source_version_rejects_missing_no_xattr_full_and_range_entries(tmpdir, monkeypatch, source_version):
+    """Required version checks fail closed when either requested revision is absent or empty."""
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir)),
+    )
+    key = "bucket/missing-revision.bin"
+    cached = b"cached data"
+    remote = b"fresh data"
+
+    def raise_xattr_error(*_args, **_kwargs):
+        raise OSError("xattr unsupported")
+
+    monkeypatch.setattr(cache_module.xattr, "setxattr", raise_xattr_error)
+    monkeypatch.setattr(cache_module.xattr, "getxattr", raise_xattr_error)
+    cache_manager.set(key, cached, source_version="stored-revision")
+
+    assert (
+        cache_manager.read(key, source_version=source_version, check_source_version=SourceVersionCheckMode.ENABLE)
+        is None
+    )
+    assert (
+        cache_manager.open(key, source_version=source_version, check_source_version=SourceVersionCheckMode.ENABLE)
+        is None
+    )
+    assert (
+        cache_manager.read(
+            key,
+            source_version=source_version,
+            byte_range=Range(offset=0, size=3),
+            storage_provider=RangeAwareStorageProvider(remote),
+            source_size=len(remote),
+            check_source_version=SourceVersionCheckMode.ENABLE,
+        )
+        is None
+    )
+
+    assert cache_manager.read(key, check_source_version=SourceVersionCheckMode.DISABLE) == cached
+    cached_file = cache_manager.open(key, check_source_version=SourceVersionCheckMode.DISABLE)
+    assert cached_file is not None
+    with cached_file:
+        assert cached_file.read() == cached
+    assert (
+        cache_manager.read(
+            key,
+            byte_range=Range(offset=0, size=3),
+            storage_provider=RangeAwareStorageProvider(remote),
+            source_size=len(remote),
+            check_source_version=SourceVersionCheckMode.DISABLE,
+        )
+        == cached[:3]
+    )
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [".range-cache-user", ".cache_refresh.lock", "project.v2+preview@west"],
+)
+def test_cache_profile_names_do_not_collide_with_internal_namespaces(tmpdir, profile):
+    """Legal one-component profile names remain ordinary cache-data roots."""
+    cache_manager = CacheManager(
+        profile=profile,
+        cache_config=CacheConfig(
+            size="1M",
+            cache_line_size="1M",
+            check_source_version=False,
+            location=str(tmpdir),
+            eviction_policy=EvictionPolicyConfig(policy="fifo", purge_factor=0),
+        ),
+    )
+    key = "bucket/object.bin"
+    cache_manager.set(key, b"data")
+    cache_path = cache_manager._get_cache_file_path(key)
+
+    assert cache_manager.read(key, check_source_version=SourceVersionCheckMode.DISABLE) == b"data"
+    assert os.path.commonpath([os.path.realpath(str(tmpdir)), os.path.realpath(cache_path)]) == os.path.realpath(
+        str(tmpdir)
+    )
+    cache_manager._max_cache_size = 0
+    cache_manager.evict_files()
+    assert not os.path.exists(cache_path)
+
+
+@pytest.mark.parametrize("profile", [".tmp-user", ".tmp-legacy-profile", ".tmp-"])
+def test_cache_manager_rejects_profiles_reserved_for_legacy_temp_downloads(tmpdir, profile):
+    """New profiles cannot claim the legacy temporary-directory prefix that eviction must preserve."""
+    with pytest.raises(ValueError, match="reserved"):
+        CacheManager(
+            profile=profile,
+            cache_config=CacheConfig(
+                size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir)
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [".msc-cache-internal", "nested/profile", r"nested\\profile", "nested/./..", ".", ".."],
+)
+def test_cache_manager_rejects_profiles_that_can_escape_or_alias_internal_paths(tmpdir, profile):
+    """Runtime CacheManager construction enforces the same one-component profile boundary as schema loading."""
+    with pytest.raises(ValueError, match="profile"):
+        CacheManager(
+            profile=profile,
+            cache_config=CacheConfig(
+                size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir)
+            ),
+        )
+
+
+def test_cache_manager_rejects_logical_keys_that_escape_the_profile_cache_root(tmpdir):
+    """A cache key cannot traverse out of the validated profile data root."""
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir)),
+    )
+
+    with pytest.raises(ValueError, match="escapes"):
+        cache_manager.set("../outside.bin", b"outside")
+
+
+def test_cache_manager_rejects_an_internal_root_symlink_that_escapes_the_cache_root(tmpdir):
+    """Internal cache bookkeeping cannot be redirected outside the configured cache location."""
+    outside = tmpdir.dirpath().mkdir(f"outside-{uuid.uuid4()}")
+    os.symlink(str(outside), os.path.join(str(tmpdir), ".msc-cache-internal"))
+
+    with pytest.raises(ValueError, match="internal.*escapes"):
+        CacheManager(
+            profile="test",
+            cache_config=CacheConfig(
+                size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir)
+            ),
+        )
 
 
 def test_cache_manager_generate_temp_file_path(cache_manager):
@@ -523,7 +1898,9 @@ def test_cache_manager_generate_temp_file_path(cache_manager):
     temp_file_path = cache_manager.generate_temp_file_path()
     assert os.path.exists(temp_file_path) is False
     assert cache_manager._cache_temp_dir in temp_file_path
-    assert cache_manager._cache_temp_dir == os.path.join(cache_manager._cache_dir, f".tmp-{cache_manager._profile}")
+    assert os.path.commonpath([cache_manager._cache_internal_dir, cache_manager._cache_temp_dir]) == (
+        cache_manager._cache_internal_dir
+    )
 
 
 def test_cache_manager_refresh_cache(tmpdir):
@@ -1253,10 +2630,6 @@ def test_concurrent_chunk_creation_with_locking():
             client1 = StorageClient(config=StorageClientConfig.from_dict(config, profile="origin"))
             client2 = StorageClient(config=StorageClientConfig.from_dict(config, profile="origin"))
 
-            # Ensure the cache directory structure exists and has proper permissions
-            cache_dir = os.path.join(config["cache"]["location"], "origin")
-            os.makedirs(cache_dir, exist_ok=True)
-
             # Test data
             byte_range = Range(offset=0, size=16 * 1024)  # 16KB starting at beginning
 
@@ -1297,12 +2670,10 @@ def test_concurrent_chunk_creation_with_locking():
             assert result1[1] == byte_range.size, f"Expected {byte_range.size} bytes, got {result1[1]}"
 
             # Verify chunk files were created and are valid
-            cache_dir = os.path.join(config["cache"]["location"], "origin")
-            file_dir = os.path.join(cache_dir, os.path.dirname(file_path))
-            base_name = os.path.basename(file_path)
-
             # Check that chunk 0 exists (since we read from offset 0)
-            chunk0_path = os.path.join(file_dir, f".{base_name}#chunk0")
+            cache_manager = client1._cache_manager
+            assert cache_manager is not None
+            chunk0_path = cache_manager._get_chunk_path(cache_manager._get_cache_file_path(file_path), 0)
             assert os.path.exists(chunk0_path), "Chunk 0 should exist after range read"
 
             # Check that the chunk file is valid (not corrupted)
@@ -1316,9 +2687,7 @@ def test_concurrent_chunk_creation_with_locking():
             assert chunk_size == 1024 * 1024, f"Expected chunk size 1MB, got {chunk_size}"
 
             # Verify only one chunk0 exists (no duplicates from race conditions)
-            chunk_files = [
-                f for f in os.listdir(file_dir) if f.startswith(f".{base_name}#chunk0") and not f.endswith(".lock")
-            ]
+            chunk_files = [f for f in os.listdir(os.path.dirname(chunk0_path)) if f == os.path.basename(chunk0_path)]
             assert len(chunk_files) == 1, f"Expected 1 chunk0 file, found {len(chunk_files)}"
 
 

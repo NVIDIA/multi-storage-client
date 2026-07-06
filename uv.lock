@@ -2189,6 +2189,10 @@ vault = [
     { name = "cryptography" },
     { name = "hvac" },
 ]
+virtual-manifest = [
+    { name = "pyarrow" },
+    { name = "requests" },
+]
 xarray = [
     { name = "xarray" },
 ]
@@ -2244,9 +2248,11 @@ requires-dist = [
     { name = "prettytable", specifier = ">=3.10,<4" },
     { name = "psutil", specifier = ">=7,<8" },
     { name = "pyarrow", marker = "extra == 'parquet'", specifier = ">=23.0.1" },
+    { name = "pyarrow", marker = "extra == 'virtual-manifest'", specifier = ">=23.0.1" },
     { name = "python-dateutil", specifier = ">=2.9,<3" },
     { name = "pyyaml", specifier = ">=6.0.1,<7" },
     { name = "ray", marker = "extra == 'ray'", specifier = ">=2.55,<3" },
+    { name = "requests", marker = "extra == 'virtual-manifest'", specifier = ">=2.32,<3" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=2.12.1,<3" },
     { name = "tqdm", specifier = ">=4.67.1,<5" },
     { name = "tzdata", specifier = ">=2024.2,<2026" },
@@ -2257,7 +2263,7 @@ requires-dist = [
     { name = "zarr", marker = "python_full_version == '3.10.*' and extra == 'zarr'", specifier = ">=2.18.3,<3" },
     { name = "zarr", marker = "python_full_version >= '3.11' and extra == 'zarr'", specifier = ">=2.18.7,<3" },
 ]
-provides-extras = ["observability-otel", "msal", "vault", "cloudfront", "mcp", "explorer", "aistore", "azure-storage-blob", "boto3", "google-cloud-storage", "huggingface", "oci", "parquet", "fsspec", "hydra-core", "numpy", "ray", "torch", "xarray", "zarr"]
+provides-extras = ["observability-otel", "msal", "vault", "cloudfront", "mcp", "explorer", "aistore", "azure-storage-blob", "boto3", "google-cloud-storage", "huggingface", "oci", "parquet", "virtual-manifest", "fsspec", "hydra-core", "numpy", "ray", "torch", "xarray", "zarr"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2282,7 +2288,7 @@ version = "0.0.0"
 source = { virtual = "multi-storage-client-docs" }
 dependencies = [
     { name = "furo" },
-    { name = "multi-storage-client", extra = ["aistore", "azure-storage-blob", "boto3", "fsspec", "google-cloud-storage", "huggingface", "hydra-core", "numpy", "observability-otel", "oci", "parquet", "ray", "torch", "xarray", "zarr"] },
+    { name = "multi-storage-client", extra = ["aistore", "azure-storage-blob", "boto3", "fsspec", "google-cloud-storage", "huggingface", "hydra-core", "numpy", "observability-otel", "oci", "ray", "torch", "virtual-manifest", "xarray", "zarr"] },
     { name = "sphinx" },
     { name = "sphinx-copybutton" },
 ]
@@ -2290,7 +2296,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "furo", specifier = ">=2025.12.19" },
-    { name = "multi-storage-client", extras = ["observability-otel", "aistore", "azure-storage-blob", "boto3", "google-cloud-storage", "huggingface", "oci", "parquet", "fsspec", "hydra-core", "numpy", "ray", "torch", "xarray", "zarr"], editable = "multi-storage-client" },
+    { name = "multi-storage-client", extras = ["observability-otel", "aistore", "azure-storage-blob", "boto3", "google-cloud-storage", "huggingface", "oci", "virtual-manifest", "fsspec", "hydra-core", "numpy", "ray", "torch", "xarray", "zarr"], editable = "multi-storage-client" },
     { name = "sphinx", specifier = ">=8.1.3,<9" },
     { name = "sphinx-copybutton", specifier = ">=0.5.2,<0.6" },
 ]

@@ -1,8 +1,12 @@
-#########
-Manifests
-#########
+#######################
+Metadata Manifests (v1)
+#######################
 
-A manifest is a file (or group of files) describing the objects in a dataset, such as names, sizes, last-modified timestamps, and custom metadata tags. Manifests are optional but can greatly accelerate object listing and metadata retrieval for large datasets in object stores.
+This page documents MSC's **v1 metadata manifests**: a manifest index and one or more parts that accelerate object listing and metadata retrieval for another storage provider. They do not supply logical file bytes.
+
+For the distinct read-only storage provider that reconstructs immutable logical files from one Parquet file, see :doc:`/user_guide/virtual_manifests`.
+
+A v1 metadata manifest is a file (or group of files) describing the objects in a dataset, such as names, sizes, last-modified timestamps, and custom metadata tags. Metadata manifests are optional but can greatly accelerate object listing and metadata retrieval for large datasets in object stores.
 
 A common approach is to prepare a manifest that includes metadata (e.g. object/file paths, sizes, custom tags) to speed up data loading and parallel processing of very large datasets. By reading a manifest, MSC can quickly discover (list) or filter (glob) objects without having to iterate over every object in the bucket or prefix.
 

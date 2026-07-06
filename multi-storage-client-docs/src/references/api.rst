@@ -69,6 +69,10 @@ Providers
    :members:
    :undoc-members:
 
+.. automodule:: multistorageclient.providers.manifest
+   :members:
+   :undoc-members:
+
 .. automodule:: multistorageclient.providers.ais
    :members:
    :undoc-members:
@@ -102,6 +106,14 @@ Providers
    :undoc-members:
 
 .. automodule:: multistorageclient.providers.huggingface
+   :members:
+   :undoc-members:
+
+*******************
+Virtual Manifest v2
+*******************
+
+.. automodule:: multistorageclient.manifest
    :members:
    :undoc-members:
 

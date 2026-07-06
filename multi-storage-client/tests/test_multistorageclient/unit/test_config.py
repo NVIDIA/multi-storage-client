@@ -14,11 +14,13 @@
 # limitations under the License.
 
 import inspect
+import json
 import os
 import pickle
 import sys
 import tempfile
 import time
+from pathlib import Path
 from typing import cast
 
 import jwt
@@ -26,6 +28,7 @@ import pytest
 import yaml
 from oci.auth.signers import SecurityTokenSigner
 
+import multistorageclient.config as config_module
 import multistorageclient.telemetry as telemetry
 import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
 from multistorageclient import StorageClient, StorageClientConfig
@@ -36,6 +39,8 @@ from multistorageclient.config import (
     _merge_profiles,
     _resolve_include_path,
 )
+from multistorageclient.manifest import ManifestValidationError
+from multistorageclient.manifest.http import HTTPServiceRangeReader
 from multistorageclient.providers import (
     ManifestMetadataProvider,
     OracleStorageProvider,
@@ -44,8 +49,10 @@ from multistorageclient.providers import (
     S8KStorageProvider,
     StaticS3CredentialsProvider,
 )
+from multistorageclient.providers.manifest import ManifestStorageProvider
 from multistorageclient.schema import CONFIG_SCHEMA
 from multistorageclient.types import StorageProviderConfig
+from test_multistorageclient.unit.manifest.helpers import object_row, write_manifest
 from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
 
 
@@ -96,6 +103,36 @@ def test_yaml_config() -> None:
 
     storage_client = StorageClient(config)
     assert isinstance(storage_client._storage_provider, PosixFileStorageProvider)
+
+
+@pytest.mark.parametrize("entrypoint", ["from_dict", "from_yaml", "from_file"])
+def test_config_loading_rejects_profiles_reserved_for_legacy_temp_downloads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entrypoint: str,
+) -> None:
+    """Reserved cache-profile names fail schema validation before client construction."""
+    config = {
+        "profiles": {
+            ".tmp-user": {
+                "storage_provider": {
+                    "type": "file",
+                    "options": {"base_path": str(tmp_path)},
+                }
+            }
+        }
+    }
+
+    with pytest.raises(RuntimeError, match="Failed to validate the config file"):
+        if entrypoint == "from_dict":
+            StorageClientConfig.from_dict(config, profile=".tmp-user")
+        elif entrypoint == "from_yaml":
+            StorageClientConfig.from_yaml(yaml.safe_dump(config), profile=".tmp-user")
+        else:
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+            monkeypatch.setattr(config_module, "read_rclone_config", lambda: ({}, None))
+            StorageClientConfig.from_file([str(config_path)], profile=".tmp-user")
 
 
 def test_override_default_profile() -> None:
@@ -2740,3 +2777,318 @@ def test_config_include_opentelemetry_conflicts():
 
         error_msg = str(exc_info.value)
         assert "opentelemetry config conflict" in error_msg
+
+
+def _virtual_manifest_config() -> dict:
+    return {
+        "profiles": {
+            "manifest-store": {"storage_provider": {"type": "file", "options": {"base_path": "/tmp/manifests"}}},
+            "objects": {
+                "storage_provider": {"type": "file", "options": {"base_path": "/tmp/objects"}},
+                "retry": {"attempts": 2, "delay": 0, "backoff_multiplier": 1},
+            },
+            "virtual": {
+                "storage_provider": {
+                    "type": "manifest",
+                    "options": {
+                        "manifest_storage_profile": "manifest-store",
+                        "manifest_path": "catalog.parquet",
+                        "source_profiles": {"objects": {"profile": "objects", "binding_revision": "objects-r1"}},
+                    },
+                }
+            },
+        }
+    }
+
+
+@pytest.mark.parametrize("entrypoint", ["from_dict", "from_yaml", "from_file", "from_file_include"])
+def test_manifest_config_validates_whole_value_environment_interpolation_after_expansion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entrypoint: str,
+) -> None:
+    """Constrained virtual-manifest values are validated after whole-value interpolation in every loader path."""
+    manifest_root = tmp_path / "manifests"
+    object_root = tmp_path / "objects"
+    manifest_root.mkdir()
+    object_root.mkdir()
+    (manifest_root / "catalog.parquet").write_bytes(write_manifest([]).getvalue())
+    config = _virtual_manifest_config()
+    config["profiles"]["manifest-store"]["storage_provider"]["options"]["base_path"] = str(manifest_root)
+    config["profiles"]["objects"]["storage_provider"]["options"]["base_path"] = str(object_root)
+    options = config["profiles"]["virtual"]["storage_provider"]["options"]
+    options["manifest_path"] = "${MSC_MANIFEST_PATH}"
+    options["services"] = {
+        "renderer": {
+            "type": "http",
+            "options": {
+                "base_url": "${MSC_SERVICE_URL}",
+                "binding_revision": "renderer-r1",
+                "allowed_path_prefixes": ["render"],
+                "allowed_query_parameters": [],
+            },
+        }
+    }
+    monkeypatch.setenv("MSC_MANIFEST_PATH", "catalog.parquet")
+    monkeypatch.setenv("MSC_SERVICE_URL", "https://renderer.example.test/v1")
+    monkeypatch.setattr(config_module, "read_rclone_config", lambda: ({}, None))
+
+    if entrypoint == "from_dict":
+        loaded = StorageClientConfig.from_dict(config, profile="virtual")
+    elif entrypoint == "from_yaml":
+        loaded = StorageClientConfig.from_yaml(yaml.safe_dump(config), profile="virtual")
+    else:
+        config_path = tmp_path / "config.yaml"
+        if entrypoint == "from_file_include":
+            included_path = tmp_path / "included.yaml"
+            included_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+            config_path.write_text(yaml.safe_dump({"include": [included_path.name]}), encoding="utf-8")
+        else:
+            config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+        loaded = StorageClientConfig.from_file([str(config_path)], profile="virtual")
+
+    provider = cast(ManifestStorageProvider, loaded.storage_provider)
+    assert provider._manifest_path == "catalog.parquet"
+    reader = cast(HTTPServiceRangeReader, provider._service_bindings["renderer"].reader)
+    assert reader._base_url == "https://renderer.example.test/v1"
+
+
+def test_manifest_config_revalidates_manifest_path_after_environment_expansion(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Environment interpolation cannot turn a schema-safe manifest path into a root escape."""
+    config = _virtual_manifest_config()
+    config["profiles"]["virtual"]["storage_provider"]["options"]["manifest_path"] = (
+        "${MSC_MANIFEST_DIRECTORY}/catalog.parquet"
+    )
+    monkeypatch.setenv("MSC_MANIFEST_DIRECTORY", "../outside")
+
+    with pytest.raises(RuntimeError, match="Failed to validate the config file"):
+        StorageClientConfig.from_dict(config, profile="virtual")
+
+
+def test_manifest_http_binding_identity_uses_the_canonical_transport_origin(tmp_path: Path) -> None:
+    """The synthetic manifest identity records the same canonical HTTP origin used for requests."""
+    manifest_root = tmp_path / "manifests"
+    object_root = tmp_path / "objects"
+    manifest_root.mkdir()
+    object_root.mkdir()
+    (manifest_root / "catalog.parquet").write_bytes(write_manifest([]).getvalue())
+    config = _virtual_manifest_config()
+    config["profiles"]["manifest-store"]["storage_provider"]["options"]["base_path"] = str(manifest_root)
+    config["profiles"]["objects"]["storage_provider"]["options"]["base_path"] = str(object_root)
+    config["profiles"]["virtual"]["storage_provider"]["options"]["services"] = {
+        "renderer": {
+            "type": "http",
+            "options": {
+                "base_url": "https://RENDERER.EXAMPLE.TEST:443/v1",
+                "binding_revision": "renderer-r1",
+                "allowed_path_prefixes": ["render"],
+                "allowed_query_parameters": [],
+            },
+        }
+    }
+
+    provider = cast(ManifestStorageProvider, StorageClientConfig.from_dict(config, profile="virtual").storage_provider)
+    reader = cast(HTTPServiceRangeReader, provider._service_bindings["renderer"].reader)
+
+    assert reader._base_url == "https://renderer.example.test:443/v1"
+    assert json.loads(reader.binding_identity)["base_url"] == reader._base_url
+
+
+def test_manifest_config_rejects_file_prefix_collisions_before_constructing_a_client(tmp_path: Path) -> None:
+    """A config-backed virtual client cannot expose both a file and its synthetic child directory."""
+    manifest_root = tmp_path / "manifests"
+    object_root = tmp_path / "objects"
+    manifest_root.mkdir()
+    object_root.mkdir()
+    (manifest_root / "catalog.parquet").write_bytes(
+        write_manifest(
+            [
+                object_row(key="a", source_profile="objects", source_path="a.bin"),
+                object_row(key="a/b", source_profile="objects", source_path="a-b.bin"),
+            ]
+        ).getvalue()
+    )
+    config = _virtual_manifest_config()
+    config["profiles"]["manifest-store"]["storage_provider"]["options"]["base_path"] = str(manifest_root)
+    config["profiles"]["objects"]["storage_provider"]["options"]["base_path"] = str(object_root)
+
+    with pytest.raises(ManifestValidationError, match="ancestor"):
+        StorageClient(StorageClientConfig.from_dict(config, profile="virtual"))
+
+
+@pytest.mark.parametrize(
+    ("timeout_name", "timeout_value", "error_type", "error_message"),
+    [
+        pytest.param("connect_timeout_seconds", float("nan"), ValueError, "finite positive", id="yaml-nan"),
+        pytest.param("read_timeout_seconds", float("inf"), ValueError, "finite positive", id="yaml-inf"),
+        pytest.param("connect_timeout_seconds", True, RuntimeError, "Failed to validate", id="yaml-bool"),
+    ],
+)
+def test_manifest_yaml_config_rejects_non_finite_or_boolean_service_timeouts(
+    timeout_name: str,
+    timeout_value: object,
+    error_type: type[Exception],
+    error_message: str,
+) -> None:
+    """YAML scalar decoding cannot smuggle non-duration values into service timeouts."""
+    config = _virtual_manifest_config()
+    config["profiles"]["virtual"]["storage_provider"]["options"]["services"] = {
+        "renderer": {
+            "type": "http",
+            "options": {
+                "base_url": "https://service.example.test/v1",
+                "binding_revision": "renderer-r1",
+                "allowed_path_prefixes": ["render"],
+                "allowed_query_parameters": [],
+                timeout_name: timeout_value,
+            },
+        }
+    }
+
+    with pytest.raises(error_type, match=error_message):
+        StorageClientConfig.from_yaml(yaml.safe_dump(config), profile="virtual")
+
+
+def _indirect_manifest_reference_profile(kind: str) -> tuple[dict, dict]:
+    extra_profiles: dict = {}
+    if kind == "metadata":
+        profile = {
+            "storage_provider": {"type": "file", "options": {"base_path": "/tmp/indirect"}},
+            "metadata_provider": {"type": "manifest", "options": {"manifest_path": ".msc_manifests"}},
+        }
+    elif kind == "replicas":
+        extra_profiles["replica-target"] = {
+            "storage_provider": {"type": "file", "options": {"base_path": "/tmp/replica"}}
+        }
+        profile = {
+            "storage_provider": {"type": "file", "options": {"base_path": "/tmp/indirect"}},
+            "replicas": [{"replica_profile": "replica-target", "read_priority": 1}],
+        }
+    elif kind == "composite":
+        extra_profiles["composite-a"] = {
+            "storage_provider": {"type": "file", "options": {"base_path": "/tmp/composite-a"}}
+        }
+        extra_profiles["composite-b"] = {
+            "storage_provider": {"type": "file", "options": {"base_path": "/tmp/composite-b"}}
+        }
+        profile = {
+            "storage_provider_profiles": ["composite-a", "composite-b"],
+            "metadata_provider": {"type": "test_multistorageclient.unit.utils.mocks.TestMetadataProvider"},
+        }
+    elif kind == "provider-bundle":
+        profile = {"provider_bundle": {"type": "test_multistorageclient.unit.utils.mocks.TestProviderBundle"}}
+    elif kind == "manifest":
+        profile = {
+            "storage_provider": {
+                "type": "manifest",
+                "options": {
+                    "manifest_storage_profile": "manifest-store",
+                    "manifest_path": "nested.parquet",
+                    "source_profiles": {},
+                },
+            }
+        }
+    else:
+        raise AssertionError(f"unknown indirect profile kind: {kind}")
+    return profile, extra_profiles
+
+
+@pytest.mark.parametrize("reference_role", ["manifest-storage", "object-source"])
+@pytest.mark.parametrize(
+    ("indirect_kind", "expected_error"),
+    [
+        ("metadata", r"(?i)metadata.provider"),
+        ("replicas", r"(?i)replica"),
+        ("composite", r"(?i)composite|storage.provider.profiles"),
+        ("provider-bundle", r"(?i)provider.bundle"),
+        ("manifest", r"(?i)manifest"),
+    ],
+)
+def test_manifest_factory_rejects_non_direct_referenced_profiles(
+    reference_role: str,
+    indirect_kind: str,
+    expected_error: str,
+) -> None:
+    config = _virtual_manifest_config()
+    profile, extra_profiles = _indirect_manifest_reference_profile(indirect_kind)
+    config["profiles"].update(extra_profiles)
+    config["profiles"]["indirect"] = profile
+    options = config["profiles"]["virtual"]["storage_provider"]["options"]
+    if reference_role == "manifest-storage":
+        options["manifest_storage_profile"] = "indirect"
+    else:
+        options["source_profiles"]["objects"]["profile"] = "indirect"
+
+    with pytest.raises(ValueError, match=expected_error):
+        StorageClientConfig.from_dict(config, profile="virtual")
+
+
+def test_manifest_factory_rejects_rust_backed_manifest_storage_profile() -> None:
+    config = _virtual_manifest_config()
+    config["profiles"]["rust-manifest-store"] = {
+        "storage_provider": {
+            "type": "s3",
+            "options": {
+                "base_path": "manifest-bucket/prefix",
+                "endpoint_url": "https://s3.example.test",
+                "rust_client": {},
+            },
+        }
+    }
+    config["profiles"]["virtual"]["storage_provider"]["options"]["manifest_storage_profile"] = "rust-manifest-store"
+
+    with pytest.raises(ValueError, match=r"(?i)manifest.*rust|rust.*manifest"):
+        StorageClientConfig.from_dict(config, profile="virtual")
+
+
+@pytest.mark.parametrize("reference_role", ["manifest-storage", "object-source"])
+def test_manifest_factory_rejects_huggingface_referenced_profiles(reference_role: str) -> None:
+    config = _virtual_manifest_config()
+    config["profiles"]["huggingface"] = {
+        "storage_provider": {
+            "type": "huggingface",
+            "options": {"base_path": "datasets/example"},
+        }
+    }
+    options = config["profiles"]["virtual"]["storage_provider"]["options"]
+    if reference_role == "manifest-storage":
+        options["manifest_storage_profile"] = "huggingface"
+    else:
+        options["source_profiles"]["objects"]["profile"] = "huggingface"
+
+    with pytest.raises(ValueError, match=r"(?i)huggingface.*range|range.*huggingface"):
+        StorageClientConfig.from_dict(config, profile="virtual")
+
+
+@pytest.mark.parametrize("reference_role", ["manifest-storage", "object-source"])
+def test_manifest_factory_rejects_missing_referenced_profiles(reference_role: str) -> None:
+    config = _virtual_manifest_config()
+    options = config["profiles"]["virtual"]["storage_provider"]["options"]
+    if reference_role == "manifest-storage":
+        options["manifest_storage_profile"] = "missing-profile"
+    else:
+        options["source_profiles"]["objects"]["profile"] = "missing-profile"
+
+    with pytest.raises(ValueError, match="missing-profile"):
+        StorageClientConfig.from_dict(config, profile="virtual")
+
+
+@pytest.mark.parametrize("cycle_role", ["manifest-storage", "object-source"])
+def test_manifest_factory_rejects_reference_cycles(cycle_role: str) -> None:
+    config = _virtual_manifest_config()
+    nested_options = {
+        "manifest_storage_profile": "manifest-store",
+        "manifest_path": "nested.parquet",
+        "source_profiles": {},
+    }
+    config["profiles"]["nested"] = {"storage_provider": {"type": "manifest", "options": nested_options}}
+    virtual_options = config["profiles"]["virtual"]["storage_provider"]["options"]
+    if cycle_role == "manifest-storage":
+        virtual_options["manifest_storage_profile"] = "nested"
+        nested_options["manifest_storage_profile"] = "virtual"
+    else:
+        virtual_options["source_profiles"]["objects"]["profile"] = "nested"
+        nested_options["source_profiles"] = {"back": {"profile": "virtual", "binding_revision": "back-r1"}}
+
+    with pytest.raises(ValueError, match="(?i)cycle|circular"):
+        StorageClientConfig.from_dict(config, profile="virtual")

@@ -177,6 +177,13 @@ class CompositeStorageClient(AbstractStorageClient):
         child = self._get_child_client(resolved.profile)
         return child.read(resolved.physical_path, byte_range, check_source_version)
 
+    def _read_uncached(self, path: str, byte_range: Optional[Range] = None) -> bytes:
+        """Read a logical path through its resolved child without consulting that child's cache."""
+        resolved = self._metadata_provider.realpath(path)
+        if not resolved.exists:
+            raise FileNotFoundError(f"Path '{path}' not found")
+        return self._get_child_client(resolved.profile)._read_uncached(resolved.physical_path, byte_range)
+
     def open(
         self,
         path: str,
@@ -195,7 +202,8 @@ class CompositeStorageClient(AbstractStorageClient):
 
         :param path: The logical path of the object to open.
         :param mode: The file mode. Supported modes: "r", "rb", "w", "wb", "a", "ab".
-        :param buffering: The buffering mode. Only applies to PosixFile.
+        :param buffering: The buffering mode. Passed to PosixFile and used for
+            streamed ObjectFile reads.
         :param encoding: The encoding to use for text files.
         :param disable_read_cache: When set to ``True``, disables caching for file content.
             This parameter is only applicable to ObjectFile when the mode is "r" or "rb".
@@ -208,7 +216,8 @@ class CompositeStorageClient(AbstractStorageClient):
             This parameter is only applicable when the mode is "w" or "wb" or "a" or "ab". Defaults to None.
         :param prefetch_file: Whether to prefetch the file content.
             This parameter is only applicable to ObjectFile when the mode is "r" or "rb".
-            If None, inherits from cache configuration.
+            If None, uses the storage provider default when defined, otherwise
+            inherits from cache configuration.
         :return: A file-like object (PosixFile or ObjectFile) for the specified path.
         :raises FileNotFoundError: If the file does not exist (read mode).
         :raises NotImplementedError: If the operation is not supported (e.g., write on CompositeStorageClient).

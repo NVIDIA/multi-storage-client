@@ -20,6 +20,7 @@
 **/.pytest_cache
 **/.reports
 **/.ruff_cache
+**/.cache/
 **/.venv
 **/__pycache__
 **/build

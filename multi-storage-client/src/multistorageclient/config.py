@@ -28,6 +28,8 @@ import yaml
 
 from .cache import DEFAULT_CACHE_LINE_SIZE, DEFAULT_CACHE_SIZE, CacheManager
 from .caching.cache_config import CacheConfig, EvictionPolicyConfig
+from .manifest.bindings import ServiceBinding, SourceBinding, StorageProviderRangeReader
+from .manifest.http import HTTPServiceRangeReader, normalize_http_base_url
 from .providers.manifest_metadata import ManifestMetadataProvider
 from .rclone import read_rclone_config
 from .schema import validate_config
@@ -92,6 +94,7 @@ STORAGE_PROVIDER_MAPPING = {
     "s8k": "S8KStorageProvider",
     "gcs_s3": "GoogleS3StorageProvider",
     "huggingface": "HuggingFaceStorageProvider",
+    "manifest": "ManifestStorageProvider",
 }
 
 CREDENTIALS_PROVIDER_MAPPING = {
@@ -104,6 +107,65 @@ CREDENTIALS_PROVIDER_MAPPING = {
     "HuggingFaceCredentials": "HuggingFaceCredentialsProvider",
     "FileBasedCredentials": "FileBasedCredentialsProvider",
 }
+
+_MANIFEST_LOCATION_OPTIONS = frozenset(
+    {
+        "account_url",
+        "base_path",
+        "endpoint",
+        "endpoint_url",
+        "namespace",
+        "project",
+        "project_id",
+        "provider",
+        "region",
+        "region_name",
+        "repo_id",
+        "repo_type",
+        "revision",
+        "service_endpoint",
+    }
+)
+_MANIFEST_URL_OPTIONS = frozenset({"account_url", "endpoint", "endpoint_url", "service_endpoint"})
+
+
+def _nonsecret_url_identity(value: str) -> str:
+    parsed = urlparse(value)
+    host = parsed.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    if parsed.port is not None:
+        host = f"{host}:{parsed.port}"
+    return f"{parsed.scheme.lower()}://{host.lower()}{parsed.path}"
+
+
+def _storage_binding_identity(provider_type: str, storage_options: dict[str, Any]) -> str:
+    location: dict[str, Any] = {}
+    for key in sorted(_MANIFEST_LOCATION_OPTIONS):
+        value = storage_options.get(key)
+        if not isinstance(value, (str, int, float, bool)):
+            continue
+        if key in _MANIFEST_URL_OPTIONS:
+            if not isinstance(value, str):
+                continue
+            location[key] = _nonsecret_url_identity(value)
+        else:
+            location[key] = value
+    return json.dumps(
+        {"provider": provider_type, "location": location},
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _http_binding_identity(base_url: str) -> str:
+    return json.dumps(
+        {"service": "http", "base_url": _nonsecret_url_identity(base_url)},
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
 
 def _resolve_include_path(include_path: str, parent_config_path: str) -> str:
@@ -328,6 +390,8 @@ def _load_and_merge_includes(
     :return: Merged configuration dictionary (without 'include' field)
     :raises ValueError: If include file not found, malformed, or contains nested includes
     """
+    main_config_dict = expand_env_vars(main_config_dict)
+    validate_config(main_config_dict)
     include_paths = main_config_dict.get("include", [])
 
     if not include_paths:
@@ -350,6 +414,7 @@ def _load_and_merge_includes(
         except Exception as e:
             raise ValueError(f"Failed to load included config {resolved_path}: {e}")
 
+        included_config = expand_env_vars(included_config)
         validate_config(included_config)
         if "include" in included_config:
             raise ValueError(f"Nested includes not allowed: {resolved_path} contains 'include' directive")
@@ -593,6 +658,7 @@ class StorageClientConfigLoader:
         profile: str = RESERVED_POSIX_PROFILE_NAME,
         provider_bundle: Optional[Union[ProviderBundle, ProviderBundleV2]] = None,
         telemetry_provider: Optional[Callable[[], Telemetry]] = None,
+        validate_expanded_config: bool = False,
     ) -> None:
         """
         Initializes a :py:class:`StorageClientConfigLoader` to create a
@@ -603,9 +669,12 @@ class StorageClientConfigLoader:
         :param profile: Name of profile in ``config_dict`` to use to build configuration.
         :param provider_bundle: Optional pre-built :py:class:`multistorageclient.types.ProviderBundle` or :py:class:`multistorageclient.types.ProviderBundleV2`, takes precedence over ``config_dict``.
         :param telemetry_provider: A function that provides a telemetry instance. The function must be defined at the top level of a module to work with pickling.
+        :param validate_expanded_config: Validate the resolved configuration after environment interpolation.
         """
         # Interpolates all environment variables into actual values.
         config_dict = expand_env_vars(config_dict)
+        if validate_expanded_config:
+            validate_config(config_dict)
         self._resolved_config_dict = ImmutableDict(config_dict)
 
         self._profiles = config_dict.get("profiles", {})
@@ -647,13 +716,16 @@ class StorageClientConfigLoader:
         storage_options: Optional[dict[str, Any]] = None,
         credentials_provider: Optional[CredentialsProvider] = None,
     ) -> StorageProvider:
-        if storage_options is None:
-            storage_options = {}
+        storage_options = copy.deepcopy(storage_options or {})
         if storage_provider_name not in STORAGE_PROVIDER_MAPPING:
             raise ValueError(
                 f"Storage provider {storage_provider_name} is not supported. "
                 f"Supported providers are: {list(STORAGE_PROVIDER_MAPPING.keys())}"
             )
+        if storage_provider_name == "manifest":
+            if credentials_provider is not None:
+                raise ValueError("Manifest storage profiles cannot define a credentials provider.")
+            return self._build_manifest_storage_provider(storage_options)
         if credentials_provider:
             storage_options["credentials_provider"] = credentials_provider
         if self._resolved_config_dict is not None:
@@ -665,6 +737,153 @@ class StorageClientConfigLoader:
         module_name = ".providers"
         cls = import_class(class_name, module_name, PACKAGE_NAME)
         return cls(**storage_options)
+
+    def _build_manifest_storage_provider(self, storage_options: dict[str, Any]) -> StorageProvider:
+        """Build a virtual manifest provider from validated, injected bindings."""
+        self._validate_manifest_reference_graph()
+
+        manifest_profile_name = storage_options["manifest_storage_profile"]
+        manifest_profile = self._validate_direct_manifest_profile(
+            manifest_profile_name,
+            reference_role="manifest storage",
+        )
+        manifest_storage = manifest_profile["storage_provider"]
+        manifest_storage_options = manifest_storage.get("options", {})
+        if "rust_client" in manifest_storage_options:
+            raise ValueError("Manifest storage profiles cannot enable a Rust client.")
+
+        source_specs: dict[str, tuple[str, str, dict[str, Any]]] = {}
+        for alias, binding_config in storage_options.get("source_profiles", {}).items():
+            profile_name = binding_config["profile"]
+            source_specs[alias] = (
+                profile_name,
+                binding_config["binding_revision"],
+                self._validate_direct_manifest_profile(profile_name, reference_role=f"object source '{alias}'"),
+            )
+
+        service_specs: dict[str, tuple[dict[str, Any], str]] = {}
+        for alias, service_config in storage_options.get("services", {}).items():
+            if service_config["type"] != "http":
+                raise ValueError(f"Manifest service '{alias}' must use the HTTP service type.")
+            options = copy.deepcopy(service_config["options"])
+            revision = options.pop("binding_revision")
+            service_specs[alias] = (options, revision)
+
+        service_bindings: dict[str, ServiceBinding] = {}
+        for alias, (options, revision) in service_specs.items():
+            base_url = normalize_http_base_url(options["base_url"], options.get("allow_insecure_http", False))
+            options["base_url"] = base_url
+            options["allowed_path_prefixes"] = [prefix.rstrip("/") for prefix in options["allowed_path_prefixes"]]
+            reader = HTTPServiceRangeReader(
+                **options,
+                binding_identity=_http_binding_identity(base_url),
+            )
+            service_bindings[alias] = ServiceBinding(reader=reader, binding_revision=revision)
+
+        manifest_reader = self._build_direct_manifest_reader(manifest_profile)
+        source_readers: dict[str, StorageProviderRangeReader] = {}
+        source_bindings: dict[str, SourceBinding] = {}
+        for alias, (profile_name, revision, profile_dict) in source_specs.items():
+            reader = source_readers.get(profile_name)
+            if reader is None:
+                reader = self._build_direct_manifest_reader(profile_dict)
+                source_readers[profile_name] = reader
+            source_bindings[alias] = SourceBinding(reader=reader, binding_revision=revision)
+
+        cls = import_class(STORAGE_PROVIDER_MAPPING["manifest"], ".providers", PACKAGE_NAME)
+        return cls(
+            manifest_path=storage_options["manifest_path"],
+            manifest_reader=manifest_reader,
+            source_bindings=source_bindings,
+            service_bindings=service_bindings,
+            max_workers=storage_options.get("max_workers", 8),
+            config_dict=copy.deepcopy(self._resolved_config_dict),
+            telemetry_provider=self._telemetry_provider,
+        )
+
+    def _validate_manifest_reference_graph(self) -> None:
+        visited: set[str] = set()
+        active: list[str] = []
+
+        def visit(profile_name: str) -> None:
+            if profile_name in active:
+                cycle = active[active.index(profile_name) :] + [profile_name]
+                raise ValueError(f"Manifest profile reference cycle detected: {' -> '.join(cycle)}")
+            if profile_name in visited:
+                return
+
+            profile_dict = self._profiles.get(profile_name)
+            if profile_dict is None:
+                return
+            storage_provider = profile_dict.get("storage_provider")
+            if not storage_provider or storage_provider.get("type") != "manifest":
+                visited.add(profile_name)
+                return
+
+            active.append(profile_name)
+            options = storage_provider.get("options", {})
+            referenced_profiles = [options.get("manifest_storage_profile")]
+            referenced_profiles.extend(
+                binding.get("profile") for binding in options.get("source_profiles", {}).values()
+            )
+            for referenced_profile in referenced_profiles:
+                if isinstance(referenced_profile, str):
+                    visit(referenced_profile)
+            active.pop()
+            visited.add(profile_name)
+
+        visit(self._profile)
+
+    def _validate_direct_manifest_profile(
+        self,
+        profile_name: str,
+        *,
+        reference_role: str,
+    ) -> dict[str, Any]:
+        profile_dict = self._profiles.get(profile_name)
+        if profile_dict is None:
+            raise ValueError(f"Manifest {reference_role} profile '{profile_name}' does not exist.")
+
+        if "provider_bundle" in profile_dict:
+            raise ValueError(f"Manifest {reference_role} profile '{profile_name}' cannot use a provider bundle.")
+        if "storage_provider_profiles" in profile_dict:
+            raise ValueError(
+                f"Manifest {reference_role} profile '{profile_name}' cannot be a composite "
+                "storage_provider_profiles profile."
+            )
+        if "metadata_provider" in profile_dict:
+            raise ValueError(f"Manifest {reference_role} profile '{profile_name}' cannot use a metadata provider.")
+        if "replicas" in profile_dict:
+            raise ValueError(f"Manifest {reference_role} profile '{profile_name}' cannot use replicas.")
+        if "autocommit" in profile_dict:
+            raise ValueError(f"Manifest {reference_role} profile '{profile_name}' cannot use autocommit.")
+
+        storage_provider = profile_dict.get("storage_provider")
+        if storage_provider is None:
+            raise ValueError(f"Manifest {reference_role} profile '{profile_name}' has no direct storage provider.")
+        if storage_provider.get("type") == "manifest":
+            raise ValueError(f"Manifest {reference_role} profile '{profile_name}' cannot reference another manifest.")
+        if storage_provider.get("type") == "huggingface":
+            raise ValueError(
+                f"Manifest {reference_role} profile '{profile_name}' cannot use HuggingFace because it does not "
+                "support exact byte-range reads."
+            )
+        return profile_dict
+
+    def _build_direct_manifest_reader(self, profile_dict: dict[str, Any]) -> StorageProviderRangeReader:
+        storage_provider = profile_dict["storage_provider"]
+        provider_type = storage_provider["type"]
+        storage_options = copy.deepcopy(storage_provider.get("options", {}))
+        credentials_provider = self._build_credentials_provider(
+            credentials_provider_dict=profile_dict.get("credentials_provider"),
+            storage_options=storage_options,
+        )
+        provider = self._build_storage_provider(provider_type, storage_options, credentials_provider)
+        return StorageProviderRangeReader(
+            provider=provider,
+            binding_identity=_storage_binding_identity(provider_type, storage_options),
+            retry_config=self._build_retry_config_from_profile(profile_dict),
+        )
 
     def _build_storage_provider_from_profile(self, storage_provider_profile: str):
         storage_profile_dict = self._profiles.get(storage_provider_profile)
@@ -900,7 +1119,11 @@ class StorageClientConfigLoader:
 
     def _build_retry_config(self) -> RetryConfig:
         """Build retry config from profile dict."""
-        retry_config_dict = self._profile_dict.get("retry", None)
+        return self._build_retry_config_from_profile(self._profile_dict)
+
+    @staticmethod
+    def _build_retry_config_from_profile(profile_dict: dict[str, Any]) -> RetryConfig:
+        retry_config_dict = profile_dict.get("retry", None)
         if retry_config_dict:
             attempts = retry_config_dict.get("attempts", DEFAULT_RETRY_ATTEMPTS)
             delay = retry_config_dict.get("delay", DEFAULT_RETRY_DELAY)
@@ -1373,15 +1596,12 @@ class StorageClientConfig:
         :param skip_validation: Skip configuration schema validation.
         :param telemetry_provider: A function that provides a telemetry instance. The function must be defined at the top level of a module to work with pickling.
         """
-        # Validate the config file with predefined JSON schema
-        if not skip_validation:
-            validate_config(config_dict)
-
         # Load config
         loader = StorageClientConfigLoader(
             config_dict=config_dict,
             profile=profile,
             telemetry_provider=telemetry_provider,
+            validate_expanded_config=not skip_validation,
         )
         config = loader.build_config()
 
@@ -1522,10 +1742,13 @@ class StorageClientConfig:
             logger.debug(f"Using MSC config file: {config_file_path}")
 
         if config_dict:
+            config_dict = expand_env_vars(config_dict)
             validate_config(config_dict)
 
             if "include" in config_dict and config_file_path:
                 config_dict = _load_and_merge_includes(config_file_path, config_dict)
+
+            validate_config(config_dict)
 
         return config_dict, config_file_path
 

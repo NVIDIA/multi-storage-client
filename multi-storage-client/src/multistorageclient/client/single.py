@@ -417,19 +417,21 @@ class SingleStorageClient(AbstractStorageClient):
 
         # Handle caching logic
         if self._is_cache_enabled() and self._cache_manager:
+            require_source_version = check_source_version == SourceVersionCheckMode.ENABLE or (
+                check_source_version == SourceVersionCheckMode.INHERIT and self._cache_manager.check_source_version()
+            )
             if byte_range:
                 # Range request with cache
                 try:
                     # Fetch metadata for source version checking (if needed)
                     metadata = None
                     source_version = None
-                    if check_source_version == SourceVersionCheckMode.ENABLE:
+                    if require_source_version:
                         metadata = self._storage_provider.get_object_metadata(path)
                         source_version = metadata.etag
-                    elif check_source_version == SourceVersionCheckMode.INHERIT:
-                        if self._cache_manager.check_source_version():
-                            metadata = self._storage_provider.get_object_metadata(path)
-                            source_version = metadata.etag
+
+                    if require_source_version and (not isinstance(source_version, str) or not source_version):
+                        return self._storage_provider.get_object(path, byte_range=byte_range)
 
                     # Optimization: For full-file reads (offset=0, size >= file_size), cache whole file instead of chunking
                     # This avoids creating many small chunks when the user requests the entire file.
@@ -447,6 +449,7 @@ class SingleStorageClient(AbstractStorageClient):
                         byte_range=byte_range,
                         storage_provider=self._storage_provider,
                         source_size=metadata.content_length if metadata else None,
+                        check_source_version=check_source_version,
                     )
                     if data is not None:
                         return data
@@ -459,13 +462,19 @@ class SingleStorageClient(AbstractStorageClient):
                 # Full file read with cache
                 # Only fetch source version if check_source_version is enabled
                 source_version = None
-                if check_source_version == SourceVersionCheckMode.ENABLE:
+                if require_source_version:
                     source_version = self._get_source_version(path)
-                elif check_source_version == SourceVersionCheckMode.INHERIT:
-                    if self._cache_manager.check_source_version():
-                        source_version = self._get_source_version(path)
 
-                data = self._cache_manager.read(path, source_version)
+                if require_source_version and (not isinstance(source_version, str) or not source_version):
+                    if self._replica_manager:
+                        return self._read_from_replica_or_primary(path)
+                    return self._storage_provider.get_object(path)
+
+                data = self._cache_manager.read(
+                    path,
+                    source_version,
+                    check_source_version=check_source_version,
+                )
                 if data is None:
                     if self._replica_manager:
                         data = self._read_from_replica_or_primary(path)
@@ -479,6 +488,13 @@ class SingleStorageClient(AbstractStorageClient):
         else:
             # No cache, no replicas - direct storage provider read
             return self._storage_provider.get_object(path, byte_range=byte_range)
+
+    @retry
+    def _read_uncached(self, path: str, byte_range: Optional[Range] = None) -> bytes:
+        """Read a logical path directly from its resolved provider without consulting the cache."""
+        if self._metadata_provider:
+            path = self._resolve_read_path(path)
+        return self._storage_provider.get_object(path, byte_range=byte_range)
 
     def info(self, path: str, strict: bool = True) -> ObjectMetadata:
         """
@@ -930,7 +946,8 @@ class SingleStorageClient(AbstractStorageClient):
 
         :param path: The logical path of the object to open.
         :param mode: The file mode. Supported modes: "r", "rb", "w", "wb", "a", "ab".
-        :param buffering: The buffering mode. Only applies to PosixFile.
+        :param buffering: The buffering mode. Passed to PosixFile and used for
+            streamed ObjectFile reads.
         :param encoding: The encoding to use for text files.
         :param disable_read_cache: When set to ``True``, disables caching for file content.
             This parameter is only applicable to ObjectFile when the mode is "r" or "rb".
@@ -943,10 +960,18 @@ class SingleStorageClient(AbstractStorageClient):
             This parameter is only applicable when the mode is "w" or "wb" or "a" or "ab". Defaults to None.
         :param prefetch_file: Whether to prefetch the file content.
             This parameter is only applicable to ObjectFile when the mode is "r" or "rb".
-            If None, inherits from cache configuration.
+            If None, uses the storage provider default when defined, otherwise
+            inherits from cache configuration.
         :return: A file-like object (PosixFile or ObjectFile) for the specified path.
         :raises FileNotFoundError: If the file does not exist (read mode).
         """
+        if (
+            mode in ("w", "wb", "a", "ab")
+            and self._storage_provider is not None
+            and self._storage_provider.is_read_only
+        ):
+            raise NotImplementedError(f"{type(self._storage_provider).__name__} is read-only.")
+
         if self._is_posix_file_storage_provider():
             return PosixFile(
                 self, path=path, mode=mode, buffering=buffering, encoding=encoding, atomic=atomic, attributes=attributes
@@ -954,6 +979,10 @@ class SingleStorageClient(AbstractStorageClient):
         else:
             if atomic is False:
                 logger.warning("Non-atomic writes are not supported for object storage providers.")
+
+            effective_prefetch = prefetch_file
+            if effective_prefetch is None and self._storage_provider is not None:
+                effective_prefetch = self._storage_provider.default_read_prefetch
 
             return ObjectFile(
                 self,
@@ -964,7 +993,8 @@ class SingleStorageClient(AbstractStorageClient):
                 memory_load_limit=memory_load_limit,
                 check_source_version=check_source_version,
                 attributes=attributes,
-                prefetch_file=prefetch_file,
+                prefetch_file=effective_prefetch,
+                buffering=buffering,
             )
 
     def get_posix_path(self, path: str) -> Optional[str]:

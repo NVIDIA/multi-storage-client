@@ -20,6 +20,7 @@ It provides a generic interface to interact with objects and files across variou
    user_guide/quickstart
    user_guide/telemetry
    user_guide/manifests
+   user_guide/virtual_manifests
    user_guide/cache
    user_guide/libraries
    user_guide/cli

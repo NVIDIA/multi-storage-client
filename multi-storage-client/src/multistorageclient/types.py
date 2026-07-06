@@ -256,6 +256,19 @@ class StorageProvider(ABC):
     Abstract base class for interacting with a storage provider.
     """
 
+    @property
+    def default_read_prefetch(self) -> Optional[bool]:
+        """Return a provider-specific default for ``open(..., prefetch_file=None)``.
+
+        ``None`` preserves the existing cache and object-file defaults.
+        """
+        return None
+
+    @property
+    def is_read_only(self) -> bool:
+        """Return whether write operations should fail before opening a file."""
+        return False
+
     @abstractmethod
     def put_object(
         self,

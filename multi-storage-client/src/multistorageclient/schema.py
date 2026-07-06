@@ -98,28 +98,135 @@ CACHE_SCHEMA = {
 }
 
 
+DIRECT_STORAGE_PROVIDER_TYPES = [
+    "ais",
+    "ais_s3",
+    "azure",
+    "file",
+    "gcs",
+    "gcs_s3",
+    "oci",
+    "s3",
+    "s8k",
+    "huggingface",
+]
+
+DIRECT_STORAGE_PROVIDER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "type": {"type": "string", "enum": DIRECT_STORAGE_PROVIDER_TYPES},
+        "options": {
+            "type": "object",
+            "properties": {
+                "base_path": {"type": "string", "minLength": 0},
+                "rust_client": {"type": "object"},
+            },
+            "required": ["base_path"],
+        },
+    },
+    "required": ["type", "options"],
+}
+
+MANIFEST_SOURCE_BINDING_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "profile": {"type": "string", "minLength": 1},
+        "binding_revision": {"type": "string", "minLength": 1},
+    },
+    "required": ["profile", "binding_revision"],
+    "additionalProperties": False,
+}
+
+MANIFEST_BINDING_ALIAS_SCHEMA = {
+    "pattern": r"^(?!.*[\x00-\x1f\x7f])[A-Za-z0-9][A-Za-z0-9._-]*$",
+}
+
+MANIFEST_HTTP_SERVICE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "type": {"const": "http"},
+        "options": {
+            "type": "object",
+            "properties": {
+                "base_url": {"type": "string", "pattern": "^https?://"},
+                "binding_revision": {"type": "string", "minLength": 1},
+                "allowed_path_prefixes": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "minItems": 1,
+                    "uniqueItems": True,
+                },
+                "allowed_query_parameters": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "uniqueItems": True,
+                },
+                "headers": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                },
+                "connect_timeout_seconds": {"type": "number", "exclusiveMinimum": 0},
+                "read_timeout_seconds": {"type": "number", "exclusiveMinimum": 0},
+                "verify_tls": {"type": "boolean"},
+                "allow_insecure_http": {"type": "boolean"},
+            },
+            "required": [
+                "base_url",
+                "binding_revision",
+                "allowed_path_prefixes",
+                "allowed_query_parameters",
+            ],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["type", "options"],
+    "additionalProperties": False,
+}
+
+MANIFEST_STORAGE_PROVIDER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "type": {"const": "manifest"},
+        "options": {
+            "type": "object",
+            "properties": {
+                "manifest_storage_profile": {"type": "string", "minLength": 1},
+                "manifest_path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": (
+                        r"^(?!.*[\x00-\x1f\x7f])(?!/)(?!.*//)(?!.*\\)"
+                        r"(?!.*(?:^|/)\.\.?(?:/|$)).+\.parquet$"
+                    ),
+                },
+                "max_workers": {"type": "integer", "minimum": 1},
+                "source_profiles": {
+                    "type": "object",
+                    "propertyNames": MANIFEST_BINDING_ALIAS_SCHEMA,
+                    "additionalProperties": MANIFEST_SOURCE_BINDING_SCHEMA,
+                },
+                "services": {
+                    "type": "object",
+                    "propertyNames": MANIFEST_BINDING_ALIAS_SCHEMA,
+                    "additionalProperties": MANIFEST_HTTP_SERVICE_SCHEMA,
+                },
+            },
+            "required": ["manifest_storage_profile", "manifest_path"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["type", "options"],
+    "additionalProperties": False,
+}
+
+
 PROFILE_SCHEMA = {
     "type": "object",
     "additionalProperties": {
         "type": "object",
         "properties": {
             "storage_provider": {
-                "type": "object",
-                "properties": {
-                    "type": {
-                        "type": "string",
-                        "enum": ["ais", "ais_s3", "azure", "file", "gcs", "gcs_s3", "oci", "s3", "s8k", "huggingface"],
-                    },
-                    "options": {
-                        "type": "object",
-                        "properties": {
-                            "base_path": {"type": "string", "minLength": 0},
-                            "rust_client": {"type": "object"},
-                        },
-                        "required": ["base_path"],
-                    },
-                },
-                "required": ["type", "options"],
+                "oneOf": [DIRECT_STORAGE_PROVIDER_SCHEMA, MANIFEST_STORAGE_PROVIDER_SCHEMA],
             },
             "replicas": {
                 "type": "array",
@@ -164,9 +271,38 @@ PROFILE_SCHEMA = {
                 "required": ["storage_provider_profiles", "metadata_provider"],
             },
         ],
+        "allOf": [
+            {
+                "if": {
+                    "properties": {
+                        "storage_provider": {
+                            "properties": {"type": {"const": "manifest"}},
+                            "required": ["type"],
+                        }
+                    },
+                    "required": ["storage_provider"],
+                },
+                "then": {
+                    "not": {
+                        "anyOf": [
+                            {"required": ["metadata_provider"]},
+                            {"required": ["replicas"]},
+                            {"required": ["storage_provider_profiles"]},
+                            {"required": ["provider_bundle"]},
+                            {"required": ["autocommit"]},
+                            {"required": ["credentials_provider"]},
+                        ]
+                    }
+                },
+            }
+        ],
     },
     "propertyNames": {
-        "pattern": "^(__filesystem__|[^_].*)$",  # Profile names must not start with an underscore to prevent collision with implicit profiles, except for __filesystem__
+        "pattern": (
+            r"^(?:__filesystem__|(?!(?:\.|\.\.)$)(?!\.msc-cache-internal$)"
+            r"(?!\.tmp-)"
+            r"(?!.*[\\/\x00-\x1f\x7f])[^_][^\\/\x00-\x1f\x7f]*)$"
+        ),
     },
 }
 

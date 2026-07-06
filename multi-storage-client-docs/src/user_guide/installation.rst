@@ -40,6 +40,9 @@ into MSC's operations and performance, making it harder to debug issues and opti
    # HuggingFace
    pip install "multi-storage-client[huggingface]"
 
+   # Single-Parquet virtual manifests (v2).
+   pip install "multi-storage-client[virtual-manifest]"
+
 MSC also implements adapters to let higher-level libraries like fsspec or PyTorch work wth the MSC.
 Likewise, there are extras for each higher level library.
 

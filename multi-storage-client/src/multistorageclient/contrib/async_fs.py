@@ -16,12 +16,15 @@
 import asyncio
 import atexit
 import os
+import tempfile
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
-from typing import Any, Union
+from typing import IO, Any, Optional, Union, cast
 
 from fsspec.asyn import AsyncFileSystem, _run_coros_in_chunks
+from fsspec.callbacks import Callback
+from fsspec.utils import isfilelike
 
 from ..client import StorageClient
 from ..file import ObjectFile, PosixFile
@@ -31,6 +34,22 @@ from ..types import MSC_PROTOCOL_NAME
 _GLOBAL_THREAD_POOL = ThreadPoolExecutor(max_workers=int(os.getenv("MSC_MAX_WORKERS", "8")))
 
 atexit.register(lambda: _GLOBAL_THREAD_POOL.shutdown(wait=False))
+
+
+def _write_all(destination: IO[bytes], data: bytes) -> int:
+    """Write one chunk completely or fail instead of silently dropping a short-write suffix."""
+    offset = 0
+    while offset < len(data):
+        written = destination.write(data[offset:])
+        if written is None:
+            return len(data)
+        if not isinstance(written, int) or isinstance(written, bool) or written <= 0:
+            raise IOError("Destination made no progress while writing a download chunk.")
+        remaining = len(data) - offset
+        if written > remaining:
+            raise IOError("Destination reported writing more bytes than the supplied download chunk.")
+        offset += written
+    return offset
 
 
 # pyright: reportIncompatibleMethodOverride=false
@@ -223,18 +242,70 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
         """
         await self.asynchronize_sync(self.cp_file, path1, path2, **kwargs)
 
-    def get_file(self, rpath: str, lpath: str, **kwargs: Any) -> None:
+    def get_file(
+        self,
+        rpath: str,
+        lpath: Union[str, os.PathLike[str], IO[bytes]],
+        callback: Optional[Callback] = None,
+        outfile: Optional[IO[bytes]] = None,
+        **kwargs: Any,
+    ) -> None:
         """
         Downloads a file from the remote path to the local path.
 
         :param rpath: The remote path of the file to download.
-        :param lpath: The local path to store the file.
+        :param lpath: The local path or writable binary file-like object.
+        :param callback: Transfer progress callback.
+        :param outfile: Optional already-open destination for path-based callers.
         :param kwargs: Additional arguments for file retrieval functionality.
         """
         storage_client, rpath = self.resolve_path_and_storage_client(rpath)
-        storage_client.download_file(rpath, lpath)
+        progress = Callback.as_callback(callback)
+        destination = cast(IO[bytes], lpath) if isfilelike(lpath) else outfile
+        open_kwargs = dict(kwargs)
+        open_kwargs["prefetch_file"] = False
 
-    async def _get_file(self, rpath: str, lpath: str, **kwargs: Any) -> None:
+        with storage_client.open(rpath, "rb", **open_kwargs) as source:
+            progress.set_size(getattr(source, "size", None))
+
+            def stream_to(output: IO[bytes]) -> None:
+                while data := source.read(self.blocksize):
+                    progress.relative_update(_write_all(output, data))
+
+            if destination is not None:
+                stream_to(destination)
+                return
+
+            local_path = os.fspath(cast(Union[str, os.PathLike[str]], lpath))
+            parent = os.path.dirname(os.path.abspath(local_path))
+            os.makedirs(parent, exist_ok=True)
+            temporary_path: Optional[str] = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    dir=parent,
+                    prefix=f".{os.path.basename(local_path)}.",
+                    delete=False,
+                ) as temporary:
+                    temporary_path = temporary.name
+                    stream_to(temporary)
+                    temporary.flush()
+                    os.fsync(temporary.fileno())
+                os.replace(temporary_path, local_path)
+                temporary_path = None
+            finally:
+                if temporary_path is not None:
+                    try:
+                        os.unlink(temporary_path)
+                    except FileNotFoundError:
+                        pass
+
+    async def _get_file(
+        self,
+        rpath: str,
+        lpath: Union[str, os.PathLike[str], IO[bytes]],
+        **kwargs: Any,
+    ) -> None:
         """
         Asynchronously downloads a file from the remote path to the local path.
 
@@ -313,19 +384,46 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
         """
         await self.asynchronize_sync(self.pipe_file, path, value, **kwargs)
 
-    def cat_file(self, path: str, **kwargs: Any) -> bytes:
+    def cat_file(
+        self,
+        path: str,
+        start: Optional[int] = None,
+        end: Optional[int] = None,
+        **kwargs: Any,
+    ) -> bytes:
         """
         Reads the contents of a file at the given path.
 
         :param path: The file path to read from.
+        :param start: Inclusive byte offset, with negative values relative to EOF.
+        :param end: Exclusive byte offset, with negative values relative to EOF.
         :param kwargs: Additional arguments for file reading functionality.
 
         :return: The contents of the file as bytes.
         """
         storage_client, path = self.resolve_path_and_storage_client(path)
-        return storage_client.read(path)
+        if start is None and end is None:
+            with storage_client.open(path, "rb", **kwargs) as source:
+                return source.read()
 
-    async def _cat_file(self, path: str, **kwargs: Any) -> bytes:
+        open_kwargs = dict(kwargs)
+        open_kwargs["prefetch_file"] = False
+        open_kwargs.setdefault("buffering", 0)
+        with storage_client.open(path, "rb", **open_kwargs) as source:
+            file_size = source.seek(0, os.SEEK_END)
+            normalized_start, normalized_end, _ = slice(start, end).indices(file_size)
+            if normalized_start >= normalized_end:
+                return b""
+            source.seek(normalized_start)
+            return source.read(normalized_end - normalized_start)
+
+    async def _cat_file(
+        self,
+        path: str,
+        start: Optional[int] = None,
+        end: Optional[int] = None,
+        **kwargs: Any,
+    ) -> bytes:
         """
         Asynchronously reads the contents of a file at the given path.
 
@@ -334,4 +432,4 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
 
         :return: The contents of the file as bytes.
         """
-        return await self.asynchronize_sync(self.cat_file, path, **kwargs)
+        return await self.asynchronize_sync(self.cat_file, path, start, end, **kwargs)

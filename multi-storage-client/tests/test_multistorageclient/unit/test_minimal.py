@@ -15,7 +15,10 @@
 
 import mmap
 import os
+import subprocess
+import sys
 import tempfile
+import textwrap
 
 import pytest
 
@@ -143,3 +146,53 @@ def test_msc_shortcuts() -> None:
 
         with msc.open(file1, "r") as f:
             assert f.read() == "Hello, world!"
+
+
+def test_minimal_posix_client_does_not_require_virtual_manifest_dependencies(tmp_path) -> None:
+    script = textwrap.dedent(
+        """
+        import builtins
+        import os
+
+        real_import = builtins.__import__
+
+        def blocked_import(name, *args, **kwargs):
+            if name.split(".", 1)[0] in {"pyarrow", "requests"}:
+                raise ImportError(f"blocked optional dependency: {name}")
+            return real_import(name, *args, **kwargs)
+
+        builtins.__import__ = blocked_import
+
+        from multistorageclient import StorageClient, StorageClientConfig
+
+        root = os.environ["MSC_MINIMAL_TEST_ROOT"]
+        config = StorageClientConfig.from_dict(
+            {
+                "profiles": {
+                    "local": {
+                        "storage_provider": {
+                            "type": "file",
+                            "options": {"base_path": root},
+                        }
+                    }
+                }
+            },
+            profile="local",
+        )
+        client = StorageClient(config)
+        client.write("data.bin", b"minimal")
+        assert client.read("data.bin") == b"minimal"
+        """
+    )
+    env = os.environ.copy()
+    env["MSC_MINIMAL_TEST_ROOT"] = str(tmp_path)
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr

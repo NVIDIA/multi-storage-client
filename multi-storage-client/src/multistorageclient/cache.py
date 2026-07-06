@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import glob
+import hashlib
+import json
 import logging
 import os
 import stat
@@ -38,6 +39,14 @@ DEFAULT_CACHE_SIZE_MB = "10000"
 DEFAULT_CACHE_REFRESH_INTERVAL = 300  # 5 minutes
 DEFAULT_LOCK_TIMEOUT = 600  # 10 minutes
 DEFAULT_CACHE_LINE_SIZE = "64M"
+_CHUNK_METADATA_SUFFIX = ".metadata"
+_RANGE_CACHE_LOCK_DIRECTORY = ".locks"
+_RANGE_CACHE_LOCK_STRIPE_COUNT = 256
+_PROMOTED_CHUNK_METADATA_NAME = f"promoted{_CHUNK_METADATA_SUFFIX}"
+_CACHE_INTERNAL_DIRECTORY = ".msc-cache-internal"
+_CACHE_INTERNAL_RANGE_DIRECTORY = "range"
+_CACHE_INTERNAL_TEMP_DIRECTORY = "tmp"
+_CACHE_ROOT_EVICTION_LOCK_NAME = ".cache_refresh.lock"
 
 
 class CacheManager:
@@ -54,7 +63,7 @@ class CacheManager:
         :param profile: The profile name for the cache.
         :param cache_config: The cache configuration settings.
         """
-        self._profile = profile
+        self._profile = self._validate_profile_name(profile)
         self._cache_config = cache_config
         self._max_cache_size = cache_config.size_bytes()
         self._last_refresh_time = datetime.now()
@@ -67,11 +76,24 @@ class CacheManager:
 
         default_location = os.path.join(tempfile.gettempdir(), "msc-cache")
         # Create cache directory if it doesn't exist, this is used to download files
-        self._cache_dir = os.path.abspath(cache_config.location or default_location)
+        self._cache_dir = os.path.realpath(os.path.abspath(cache_config.location or default_location))
         self._cache_path = os.path.join(self._cache_dir, self._profile)
-        self._cache_temp_dir = os.path.join(self._cache_dir, f".tmp-{self._profile}")
+        self._cache_internal_dir = os.path.join(self._cache_dir, _CACHE_INTERNAL_DIRECTORY)
+        self._cache_temp_dir = os.path.join(
+            self._cache_internal_dir,
+            _CACHE_INTERNAL_TEMP_DIRECTORY,
+            hashlib.sha256(os.fsencode(self._profile)).hexdigest(),
+        )
+        self._range_cache_dir = os.path.join(self._cache_internal_dir, _CACHE_INTERNAL_RANGE_DIRECTORY)
+        safe_makedirs(self._cache_dir)
+        self._resolve_cache_root_path(self._cache_path, "profile")
+        self._resolve_cache_root_path(self._cache_internal_dir, "internal")
+        self._resolve_cache_root_path(self._cache_temp_dir, "temporary")
+        self._resolve_cache_root_path(self._range_cache_dir, "range")
         safe_makedirs(self._cache_path)
+        safe_makedirs(self._cache_internal_dir)
         safe_makedirs(self._cache_temp_dir)
+        safe_makedirs(self._range_cache_dir)
 
         # Check if eviction policy is valid for this backend
         if not self._check_if_eviction_policy_is_valid(cache_config.eviction_policy.policy):
@@ -79,19 +101,55 @@ class CacheManager:
 
         self._eviction_policy = EvictionPolicyFactory.create(cache_config.eviction_policy.policy)
 
-        # Create a lock file for cache refresh operations
+        # Coordinate eviction across every profile that shares this cache root.
         self._cache_refresh_lock_file = FileLock(
-            os.path.join(self._cache_path, ".cache_refresh.lock"), timeout=self.DEFAULT_FILE_LOCK_TIMEOUT
+            os.path.join(self._cache_internal_dir, _CACHE_ROOT_EVICTION_LOCK_NAME),
+            timeout=self.DEFAULT_FILE_LOCK_TIMEOUT,
         )
 
         # Populate cache with existing files in the cache directory
         self.refresh_cache()
 
+    @staticmethod
+    def _validate_profile_name(profile: str) -> str:
+        """Validate one cache profile as a non-reserved single path component."""
+        if not isinstance(profile, str) or not profile:
+            raise ValueError("Cache profile must be a non-empty single path component.")
+        if profile.startswith(".tmp-"):
+            raise ValueError("Cache profiles beginning with '.tmp-' are reserved for legacy temporary downloads.")
+        if (
+            profile in {".", "..", _CACHE_INTERNAL_DIRECTORY}
+            or "/" in profile
+            or "\\" in profile
+            or any(ord(character) < 32 or ord(character) == 127 for character in profile)
+        ):
+            raise ValueError("Cache profile must be a non-reserved single path component.")
+        return profile
+
+    @staticmethod
+    def _has_source_version(source_version: object) -> bool:
+        """Return whether a source revision is a non-empty string suitable for required validation."""
+        return isinstance(source_version, str) and bool(source_version)
+
+    def _resolve_cache_root_path(self, path: str, description: str) -> str:
+        """Resolve one cache-owned path and reject a pre-existing symlink escape."""
+        cache_root = os.path.realpath(self._cache_dir)
+        resolved_path = os.path.realpath(path)
+        try:
+            if os.path.commonpath([cache_root, resolved_path]) != cache_root or resolved_path == cache_root:
+                raise ValueError(f"Cache {description} path escapes the cache root.")
+        except ValueError as exc:
+            if str(exc).startswith("Cache "):
+                raise
+            raise ValueError(f"Cache {description} path escapes the cache root.") from exc
+        return resolved_path
+
     def generate_temp_file_path(self) -> str:
         """
         Create a temporary file in the cache temporary directory.
         """
-        with tempfile.NamedTemporaryFile(mode="wb", dir=self._cache_temp_dir, prefix=".") as temp_file:
+        temporary_directory = self._resolve_cache_root_path(self._cache_temp_dir, "temporary")
+        with tempfile.NamedTemporaryFile(mode="wb", dir=temporary_directory, prefix=".") as temp_file:
             return temp_file.name
 
     def _check_if_eviction_policy_is_valid(self, eviction_policy: str) -> bool:
@@ -121,7 +179,8 @@ class CacheManager:
         :param file_path: Path to the file relative to the profile cache directory
         """
         abs_path = self._resolve_profile_cache_delete_path(file_path)
-        self._delete_cache_file_at_path(abs_path)
+        with self._cache_refresh_lock_file:
+            self._delete_cache_file_at_path(abs_path)
 
     def _resolve_profile_cache_delete_path(self, file_path: str) -> str:
         """Resolve a profile-relative delete path and ensure it stays within the profile cache root."""
@@ -144,10 +203,15 @@ class CacheManager:
 
     def _delete_cache_file_at_path(self, abs_path: str) -> None:
         """Delete a cached file and its sibling lock file using an absolute cache path."""
+        is_range_cache_file = self._is_range_cache_path(abs_path)
         try:
             os.unlink(abs_path)
         except OSError:
             pass
+        self._remove_chunk_metadata_sidecar(abs_path)
+
+        if not is_range_cache_file:
+            self._invalidate_chunks(abs_path)
 
         lock_name = f".{os.path.basename(abs_path)}.lock"
         lock_path = os.path.join(os.path.dirname(abs_path), lock_name)
@@ -156,10 +220,52 @@ class CacheManager:
         except OSError:
             pass
 
+    def _cache_root_namespace(self, path: str) -> Optional[str]:
+        """Classify one path under the shared cache root's internal namespaces."""
+        cache_root = os.path.realpath(self._cache_dir)
+        try:
+            resolved_path = os.path.realpath(path)
+            if os.path.commonpath([cache_root, resolved_path]) != cache_root:
+                return None
+        except ValueError:
+            return None
+
+        relative_path = os.path.relpath(resolved_path, cache_root)
+        first_component = relative_path.split(os.sep, 1)[0]
+        if first_component.startswith(".tmp-"):
+            return "temporary"
+        if first_component != _CACHE_INTERNAL_DIRECTORY:
+            return None
+
+        internal_relative_path = os.path.relpath(resolved_path, os.path.realpath(self._cache_internal_dir))
+        internal_first_component = internal_relative_path.split(os.sep, 1)[0]
+        if internal_first_component == _CACHE_INTERNAL_RANGE_DIRECTORY:
+            return "range"
+        if internal_first_component == _CACHE_INTERNAL_TEMP_DIRECTORY:
+            return "temporary"
+        return "internal"
+
+    def _is_range_cache_path(self, path: str) -> bool:
+        """Return whether a path belongs to any profile's private range-cache namespace."""
+        return self._cache_root_namespace(path) == "range"
+
+    def _is_range_cache_sidecar(self, path: str) -> bool:
+        """Return whether a file is an internal portable range-cache metadata sidecar."""
+        return self._is_range_cache_path(path) and path.endswith(_CHUNK_METADATA_SUFFIX)
+
+    def _is_cache_temporary_path(self, path: str) -> bool:
+        """Return whether a path belongs to any profile's non-cache temporary-file directory."""
+        return self._cache_root_namespace(path) == "temporary"
+
     def evict_files(self) -> None:
         """
         Evict cache entries based on the configured eviction policy.
         """
+        with self._cache_refresh_lock_file:
+            self._evict_files()
+
+    def _evict_files(self) -> None:
+        """Evict entries while the shared cache-root coordinator is held."""
         logging.debug("\nStarting evict_files...")
         cache_items: list[CacheItem] = []
 
@@ -167,10 +273,14 @@ class CacheManager:
         for dirpath, _, filenames in os.walk(self._cache_dir):
             for file_name in filenames:
                 file_path = os.path.join(dirpath, file_name)
-                # Skip lock files, but allow chunk files (hidden files that contain '#chunk')
-                if file_name.endswith(".lock"):
-                    continue
-                if file_name.startswith(".") and "#chunk" not in file_name:
+                # Internal sidecars are bookkeeping, while user objects named *.metadata are cache data.
+                namespace = self._cache_root_namespace(file_path)
+                if (
+                    file_name.endswith(".lock")
+                    or self._is_range_cache_sidecar(file_path)
+                    or namespace in {"temporary", "internal"}
+                    or (namespace == "range" and file_name.startswith("."))
+                ):
                     continue
                 try:
                     if os.path.isfile(file_path):
@@ -242,6 +352,8 @@ class CacheManager:
 
     def _get_cache_file_path(self, key: str) -> str:
         """Return the path to the local cache file for the given key."""
+        if not isinstance(key, str) or not key:
+            raise ValueError("Cache key must be a non-empty string.")
         # Handle absolute paths by making them relative to the cache directory
         if os.path.isabs(key):
             # For absolute paths, use os.path.relpath() to preserve the full path structure
@@ -249,7 +361,15 @@ class CacheManager:
         else:
             relative_key = key
 
-        cache_path = os.path.join(self._cache_dir, self._profile, relative_key)
+        cache_root = self._resolve_cache_root_path(self._get_cache_dir(), "profile")
+        cache_path = os.path.realpath(os.path.join(cache_root, relative_key))
+        try:
+            if os.path.commonpath([cache_root, cache_path]) != cache_root or cache_path == cache_root:
+                raise ValueError(f"Cache key escapes the profile cache root: {key}")
+        except ValueError as exc:
+            if str(exc).startswith("Cache key escapes"):
+                raise
+            raise ValueError(f"Cache key escapes the profile cache root: {key}") from exc
         return cache_path
 
     def read(
@@ -259,6 +379,7 @@ class CacheManager:
         byte_range: Optional[Range] = None,
         storage_provider: Optional[Any] = None,
         source_size: Optional[int] = None,
+        check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
     ) -> Optional[bytes]:
         """Read the contents of a file from the cache if it exists.
 
@@ -271,28 +392,58 @@ class CacheManager:
         :param byte_range: Optional byte range for partial file reads
         :param storage_provider: Storage provider required for range reads
         :param source_size: Optional size of the source object in bytes
+        :param check_source_version: Source-version policy for full-file cache validation
         :return: The file contents as bytes, or None if not found in cache
         """
         # If this is a range read, check for full cached file first
         if byte_range:
+            require_source_version = self._requires_source_version_check(check_source_version)
+            if require_source_version and not self._has_source_version(source_version):
+                return None
+            validate_source_version = require_source_version or (
+                check_source_version != SourceVersionCheckMode.DISABLE and self._has_source_version(source_version)
+            )
+            effective_source_version = source_version if validate_source_version else None
             cache_path = self._get_cache_file_path(key)
 
             # Try to read range from full cached file first
-            range_data = self._read_range_from_full_cached_file(cache_path, byte_range, source_version)
+            range_data = self._read_range_from_full_cached_file(
+                cache_path,
+                byte_range,
+                effective_source_version,
+                require_source_version=validate_source_version,
+            )
             if range_data is not None:
                 return range_data
 
             # No valid full cached file, delegate to chunk-based range reading
-            return self._read_range(cache_path, byte_range, storage_provider, source_version, source_size, key)  # type: ignore[arg-type]
+            return self._read_range(  # type: ignore[arg-type]
+                cache_path,
+                byte_range,
+                storage_provider,
+                effective_source_version,
+                source_size,
+                key,
+                require_source_version=validate_source_version,
+            )
 
         # Full-file cached read (existing behavior)
         try:
-            if self.contains(key=key, source_version=source_version):
-                file_path = self._get_cache_file_path(key)
-                with open(file_path, "rb") as fp:
+            file_path = self._get_cache_file_path(key)
+            cached_file = self._open_validated_cache_file(
+                key,
+                mode="rb",
+                source_version=source_version,
+                check_source_version=check_source_version,
+            )
+            if cached_file is not None:
+                with cached_file as fp:
                     data = fp.read()
                 # Update access time based on eviction policy
-                self._update_access_time(file_path)
+                try:
+                    self._update_access_time(file_path)
+                except OSError:
+                    pass
                 return data
         except OSError:
             pass
@@ -309,11 +460,20 @@ class CacheManager:
     ) -> Optional[Any]:
         """Open a file from the cache and return the file object."""
         try:
-            if self.contains(key=key, check_source_version=check_source_version, source_version=source_version):
+            cached_file = self._open_validated_cache_file(
+                key,
+                mode=mode,
+                source_version=source_version,
+                check_source_version=check_source_version,
+            )
+            if cached_file is not None:
                 file_path = self._get_cache_file_path(key)
                 # Update access time based on eviction policy
-                self._update_access_time(file_path)
-                return open(file_path, mode)
+                try:
+                    self._update_access_time(file_path)
+                except OSError:
+                    pass
+                return cached_file
         except OSError:
             pass
 
@@ -326,30 +486,45 @@ class CacheManager:
         # Ensure the directory exists
         safe_makedirs(os.path.dirname(file_path))
 
+        temporary_path: Optional[str] = None
+        owns_temporary_path = False
         if isinstance(source, str):
-            # Move the file to the cache directory
-            os.rename(src=source, dst=file_path)
+            temporary_path = source
         else:
-            # Create a temporary file and move the file to the cache directory
-            with tempfile.NamedTemporaryFile(
-                mode="wb", delete=False, dir=os.path.dirname(file_path), prefix="."
-            ) as temp_file:
-                temp_file_path = temp_file.name
+            # Create a temporary file and atomically publish it to the cache directory.
+            temporary_directory = self._resolve_cache_root_path(self._cache_temp_dir, "temporary")
+            with tempfile.NamedTemporaryFile(mode="wb", delete=False, dir=temporary_directory, prefix=".") as temp_file:
+                temporary_path = temp_file.name
+                owns_temporary_path = True
                 temp_file.write(source)
-            os.rename(src=temp_file_path, dst=file_path)
 
-        # Set extended attribute (e.g., ETag)
-        if source_version:
-            try:
-                xattr.setxattr(file_path, "user.etag", source_version.encode("utf-8"))
-            except OSError as e:
-                logging.warning(f"Failed to set xattr on {file_path}: {e}")
+        try:
+            if temporary_path is None:  # pragma: no cover - source accepts only str or bytes
+                raise ValueError("Cache source must be a path or bytes.")
+            object_size = os.path.getsize(temporary_path)
+            metadata_in_xattrs = self._set_chunk_metadata(
+                temporary_path,
+                source_version,
+                self._cache_line_size,
+                object_size,
+            )
+            with self._cache_refresh_lock_file:
+                os.replace(temporary_path, file_path)
+                temporary_path = None
+                if metadata_in_xattrs:
+                    self._remove_chunk_metadata_sidecar(file_path)
+                else:
+                    self._write_chunk_metadata_sidecar(file_path, source_version, self._cache_line_size, object_size)
 
-        # Make the file read-only for all users
-        self._make_readonly(file_path)
-
-        # Update access time if applicable
-        self._update_access_time(file_path)
+                # Keep the complete data/metadata/permission/access transition invisible to eviction.
+                self._make_readonly(file_path)
+                self._update_access_time(file_path)
+        finally:
+            if owns_temporary_path and temporary_path is not None:
+                try:
+                    os.unlink(temporary_path)
+                except OSError:
+                    pass
 
         self._schedule_refresh_if_needed()
 
@@ -369,24 +544,79 @@ class CacheManager:
                 return False
 
             # If etag checking is disabled, return True if file exists
-            if check_source_version == SourceVersionCheckMode.INHERIT:
-                if not self.check_source_version():
-                    return True
-            elif check_source_version == SourceVersionCheckMode.DISABLE:
+            if not self._requires_source_version_check(check_source_version):
                 return True
 
-            # Verify etag matches if checking is enabled
-            try:
-                xattr_value = xattr.getxattr(file_path, "user.etag")
-                stored_version = xattr_value.decode("utf-8")
-                return stored_version is not None and stored_version == source_version
-            except OSError:
-                # If xattr fails, assume version doesn't match
+            # Verify source revision against xattrs or an identity-bound sidecar.
+            if not self._has_source_version(source_version):
                 return False
+            metadata = self._get_chunk_metadata(file_path, require_source_version=True)
+            return metadata is not None and metadata["source_version"] == source_version
 
         except Exception as e:
             logging.error(f"Error checking cache: {e}")
             return False
+
+    def _requires_source_version_check(self, check_source_version: SourceVersionCheckMode) -> bool:
+        """Return whether one operation must verify the cached source revision."""
+        return check_source_version == SourceVersionCheckMode.ENABLE or (
+            check_source_version == SourceVersionCheckMode.INHERIT and self.check_source_version()
+        )
+
+    def _descriptor_matches_source_version(
+        self,
+        file_path: str,
+        file_descriptor: int,
+        source_version: Optional[str],
+    ) -> bool:
+        """Validate one already-open full-cache file against its source revision."""
+        if not self._has_source_version(source_version):
+            return False
+        metadata = self._get_chunk_metadata(
+            file_path,
+            require_source_version=True,
+            file_descriptor=file_descriptor,
+        )
+        if metadata is not None:
+            return self._has_source_version(metadata["source_version"]) and metadata["source_version"] == source_version
+
+        try:
+            stored_version = xattr.getxattr(file_descriptor, "user.etag").decode("utf-8")
+        except (OSError, AttributeError, UnicodeDecodeError):
+            return False
+        return self._has_source_version(stored_version) and stored_version == source_version
+
+    def _open_validated_cache_file(
+        self,
+        key: str,
+        *,
+        mode: str,
+        source_version: Optional[str],
+        check_source_version: SourceVersionCheckMode,
+    ) -> Optional[Any]:
+        """Open and validate one full-cache entry without reopening its pathname."""
+        try:
+            cached_file = open(self._get_cache_file_path(key), mode)
+        except OSError:
+            return None
+
+        valid = False
+        try:
+            requires_source_version_check = self._requires_source_version_check(check_source_version)
+            if requires_source_version_check and not self._descriptor_matches_source_version(
+                self._get_cache_file_path(key), cached_file.fileno(), source_version
+            ):
+                return None
+            valid = True
+            return cached_file
+        except (OSError, AttributeError, UnicodeDecodeError):
+            return None
+        finally:
+            if not valid:
+                try:
+                    cached_file.close()
+                except OSError:
+                    pass
 
     def delete(self, key: str) -> None:
         """Delete a file from the cache."""
@@ -400,7 +630,14 @@ class CacheManager:
         for dirpath, _, filenames in os.walk(self._cache_dir):
             for file_name in filenames:
                 file_path = os.path.join(dirpath, file_name)
-                if os.path.isfile(file_path) and not file_name.endswith(".lock"):
+                namespace = self._cache_root_namespace(file_path)
+                if (
+                    os.path.isfile(file_path)
+                    and not file_name.endswith(".lock")
+                    and not self._is_range_cache_sidecar(file_path)
+                    and namespace not in {"temporary", "internal"}
+                    and not (namespace == "range" and file_name.startswith("."))
+                ):
                     size = self.get_file_size(file_path)
                     if size:
                         file_size += size
@@ -417,7 +654,7 @@ class CacheManager:
 
             # If the process acquires the lock, then proceed with the cache eviction
             with self._cache_refresh_lock_file.acquire(blocking=False):
-                self.evict_files()
+                self._evict_files()
                 self._last_refresh_time = datetime.now()
                 return True
         except Timeout:
@@ -428,7 +665,22 @@ class CacheManager:
 
     def acquire_lock(self, key: str) -> BaseFileLock:
         """Create a FileLock object for a given key."""
-        file_dir = os.path.dirname(os.path.join(self._get_cache_dir(), key))
+        if os.path.isabs(key):
+            internal_root = os.path.realpath(self._cache_internal_dir)
+            lock_target = os.path.realpath(key)
+            try:
+                if os.path.commonpath([internal_root, lock_target]) != internal_root:
+                    raise ValueError(f"Cache lock path escapes the cache internal root: {key}")
+            except ValueError as exc:
+                if str(exc).startswith("Cache lock path escapes"):
+                    raise
+                raise ValueError(f"Cache lock path escapes the cache internal root: {key}") from exc
+            file_dir = os.path.dirname(lock_target)
+            lock_name = f".{os.path.basename(lock_target)}.lock"
+            return FileLock(os.path.join(file_dir, lock_name), timeout=self.DEFAULT_FILE_LOCK_TIMEOUT)
+
+        cache_path = self._get_cache_file_path(key)
+        file_dir = os.path.dirname(cache_path)
 
         # Create lock file in the same directory as the file
         lock_name = f".{os.path.basename(key)}.lock"
@@ -461,20 +713,23 @@ class CacheManager:
 
         :param file_path: Path to the file to update access time.
         """
-        current_time = time.time()
+        current_time_ns = time.time_ns()
         try:
             # Make file writable to update timestamps
             self._make_writable(file_path)
             # Only update atime, preserve mtime for FIFO ordering
-            stat = os.stat(file_path)
-            os.utime(file_path, (current_time, stat.st_mtime))
+            file_stat = os.stat(file_path)
+            os.utime(file_path, ns=(current_time_ns, file_stat.st_mtime_ns))
         except (OSError, FileNotFoundError):
             # File might be deleted by another process or have permission issues
             # Just continue without updating the access time
             pass
         finally:
             # Restore read-only permissions
-            self._make_readonly(file_path)
+            try:
+                self._make_readonly(file_path)
+            except OSError:
+                pass
 
     def _should_refresh_cache(self) -> bool:
         """Check if enough time has passed since the last refresh."""
@@ -504,19 +759,58 @@ class CacheManager:
             thread.start()
 
     # Range cache methods
-    def _get_chunk_path(self, cache_path: str, chunk_idx: int) -> str:
-        """Get the path for a chunk file.
+    @staticmethod
+    def _range_cache_key(cache_path: str) -> str:
+        """Return the collision-resistant private namespace key for one logical cache path."""
+        return hashlib.sha256(os.fsencode(os.path.abspath(cache_path))).hexdigest()
 
-        Constructs the path for a specific chunk file using the pattern '.{base}#chunk{idx}'
-        where base is the original file name and idx is the chunk index.
+    def _get_range_cache_entry_dir(self, cache_path: str) -> str:
+        """Return the shared private range-cache directory for one logical cache path."""
+        return self._resolve_cache_root_path(
+            os.path.join(self._range_cache_dir, self._range_cache_key(cache_path)),
+            "range entry",
+        )
+
+    def _get_chunk_path(self, cache_path: str, chunk_idx: int) -> str:
+        """Return the private path for a range-cache chunk.
 
         :param cache_path: The base cache path for the original file
         :param chunk_idx: The index of the chunk (0-based)
         :return: The full path to the chunk file
         """
-        cache_dir = os.path.dirname(cache_path)
-        base_name = os.path.basename(cache_path)
-        return os.path.join(cache_dir, f".{base_name}#chunk{chunk_idx}")
+        return os.path.join(self._get_range_cache_entry_dir(cache_path), f"chunk-{chunk_idx}")
+
+    def _get_chunk_lock_key(self, cache_path: str, chunk_idx: int) -> str:
+        """Return the stable bounded lock stripe for one private range-cache chunk."""
+        lock_dir = self._resolve_cache_root_path(
+            os.path.join(self._range_cache_dir, _RANGE_CACHE_LOCK_DIRECTORY),
+            "range lock",
+        )
+        safe_makedirs(lock_dir)
+        chunk_identity = f"{self._range_cache_key(cache_path)}:{chunk_idx}".encode("ascii")
+        stripe = int.from_bytes(hashlib.sha256(chunk_identity).digest()[:8], byteorder="big")
+        return self._resolve_cache_root_path(
+            os.path.join(lock_dir, f"stripe-{stripe % _RANGE_CACHE_LOCK_STRIPE_COUNT:03d}"),
+            "range lock",
+        )
+
+    def _get_chunk_metadata_path(self, chunk_path: str) -> str:
+        """Return the private portable metadata sidecar for a chunk or promoted cache entry."""
+        if self._is_range_cache_path(chunk_path):
+            return f"{chunk_path}{_CHUNK_METADATA_SUFFIX}"
+        return os.path.join(self._get_range_cache_entry_dir(chunk_path), _PROMOTED_CHUNK_METADATA_NAME)
+
+    def _remove_empty_range_cache_entry(self, cache_path: str) -> None:
+        """Remove an empty private range-cache directory after its data and sidecars are deleted."""
+        entry_dir = (
+            os.path.dirname(cache_path)
+            if self._is_range_cache_path(cache_path)
+            else self._get_range_cache_entry_dir(cache_path)
+        )
+        try:
+            os.rmdir(entry_dir)
+        except OSError:
+            pass
 
     def _download_missing_chunks(
         self,
@@ -528,12 +822,19 @@ class CacheManager:
         storage_provider,
         source_version: Optional[str],
         source_size: Optional[int],
+        *,
+        require_source_version: bool,
     ) -> None:
         """Download all missing chunks for a given range with optimized performance."""
 
         # Identify which chunks need to be downloaded
         chunks_to_download = self._identify_missing_chunks(
-            cache_path, start_chunk, end_chunk, configured_cache_line_size, source_version
+            cache_path,
+            start_chunk,
+            end_chunk,
+            configured_cache_line_size,
+            source_version,
+            require_source_version=require_source_version,
         )
 
         # Download missing chunks with minimal locking
@@ -546,6 +847,7 @@ class CacheManager:
                 storage_provider,
                 source_version,
                 source_size,
+                require_source_version=require_source_version,
             )
 
     def _identify_missing_chunks(
@@ -555,6 +857,8 @@ class CacheManager:
         end_chunk: int,
         cache_line_size: int,
         source_version: Optional[str],
+        *,
+        require_source_version: bool,
     ) -> list[int]:
         """Identify which chunks are missing or invalid."""
         chunks_to_download = []
@@ -562,35 +866,43 @@ class CacheManager:
         for chunk_idx in range(start_chunk, end_chunk + 1):
             chunk_path = self._get_chunk_path(cache_path, chunk_idx)
 
-            if not self._is_chunk_valid(chunk_path, source_version, cache_line_size):
+            if not self._is_chunk_valid(
+                chunk_path,
+                source_version,
+                cache_line_size,
+                remove_invalid=False,
+                require_source_version=require_source_version,
+            ):
                 chunks_to_download.append(chunk_idx)
 
         return chunks_to_download
 
-    def _is_chunk_valid(self, chunk_path: str, source_version: Optional[str], cache_line_size: int) -> bool:
+    def _is_chunk_valid(
+        self,
+        chunk_path: str,
+        source_version: Optional[str],
+        cache_line_size: int,
+        *,
+        remove_invalid: bool = True,
+        require_source_version: bool = False,
+    ) -> bool:
         """Check if a chunk exists and has valid metadata."""
         if not os.path.exists(chunk_path):
             return False
 
-        # If no metadata to validate, chunk is valid if it exists
-        if not source_version:
-            return True
-
-        try:
-            # Validate chunk metadata
-            chunk_etag = xattr.getxattr(chunk_path, "user.etag").decode("utf-8")
-            stored_cache_line_size = int(xattr.getxattr(chunk_path, "user.cache_line_size").decode("utf-8"))
-
-            # Check if chunk is invalid
-            if (source_version and chunk_etag != source_version) or stored_cache_line_size != cache_line_size:
-                self._remove_invalid_chunk(chunk_path)
-                return False
-
-            return True
-        except Exception:
-            # xattr read failed or chunk corrupted
-            self._remove_invalid_chunk(chunk_path)
+        if require_source_version and not self._has_source_version(source_version):
             return False
+
+        metadata = self._get_chunk_metadata(chunk_path, require_source_version=require_source_version)
+        if metadata is None or metadata["cache_line_size"] != cache_line_size:
+            if remove_invalid:
+                self._remove_invalid_chunk(chunk_path)
+            return False
+        if require_source_version and metadata["source_version"] != source_version:
+            if remove_invalid:
+                self._remove_invalid_chunk(chunk_path)
+            return False
+        return True
 
     def _remove_invalid_chunk(self, chunk_path: str) -> None:
         """Safely remove an invalid chunk file."""
@@ -598,6 +910,8 @@ class CacheManager:
             os.unlink(chunk_path)
         except OSError:
             pass
+        self._remove_chunk_metadata_sidecar(chunk_path)
+        self._remove_empty_range_cache_entry(chunk_path)
 
     def _download_single_chunk(
         self,
@@ -608,6 +922,8 @@ class CacheManager:
         storage_provider,
         source_version: Optional[str],
         source_size: Optional[int],
+        *,
+        require_source_version: bool,
     ) -> None:
         """Download and cache a single chunk with proper locking.
 
@@ -626,20 +942,23 @@ class CacheManager:
         If the chunk is created by another thread, it is skipped.
         """
         chunk_path = self._get_chunk_path(cache_path, chunk_idx)
-        chunk_lock_key = f"{cache_path}#chunk{chunk_idx}"
+        chunk_lock_key = self._get_chunk_lock_key(cache_path, chunk_idx)
 
         with self.acquire_lock(chunk_lock_key):
-            # Double-check if chunk was created by another thread
-            if os.path.exists(chunk_path):
+            # Revalidate after waiting: another reader may have published a chunk
+            # from an older source revision or a differently sized cache line.
+            if self._is_chunk_valid(
+                chunk_path,
+                source_version,
+                cache_line_size,
+                require_source_version=require_source_version,
+            ):
                 return
 
             # Fetch and cache the chunk
             self._fetch_and_cache_chunk(
                 cache_path, original_key, chunk_idx, cache_line_size, storage_provider, source_version, source_size
             )
-
-            # Clean up lock file
-            self._cleanup_lock_file(chunk_lock_key)
 
     def _fetch_and_cache_chunk(
         self,
@@ -692,12 +1011,10 @@ class CacheManager:
     ) -> None:
         """Atomically write chunk data to cache with metadata.
 
-        Writes to a temporary file, sets xattr metadata on it, then
-        atomically replaces the target path. This ensures concurrent readers
-        never see a partially written chunk. Metadata is best-effort: on
-        filesystems without xattr support the write still succeeds, but later
-        validation may invalidate short final chunks and fall back to a
-        remote read.
+        Writes to a temporary file, attaches xattrs when available, then
+        atomically replaces the target path. Filesystems without user xattrs
+        receive an atomically published metadata sidecar tied to the chunk's
+        filesystem identity.
 
         :param chunk_path: The path to the chunk file
         :param chunk_data: The data to write to the chunk file
@@ -721,8 +1038,16 @@ class CacheManager:
             ) as temp_file:
                 temp_path = temp_file.name
                 temp_file.write(chunk_data)
-            self._set_chunk_metadata(temp_path, source_version, cache_line_size, object_size)
-            os.replace(temp_path, chunk_path)
+            metadata_in_xattrs = self._set_chunk_metadata(temp_path, source_version, cache_line_size, object_size)
+            with self._cache_refresh_lock_file:
+                os.replace(temp_path, chunk_path)
+                temp_path = None
+                if metadata_in_xattrs:
+                    self._remove_chunk_metadata_sidecar(chunk_path)
+                else:
+                    self._write_chunk_metadata_sidecar(chunk_path, source_version, cache_line_size, object_size)
+                self._make_readonly(chunk_path)
+                self._update_access_time(chunk_path)
         finally:
             if temp_path and os.path.exists(temp_path):
                 try:
@@ -732,7 +1057,7 @@ class CacheManager:
 
     def _set_chunk_metadata(
         self, chunk_path: str, source_version: Optional[str], cache_line_size: int, object_size: Optional[int]
-    ) -> None:
+    ) -> bool:
         """Set xattr metadata for a chunk file.
         :param chunk_path: The path to the chunk file
         :param source_version: The source version of the object
@@ -747,15 +1072,138 @@ class CacheManager:
             if object_size is not None:
                 xattr.setxattr(chunk_path, "user.size", str(object_size).encode("utf-8"))
         except OSError:
-            # xattrs may not be supported; continue without failing
+            return False
+        return True
+
+    def _write_chunk_metadata_sidecar(
+        self,
+        chunk_path: str,
+        source_version: Optional[str],
+        cache_line_size: int,
+        object_size: Optional[int],
+    ) -> None:
+        """Atomically persist chunk metadata when the cache filesystem has no user xattrs."""
+        chunk_stat = os.stat(chunk_path)
+        metadata = {
+            "cache_line_size": cache_line_size,
+            "source_version": source_version,
+            "object_size": object_size,
+            "device": chunk_stat.st_dev,
+            "inode": chunk_stat.st_ino,
+            "mtime_ns": chunk_stat.st_mtime_ns,
+            "chunk_size": chunk_stat.st_size,
+        }
+        metadata_path = self._get_chunk_metadata_path(chunk_path)
+        safe_makedirs(os.path.dirname(metadata_path))
+        temporary_path: Optional[str] = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                delete=False,
+                dir=os.path.dirname(metadata_path),
+                prefix=".chunk_metadata_tmp_",
+            ) as temporary:
+                temporary_path = temporary.name
+                json.dump(metadata, temporary, sort_keys=True, separators=(",", ":"))
+                temporary.flush()
+            os.replace(temporary_path, metadata_path)
+            temporary_path = None
+        finally:
+            if temporary_path is not None:
+                try:
+                    os.unlink(temporary_path)
+                except OSError:
+                    pass
+
+    def _remove_chunk_metadata_sidecar(self, chunk_path: str) -> None:
+        """Remove portable range-cache metadata without treating an absent sidecar as an error."""
+        try:
+            os.unlink(self._get_chunk_metadata_path(chunk_path))
+        except OSError:
             pass
+        self._remove_empty_range_cache_entry(chunk_path)
+
+    def _get_chunk_metadata(
+        self,
+        chunk_path: str,
+        *,
+        require_source_version: bool = False,
+        require_object_size: bool = False,
+        file_descriptor: Optional[int] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Load xattr metadata when complete, otherwise use a verified portable sidecar."""
+        metadata_target: Union[str, int] = file_descriptor if file_descriptor is not None else chunk_path
+        try:
+            metadata: dict[str, Any] = {
+                "cache_line_size": int(xattr.getxattr(metadata_target, "user.cache_line_size").decode("utf-8")),
+                "source_version": None,
+                "object_size": None,
+            }
+            if require_source_version:
+                source_version = xattr.getxattr(metadata_target, "user.etag").decode("utf-8")
+                if not self._has_source_version(source_version):
+                    return None
+                metadata["source_version"] = source_version
+            if require_object_size:
+                metadata["object_size"] = int(xattr.getxattr(metadata_target, "user.size").decode("utf-8"))
+            return metadata
+        except (OSError, UnicodeDecodeError, ValueError):
+            return self._read_chunk_metadata_sidecar(
+                chunk_path,
+                require_source_version=require_source_version,
+                file_descriptor=file_descriptor,
+            )
+
+    def _read_chunk_metadata_sidecar(
+        self,
+        chunk_path: str,
+        *,
+        require_source_version: bool = False,
+        file_descriptor: Optional[int] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Return sidecar metadata only when it belongs to the current atomically published chunk."""
+        try:
+            with open(self._get_chunk_metadata_path(chunk_path), encoding="utf-8") as metadata_file:
+                metadata = json.load(metadata_file)
+            if not isinstance(metadata, dict):
+                return None
+            for name in ("cache_line_size", "device", "inode", "mtime_ns", "chunk_size"):
+                value = metadata.get(name)
+                if not isinstance(value, int) or isinstance(value, bool):
+                    return None
+            source_version = metadata.get("source_version")
+            if source_version is not None and not isinstance(source_version, str):
+                return None
+            if require_source_version and not self._has_source_version(source_version):
+                return None
+            object_size = metadata.get("object_size")
+            if object_size is not None and (not isinstance(object_size, int) or isinstance(object_size, bool)):
+                return None
+            chunk_stat = os.fstat(file_descriptor) if file_descriptor is not None else os.stat(chunk_path)
+            if (
+                metadata["device"],
+                metadata["inode"],
+                metadata["mtime_ns"],
+                metadata["chunk_size"],
+            ) != (
+                chunk_stat.st_dev,
+                chunk_stat.st_ino,
+                chunk_stat.st_mtime_ns,
+                chunk_stat.st_size,
+            ):
+                return None
+            return metadata
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return None
 
     def _get_chunk_object_size(self, chunk_path: str) -> Optional[int]:
         """Return the stored object size for a chunk, if available."""
-        try:
-            return int(xattr.getxattr(chunk_path, "user.size").decode("utf-8"))
-        except (OSError, ValueError):
+        metadata = self._get_chunk_metadata(chunk_path, require_object_size=True)
+        if metadata is None:
             return None
+        object_size = metadata["object_size"]
+        return object_size if isinstance(object_size, int) and not isinstance(object_size, bool) else None
 
     def _handle_chunk0_renaming(self, cache_path: str, chunk_path: str, chunk_idx: int, cache_line_size: int) -> None:
         """Handle special case where chunk 0 becomes the full file for small files.
@@ -764,15 +1212,30 @@ class CacheManager:
         :param chunk_idx: The index of the chunk (0-based)
         :param cache_line_size: The size of each chunk in bytes
         """
-        if chunk_idx == 0 and not os.path.exists(cache_path):
-            # Check if the chunk is smaller than the cache line size
-            # This indicates the file is small enough to fit in a single chunk
+        if chunk_idx != 0:
+            return
+
+        with self._cache_refresh_lock_file:
+            if os.path.exists(cache_path):
+                return
             try:
                 chunk_size = os.path.getsize(chunk_path)
-                if chunk_size < cache_line_size:
-                    os.rename(chunk_path, cache_path)
+                if chunk_size >= cache_line_size:
+                    return
+                safe_makedirs(os.path.dirname(cache_path))
+                os.link(chunk_path, cache_path)
+                os.unlink(chunk_path)
+                chunk_metadata_path = self._get_chunk_metadata_path(chunk_path)
+                if os.path.exists(chunk_metadata_path):
+                    os.replace(chunk_metadata_path, self._get_chunk_metadata_path(cache_path))
+                else:
+                    self._remove_chunk_metadata_sidecar(cache_path)
+                self._make_readonly(cache_path)
+                self._update_access_time(cache_path)
+                self._remove_empty_range_cache_entry(chunk_path)
+            except FileExistsError:
+                pass
             except OSError:
-                # If we can't get the size, don't rename
                 pass
 
     def _update_chunk_access_time(self, cache_path: str, chunk_path: str, chunk_idx: int) -> None:
@@ -781,32 +1244,28 @@ class CacheManager:
         :param chunk_path: The path to the chunk file
         :param chunk_idx: The index of the chunk (0-based)
         """
-        if chunk_idx == 0 and os.path.exists(cache_path) and not os.path.exists(chunk_path):
-            # Chunk 0 was renamed to original file name
-            self._update_access_time(cache_path)
-        else:
-            # Regular chunk file
-            self._update_access_time(chunk_path)
-
-    def _cleanup_lock_file(self, lock_key: str) -> None:
-        """Clean up lock file after chunk operations.
-        :param lock_key: The key for the lock file
-        """
-        try:
-            lock_file_path = os.path.join(os.path.dirname(lock_key), f".{os.path.basename(lock_key)}.lock")
-            if os.path.exists(lock_file_path):
-                os.unlink(lock_file_path)
-        except OSError:
-            pass
+        with self._cache_refresh_lock_file:
+            if chunk_idx == 0 and os.path.exists(cache_path) and not os.path.exists(chunk_path):
+                self._update_access_time(cache_path)
+            else:
+                self._update_access_time(chunk_path)
 
     def _assemble_result_from_chunks(
-        self, cache_path: str, start_chunk: int, end_chunk: int, configured_cache_line_size: int, byte_range: Range
+        self,
+        cache_path: str,
+        start_chunk: int,
+        end_chunk: int,
+        configured_cache_line_size: int,
+        byte_range: Range,
+        source_version: Optional[str] = None,
+        *,
+        require_source_version: bool = False,
     ) -> bytes:
         """Assemble the requested byte range from locally cached chunks.
 
         Reads only the overlapping portion of each chunk and copies it into a
         pre-allocated result buffer. When a chunk on disk is shorter than the
-        slice needed from it, the stored ``user.size`` xattr is consulted to
+        slice needed from it, the stored object-size metadata is consulted to
         determine whether the chunk is a valid short final chunk or corrupt.
         An ``IOError`` is raised (and the chunk invalidated) when the chunk
         is too short and the xattr is missing or contradicts the file size,
@@ -818,6 +1277,7 @@ class CacheManager:
         :param end_chunk: The ending chunk index
         :param configured_cache_line_size: The size of each chunk in bytes
         :param byte_range: The byte range to read (offset and size)
+        :param source_version: Source revision that every assembled chunk must match
         :return: The assembled byte range data
         :raises IOError: If a short chunk is missing size metadata, is
             smaller than the stored object size indicates, or returns a
@@ -829,89 +1289,109 @@ class CacheManager:
 
         for chunk_idx in range(start_chunk, end_chunk + 1):
             chunk_path = self._get_chunk_path(cache_path, chunk_idx)
+            chunk_lock_key = self._get_chunk_lock_key(cache_path, chunk_idx)
 
-            # Check if chunk 0 was renamed to original file name (for small files)
-            if chunk_idx == 0 and os.path.exists(cache_path) and not os.path.exists(chunk_path):
-                actual_path = cache_path
-            else:
-                actual_path = chunk_path
+            with self.acquire_lock(chunk_lock_key):
+                # Chunk zero may have been promoted to a full-file cache entry.
+                if chunk_idx == 0 and os.path.exists(cache_path) and not os.path.exists(chunk_path):
+                    actual_path = cache_path
+                else:
+                    actual_path = chunk_path
 
-            # Calculate the portion of this chunk that overlaps with the requested range
-            chunk_start = chunk_idx * configured_cache_line_size
-            chunk_end = chunk_start + configured_cache_line_size - 1
+                if not self._is_chunk_valid(
+                    actual_path,
+                    source_version,
+                    configured_cache_line_size,
+                    remove_invalid=False,
+                    require_source_version=require_source_version,
+                ):
+                    raise IOError(f"Chunk file {actual_path} does not match the requested source revision")
 
-            overlap_start = max(byte_range.offset, chunk_start)
-            overlap_end = min(byte_range.offset + byte_range.size - 1, chunk_end)
+                # Calculate the portion of this chunk that overlaps with the requested range
+                chunk_start = chunk_idx * configured_cache_line_size
+                chunk_end = chunk_start + configured_cache_line_size - 1
 
-            if overlap_start <= overlap_end:
-                # Calculate positions within the chunk file and result buffer
-                chunk_offset = overlap_start - chunk_start
-                length = overlap_end - overlap_start + 1
+                overlap_start = max(byte_range.offset, chunk_start)
+                overlap_end = min(byte_range.offset + byte_range.size - 1, chunk_end)
 
-                # The chunk on disk may be shorter than cache_line_size (final chunk).
-                file_size = os.path.getsize(actual_path)
-                expected_length = length
-                if file_size < chunk_offset + length:
-                    # Chunk is too small for the naive slice -- consult object size metadata.
-                    object_size = self._get_chunk_object_size(actual_path)
-                    if object_size is None:
-                        # No metadata to validate; treat as corrupt.
+                if overlap_start <= overlap_end:
+                    # Calculate positions within the chunk file and result buffer
+                    chunk_offset = overlap_start - chunk_start
+                    length = overlap_end - overlap_start + 1
+
+                    # The chunk on disk may be shorter than cache_line_size (final chunk).
+                    file_size = os.path.getsize(actual_path)
+                    expected_length = length
+                    if file_size < chunk_offset + length:
+                        # Chunk is too small for the naive slice -- consult object size metadata.
+                        object_size = self._get_chunk_object_size(actual_path)
+                        if object_size is None:
+                            # No metadata to validate; treat as corrupt.
+                            self._remove_invalid_chunk(actual_path)
+                            raise IOError(
+                                f"Chunk file {actual_path} is too small for requested slice: "
+                                f"size={file_size}, needed={chunk_offset + length}"
+                            )
+
+                        # Verify the chunk isn't truncated relative to what object size implies.
+                        expected_chunk_size = min(configured_cache_line_size, max(object_size - chunk_start, 0))
+                        if file_size < expected_chunk_size:
+                            self._remove_invalid_chunk(actual_path)
+                            raise IOError(
+                                f"Chunk file {actual_path} is smaller than expected object metadata: "
+                                f"size={file_size}, expected={expected_chunk_size}"
+                            )
+
+                        # Clamp to the bytes that actually exist in the object.
+                        expected_length = max(min(length, object_size - overlap_start), 0)
+                        if expected_length == 0:
+                            # Requested range is entirely past the object's EOF.
+                            continue
+                    with open(actual_path, "rb") as f:
+                        f.seek(chunk_offset)
+                        chunk_data = f.read(expected_length)
+                    if len(chunk_data) != expected_length:
                         self._remove_invalid_chunk(actual_path)
                         raise IOError(
-                            f"Chunk file {actual_path} is too small for requested slice: "
-                            f"size={file_size}, needed={chunk_offset + length}"
+                            f"Chunk file {actual_path} returned a short read: "
+                            f"expected={expected_length}, actual={len(chunk_data)}"
                         )
 
-                    # Verify the chunk isn't truncated relative to what object size implies.
-                    expected_chunk_size = min(configured_cache_line_size, max(object_size - chunk_start, 0))
-                    if file_size < expected_chunk_size:
-                        self._remove_invalid_chunk(actual_path)
-                        raise IOError(
-                            f"Chunk file {actual_path} is smaller than expected object metadata: "
-                            f"size={file_size}, expected={expected_chunk_size}"
-                        )
-
-                    # Clamp to the bytes that actually exist in the object.
-                    expected_length = max(min(length, object_size - overlap_start), 0)
-                    if expected_length == 0:
-                        # Requested range is entirely past the object's EOF.
-                        continue
-                with open(actual_path, "rb") as f:
-                    f.seek(chunk_offset)
-                    chunk_data = f.read(expected_length)
-                if len(chunk_data) != expected_length:
-                    self._remove_invalid_chunk(actual_path)
-                    raise IOError(
-                        f"Chunk file {actual_path} returned a short read: "
-                        f"expected={expected_length}, actual={len(chunk_data)}"
-                    )
-
-                # Copy directly to result buffer
-                result[result_offset : result_offset + expected_length] = chunk_data
-                result_offset += expected_length
+                    # Copy directly to result buffer
+                    result[result_offset : result_offset + expected_length] = chunk_data
+                    result_offset += expected_length
 
         return bytes(result[:result_offset])
 
     def _invalidate_chunks(self, cache_path: str):
         """Delete all chunks and metadata for a path.
 
-        Removes all chunk files associated with the given cache path by finding
-        all files matching the pattern '.{base}#chunk*' and deleting them.
+        Removes every data file and sidecar in the private range-cache entry
+        associated with the given logical cache path.
 
         :param cache_path: The base cache path for which to invalidate all chunks
         """
-        cache_dir = os.path.dirname(cache_path)
-        base_name = os.path.basename(cache_path)
-        pattern = os.path.join(cache_dir, f".{base_name}#chunk*")
+        entry_dir = self._get_range_cache_entry_dir(cache_path)
+        try:
+            paths = [entry.path for entry in os.scandir(entry_dir) if entry.is_file()]
+        except OSError:
+            paths = []
 
-        for path in glob.glob(pattern):
+        for path in paths:
             try:
                 os.unlink(path)
             except OSError:
                 pass
+        self._remove_chunk_metadata_sidecar(cache_path)
+        self._remove_empty_range_cache_entry(cache_path)
 
     def _read_range_from_full_cached_file(
-        self, cache_path: str, byte_range: Range, source_version: Optional[str]
+        self,
+        cache_path: str,
+        byte_range: Range,
+        source_version: Optional[str],
+        *,
+        require_source_version: bool = False,
     ) -> Optional[bytes]:
         """Read a byte range from a full cached file if it exists and is valid.
 
@@ -924,25 +1404,23 @@ class CacheManager:
         :param source_version: Source version identifier for cache validation
         :return: The requested byte range data if successful, None otherwise
         """
-        # Check if we have a full cached file that's valid
-        if os.path.exists(cache_path):
-            try:
-                # Validate the full cached file's etag
-                cached_etag = xattr.getxattr(cache_path, "user.etag").decode("utf-8")
-                if cached_etag == source_version or source_version is None:
-                    # Full file is cached and valid, read range directly from it
-                    with open(cache_path, "rb") as f:
-                        f.seek(byte_range.offset)
-                        data = f.read(byte_range.size)
-                    # Update access time for LRU
-                    self._update_access_time(cache_path)
-                    return data
-            except (OSError, AttributeError):
-                # xattrs not supported or file corrupted, fall through to chunking
-                pass
+        try:
+            with open(cache_path, "rb") as cached_file:
+                file_descriptor = cached_file.fileno()
+                if require_source_version and not self._descriptor_matches_source_version(
+                    cache_path,
+                    file_descriptor,
+                    source_version,
+                ):
+                    return None
 
-        # No valid full cached file available
-        return None
+                cached_file.seek(byte_range.offset)
+                data = cached_file.read(byte_range.size)
+        except OSError:
+            return None
+
+        self._update_access_time(cache_path)
+        return data
 
     def _read_range(
         self,
@@ -952,6 +1430,8 @@ class CacheManager:
         source_version: Optional[str],
         source_size: Optional[int],
         original_key: str,
+        *,
+        require_source_version: bool,
     ) -> bytes:
         """Read a byte range using optimized chunk-based caching.
 
@@ -991,11 +1471,18 @@ class CacheManager:
                 storage_provider,
                 source_version,
                 source_size,
+                require_source_version=require_source_version,
             )
 
             # Step 2: Assemble result from cached chunks (streaming)
             return self._assemble_result_from_chunks(
-                cache_path, start_chunk, end_chunk, configured_cache_line_size, byte_range
+                cache_path,
+                start_chunk,
+                end_chunk,
+                configured_cache_line_size,
+                byte_range,
+                source_version,
+                require_source_version=require_source_version,
             )
         except Exception as e:
             # If any step fails, fall back to getting the object directly
