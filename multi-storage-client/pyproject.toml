@@ -57,11 +57,11 @@ msal = [
 
 vault = [
     "hvac>=2.3,<3",
-    "cryptography>=46.0.7"
+    "cryptography>=48.0.1"
 ]
 
 cloudfront = [
-    "cryptography>=46.0.7"
+    "cryptography>=48.0.1"
 ]
 
 # MCP.
@@ -95,7 +95,7 @@ huggingface = [
     "hf_transfer>=0.1.9"
 ]
 oci = [
-    "oci>=2.169,<3"
+    "oci>=2.181,<3"
 ]
 parquet = [
     "pyarrow>=23.0.1"
