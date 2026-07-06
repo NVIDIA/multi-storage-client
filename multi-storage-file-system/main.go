@@ -75,7 +75,7 @@ func main() {
 		fmt.Printf("    ${XDG_CONFIG_DIRS:-/etc/xdg}/msc/config.{yaml|yml|json}\n")
 		fmt.Printf("    /etc/msc_config.{yaml|yml|json}\n")
 		fmt.Printf("version:\n")
-		fmt.Printf("  %s\n", GitTagPrefix+GitTag+GitTagSuffix)
+		fmt.Printf("  %s\n", Version)
 		os.Exit(0)
 	}
 

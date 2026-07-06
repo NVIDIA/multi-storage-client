@@ -199,7 +199,6 @@ multi-storage-file-system:
         - flake.lock
         - flake.nix
         - nix/**/*
-        - multi-storage-client/pyproject.toml
         - multi-storage-file-system/**/*
     - when: manual
       allow_failure: true

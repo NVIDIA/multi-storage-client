@@ -14,12 +14,7 @@ import (
 
 //go:generate go run ./tools/lockgen -dir .
 
-const (
-	GitTagPrefix = "P.01.00 (MSC "
-	GitTagSuffix = ")"
-)
-
-var GitTag string // This variable will be populated at build time
+var Version string // This variable will be populated at build time
 
 const (
 	MSFSVersionPythonCompatibility = uint64(0)
@@ -434,7 +429,7 @@ func initGlobals(osArgs []string) {
 
 	globals.logger = log.New(os.Stdout, "", log.Ldate|log.Ltime|log.Lmsgprefix) // |log.Lmicroseconds|log.Lshortfile
 
-	globals.logger.Printf("[INFO] starting %s version %s", osArgs[0], GitTagPrefix+GitTag+GitTagSuffix)
+	globals.logger.Printf("[INFO] starting %s version %s", osArgs[0], Version)
 
 	globals.backendsSkipped = make(map[string]struct{})
 

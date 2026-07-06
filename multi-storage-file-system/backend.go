@@ -234,8 +234,8 @@ func recordRequest(backendName, operation string) {
 		return
 	}
 
-	// Get version (matches Python's VERSION attribute)
-	version := GitTag
+	// Get version
+	version := Version
 	if version == "" {
 		version = "dev" // Fallback for development builds
 	}
@@ -262,8 +262,8 @@ func recordBackendMetrics(backendName, operation string, startTime time.Time, er
 	duration := time.Since(startTime)
 	success := (err == nil)
 
-	// Get version (matches Python's VERSION attribute)
-	version := GitTag
+	// Get version
+	version := Version
 	if version == "" {
 		version = "dev" // Fallback for development builds
 	}

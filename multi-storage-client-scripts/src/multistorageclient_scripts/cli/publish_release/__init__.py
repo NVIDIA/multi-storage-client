@@ -107,28 +107,10 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
             )
         )
 
-        multi_storage_file_system_artifacts = pathlib.Path("../multi-storage-file-system/build").resolve()
-        multi_storage_file_system_debs = [
-            *multi_storage_file_system_artifacts.glob(f"debian/archives/*_{str(multi_storage_client_version)}_*.deb")
-        ]
-        multi_storage_file_system_rpms = [
-            *multi_storage_file_system_artifacts.glob(f"rpm/RPMS/*/*-{str(multi_storage_client_version)}-*.rpm")
-        ]
-        multi_storage_file_system_tars = [
-            *multi_storage_file_system_artifacts.glob(f"tar/*-{str(multi_storage_client_version)}-*.tar.*")
-        ]
-        multi_storage_file_system_zips = [
-            *multi_storage_file_system_artifacts.glob(f"zip/*-{str(multi_storage_client_version)}-*.zip")
-        ]
-
         release_assets = sorted(
             [
                 *multi_storage_client_wheels,
                 multi_storage_client_docs_archive,
-                *multi_storage_file_system_debs,
-                *multi_storage_file_system_rpms,
-                *multi_storage_file_system_tars,
-                *multi_storage_file_system_zips,
             ]
         )
 
@@ -169,22 +151,6 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
 
         if len(multi_storage_client_wheels) == 0:
             raise FileNotFoundError(f"Missing multi-storage-client wheels in {str(multi_storage_client_artifacts)}!")
-        if len(multi_storage_file_system_debs) == 0:
-            raise FileNotFoundError(
-                f"Missing multi-storage-file-system debs in {str(multi_storage_file_system_artifacts)}!"
-            )
-        if len(multi_storage_file_system_rpms) == 0:
-            raise FileNotFoundError(
-                f"Missing multi-storage-file-system rpms in {str(multi_storage_file_system_artifacts)}!"
-            )
-        if len(multi_storage_file_system_tars) == 0:
-            raise FileNotFoundError(
-                f"Missing multi-storage-file-system tars in {str(multi_storage_file_system_artifacts)}!"
-            )
-        if len(multi_storage_file_system_zips) == 0:
-            raise FileNotFoundError(
-                f"Missing multi-storage-file-system zips in {str(multi_storage_file_system_artifacts)}!"
-            )
 
         for multi_storage_client_wheel in multi_storage_client_wheels:
             name, version, _, _ = packaging.utils.parse_wheel_filename(str(multi_storage_client_wheel.name))
