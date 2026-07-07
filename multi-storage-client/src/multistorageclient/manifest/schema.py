@@ -48,6 +48,10 @@ def virtual_manifest_v2_schema() -> "pyarrow.Schema":
         ),
         nullable=False,
     )
+    metadata_type = pa.map_(
+        pa.string(),
+        pa.field("value", pa.string(), nullable=False),
+    )
     return pa.schema(
         [
             pa.field("key", pa.string(), nullable=False),
@@ -55,7 +59,7 @@ def virtual_manifest_v2_schema() -> "pyarrow.Schema":
             pa.field("last_modified", pa.timestamp("us", tz="UTC"), nullable=False),
             pa.field("content_type", pa.string()),
             pa.field("storage_class", pa.string()),
-            pa.field("metadata", pa.string()),
+            pa.field("metadata", metadata_type),
             pa.field("chunk_index", pa.int32(), nullable=False),
             pa.field("chunk_size_bytes", pa.int64(), nullable=False),
             pa.field("chunk_kind", pa.string(), nullable=False),

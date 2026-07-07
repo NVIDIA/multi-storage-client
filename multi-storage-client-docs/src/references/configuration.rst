@@ -256,11 +256,11 @@ Each profile in the configuration defines how to interact with storage services 
 
    * The ``options`` field contains provider-specific configuration that will be passed to the provider's constructor. The available options depend on the specific provider implementation being used.
 
-   * Profile names must not start with an underscore (_) to prevent collision with :ref:`implicit profiles <implicit-profiles>`.
+   * Profile names must be a non-reserved single path component. Configuration rejects ``.``, ``..``, ``.msc-cache-internal`` and every case-folding or Unicode-normalization equivalent of that internal name, names containing a slash (``/``), backslash (``\\``), or control character, and every name beginning with an underscore (``_``) except the built-in ``__filesystem__`` profile, to avoid collisions with :ref:`implicit profiles <implicit-profiles>`.
 
-   * Profile names beginning with ``.tmp-`` are reserved because older MSC clients use ``<cache root>/.tmp-<profile>`` for in-progress downloads.
+   * Profile names matching ``.tmp-*`` are also reserved, including case-folding or Unicode-normalization equivalents of that prefix, because older MSC clients use ``<cache root>/.tmp-<profile>`` for in-progress downloads.
 
-   To migrate a legacy ``.tmp-`` profile, stop older clients that share its cache root, rename the profile to a non-reserved single component, then move or discard its cache directory only after separately identifying or clearing any legacy in-progress temporary-download data.
+   To migrate any newly rejected profile name, stop clients that share its cache root, rename it to a non-reserved single component, and update every reference to it. As applicable, this includes ``storage_provider_profiles``, replica ``replica_profile`` values, profile-addressing provider-bundle settings, ``metadata_provider.options.storage_provider_profile``, ``path_mapping`` entries, and virtual-manifest ``manifest_storage_profile`` and ``source_profiles.<alias>.profile`` values. For a legacy ``.tmp-`` profile, move or discard its cache directory only after separately identifying or clearing any legacy in-progress temporary-download data. Range-cache entries live in a hashed private namespace, so moving only ``<cache-root>/<old-profile>`` cannot migrate them to the renamed profile; clear and repopulate affected cache state instead.
 
    * The ``caching_enabled`` field controls whether caching is enabled for this specific profile. When set to ``true``, the profile will use the global cache configuration if provided. When set to ``false`` or omitted, caching is disabled for this profile regardless of global cache settings.
 
@@ -276,7 +276,7 @@ The POSIX filesystem provider.
 
 Options: See parameters in :py:class:`multistorageclient.providers.posix_file.PosixFileStorageProvider`.
 
-MSC includes a default POSIX filesystem profile named ``__filesystem__``. When that profile is requested and not explicitly defined in configuration, MSC synthesizes it so basic local filesystem access remains available:
+MSC includes a built-in ``__filesystem__`` POSIX filesystem profile. When that profile is requested and not explicitly defined in configuration, MSC synthesizes it so basic local filesystem access remains available:
 
 .. code-block:: yaml
    :caption: Example configuration.
@@ -594,9 +594,9 @@ Optional options:
                  read_timeout_seconds: 60
                  verify_tls: true
 
-The manifest-store and object-source profiles must be direct profiles. They cannot be virtual manifests, composite ``storage_provider_profiles`` profiles, provider bundles, replica profiles, or profiles with a metadata provider. The virtual profile itself is read-only and cannot define a credentials provider, metadata provider, replicas, provider bundle, or autocommit settings.
+The manifest-store and object-source profiles must be direct profiles. They cannot be virtual manifests, composite ``storage_provider_profiles`` profiles, provider bundles, replica profiles, or profiles with a metadata provider. The virtual profile itself is read-only and cannot define a credentials provider, metadata provider, replicas, provider bundle, or autocommit settings. It may be a sync source, but attempts to use it as a sync target fail before workers are constructed.
 
-For HTTP services, ``base_url`` is HTTPS by default (plain HTTP requires ``allow_insecure_http: true``), and path/query allowlists are mandatory. The service configuration may also specify ``headers`` and ``verify_tls``. Do not configure protocol-controlled ``Range``, ``Accept-Encoding``, ``Host``, or ``Content-Length`` headers.
+For HTTP services, ``base_url`` is HTTPS by default (plain HTTP requires the exact boolean ``allow_insecure_http: true``), and path/query allowlists are mandatory. The service configuration may also specify ``headers`` and the exact boolean ``verify_tls``. Header names are case-insensitively unique HTTP tokens and values cannot contain control characters. Do not configure protocol-controlled ``Range``, ``Accept-Encoding``, ``Host``, or ``Content-Length`` headers.
 
 .. _rust-client-reference:
 
@@ -1003,6 +1003,8 @@ Cache
 
 The MSC cache configuration allows you to specify caching behavior for improved performance. The cache stores
 files locally for faster access on subsequent reads. The cache is shared across all profiles.
+
+New full-cache entries also record a deterministic, non-secret binding to the exact profile and logical key. MSC verifies that binding even when source-version checks are disabled, so a case-insensitive or Unicode-normalizing local filesystem cannot return or remove another logical entry that resolves to the same host path. Older full-cache entries that lack this binding remain readable for compatibility when their normal validation succeeds.
 
 .. note::
    Caching can be controlled at the profile level using the ``caching_enabled`` field in the profile configuration.

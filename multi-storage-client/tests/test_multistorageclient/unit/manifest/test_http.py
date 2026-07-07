@@ -17,7 +17,7 @@ import urllib3
 from requests.cookies import RequestsCookieJar
 from requests.structures import CaseInsensitiveDict
 
-from multistorageclient.manifest.http import HTTPServiceRangeReader
+from multistorageclient.manifest.http import HTTPServiceRangeReader, normalize_http_base_url
 from multistorageclient.manifest.models import QueryParameter
 from multistorageclient.types import Range, RetryableError
 
@@ -142,6 +142,40 @@ def test_http_service_reader_rejects_non_token_header_names_before_reserved_name
         _reader(headers={header_name: "caller-controlled"})
 
 
+@pytest.mark.parametrize("header_value", ["line\rbreak", "line\nbreak", "nul\x00byte", "delete\x7fbyte"])
+def test_http_service_reader_rejects_control_characters_in_header_values(header_value: str) -> None:
+    """Configured header values cannot inject or corrupt HTTP wire framing."""
+    with pytest.raises(ValueError, match="header values"):
+        _reader(headers={"X-Configured": header_value})
+
+
+def test_http_service_reader_rejects_case_insensitive_duplicate_header_names() -> None:
+    """One semantic header has one configured value regardless of spelling case."""
+    with pytest.raises(ValueError, match="duplicate"):
+        _reader(headers={"X-Trace": "first", "x-trace": "second"})
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        pytest.param("verify_tls", 1, id="verify-integer"),
+        pytest.param("verify_tls", "true", id="verify-string"),
+        pytest.param("allow_insecure_http", 1, id="allow-insecure-integer"),
+        pytest.param("allow_insecure_http", "false", id="allow-insecure-string"),
+    ],
+)
+def test_http_service_reader_rejects_non_boolean_security_switches(option: str, value: object) -> None:
+    """TLS policy switches require exact booleans rather than truthy configuration values."""
+    with pytest.raises(ValueError, match="boolean"):
+        _reader(**{option: value})
+
+
+def test_http_base_url_normalizer_rejects_a_non_boolean_insecure_transport_switch() -> None:
+    """Direct callers receive the same exact security-switch validation as the reader constructor."""
+    with pytest.raises(ValueError, match="boolean"):
+        normalize_http_base_url("https://service.example.test/v1", cast(Any, 1))
+
+
 def test_http_service_reader_requires_https_unless_explicitly_opted_into_insecure_http() -> None:
     """Plain HTTP is opt-in so a service binding cannot silently downgrade TLS."""
     with pytest.raises(ValueError):
@@ -194,6 +228,7 @@ def test_http_service_reader_rebuilds_the_transport_base_from_canonical_authorit
         ("allowed_path_prefixes", ("",)),
         ("allowed_path_prefixes", ("/clips",)),
         ("allowed_path_prefixes", ("clips//nested",)),
+        ("allowed_path_prefixes", ("clips//",)),
         ("allowed_path_prefixes", ("clips/../escape",)),
         ("allowed_path_prefixes", ("clips%2Fnested",)),
         ("allowed_path_prefixes", ("clips", "clips")),

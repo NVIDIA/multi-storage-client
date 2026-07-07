@@ -3,7 +3,7 @@
 
 """Public contracts for single-Parquet virtual manifests."""
 
-from .bindings import RangeReader, ServiceBinding, ServiceRangeReader, SourceBinding
+from .bindings import RangeReader, ServiceBinding, ServiceRangeReader, SizedRangeReader, SourceBinding
 from .models import QueryParameter
 from .schema import (
     MANIFEST_KIND,
@@ -28,6 +28,7 @@ __all__ = [
     "RangeReader",
     "ServiceBinding",
     "ServiceRangeReader",
+    "SizedRangeReader",
     "SourceBinding",
     "virtual_manifest_v2_schema",
 ]

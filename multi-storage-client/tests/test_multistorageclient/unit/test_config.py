@@ -135,6 +135,47 @@ def test_config_loading_rejects_profiles_reserved_for_legacy_temp_downloads(
             StorageClientConfig.from_file([str(config_path)], profile=".tmp-user")
 
 
+@pytest.mark.parametrize("entrypoint", ["from_dict", "from_yaml", "from_file"])
+@pytest.mark.parametrize(
+    "profile_name",
+    [
+        ".MSC-CACHE-INTERNAL",
+        ".TMP-user",
+        ".TmP-legacy",
+        ".ｍｓｃ－ｃａｃｈｅ－ｉｎｔｅｒｎａｌ",
+        ".ｔｍｐ－legacy",
+    ],
+)
+def test_config_loading_rejects_casefold_equivalents_of_reserved_cache_profiles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entrypoint: str,
+    profile_name: str,
+) -> None:
+    """Schema validation keeps case-folding cache filesystem aliases out of profile names."""
+    config = {
+        "profiles": {
+            profile_name: {
+                "storage_provider": {
+                    "type": "file",
+                    "options": {"base_path": str(tmp_path)},
+                }
+            }
+        }
+    }
+
+    with pytest.raises(RuntimeError, match="Failed to validate the config file"):
+        if entrypoint == "from_dict":
+            StorageClientConfig.from_dict(config, profile=profile_name)
+        elif entrypoint == "from_yaml":
+            StorageClientConfig.from_yaml(yaml.safe_dump(config), profile=profile_name)
+        else:
+            config_path = tmp_path / "config.yaml"
+            config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+            monkeypatch.setattr(config_module, "read_rclone_config", lambda: ({}, None))
+            StorageClientConfig.from_file([str(config_path)], profile=profile_name)
+
+
 def test_override_default_profile() -> None:
     with pytest.raises(ValueError) as ex:
         StorageClientConfig.from_json(
@@ -2892,6 +2933,32 @@ def test_manifest_http_binding_identity_uses_the_canonical_transport_origin(tmp_
 
     assert reader._base_url == "https://renderer.example.test:443/v1"
     assert json.loads(reader.binding_identity)["base_url"] == reader._base_url
+
+
+def test_manifest_config_rejects_repeated_service_allowlist_trailing_separators(tmp_path: Path) -> None:
+    """Config preserves one legacy trailing slash but leaves repeated separators for strict HTTP validation."""
+    manifest_root = tmp_path / "manifests"
+    object_root = tmp_path / "objects"
+    manifest_root.mkdir()
+    object_root.mkdir()
+    (manifest_root / "catalog.parquet").write_bytes(write_manifest([]).getvalue())
+    config = _virtual_manifest_config()
+    config["profiles"]["manifest-store"]["storage_provider"]["options"]["base_path"] = str(manifest_root)
+    config["profiles"]["objects"]["storage_provider"]["options"]["base_path"] = str(object_root)
+    config["profiles"]["virtual"]["storage_provider"]["options"]["services"] = {
+        "renderer": {
+            "type": "http",
+            "options": {
+                "base_url": "https://renderer.example.test/v1",
+                "binding_revision": "renderer-r1",
+                "allowed_path_prefixes": ["render//"],
+                "allowed_query_parameters": [],
+            },
+        }
+    }
+
+    with pytest.raises(ValueError, match="allowed path prefix"):
+        StorageClientConfig.from_dict(config, profile="virtual").storage_provider
 
 
 def test_manifest_config_rejects_file_prefix_collisions_before_constructing_a_client(tmp_path: Path) -> None:

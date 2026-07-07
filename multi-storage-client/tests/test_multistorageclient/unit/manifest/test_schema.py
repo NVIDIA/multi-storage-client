@@ -12,7 +12,13 @@ from io import BytesIO
 import pyarrow as pa
 import pytest
 
-from multistorageclient.manifest import ManifestValidationError, QueryParameter, ServiceRangeReader
+from multistorageclient.manifest import (
+    ManifestValidationError,
+    QueryParameter,
+    RangeReader,
+    ServiceRangeReader,
+    SizedRangeReader,
+)
 from multistorageclient.manifest.parquet import load_virtual_manifest
 from multistorageclient.manifest.schema import (
     MANIFEST_KIND,
@@ -38,6 +44,10 @@ def test_virtual_manifest_v2_schema_has_the_exact_column_contract() -> None:
         ),
         nullable=False,
     )
+    metadata_type = pa.map_(
+        pa.string(),
+        pa.field("value", pa.string(), nullable=False),
+    )
 
     assert [(field.name, field.type, field.nullable) for field in schema] == [
         ("key", pa.string(), False),
@@ -45,7 +55,7 @@ def test_virtual_manifest_v2_schema_has_the_exact_column_contract() -> None:
         ("last_modified", pa.timestamp("us", tz="UTC"), False),
         ("content_type", pa.string(), True),
         ("storage_class", pa.string(), True),
-        ("metadata", pa.string(), True),
+        ("metadata", metadata_type, True),
         ("chunk_index", pa.int32(), False),
         ("chunk_size_bytes", pa.int64(), False),
         ("chunk_kind", pa.string(), False),
@@ -67,7 +77,9 @@ def test_virtual_manifest_public_api_exports_query_parameter() -> None:
     parameter = QueryParameter("format", "raw")
 
     assert (parameter.name, parameter.value) == ("format", "raw")
+    assert RangeReader.__name__ == "RangeReader"
     assert ServiceRangeReader.__name__ == "ServiceRangeReader"
+    assert SizedRangeReader.__name__ == "SizedRangeReader"
 
 
 def test_load_virtual_manifest_accepts_unrelated_writer_footer_metadata() -> None:
@@ -215,11 +227,35 @@ def _with_wrong_chunk_index_type(schema: pa.Schema) -> pa.Schema:
 
 
 def _with_required_metadata(schema: pa.Schema) -> pa.Schema:
-    return schema.set(5, pa.field("metadata", pa.string(), nullable=False))
+    return schema.set(5, schema.field(5).with_nullable(False))
 
 
 def _with_required_source_path(schema: pa.Schema) -> pa.Schema:
     return schema.set(10, pa.field("source_path", pa.string(), nullable=False))
+
+
+def _with_binary_metadata_key(schema: pa.Schema) -> pa.Schema:
+    metadata_type = pa.map_(
+        pa.binary(),
+        pa.field("value", pa.string(), nullable=False),
+    )
+    return schema.set(5, pa.field("metadata", metadata_type))
+
+
+def _with_binary_metadata_value(schema: pa.Schema) -> pa.Schema:
+    metadata_type = pa.map_(
+        pa.string(),
+        pa.field("value", pa.binary(), nullable=False),
+    )
+    return schema.set(5, pa.field("metadata", metadata_type))
+
+
+def _with_nullable_metadata_value(schema: pa.Schema) -> pa.Schema:
+    metadata_type = pa.map_(
+        pa.string(),
+        pa.field("value", pa.string(), nullable=True),
+    )
+    return schema.set(5, pa.field("metadata", metadata_type))
 
 
 def _with_wrong_timestamp_unit(schema: pa.Schema) -> pa.Schema:
@@ -362,6 +398,9 @@ def _with_nullable_query_value(schema: pa.Schema) -> pa.Schema:
         ("key type changed", _with_wrong_key_type),
         ("chunk index type changed", _with_wrong_chunk_index_type),
         ("metadata made required", _with_required_metadata),
+        ("metadata key type changed", _with_binary_metadata_key),
+        ("metadata value type changed", _with_binary_metadata_value),
+        ("metadata value made nullable", _with_nullable_metadata_value),
         ("source path made required", _with_required_source_path),
         ("timestamp precision changed", _with_wrong_timestamp_unit),
         ("timestamp timezone changed", _with_wrong_timestamp_timezone),

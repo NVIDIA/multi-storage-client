@@ -15,8 +15,8 @@ from datetime import datetime, timezone
 from typing import IO, Any, Optional
 
 from . import ManifestValidationError
-from .bindings import ServiceBinding, SourceBinding
-from .models import EmptyChunk, ManifestChunk, ManifestFile, ObjectChunk, QueryParameter, ServiceChunk
+from .bindings import ServiceBinding, SourceBinding, validate_manifest_bindings
+from .models import ManifestChunk, ManifestFile, ObjectChunk, QueryParameter, ServiceChunk
 from .schema import (
     MANIFEST_KIND,
     MANIFEST_KIND_METADATA_KEY,
@@ -46,8 +46,7 @@ class _DecodedRow:
     last_modified: datetime
     content_type: Optional[str]
     storage_class: Optional[str]
-    metadata_json: Optional[str]
-    metadata_value: Optional[dict[str, Any]]
+    metadata: Optional[tuple[tuple[str, str], ...]]
     chunk: ManifestChunk
 
 
@@ -87,56 +86,28 @@ def _validate_relative_path(path: str, *, service: bool) -> None:
         raise _error(f"path {path!r} is not normalized")
 
 
-def _reject_json_constant(value: str) -> None:
-    raise ValueError(f"non-finite JSON value {value!r}")
-
-
-def _unique_json_object(pairs: Sequence[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for name, value in pairs:
-        if name in result:
-            raise ValueError(f"duplicate JSON object key {name!r}")
-        result[name] = value
-    return result
-
-
-def _normalize_metadata(value: Optional[str]) -> tuple[Optional[str], Optional[dict[str, Any]]]:
+def _normalize_metadata(value: Any) -> Optional[tuple[tuple[str, str], ...]]:
     if value is None:
-        return None, None
-    try:
-        parsed = json.loads(value, parse_constant=_reject_json_constant, object_pairs_hook=_unique_json_object)
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise _error("metadata must be strict JSON") from exc
-    if not isinstance(parsed, dict):
-        raise _error("metadata must be a JSON object")
-    try:
-        canonical = json.dumps(parsed, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
-    except (TypeError, ValueError) as exc:
-        raise _error("metadata cannot be canonically encoded") from exc
-    return canonical, parsed
+        return None
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        raise _error("metadata must be a map of strings to strings")
+    normalized: dict[str, str] = {}
+    for item in value:
+        if not isinstance(item, Sequence) or isinstance(item, (str, bytes, bytearray)) or len(item) != 2:
+            raise _error("metadata entries must be key/value pairs")
+        name, metadata_value = item
+        if not isinstance(name, str) or not isinstance(metadata_value, str):
+            raise _error("metadata keys and values must be strings")
+        if name in normalized:
+            raise _error(f"metadata contains duplicate key {name!r}")
+        normalized[name] = metadata_value
+    return tuple(sorted(normalized.items()))
 
 
 def _normalize_timestamp(value: Any) -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
         raise _error("last_modified must be a timezone-aware timestamp")
     return value.astimezone(timezone.utc)
-
-
-def _validate_bindings(bindings: Mapping[str, SourceBinding] | Mapping[str, ServiceBinding], *, service: bool) -> None:
-    for alias, binding in bindings.items():
-        if not isinstance(alias, str) or not alias:
-            raise _error("binding aliases must be non-empty strings")
-        expected_type = ServiceBinding if service else SourceBinding
-        if not isinstance(binding, expected_type):
-            raise _error(f"binding {alias!r} has an invalid type")
-        revision = binding.binding_revision
-        identity = binding.reader.binding_identity
-        if not isinstance(revision, str) or not revision:
-            raise _error(f"binding {alias!r} has an invalid revision")
-        if not isinstance(identity, str) or not identity:
-            raise _error(f"binding {alias!r} has an invalid identity")
-        if service and not callable(getattr(binding.reader, "validate", None)):
-            raise _error(f"service binding {alias!r} has no validator")
 
 
 def _validate_manifest_metadata(metadata: Mapping[bytes, bytes], *, location: str) -> None:
@@ -169,9 +140,33 @@ def _validate_schema(parquet_file: Any, pa: Any) -> None:
     metadata = dict(parquet_file.metadata.metadata or {})
     expected = virtual_manifest_v2_schema()
 
+    def normalize_map_container_name(schema: Any) -> Any:
+        field_index = schema.get_field_index("metadata")
+        if field_index < 0:
+            return schema
+        field = schema.field(field_index)
+        if not pa.types.is_map(field.type):
+            return schema
+        map_type = pa.map_(
+            field.type.key_field,
+            field.type.item_field,
+            keys_sorted=field.type.keys_sorted,
+        )
+        return schema.set(
+            field_index,
+            pa.field(
+                field.name,
+                map_type,
+                nullable=field.nullable,
+                metadata=field.metadata,
+            ),
+        )
+
     def require_manifest_schema(actual: Any, *, location: str) -> None:
         _validate_manifest_metadata(dict(actual.metadata or {}), location=location)
-        if not actual.remove_metadata().equals(expected.remove_metadata(), check_metadata=True):
+        normalized_actual = normalize_map_container_name(actual.remove_metadata())
+        normalized_expected = normalize_map_container_name(expected.remove_metadata())
+        if not normalized_actual.equals(normalized_expected, check_metadata=True):
             raise _error("Parquet schema does not exactly match virtual manifest v2")
 
     require_manifest_schema(parquet_file.schema_arrow, location="physical Arrow schema")
@@ -212,29 +207,21 @@ def _decode_row(
     key = _required_string(row, "key")
     _validate_relative_path(key, service=False)
     size_bytes = _required_int(row, "size_bytes")
-    if size_bytes < 0:
-        raise _error("size_bytes must be non-negative")
+    if size_bytes <= 0:
+        raise _error("size_bytes must be positive")
     last_modified = _normalize_timestamp(row.get("last_modified"))
     content_type = _optional_string(row, "content_type")
     storage_class = _optional_string(row, "storage_class")
-    metadata_json, metadata_value = _normalize_metadata(_optional_string(row, "metadata"))
+    metadata = _normalize_metadata(row.get("metadata"))
     chunk_index = _required_int(row, "chunk_index")
     chunk_size = _required_int(row, "chunk_size_bytes")
     chunk_kind = _required_string(row, "chunk_kind")
-    if chunk_index < 0 or chunk_size < 0:
-        raise _error("chunk index and size must be non-negative")
+    if chunk_index < 0 or chunk_size <= 0:
+        raise _error("chunk index must be non-negative and chunk size must be positive")
 
     source_fields = ("source_profile", "source_path", "source_offset")
     service_fields = ("service_id", "service_path", "service_query")
-    if chunk_kind == "empty":
-        if size_bytes != 0 or chunk_index != 0 or chunk_size != 0:
-            raise _error("empty chunks require zero file size, zero index, and zero chunk size")
-        if not _all_null(row, source_fields + service_fields):
-            raise _error("empty chunks cannot contain object or service fields")
-        chunk: ManifestChunk = EmptyChunk()
-    elif chunk_kind == "object":
-        if chunk_size <= 0:
-            raise _error("object chunks must have a positive size")
+    if chunk_kind == "object":
         if not _all_null(row, service_fields):
             raise _error("object chunks cannot contain service fields")
         source_profile = _required_string(row, "source_profile")
@@ -242,13 +229,13 @@ def _decode_row(
         source_offset = _required_int(row, "source_offset")
         if source_offset < 0:
             raise _error("object source offset must be non-negative")
+        if source_offset > _INT64_MAX - chunk_size:
+            raise _error("object source range exceeds int64")
         _validate_relative_path(source_path, service=False)
         if source_profile not in source_bindings:
             raise _error(f"unknown source binding {source_profile!r}")
-        chunk = ObjectChunk(chunk_index, chunk_size, source_profile, source_path, source_offset)
+        chunk: ManifestChunk = ObjectChunk(chunk_index, chunk_size, source_profile, source_path, source_offset)
     elif chunk_kind == "service":
-        if chunk_size <= 0:
-            raise _error("service chunks must have a positive size")
         if not _all_null(row, source_fields):
             raise _error("service chunks cannot contain object fields")
         service_id = _required_string(row, "service_id")
@@ -272,8 +259,7 @@ def _decode_row(
         last_modified=last_modified,
         content_type=content_type,
         storage_class=storage_class,
-        metadata_json=metadata_json,
-        metadata_value=metadata_value,
+        metadata=metadata,
         chunk=chunk,
     )
 
@@ -288,16 +274,14 @@ def _make_etag(
     last_modified: datetime,
     content_type: Optional[str],
     storage_class: Optional[str],
-    metadata_value: Optional[dict[str, Any]],
+    metadata: Optional[tuple[tuple[str, str], ...]],
     chunks: Sequence[ManifestChunk],
     source_bindings: Mapping[str, SourceBinding],
     service_bindings: Mapping[str, ServiceBinding],
 ) -> str:
     serialized_chunks: list[dict[str, Any]] = []
     for chunk in chunks:
-        if isinstance(chunk, EmptyChunk):
-            serialized_chunks.append({"index": chunk.index, "kind": "empty", "size_bytes": chunk.size_bytes})
-        elif isinstance(chunk, ObjectChunk):
+        if isinstance(chunk, ObjectChunk):
             binding = source_bindings[chunk.source_profile]
             serialized_chunks.append(
                 {
@@ -339,7 +323,7 @@ def _make_etag(
                 "last_modified": _timestamp_for_etag(last_modified),
                 "content_type": content_type,
                 "storage_class": storage_class,
-                "metadata": metadata_value,
+                "metadata": dict(metadata) if metadata is not None else None,
             },
             "chunks": serialized_chunks,
         },
@@ -352,81 +336,59 @@ def _make_etag(
     return f"msc-v2-sha256:{digest}"
 
 
-def _build_files(
-    rows_by_key: Mapping[str, Sequence[_DecodedRow]],
+def _file_metadata(
+    row: _DecodedRow,
+) -> tuple[int, datetime, Optional[str], Optional[str], Optional[tuple[tuple[str, str], ...]]]:
+    return (
+        row.size_bytes,
+        row.last_modified,
+        row.content_type,
+        row.storage_class,
+        row.metadata,
+    )
+
+
+def _finalize_file(
+    first: _DecodedRow,
+    chunks: Sequence[ManifestChunk],
+    cumulative_ends: Sequence[int],
     source_bindings: Mapping[str, SourceBinding],
     service_bindings: Mapping[str, ServiceBinding],
-) -> dict[str, ManifestFile]:
-    keys = set(rows_by_key)
-    for key in sorted(keys):
-        ancestor = key.rsplit("/", 1)[0] if "/" in key else None
-        while ancestor is not None:
-            if ancestor in keys:
-                raise _error(f"file key {ancestor!r} is an ancestor of file key {key!r}")
-            ancestor = ancestor.rsplit("/", 1)[0] if "/" in ancestor else None
-
-    files: dict[str, ManifestFile] = {}
-    for key, rows in rows_by_key.items():
-        first = rows[0]
-        metadata = (
+) -> ManifestFile:
+    total = cumulative_ends[-1]
+    if total != first.size_bytes:
+        raise _error(f"file {first.key!r} chunk sizes do not match file size")
+    immutable_chunks = tuple(chunks)
+    return ManifestFile(
+        key=first.key,
+        size_bytes=first.size_bytes,
+        last_modified=first.last_modified,
+        content_type=first.content_type,
+        storage_class=first.storage_class,
+        metadata=first.metadata,
+        chunks=immutable_chunks,
+        cumulative_ends=tuple(cumulative_ends),
+        etag=_make_etag(
+            first.key,
             first.size_bytes,
             first.last_modified,
             first.content_type,
             first.storage_class,
-            first.metadata_json,
-        )
-        if any(
-            (
-                row.size_bytes,
-                row.last_modified,
-                row.content_type,
-                row.storage_class,
-                row.metadata_json,
-            )
-            != metadata
-            for row in rows[1:]
-        ):
-            raise _error(f"file {key!r} has conflicting file metadata")
+            first.metadata,
+            immutable_chunks,
+            source_bindings,
+            service_bindings,
+        ),
+    )
 
-        chunks = tuple(sorted((row.chunk for row in rows), key=lambda chunk: chunk.index))
-        if any(isinstance(chunk, EmptyChunk) for chunk in chunks):
-            if len(chunks) != 1 or not isinstance(chunks[0], EmptyChunk):
-                raise _error(f"file {key!r} has mixed or multiple empty chunks")
-        elif tuple(chunk.index for chunk in chunks) != tuple(range(len(chunks))):
-            raise _error(f"file {key!r} chunk indexes must be contiguous and unique")
 
-        total = 0
-        cumulative_ends: list[int] = []
-        for chunk in chunks:
-            if total > _INT64_MAX - chunk.size_bytes:
-                raise _error(f"file {key!r} chunk total overflows int64")
-            total += chunk.size_bytes
-            cumulative_ends.append(total)
-        if total != first.size_bytes:
-            raise _error(f"file {key!r} chunk sizes do not match file size")
-
-        files[key] = ManifestFile(
-            key=key,
-            size_bytes=first.size_bytes,
-            last_modified=first.last_modified,
-            content_type=first.content_type,
-            storage_class=first.storage_class,
-            metadata_json=first.metadata_json,
-            chunks=chunks,
-            cumulative_ends=tuple(cumulative_ends),
-            etag=_make_etag(
-                key,
-                first.size_bytes,
-                first.last_modified,
-                first.content_type,
-                first.storage_class,
-                first.metadata_value,
-                chunks,
-                source_bindings,
-                service_bindings,
-            ),
-        )
-    return files
+def _insert_file(files: dict[str, ManifestFile], file: ManifestFile) -> None:
+    ancestor = file.key.rsplit("/", 1)[0] if "/" in file.key else None
+    while ancestor is not None:
+        if ancestor in files:
+            raise _error(f"file key {ancestor!r} is an ancestor of file key {file.key!r}")
+        ancestor = ancestor.rsplit("/", 1)[0] if "/" in ancestor else None
+    files[file.key] = file
 
 
 def load_virtual_manifest(
@@ -435,6 +397,11 @@ def load_virtual_manifest(
     service_bindings: Mapping[str, ServiceBinding],
 ) -> dict[str, ManifestFile]:
     """Decode and validate one single-Parquet virtual manifest."""
+    try:
+        validate_manifest_bindings(source_bindings, service_bindings)
+    except ValueError as exc:
+        raise _error(str(exc)) from exc
+
     pa = _require_pyarrow()
     try:
         import pyarrow.parquet as pq
@@ -445,16 +412,50 @@ def load_virtual_manifest(
         ) from exc
 
     try:
-        _validate_bindings(source_bindings, service=False)
-        _validate_bindings(service_bindings, service=True)
         parquet_file = pq.ParquetFile(stream)
         _validate_schema(parquet_file, pa)
-        rows_by_key: dict[str, list[_DecodedRow]] = {}
+        files: dict[str, ManifestFile] = {}
+        first: Optional[_DecodedRow] = None
+        chunks: list[ManifestChunk] = []
+        cumulative_ends: list[int] = []
+        previous_position: Optional[tuple[str, int]] = None
         for batch in parquet_file.iter_batches(batch_size=_BATCH_SIZE):
             for row in batch.to_pylist():
                 decoded = _decode_row(row, source_bindings, service_bindings)
-                rows_by_key.setdefault(decoded.key, []).append(decoded)
-        return _build_files(rows_by_key, source_bindings, service_bindings)
+                position = (decoded.key, decoded.chunk.index)
+                if previous_position is not None and position <= previous_position:
+                    raise _error("rows must be strictly sorted by key and chunk_index")
+
+                if first is not None and decoded.key != first.key:
+                    _insert_file(
+                        files,
+                        _finalize_file(first, chunks, cumulative_ends, source_bindings, service_bindings),
+                    )
+                    first = None
+                    chunks = []
+                    cumulative_ends = []
+
+                if first is None:
+                    first = decoded
+                elif _file_metadata(decoded) != _file_metadata(first):
+                    raise _error(f"file {decoded.key!r} has conflicting file metadata")
+
+                expected_index = len(chunks)
+                if decoded.chunk.index != expected_index:
+                    raise _error(f"file {decoded.key!r} chunk indexes must be contiguous and unique")
+                total = cumulative_ends[-1] if cumulative_ends else 0
+                if total > _INT64_MAX - decoded.chunk.size_bytes:
+                    raise _error(f"file {decoded.key!r} chunk total overflows int64")
+                chunks.append(decoded.chunk)
+                cumulative_ends.append(total + decoded.chunk.size_bytes)
+                previous_position = position
+
+        if first is not None:
+            _insert_file(
+                files,
+                _finalize_file(first, chunks, cumulative_ends, source_bindings, service_bindings),
+            )
+        return files
     except ManifestValidationError:
         raise
     except Exception as exc:

@@ -18,6 +18,8 @@ from typing import Any
 
 from jsonschema import validate
 
+from .cache import _validate_cache_profile_name
+
 EXTENSION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -299,8 +301,8 @@ PROFILE_SCHEMA = {
     },
     "propertyNames": {
         "pattern": (
-            r"^(?:__filesystem__|(?!(?:\.|\.\.)$)(?!\.msc-cache-internal$)"
-            r"(?!\.tmp-)"
+            r"^(?:__filesystem__|(?!(?:\.|\.\.)$)(?!(?i:\.msc-cache-internal)$)"
+            r"(?!(?i:\.tmp-))"
             r"(?!.*[\\/\x00-\x1f\x7f])[^_][^\\/\x00-\x1f\x7f]*)$"
         ),
     },
@@ -392,6 +394,10 @@ def validate_config(config_dict: dict[str, Any]) -> None:
     # Custom validation: ensure replica_profile uniqueness within each profile's replicas
     profiles = config_dict.get("profiles", {})
     for profile_name, profile in profiles.items():
+        try:
+            _validate_cache_profile_name(profile_name)
+        except ValueError as exc:
+            raise RuntimeError("Failed to validate the config file", exc) from exc
         replicas = profile.get("replicas", [])
         replica_profiles = [r.get("replica_profile") for r in replicas]
         counter = Counter(replica_profiles)

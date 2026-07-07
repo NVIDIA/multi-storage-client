@@ -17,7 +17,7 @@ import pyarrow.parquet as pq
 from multistorageclient.manifest.bindings import ServiceBinding, SourceBinding
 from multistorageclient.manifest.models import QueryParameter
 from multistorageclient.manifest.schema import virtual_manifest_v2_schema
-from multistorageclient.types import ObjectMetadata, Range
+from multistorageclient.types import Range
 
 
 @dataclass(frozen=True)
@@ -28,9 +28,6 @@ class StubSourceReader:
 
     def read(self, path: str, byte_range: Optional[Range] = None) -> bytes:
         raise AssertionError(f"unexpected source read for {path!r} at {byte_range!r}")
-
-    def info(self, path: str) -> ObjectMetadata:
-        raise AssertionError(f"unexpected source metadata read for {path!r}")
 
 
 @dataclass(frozen=True)
@@ -74,7 +71,7 @@ def object_row(**changes: Any) -> dict[str, Any]:
         "last_modified": datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
         "content_type": "application/octet-stream",
         "storage_class": "STANDARD",
-        "metadata": '{"source":"unit-test"}',
+        "metadata": {"source": "unit-test"},
         "chunk_index": 0,
         "chunk_size_bytes": 3,
         "chunk_kind": "object",
@@ -99,23 +96,6 @@ def service_row(**changes: Any) -> dict[str, Any]:
         service_id="service",
         service_path="clips/rendered.bin",
         service_query=[],
-    )
-    row.update(changes)
-    return row
-
-
-def empty_row(**changes: Any) -> dict[str, Any]:
-    """Return the sole valid row for a zero-byte virtual file."""
-    row = object_row(
-        size_bytes=0,
-        chunk_size_bytes=0,
-        chunk_kind="empty",
-        source_profile=None,
-        source_path=None,
-        source_offset=None,
-        service_id=None,
-        service_path=None,
-        service_query=None,
     )
     row.update(changes)
     return row

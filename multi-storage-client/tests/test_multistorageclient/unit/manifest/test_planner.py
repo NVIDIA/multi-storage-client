@@ -13,7 +13,6 @@ import pytest
 
 from multistorageclient.manifest.models import (
     DownloadPlan,
-    EmptyChunk,
     ManifestFile,
     ObjectChunk,
     PlannedChunkRead,
@@ -37,25 +36,10 @@ def _three_chunk_file() -> ManifestFile:
         last_modified=datetime(2026, 1, 2, tzinfo=timezone.utc),
         content_type=None,
         storage_class=None,
-        metadata_json=None,
+        metadata=None,
         chunks=chunks,
         cumulative_ends=(3, 8, 10),
         etag="msc-v2-sha256:test",
-    )
-
-
-def _empty_file() -> ManifestFile:
-    """Build the valid zero-byte, explicit-empty-chunk representation."""
-    return ManifestFile(
-        key="logical/empty.bin",
-        size_bytes=0,
-        last_modified=datetime(2026, 1, 2, tzinfo=timezone.utc),
-        content_type=None,
-        storage_class=None,
-        metadata_json=None,
-        chunks=(EmptyChunk(),),
-        cumulative_ends=(0,),
-        etag="msc-v2-sha256:empty",
     )
 
 
@@ -72,7 +56,7 @@ def _small_file() -> ManifestFile:
         last_modified=datetime(2026, 1, 2, tzinfo=timezone.utc),
         content_type=None,
         storage_class=None,
-        metadata_json=None,
+        metadata=None,
         chunks=chunks,
         cumulative_ends=(2, 3, 5),
         etag="msc-v2-sha256:small",
@@ -153,14 +137,6 @@ def test_plan_download_rejects_non_integer_or_boolean_range_values(byte_range: R
         plan_download(_three_chunk_file(), byte_range)
 
 
-@pytest.mark.parametrize("byte_range", [None, Range(0, 0), Range(0, 1), Range(1, 1)])
-def test_plan_download_never_issues_a_physical_read_for_an_empty_file(byte_range: Range | None) -> None:
-    """The explicit empty chunk is a semantic sentinel rather than a transport operation."""
-    plan = plan_download(_empty_file(), byte_range)
-
-    assert plan == DownloadPlan("logical/empty.bin", 0 if byte_range is None else byte_range.offset, 0, ())
-
-
 def test_plan_download_exhaustively_matches_small_file_offset_and_size_boundaries() -> None:
     """Every small nonnegative offset/size pair obeys clipping and exact chunk-overlap arithmetic."""
     file = _small_file()
@@ -220,7 +196,7 @@ def test_plan_download_does_not_slice_a_large_untouched_chunk_tail() -> None:
         last_modified=datetime(2026, 1, 2, tzinfo=timezone.utc),
         content_type=None,
         storage_class=None,
-        metadata_json=None,
+        metadata=None,
         chunks=chunks,
         cumulative_ends=_SliceRejectingTuple(range(1, chunk_count + 1)),
         etag="msc-v2-sha256:large",

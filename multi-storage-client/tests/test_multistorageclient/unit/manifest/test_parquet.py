@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
-from typing import cast
+from typing import Any, cast
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -18,7 +18,7 @@ import pytest
 
 from multistorageclient.manifest import ManifestValidationError
 from multistorageclient.manifest.bindings import ServiceBinding, SourceBinding
-from multistorageclient.manifest.models import EmptyChunk, ObjectChunk, QueryParameter, ServiceChunk
+from multistorageclient.manifest.models import ObjectChunk, QueryParameter, ServiceChunk
 from multistorageclient.manifest.parquet import load_virtual_manifest
 from multistorageclient.manifest.schema import virtual_manifest_v2_schema
 from multistorageclient.types import Range
@@ -26,7 +26,6 @@ from multistorageclient.types import Range
 from .helpers import (
     StubServiceReader,
     StubSourceReader,
-    empty_row,
     object_row,
     service_bindings,
     service_row,
@@ -97,12 +96,12 @@ def test_load_virtual_manifest_rejects_a_spoofed_arrow_schema_in_the_footer(
         load_virtual_manifest(stream, source_bindings(), service_bindings())
 
 
-def test_load_virtual_manifest_decodes_object_rows_across_row_groups_out_of_order() -> None:
-    """Chunk index, rather than physical Parquet row position, defines file reconstruction order."""
+def test_load_virtual_manifest_decodes_sorted_object_rows_across_row_groups() -> None:
+    """One file may span row groups when its rows remain adjacent and chunk-index ordered."""
     second_chunk = object_row(
         key="logical/alpha.bin",
         size_bytes=5,
-        metadata='{"b":2, "a":1}',
+        metadata=[("b", "2"), ("a", "1")],
         chunk_index=1,
         chunk_size_bytes=2,
         source_path="objects/alpha-tail.bin",
@@ -111,7 +110,7 @@ def test_load_virtual_manifest_decodes_object_rows_across_row_groups_out_of_orde
     first_chunk = object_row(
         key="logical/alpha.bin",
         size_bytes=5,
-        metadata='{"a":1,"b":2}',
+        metadata=[("a", "1"), ("b", "2")],
         chunk_index=0,
         chunk_size_bytes=3,
         source_path="objects/alpha-head.bin",
@@ -129,11 +128,11 @@ def test_load_virtual_manifest_decodes_object_rows_across_row_groups_out_of_orde
         ],
     )
 
-    files = _decode([second_chunk, independent_file, first_chunk], row_group_size=1)
+    files = _decode([first_chunk, second_chunk, independent_file], row_group_size=1)
 
     alpha = files["logical/alpha.bin"]
     assert alpha.size_bytes == 5
-    assert alpha.metadata_json == '{"a":1,"b":2}'
+    assert alpha.metadata == (("a", "1"), ("b", "2"))
     assert alpha.cumulative_ends == (3, 5)
     assert alpha.chunks == (
         ObjectChunk(0, 3, "source", "objects/alpha-head.bin", 0),
@@ -154,14 +153,46 @@ def test_load_virtual_manifest_decodes_object_rows_across_row_groups_out_of_orde
     )
 
 
-def test_load_virtual_manifest_decodes_the_single_empty_file_representation() -> None:
-    """A zero-byte file is represented by exactly one explicit empty chunk."""
-    files = _decode([empty_row(key="logical/empty.bin")])
+def test_load_virtual_manifest_accepts_ascii_bmp_and_non_bmp_key_order_across_row_groups() -> None:
+    """Physical rows retain their Unicode scalar-value order across Parquet row groups."""
+    keys = ("keys/ascii.bin", "keys/\u00e9-bmp.bin", "keys/\U0001f600-non-bmp.bin")
+    rows = [object_row(key=key, source_path=f"objects/{index}.bin") for index, key in enumerate(keys)]
 
-    empty_file = files["logical/empty.bin"]
-    assert empty_file.size_bytes == 0
-    assert empty_file.chunks == (EmptyChunk(),)
-    assert empty_file.cumulative_ends == (0,)
+    files = _decode(rows, row_group_size=1)
+
+    assert tuple(files) == keys
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        pytest.param(
+            [object_row(key="logical/b.bin"), object_row(key="logical/a.bin")],
+            id="descending-keys",
+        ),
+        pytest.param(
+            [
+                object_row(size_bytes=6, chunk_index=1, chunk_size_bytes=3),
+                object_row(size_bytes=6, chunk_index=0, chunk_size_bytes=3),
+            ],
+            id="descending-chunk-indexes",
+        ),
+        pytest.param(
+            [
+                object_row(key="logical/a.bin"),
+                object_row(key="logical/b.bin"),
+                object_row(key="logical/a.bin"),
+            ],
+            id="noncontiguous-key",
+        ),
+    ],
+)
+def test_load_virtual_manifest_rejects_rows_not_sorted_by_key_and_chunk_index(
+    rows: list[dict[str, object]],
+) -> None:
+    """Physical row order is the lookup order and must strictly increase by key and chunk index."""
+    with pytest.raises(ManifestValidationError):
+        _decode(rows, row_group_size=1)
 
 
 @pytest.mark.parametrize(
@@ -186,6 +217,7 @@ def test_load_virtual_manifest_decodes_the_single_empty_file_representation() ->
             ],
         ),
         ("zero-sized nonempty chunk", [object_row(size_bytes=0, chunk_size_bytes=0)]),
+        ("empty chunk kind", [object_row(chunk_kind="empty")]),
         ("chunk sum differs from file size", [object_row(size_bytes=4, chunk_size_bytes=3)]),
         ("unknown chunk kind", [object_row(chunk_kind="inline")]),
         ("object without source profile", [object_row(source_profile=None)]),
@@ -196,10 +228,6 @@ def test_load_virtual_manifest_decodes_the_single_empty_file_representation() ->
         ("service without path", [service_row(service_path=None)]),
         ("service without query list", [service_row(service_query=None)]),
         ("service with source fields", [service_row(source_profile="source")]),
-        ("empty row has object fields", [empty_row(source_path="objects/not-empty.bin")]),
-        ("empty row has nonzero index", [empty_row(chunk_index=1)]),
-        ("empty row has nonzero chunk", [empty_row(chunk_size_bytes=1)]),
-        ("empty row has nonzero file size", [empty_row(size_bytes=1)]),
     ],
 )
 def test_load_virtual_manifest_rejects_invalid_chunk_rows(case: str, rows: list[dict[str, object]]) -> None:
@@ -217,37 +245,12 @@ def test_load_virtual_manifest_rejects_invalid_chunk_rows(case: str, rows: list[
         ("service has source profile", service_row(source_profile="source")),
         ("service has source path", service_row(source_path="objects/unexpected.bin")),
         ("service has source offset", service_row(source_offset=0)),
-        ("empty has source profile", empty_row(source_profile="source")),
-        ("empty has source path", empty_row(source_path="objects/unexpected.bin")),
-        ("empty has source offset", empty_row(source_offset=0)),
-        ("empty has service identifier", empty_row(service_id="service")),
-        ("empty has service path", empty_row(service_path="clips/unexpected.bin")),
-        ("empty has service query", empty_row(service_query=[])),
     ],
 )
 def test_load_virtual_manifest_rejects_each_cross_kind_field_independently(case: str, row: dict[str, object]) -> None:
     """A field from another chunk kind is invalid even when every other field is canonical."""
     with pytest.raises(ManifestValidationError):
         _decode([row])
-
-
-@pytest.mark.parametrize(
-    ("case", "rows"),
-    [
-        ("two empty rows for one key", [empty_row(), empty_row()]),
-        ("empty row and object row for one key", [empty_row(), object_row()]),
-        (
-            "empty row with a second index",
-            [empty_row(), empty_row(chunk_index=1)],
-        ),
-    ],
-)
-def test_load_virtual_manifest_rejects_multiple_or_mixed_empty_row_representations(
-    case: str, rows: list[dict[str, object]]
-) -> None:
-    """A logical empty file has one and only one all-null empty row."""
-    with pytest.raises(ManifestValidationError):
-        _decode(rows)
 
 
 @pytest.mark.parametrize(
@@ -271,7 +274,7 @@ def test_load_virtual_manifest_rejects_nulls_in_physical_required_fields(require
         ("last_modified", datetime(2026, 1, 2, 3, 4, 6, tzinfo=timezone.utc)),
         ("content_type", "text/plain"),
         ("storage_class", "ARCHIVE"),
-        ("metadata", '{"different":true}'),
+        ("metadata", {"different": "true"}),
     ],
 )
 def test_load_virtual_manifest_rejects_conflicting_file_metadata(field: str, different_value: object) -> None:
@@ -290,23 +293,10 @@ def test_load_virtual_manifest_rejects_conflicting_file_metadata(field: str, dif
         _decode([first, second])
 
 
-@pytest.mark.parametrize(
-    "invalid_metadata",
-    [
-        "{",
-        "[]",
-        "null",
-        '"not-an-object"',
-        '{"number":NaN}',
-        '{"number":Infinity}',
-        '{"number":-Infinity}',
-        '{"key":1,"key":2}',
-    ],
-)
-def test_load_virtual_manifest_rejects_metadata_that_is_not_a_json_object(invalid_metadata: str) -> None:
-    """Metadata remains a JSON object even though Parquet carries it as a string."""
-    with pytest.raises(ManifestValidationError):
-        _decode([object_row(metadata=invalid_metadata)])
+def test_load_virtual_manifest_rejects_duplicate_native_metadata_keys() -> None:
+    """Parquet map entries are native strings and duplicate keys are never canonical metadata."""
+    with pytest.raises(ManifestValidationError, match="duplicate key"):
+        _decode([object_row(metadata=[("duplicate", "one"), ("duplicate", "two")])])
 
 
 @pytest.mark.parametrize(
@@ -450,6 +440,52 @@ def test_load_virtual_manifest_rejects_invalid_injected_bindings_before_using_ro
         _decode([row], sources=sources, services=services)
 
 
+@pytest.mark.parametrize(
+    ("binding_kind", "reader"),
+    [
+        pytest.param(
+            "source",
+            type("SourceReaderWithoutRead", (), {"binding_identity": "s3://source-bucket/objects"})(),
+            id="source-without-read",
+        ),
+        pytest.param(
+            "service",
+            type(
+                "ServiceReaderWithoutRead",
+                (),
+                {
+                    "binding_identity": "https://service.example.test/v1",
+                    "validate": lambda _self, _path, _query: None,
+                },
+            )(),
+            id="service-without-read",
+        ),
+        pytest.param(
+            "service",
+            type(
+                "ServiceReaderWithoutValidate",
+                (),
+                {
+                    "binding_identity": "https://service.example.test/v1",
+                    "read": lambda _self, _path, _query, _byte_range, _total_size: b"",
+                },
+            )(),
+            id="service-without-validate",
+        ),
+    ],
+)
+def test_load_virtual_manifest_rejects_injected_readers_without_required_callables_before_rows(
+    binding_kind: str,
+    reader: object,
+) -> None:
+    """Malformed injected readers fail during manifest loading, even when no row uses them."""
+    sources = {"source": SourceBinding(cast(Any, reader), "source-revision-1")} if binding_kind == "source" else {}
+    services = {"service": ServiceBinding(cast(Any, reader), "service-revision-1")} if binding_kind == "service" else {}
+
+    with pytest.raises(ManifestValidationError, match="callable"):
+        _decode([], sources=sources, services=services)
+
+
 def test_load_virtual_manifest_validates_service_paths_and_queries_against_the_bound_reader() -> None:
     """The service allowlist is checked while loading, before a virtual file is exposed."""
 
@@ -493,11 +529,11 @@ def test_load_virtual_manifest_preserves_service_validation_rejection_reason() -
 
 def test_load_virtual_manifest_checks_i64_chunk_sums_without_overflow() -> None:
     """Large valid values work, while a checked running total cannot wrap around."""
-    valid = _decode([object_row(size_bytes=MAX_I64, chunk_size_bytes=MAX_I64)])
+    valid = _decode([object_row(size_bytes=MAX_I64, chunk_size_bytes=MAX_I64, source_offset=0)])
     assert valid["logical/file.bin"].size_bytes == MAX_I64
 
     overflowing_rows = [
-        object_row(size_bytes=MAX_I64, chunk_index=0, chunk_size_bytes=MAX_I64),
+        object_row(size_bytes=MAX_I64, chunk_index=0, chunk_size_bytes=MAX_I64, source_offset=0),
         object_row(
             size_bytes=MAX_I64,
             chunk_index=1,
@@ -510,13 +546,32 @@ def test_load_virtual_manifest_checks_i64_chunk_sums_without_overflow() -> None:
         _decode(overflowing_rows)
 
 
+def test_load_virtual_manifest_rejects_an_object_range_that_exceeds_i64() -> None:
+    """The physical half-open range remains representable in signed 64-bit arithmetic."""
+    valid = _decode([object_row(source_offset=MAX_I64 - 3, chunk_size_bytes=3)])
+    assert valid["logical/file.bin"].chunks[0].size_bytes == 3
+
+    with pytest.raises(ManifestValidationError, match="source range exceeds int64"):
+        _decode([object_row(source_offset=MAX_I64 - 2, chunk_size_bytes=3)])
+
+
 def test_synthetic_etag_is_stable_for_canonical_metadata_and_has_the_v2_shape() -> None:
-    """Equivalent JSON metadata cannot perturb a logical file's cache identity."""
-    first = _decode([object_row(metadata='{"b":2, "a":1}')])["logical/file.bin"].etag
-    second = _decode([object_row(metadata='{"a":1,"b":2}')])["logical/file.bin"].etag
+    """Equivalent native map metadata cannot perturb a logical file's cache identity."""
+    first = _decode([object_row(metadata=[("b", "2"), ("a", "1")])])["logical/file.bin"].etag
+    second = _decode([object_row(metadata=[("a", "1"), ("b", "2")])])["logical/file.bin"].etag
 
     assert first == second
     assert re.fullmatch(r"msc-v2-sha256:[0-9a-f]{64}", first)
+
+
+def test_synthetic_etag_distinguishes_null_metadata_from_an_empty_native_map() -> None:
+    """Absent metadata and explicitly present empty metadata retain distinct logical identities."""
+    absent = _decode([object_row(metadata=None)])["logical/file.bin"]
+    empty = _decode([object_row(metadata={})])["logical/file.bin"]
+
+    assert absent.metadata is None
+    assert empty.metadata == ()
+    assert absent.etag != empty.etag
 
 
 def test_synthetic_etag_tracks_each_used_object_binding_identity_alias_and_revision() -> None:
@@ -545,7 +600,7 @@ def test_synthetic_etag_tracks_each_used_object_binding_identity_alias_and_revis
         ("last modified", object_row(last_modified=datetime(2026, 1, 2, 3, 4, 6, tzinfo=timezone.utc))),
         ("content type", object_row(content_type="text/plain")),
         ("storage class", object_row(storage_class="ARCHIVE")),
-        ("metadata", object_row(metadata='{"source":"different"}')),
+        ("metadata", object_row(metadata={"source": "different"})),
     ],
 )
 def test_synthetic_etag_tracks_each_file_metadata_field(case: str, changed_row: dict[str, object]) -> None:

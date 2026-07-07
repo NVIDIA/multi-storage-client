@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast
 from unittest.mock import MagicMock
 from urllib.parse import parse_qsl, urlsplit
 
@@ -45,7 +45,7 @@ from multistorageclient.types import (
     SourceVersionCheckMode,
     SymlinkHandling,
 )
-from test_multistorageclient.unit.manifest.helpers import empty_row, object_row, service_row, write_manifest
+from test_multistorageclient.unit.manifest.helpers import object_row, service_row, write_manifest
 from test_multistorageclient.unit.utils.config import setup_msc_config
 
 _LAST_MODIFIED = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
@@ -422,6 +422,125 @@ def test_manifest_provider_rejects_invalid_manifest_paths_before_reader_io(manif
     manifest_reader.info.assert_not_called()
 
 
+@pytest.mark.parametrize("missing_operation", ["info", "read"])
+def test_manifest_provider_rejects_malformed_manifest_readers_before_reader_io(missing_operation: str) -> None:
+    """Direct construction rejects a non-callable manifest reader operation before invoking either one."""
+    info = MagicMock()
+    read = MagicMock()
+    manifest_reader = MagicMock()
+    manifest_reader.info = info
+    manifest_reader.read = read
+    setattr(manifest_reader, missing_operation, None)
+
+    with pytest.raises(ValueError, match=rf"callable {missing_operation}"):
+        ManifestStorageProvider(
+            manifest_path="catalog.parquet",
+            manifest_reader=cast(Any, manifest_reader),
+            source_bindings={},
+            service_bindings={},
+        )
+
+    info.assert_not_called()
+    read.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("source_bindings", "service_bindings"),
+    [
+        pytest.param(
+            {
+                "objects": SourceBinding(
+                    cast(Any, type("ReaderWithoutRead", (), {"binding_identity": "file:///objects"})()), "r1"
+                )
+            },
+            {},
+            id="source-read",
+        ),
+        pytest.param(
+            {},
+            {
+                "renderer": ServiceBinding(
+                    cast(
+                        Any,
+                        type(
+                            "ReaderWithoutValidate",
+                            (),
+                            {
+                                "binding_identity": "https://renderer.example.test/v1",
+                                "read": lambda _self, _path, _query, _byte_range, _total_size: b"",
+                            },
+                        )(),
+                    ),
+                    "r1",
+                )
+            },
+            id="service-validate",
+        ),
+    ],
+)
+def test_manifest_provider_rejects_malformed_bindings_before_manifest_reader_io(
+    source_bindings: Mapping[str, SourceBinding],
+    service_bindings: Mapping[str, ServiceBinding],
+) -> None:
+    """Binding configuration fails before the provider reads manifest metadata or bytes."""
+
+    class CountingManifestReader:
+        binding_identity = "file:///manifests"
+
+        def __init__(self) -> None:
+            self.info_calls = 0
+            self.read_calls = 0
+            self._manifest = write_manifest([]).getvalue()
+
+        def info(self, path: str) -> ObjectMetadata:
+            self.info_calls += 1
+            return ObjectMetadata(key=path, content_length=len(self._manifest), last_modified=_LAST_MODIFIED)
+
+        def read(self, path: str, byte_range: Optional[Range] = None) -> bytes:
+            self.read_calls += 1
+            if byte_range is None:
+                return self._manifest
+            return self._manifest[byte_range.offset : byte_range.offset + byte_range.size]
+
+    manifest_reader = CountingManifestReader()
+
+    with pytest.raises(ValueError, match="callable"):
+        ManifestStorageProvider(
+            manifest_path="catalog.parquet",
+            manifest_reader=manifest_reader,
+            source_bindings=source_bindings,
+            service_bindings=service_bindings,
+        )
+
+    assert manifest_reader.info_calls == 0
+    assert manifest_reader.read_calls == 0
+
+
+@pytest.mark.parametrize(
+    "content_length",
+    [
+        pytest.param(-1, id="negative"),
+        pytest.param(True, id="boolean"),
+        pytest.param(1.5, id="float"),
+        pytest.param("10", id="string"),
+    ],
+)
+def test_manifest_provider_rejects_invalid_manifest_content_lengths_before_range_io(content_length: object) -> None:
+    """Direct construction requires a concrete nonnegative integer manifest size."""
+    manifest_reader = MagicMock()
+    manifest_reader.info.return_value = MagicMock(content_length=content_length)
+
+    with pytest.raises(ValueError, match="content length"):
+        ManifestStorageProvider(
+            manifest_path="catalog.parquet",
+            manifest_reader=manifest_reader,
+            source_bindings={},
+            service_bindings={},
+        )
+
+    manifest_reader.read.assert_not_called()
+
+
 def _single_object_rows(
     key: str,
     source_path: str,
@@ -436,7 +555,7 @@ def _single_object_rows(
             size_bytes=len(content),
             last_modified=_LAST_MODIFIED,
             content_type=content_type,
-            metadata=json.dumps(metadata, separators=(",", ":"), sort_keys=True) if metadata is not None else None,
+            metadata=metadata,
             chunk_size_bytes=len(content),
             source_profile="objects",
             source_path=source_path,
@@ -445,7 +564,7 @@ def _single_object_rows(
     ]
 
 
-def test_manifest_provider_lists_info_glob_attributes_and_empty_files() -> None:
+def test_manifest_provider_lists_info_glob_and_attributes() -> None:
     objects = {
         "alpha.txt": b"a",
         "dir/a.txt": b"abc",
@@ -459,14 +578,6 @@ def test_manifest_provider_lists_info_glob_attributes_and_empty_files() -> None:
             "dir/nested/b.bin",
             objects["dir/nested/b.bin"],
             metadata={"color": "green"},
-        ),
-        empty_row(
-            key="empty.bin",
-            size_bytes=0,
-            last_modified=_LAST_MODIFIED,
-            content_type="application/octet-stream",
-            storage_class="ARCHIVE",
-            metadata='{"color":"blue"}',
         ),
     ]
     source = _RecordingRangeReader(objects, binding_identity="file:///objects")
@@ -483,16 +594,15 @@ def test_manifest_provider_lists_info_glob_attributes_and_empty_files() -> None:
     assert [(item.key, item.type) for item in shallow] == [
         ("alpha.txt", "file"),
         ("dir", "directory"),
-        ("empty.bin", "file"),
     ]
-    expected_recursive = ["alpha.txt", "dir/a.txt", "dir/nested/b.bin", "empty.bin"]
+    expected_recursive = ["alpha.txt", "dir/a.txt", "dir/nested/b.bin"]
     assert [item.key for item in provider.list_objects("")] == expected_recursive
     assert [item.key for item in provider.list_objects_recursive("")] == expected_recursive
     assert [item.key for item in provider.list_objects("", start_after="alpha.txt", end_at="dir/nested/b.bin")] == [
         "dir/a.txt",
         "dir/nested/b.bin",
     ]
-    assert provider.glob("**/*.bin") == ["dir/nested/b.bin", "empty.bin"]
+    assert provider.glob("**/*.bin") == ["dir/nested/b.bin"]
     assert [
         item.key
         for item in provider.list_objects(
@@ -500,10 +610,8 @@ def test_manifest_provider_lists_info_glob_attributes_and_empty_files() -> None:
             attribute_filter_expression='color = "blue"',
             show_attributes=True,
         )
-    ] == ["dir/a.txt", "empty.bin"]
+    ] == ["dir/a.txt"]
 
-    assert provider.get_object("empty.bin") == b""
-    assert provider.get_object("empty.bin", Range(offset=0, size=1)) == b""
     assert provider.get_object("dir/a.txt", Range(offset=3, size=1)) == b""
     assert provider.get_object("dir/a.txt", Range(offset=30, size=1)) == b""
     with pytest.raises(FileNotFoundError):
@@ -664,6 +772,71 @@ def test_manifest_provider_replenishes_bounded_reads_after_any_completion() -> N
     assert not read_thread.is_alive()
     assert not errors
     assert result == [b"ABC"]
+    provider.close()
+
+
+def test_manifest_provider_waits_for_running_siblings_before_propagating_a_subread_failure() -> None:
+    """A failed logical read leaves no abandoned source request that can overlap an outer retry."""
+
+    class FailingReaderWithBlockedSibling(_RecordingRangeReader):
+        def __init__(self) -> None:
+            super().__init__(
+                {"failing.bin": b"A", "blocked.bin": b"B"},
+                binding_identity="file:///objects",
+            )
+            self.blocked_started = threading.Event()
+            self.failure_raised = threading.Event()
+            self.release_blocked = threading.Event()
+
+        def read(self, path: str, byte_range: Optional[Range] = None) -> bytes:
+            if byte_range is not None and path == "blocked.bin":
+                self.blocked_started.set()
+                assert self.release_blocked.wait(timeout=5), "blocked sibling was never released"
+            if byte_range is not None and path == "failing.bin":
+                assert self.blocked_started.wait(timeout=5), "sibling read did not start"
+                self.failure_raised.set()
+                raise OSError("injected subread failure")
+            return super().read(path, byte_range)
+
+    source = FailingReaderWithBlockedSibling()
+    provider = _provider(
+        [
+            object_row(
+                key="joined.bin",
+                size_bytes=2,
+                chunk_index=index,
+                chunk_size_bytes=1,
+                source_profile="objects",
+                source_path=source_path,
+                source_offset=0,
+            )
+            for index, source_path in enumerate(("failing.bin", "blocked.bin"))
+        ],
+        source_bindings={"objects": SourceBinding(source, "objects-r1")},
+        max_workers=2,
+    )
+    errors: list[BaseException] = []
+
+    def read_joined_file() -> None:
+        try:
+            provider.get_object("joined.bin")
+        except BaseException as error:  # pragma: no cover - asserted below
+            errors.append(error)
+
+    read_thread = threading.Thread(target=read_joined_file)
+    read_thread.start()
+    assert source.failure_raised.wait(timeout=5), "failing subread did not run"
+    read_thread.join(timeout=0.1)
+    try:
+        assert read_thread.is_alive(), "logical read returned while a sibling source request was still running"
+    finally:
+        source.release_blocked.set()
+    read_thread.join(timeout=5)
+
+    assert not read_thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], OSError)
+    assert str(errors[0]) == "injected subread failure"
     provider.close()
 
 
@@ -1229,12 +1402,12 @@ def test_manifest_etag_tracks_used_locations_revisions_and_manifest_content_only
         used_identity: str = "file:///objects",
         used_revision: str = "objects-r1",
         unused_revision: str = "unused-r1",
-        metadata: str = '{"kind":"first"}',
+        metadata: Optional[dict[str, str]] = None,
     ) -> str:
         used = _RecordingRangeReader({"data.bin": content}, binding_identity=used_identity)
         unused = _RecordingRangeReader({}, binding_identity="file:///unused")
         rows = _single_object_rows("data.bin", "data.bin", content)
-        rows[0]["metadata"] = metadata
+        rows[0]["metadata"] = metadata or {"kind": "first"}
         provider = _provider(
             rows,
             source_bindings={
@@ -1250,7 +1423,7 @@ def test_manifest_etag_tracks_used_locations_revisions_and_manifest_content_only
     assert etag(unused_revision="unused-r2") == baseline
     assert etag(used_revision="objects-r2") != baseline
     assert etag(used_identity="file:///other-objects") != baseline
-    assert etag(metadata='{"kind":"second"}') != baseline
+    assert etag(metadata={"kind": "second"}) != baseline
 
 
 def test_manifest_download_streams_eight_mib_windows_and_atomically_replaces_paths(tmp_path: Path) -> None:
@@ -1309,6 +1482,53 @@ def test_manifest_download_accepts_only_binary_file_like_destinations() -> None:
     assert destination.getvalue() == content
     with pytest.raises(TypeError, match="binary"):
         provider.download_file("data.bin", io.StringIO())
+
+
+def test_manifest_file_like_download_rejects_a_writer_that_reports_no_progress() -> None:
+    content = b"binary-data"
+    source = _RecordingRangeReader({"data.bin": content}, binding_identity="file:///objects")
+    provider = _provider(
+        _single_object_rows("data.bin", "data.bin", content),
+        source_bindings={"objects": SourceBinding(source, "objects-r1")},
+    )
+
+    class NoneWritingDestination:
+        def __init__(self) -> None:
+            self.writes: list[bytes] = []
+
+        def write(self, data: bytes) -> None:
+            self.writes.append(data)
+
+    destination = NoneWritingDestination()
+
+    with pytest.raises(OSError, match="no progress"):
+        provider.download_file("data.bin", cast(Any, destination))
+
+    assert destination.writes == [content]
+
+
+def test_manifest_file_like_download_retries_positive_short_writes() -> None:
+    content = b"binary-data"
+    source = _RecordingRangeReader({"data.bin": content}, binding_identity="file:///objects")
+    provider = _provider(
+        _single_object_rows("data.bin", "data.bin", content),
+        source_bindings={"objects": SourceBinding(source, "objects-r1")},
+    )
+
+    class PrefixWritingDestination:
+        def __init__(self) -> None:
+            self.data = bytearray()
+
+        def write(self, data: bytes) -> int:
+            accepted = max(1, len(data) // 2)
+            self.data.extend(data[:accepted])
+            return accepted
+
+    destination = PrefixWritingDestination()
+
+    provider.download_file("data.bin", cast(Any, destination))
+
+    assert bytes(destination.data) == content
 
 
 def test_manifest_file_like_download_publishes_once_after_a_single_client_retry(
@@ -1462,7 +1682,9 @@ def _serve_ranges(
     server.failure_lock = threading.Lock()
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    host, port = server.server_address
+    server_address = server.server_address
+    host = cast(str, server_address[0])
+    port = cast(int, server_address[1])
     try:
         yield f"http://{host}:{port}", server
     finally:
@@ -1558,10 +1780,32 @@ def _write_integration_manifest(manifest_root: Path, source_root: Path, service_
     mp4_size = len(mp4_prefix) + len(service_suffix)
     rows = [
         object_row(
+            key="events/events.jsonl",
+            size_bytes=len(jsonl_bytes),
+            content_type="application/x-ndjson",
+            metadata={"kind": "events"},
+            chunk_index=0,
+            chunk_size_bytes=jsonl_split,
+            source_profile="objects",
+            source_path="events.jsonl",
+            source_offset=0,
+        ),
+        object_row(
+            key="events/events.jsonl",
+            size_bytes=len(jsonl_bytes),
+            content_type="application/x-ndjson",
+            metadata={"kind": "events"},
+            chunk_index=1,
+            chunk_size_bytes=len(jsonl_bytes) - jsonl_split,
+            source_profile="objects",
+            source_path="events.jsonl",
+            source_offset=jsonl_split,
+        ),
+        object_row(
             key="media/clip.mp4",
             size_bytes=mp4_size,
             content_type="video/mp4",
-            metadata='{"kind":"video"}',
+            metadata={"kind": "video"},
             chunk_index=0,
             chunk_size_bytes=len(mp4_prefix),
             source_profile="objects",
@@ -1572,7 +1816,7 @@ def _write_integration_manifest(manifest_root: Path, source_root: Path, service_
             key="media/clip.mp4",
             size_bytes=mp4_size,
             content_type="video/mp4",
-            metadata='{"kind":"video"}',
+            metadata={"kind": "video"},
             chunk_index=1,
             chunk_size_bytes=len(service_suffix),
             service_id="renderer",
@@ -1588,34 +1832,6 @@ def _write_integration_manifest(manifest_root: Path, source_root: Path, service_
             parquet_bytes,
             metadata={"kind": "table"},
             content_type="application/vnd.apache.parquet",
-        ),
-        object_row(
-            key="events/events.jsonl",
-            size_bytes=len(jsonl_bytes),
-            content_type="application/x-ndjson",
-            metadata='{"kind":"events"}',
-            chunk_index=0,
-            chunk_size_bytes=jsonl_split,
-            source_profile="objects",
-            source_path="events.jsonl",
-            source_offset=0,
-        ),
-        object_row(
-            key="events/events.jsonl",
-            size_bytes=len(jsonl_bytes),
-            content_type="application/x-ndjson",
-            metadata='{"kind":"events"}',
-            chunk_index=1,
-            chunk_size_bytes=len(jsonl_bytes) - jsonl_split,
-            source_profile="objects",
-            source_path="events.jsonl",
-            source_offset=jsonl_split,
-        ),
-        empty_row(
-            key="empty.bin",
-            size_bytes=0,
-            content_type="application/octet-stream",
-            metadata='{"kind":"empty"}',
         ),
     ]
     (manifest_root / "catalog.parquet").write_bytes(write_manifest(rows).getvalue())
@@ -1752,10 +1968,8 @@ def test_manifest_config_reconstructs_mixed_virtual_files_with_local_ranges_and_
         jsonl_split = len(expected["jsonl_head"])
         assert expected["jsonl_head"][-1] & 0xC0 == 0xC0
         assert expected["jsonl"][jsonl_split] & 0xC0 == 0x80
-        assert client.read("empty.bin") == b""
         assert client.info("media/clip.mp4").metadata == {"kind": "video"}
         assert [item.key for item in client.list()] == [
-            "empty.bin",
             "events/events.jsonl",
             "media/clip.mp4",
             "tables/actual.parquet",
@@ -2018,6 +2232,10 @@ def test_manifest_cache_uses_virtual_etag_and_can_intentionally_serve_stale_data
     assert first_client.read("data.bin", check_source_version=SourceVersionCheckMode.ENABLE) == b"old"
 
     source_path.write_bytes(b"new")
+    unchanged_binding_client = StorageClient(StorageClientConfig.from_dict(first_config, profile="virtual"))
+    assert unchanged_binding_client.info("data.bin").etag == first_etag
+    assert unchanged_binding_client.read("data.bin", check_source_version=SourceVersionCheckMode.ENABLE) == b"old"
+
     second_config = _manifest_config(
         manifest_root=manifest_root,
         source_root=source_root,

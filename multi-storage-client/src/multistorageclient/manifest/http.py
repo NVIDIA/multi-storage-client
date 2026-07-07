@@ -54,6 +54,8 @@ def _validate_query_name(name: str, *, description: str) -> None:
 
 def normalize_http_base_url(base_url: str, allow_insecure_http: bool) -> str:
     """Return one canonical HTTP origin and normalized base path for a service binding."""
+    if not isinstance(allow_insecure_http, bool):
+        raise ValueError("allow_insecure_http must be a boolean.")
     if not isinstance(base_url, str) or not base_url:
         raise ValueError("base_url must be a non-empty HTTP(S) URL.")
     if "\\" in base_url or any(ord(character) < 32 or ord(character) == 127 for character in base_url):
@@ -114,6 +116,8 @@ class HTTPServiceRangeReader:
         verify_tls: bool = True,
         allow_insecure_http: bool = False,
     ) -> None:
+        verify_tls = self._validate_boolean(verify_tls, "verify_tls")
+        allow_insecure_http = self._validate_boolean(allow_insecure_http, "allow_insecure_http")
         self._base_url = self._normalize_base_url(base_url, allow_insecure_http)
         if not isinstance(binding_identity, str) or not binding_identity:
             raise ValueError("binding_identity must be a non-empty string.")
@@ -134,6 +138,12 @@ class HTTPServiceRangeReader:
         if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or value <= 0:
             raise ValueError(f"{name} must be a finite positive real number.")
         return float(value)
+
+    @staticmethod
+    def _validate_boolean(value: object, name: str) -> bool:
+        if not isinstance(value, bool):
+            raise ValueError(f"{name} must be a boolean.")
+        return value
 
     @staticmethod
     def _normalize_base_url(base_url: str, allow_insecure_http: bool) -> str:
@@ -164,13 +174,20 @@ class HTTPServiceRangeReader:
     @staticmethod
     def _validate_headers(headers: Mapping[str, str] | None) -> dict[str, str]:
         result = dict(headers or {})
+        normalized_names: set[str] = set()
         for name, value in result.items():
             if not isinstance(name, str) or not isinstance(value, str):
                 raise ValueError("HTTP headers must have string names and values.")
             if _HTTP_TOKEN.fullmatch(name) is None:
                 raise ValueError("HTTP header names must be RFC HTTP tokens.")
-            if name.lower() in _RESERVED_HEADERS:
+            normalized_name = name.lower()
+            if normalized_name in normalized_names:
+                raise ValueError("HTTP headers must not contain case-insensitive duplicate names.")
+            normalized_names.add(normalized_name)
+            if normalized_name in _RESERVED_HEADERS:
                 raise ValueError(f"HTTP header {name!r} is controlled by the manifest range protocol.")
+            if any(ord(character) < 32 or ord(character) == 127 for character in value):
+                raise ValueError("HTTP header values cannot contain control characters.")
         return result
 
     def _session(self) -> Any:

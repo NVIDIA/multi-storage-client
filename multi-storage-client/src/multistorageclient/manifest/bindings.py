@@ -26,6 +26,10 @@ class RangeReader(Protocol):
         """Read a complete object or an exact byte range."""
         ...
 
+
+class SizedRangeReader(RangeReader, Protocol):
+    """Random-access reader that can also report an object's size."""
+
     def info(self, path: str) -> ObjectMetadata:
         """Return metadata for an object."""
         ...
@@ -54,6 +58,14 @@ class ServiceRangeReader(Protocol):
         ...
 
 
+def reader_operation_is_callable(reader: object, operation: str) -> bool:
+    """Return whether an injected reader exposes one callable operation."""
+    try:
+        return callable(getattr(reader, operation, None))
+    except Exception:
+        return False
+
+
 @dataclass(frozen=True, slots=True)
 class SourceBinding:
     """Configured object-range source available to a manifest."""
@@ -72,6 +84,41 @@ class ServiceBinding:
 
 SourceBindings = Mapping[str, SourceBinding]
 ServiceBindings = Mapping[str, ServiceBinding]
+
+
+def validate_manifest_bindings(source_bindings: SourceBindings, service_bindings: ServiceBindings) -> None:
+    """Validate all injected manifest bindings without reading manifest or source data."""
+    _validate_binding_group(source_bindings, SourceBinding, binding_kind="source", requires_validate=False)
+    _validate_binding_group(service_bindings, ServiceBinding, binding_kind="service", requires_validate=True)
+
+
+def _validate_binding_group(
+    bindings: Mapping[str, SourceBinding] | Mapping[str, ServiceBinding],
+    expected_type: type[SourceBinding] | type[ServiceBinding],
+    *,
+    binding_kind: str,
+    requires_validate: bool,
+) -> None:
+    """Validate one source or service binding mapping without performing I/O."""
+    if not isinstance(bindings, Mapping):
+        raise ValueError(f"{binding_kind} bindings must be a mapping.")
+    for alias, binding in bindings.items():
+        if not isinstance(alias, str) or not alias:
+            raise ValueError("binding aliases must be non-empty strings.")
+        if not isinstance(binding, expected_type):
+            raise ValueError(f"binding {alias!r} has an invalid type.")
+        if not isinstance(binding.binding_revision, str) or not binding.binding_revision:
+            raise ValueError(f"binding {alias!r} has an invalid revision.")
+        if not reader_operation_is_callable(binding.reader, "read"):
+            raise ValueError(f"{binding_kind} binding {alias!r} has no callable read method.")
+        if requires_validate and not reader_operation_is_callable(binding.reader, "validate"):
+            raise ValueError(f"service binding {alias!r} has no callable validate method.")
+        try:
+            identity = binding.reader.binding_identity
+        except Exception as exc:
+            raise ValueError(f"binding {alias!r} has an invalid identity.") from exc
+        if not isinstance(identity, str) or not identity:
+            raise ValueError(f"binding {alias!r} has an invalid identity.")
 
 
 class StorageProviderRangeReader:

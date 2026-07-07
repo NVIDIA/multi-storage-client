@@ -75,6 +75,24 @@ def test_single_open_rejects_writes_to_read_only_provider_before_constructing_fi
     provider.get_object_metadata.assert_not_called()
 
 
+def test_single_sync_from_rejects_a_read_only_target_before_constructing_sync_manager(
+    single_backend_config: StorageClientConfig,
+) -> None:
+    """Syncing to a manifest fails before source enumeration or worker setup."""
+    client = SingleStorageClient(single_backend_config)
+    provider = MagicMock()
+    provider.is_read_only = True
+    client._storage_provider = provider
+    source_client = MagicMock()
+
+    with patch("multistorageclient.client.single.SyncManager", autospec=True) as sync_manager:
+        with pytest.raises(NotImplementedError, match="read-only"):
+            client.sync_from(source_client)
+
+    sync_manager.assert_not_called()
+    source_client.assert_not_called()
+
+
 def test_single_streaming_open_with_cache_disabled_bypasses_cache_after_logical_resolution(
     single_backend_config: StorageClientConfig,
     tmp_path: Path,

@@ -2,7 +2,9 @@
 Single-Parquet Virtual Manifests (v2)
 #####################################
 
-Virtual manifests expose an immutable logical dataset from one Parquet file. Each logical file is reconstructed from ordered byte ranges in configured object-storage profiles and, optionally, deterministic HTTP services. MSC validates the complete manifest before exposing any file.
+Virtual manifests expose an immutable logical dataset from one Parquet file. Each logical file is reconstructed by concatenating ordered byte ranges from configured object-storage profiles and, optionally, deterministic HTTP services. MSC does not interpret the resulting bytes: MP4, Parquet, JSONL, and other formats all use the same concatenation path.
+
+MSC validates the complete manifest footer, schema, row order, and row-level contract before exposing any file. Construction does not read referenced object bytes or call HTTP transports, so source immutability remains part of the publication contract described below.
 
 This is a storage provider (``storage_provider.type: manifest``), not the legacy metadata-provider feature. The existing :doc:`/user_guide/manifests` guide documents **v1 metadata manifests**: an index and parts used to accelerate listing and metadata lookup for another storage provider. A v2 virtual manifest supplies the file bytes itself.
 
@@ -107,6 +109,25 @@ Unrelated writer metadata is allowed. An unknown ``msc.manifest.*`` footer key, 
 
 The Arrow schema is exact. Column order, types, nullability, nested field names, and timestamp unit/timezone are part of the v2 contract. The following language-neutral table describes the required schema.
 
+Python producers can obtain the exact authoring schema without importing PyArrow until the helper is called:
+
+.. code-block:: python
+
+   from multistorageclient.manifest import virtual_manifest_v2_schema
+
+   schema = virtual_manifest_v2_schema()
+
+The helper is a conformance aid, not a production manifest writer. In the physical Parquet schema, ``metadata`` is encoded as an optional ``MAP`` with required UTF-8 ``key`` and ``value`` leaves:
+
+.. code-block:: text
+
+   optional group metadata (MAP) {
+     repeated group key_value {
+       required binary key (STRING);
+       required binary value (STRING);
+     }
+   }
+
 .. list-table:: v2 Parquet columns
    :header-rows: 1
    :widths: 26 34 40
@@ -130,8 +151,8 @@ The Arrow schema is exact. Column order, types, nullability, nested field names,
      - optional UTF-8 string
      - Logical-file storage class.
    * - ``metadata``
-     - optional UTF-8 string
-     - Strict JSON object; canonicalized before comparison and ETag calculation.
+     - optional map of required UTF-8 string keys to required UTF-8 string values
+     - Logical-file custom metadata. Duplicate keys are rejected; map order is ignored. Null and an empty map are distinct.
    * - ``chunk_index``
      - required signed 32-bit integer
      - Zero-based reconstruction order within ``key``.
@@ -140,7 +161,7 @@ The Arrow schema is exact. Column order, types, nullability, nested field names,
      - Bytes contributed by this chunk.
    * - ``chunk_kind``
      - required UTF-8 string
-     - One of ``empty``, ``object``, or ``service``.
+     - One of ``object`` or ``service``.
    * - ``source_profile``
      - optional UTF-8 string
      - Object binding alias; required only for ``object`` chunks.
@@ -160,9 +181,11 @@ The Arrow schema is exact. Column order, types, nullability, nested field names,
      - optional list of required ``element`` structs with required UTF-8 ``name`` and ``value`` fields
      - Ordered service query pairs; required, but allowed to be empty, for ``service`` chunks.
 
-Rows may occur in any Parquet row group and in any physical order. MSC groups by ``key`` and orders chunks by ``chunk_index``. Non-empty files require contiguous, unique indexes beginning at zero, positive chunk sizes, and a checked signed-64-bit chunk sum equal to ``size_bytes``. Every row for a key must agree on the file-level columns after metadata normalization. Logical keys are prefix-free: a manifest cannot contain both a file ``a`` and a descendant file ``a/b``.
+Rows must be strictly sorted in ascending ``(key, chunk_index)`` order. Keys use unsigned lexicographic order over their valid UTF-8 bytes (equivalent to Unicode scalar-value order), and ``chunk_index`` uses numeric order. MSC rejects duplicate, descending, or noncontiguous key/chunk positions instead of regrouping an unsorted manifest in memory. Each logical file requires contiguous indexes beginning at zero, positive file and chunk sizes, and a checked signed-64-bit chunk sum equal to ``size_bytes``. Every row for a key must agree on the file-level columns after native-map normalization. Logical keys are prefix-free: a manifest cannot contain both a file ``a`` and a descendant file ``a/b``.
 
-An empty logical file is exactly one ``empty`` row: index ``0``, zero file/chunk size, and all object/service fields null. Object rows require only their three ``source_*`` fields; service rows require only their three ``service_*`` fields. Cross-kind fields are rejected.
+Sorted rows for one key may cross batches, data pages, and row groups, and row groups remain physical batching rather than semantic partitions. Producers should nevertheless keep all rows for a key in one row group when practical, and should avoid splitting a key across data pages, because key-local layout improves manifest scan locality. A key must never be interleaved with another key.
+
+A zero-row Parquet file with the complete schema represents an empty dataset. V2 does not represent zero-byte logical files and does not define an ``empty`` chunk kind. Object rows require only their three ``source_*`` fields; service rows require only their three ``service_*`` fields. Cross-kind fields are rejected. ``source_offset + chunk_size_bytes`` must also remain representable as a signed 64-bit integer.
 
 Reading Files
 =============
@@ -192,7 +215,47 @@ The standard MSC fsspec adapter also uses the same profile and streaming behavio
 
 The reader plans only touched chunks for a requested range, clips reads at logical EOF, and returns an empty result at or beyond EOF. Negative logical offsets or sizes are invalid.
 
-Virtual-manifest profiles default ``open(..., prefetch_file=None)`` to streamed reads (the effective value is ``False``). A streamed ``ObjectFile`` requests only the logical ranges consumed by the caller. Set ``prefetch_file=True`` to materialize the complete virtual file through MSC's normal cache or in-memory download policy instead. The synthetic manifest ETag participates in the normal MSC source-version cache check, so an enabled source-version check invalidates cached logical bytes when the decoded manifest identity changes. Set ``disable_read_cache=True`` to bypass the MSC read cache even for streamed range requests; logical-path and metadata resolution still occur before the direct source read.
+Virtual-manifest profiles default ``open(..., prefetch_file=None)`` to streamed reads (the effective value is ``False``). A streamed ``ObjectFile`` asks for only the logical ranges consumed by the caller, but those ranges may be satisfied from MSC's logical read cache. Set ``prefetch_file=True`` to materialize the complete virtual file through MSC's normal cache or in-memory download policy instead. The synthetic manifest ETag participates in the normal MSC source-version cache check, so an enabled source-version check invalidates cached logical bytes when the decoded manifest identity changes. Set ``disable_read_cache=True`` to bypass the logical read cache; logical-path and metadata resolution still occur before the direct source read. Fsspec ``get_file`` uses MSC's native optimized transfer for a path destination, writing to a sibling temporary file and atomically replacing the destination after success. A file-like or ``outfile`` destination instead receives uncached streamed bytes.
+
+``download_file`` reconstructs the file in 8 MiB logical windows. A path destination is written to a sibling temporary file and atomically replaced only after success; a failed download cleans the temporary file. Filesystem materialization uses actual reconstructed bytes rather than a source locator.
+
+Capabilities
+============
+
+.. list-table:: Virtual-manifest provider capabilities
+   :header-rows: 1
+   :widths: 35 18 47
+
+   * - Operation
+     - Supported
+     - Notes
+   * - full and ranged ``read``
+     - yes
+     - Ranges are clipped at EOF and planned across only touched chunks.
+   * - binary/text ``open`` and seek
+     - yes
+     - Includes UTF-8 and line records crossing chunk boundaries.
+   * - ``info``, ``is_file``, ``is_empty``, list, recursive list, and glob
+     - yes
+     - Directories are synthesized from sorted logical keys.
+   * - ``download_file(s)`` and filesystem materialization
+     - yes
+     - Path publication is atomic.
+   * - fsspec ``open``, ``cat_file``, and ``get_file``
+     - yes
+     - ``cat_file`` uses standard end-exclusive slicing, including negative endpoints.
+   * - sync source
+     - yes
+     - The manifest can supply bytes to a writable target.
+   * - sync target or any mutation
+     - no
+     - Rejected before worker construction or file I/O.
+   * - presigned URLs
+     - no
+     - A logical file may span unrelated dependencies.
+   * - MSFS/FUSE mount
+     - no
+     - Python is the only supported implementation layer for v2.
 
 Path and HTTP Contract
 ======================
@@ -201,7 +264,9 @@ Logical keys and object ``source_path`` values are normalized relative POSIX pat
 
 Service paths are stricter: they are unescaped relative Unicode paths. They also reject percent escapes, queries, fragments, authorities, and paths outside an allowlisted prefix. Prefix matching is segment-aware: an allowed ``render`` prefix accepts ``render`` and ``render/...``, but not ``rendered/...``. Service query names must be non-empty and appear in ``allowed_query_parameters``; query values may be empty, and duplicate name/value pairs retain their order. The configured HTTP base URL rejects controls, backslashes, encoded or userinfo authorities, and ambiguous separators before MSC rebuilds its canonical transport origin. Configured header names must be RFC HTTP tokens; protocol-controlled headers such as ``Range`` and ``Host`` cannot be supplied, including whitespace lookalikes.
 
-For every service chunk MSC sends a single ``GET`` with an exact ``Range`` request and ``Accept-Encoding: identity``. Redirects are disabled. A service must return ``206`` with matching ``Content-Range`` (including the total), matching ``Content-Length``, and no content encoding other than absent or ``identity``. MSC reads at most the requested byte count plus one sentinel byte and rejects short or oversized bodies. Non-TLS connection failures, timeouts, and HTTP ``408``, ``429``, ``500``, ``502``, ``503``, and ``504`` are retryable. TLS, certificate, and protocol-verification failures fail closed and are nonretryable, as are redirects, authentication failures, malformed range metadata, and other statuses.
+Each touched service subrange sends one ``GET`` with an exact ``Range`` request and ``Accept-Encoding: identity``. Distinct service calls are not coalesced, and repeated logical reads may touch the same service chunk more than once. Redirects are disabled. A service must return ``206`` with matching ``Content-Range`` (including the total), matching ``Content-Length``, and no content encoding other than absent or ``identity``. MSC reads at most the requested byte count plus one sentinel byte and rejects short or oversized bodies. Non-TLS connection failures, timeouts, and HTTP ``408``, ``429``, ``500``, ``502``, ``503``, and ``504`` are retryable. TLS, certificate, and protocol-verification failures fail closed and are nonretryable, as are redirects, authentication failures, malformed range metadata, and other statuses.
+
+A retryable subread failure is surfaced to the enclosing MSC logical-read retry. The retry therefore repeats the complete requested logical range, including any sibling chunks that already succeeded; it is not an independent per-service-call retry. Before surfacing a failed attempt, MSC cancels work that has not started and waits for already-running sibling reads, preventing abandoned requests from overlapping the next attempt.
 
 ETags, Caching, and Immutability
 ================================
@@ -209,6 +274,10 @@ ETags, Caching, and Immutability
 Each logical file receives a synthetic ETag beginning with ``msc-v2-sha256:``. It is a SHA-256 digest over canonical file metadata, chunks in index order, ordered service query pairs, and the used binding alias, non-secret binding identity, and ``binding_revision``. Credential material and configured secret headers are excluded.
 
 Changing file metadata, chunk paths/offsets/boundaries, query order, a used binding identity, or a used binding revision changes the ETag. Changing an unused binding does not. This gives normal MSC caches a stable, dependency-aware identity without exposing credentials.
+
+The ETag identifies the decoded manifest plan and configured bindings; it is not a checksum of reconstructed file bytes. The manifest object, referenced source objects, deterministic service outputs, and binding locations must remain immutable for the manifest lifetime. If any dependency can produce new bytes, publish a new manifest and/or change its ``binding_revision``. MSC verifies only the exact length of each fetched range. Same-length byte drift is undetectable and can produce mixed-version reads or apparently valid stale cache hits under an unchanged ETag. Disabling source-version checking intentionally permits cached logical bytes to remain stale.
+
+The cache belongs to the virtual logical profile. Object-source aliases invoke their configured direct provider range API and bypass that source profile's logical routing, replicas, metadata provider, and MSC read cache.
 
 Decoded manifest files, chunks, range plans, and ordered query pairs are immutable. An initialized provider exposes one immutable snapshot; callers cannot mutate the decoded plan in place.
 
@@ -225,7 +294,8 @@ Limitations
 Virtual manifests are intentionally narrow in v2:
 
 * The provider is read-only. It has no manifest writer and does not support writes, deletes, copies, uploads, appends, or symlinks.
-* There are no chunk checksums, source version pins, manifest version pins, live reload, or multipart write support.
+* Zero-byte logical files and zero-byte chunks are not representable. A zero-row manifest represents an empty dataset.
+* There are no chunk checksums, source version pins, conditional range reads, live reload, or multipart manifest support.
 * The Parquet file is a single immutable v2 manifest; v1 indexes and parts are not accepted as virtual manifests.
 * The Multi-Storage File System (MSFS/FUSE) does not support virtual-manifest profiles.
 * HTTP services must be deterministic for the configured path/query/range contract. MSC does not follow redirects or infer service authorization rules.

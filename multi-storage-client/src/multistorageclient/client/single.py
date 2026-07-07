@@ -1121,8 +1121,12 @@ class SingleStorageClient(AbstractStorageClient):
             :py:attr:`SymlinkHandling.PRESERVE` recreates symlinks on the target via :py:meth:`make_symlink`
             instead of copying bytes (required for round-trip preservation of symlinks).
         :raises ValueError: If both source_files and patterns are provided.
+        :raises NotImplementedError: If this client uses a read-only storage provider.
         :raises RuntimeError: If errors occur during sync operations. The sync will stop on first error (fail-fast).
         """
+        if self._storage_provider is not None and self._storage_provider.is_read_only:
+            raise NotImplementedError(f"{type(self._storage_provider).__name__} is read-only.")
+
         if source_files and patterns:
             raise ValueError("Cannot specify both 'source_files' and 'patterns'. Please use only one filtering method.")
 

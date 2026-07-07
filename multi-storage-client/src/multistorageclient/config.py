@@ -773,7 +773,9 @@ class StorageClientConfigLoader:
         for alias, (options, revision) in service_specs.items():
             base_url = normalize_http_base_url(options["base_url"], options.get("allow_insecure_http", False))
             options["base_url"] = base_url
-            options["allowed_path_prefixes"] = [prefix.rstrip("/") for prefix in options["allowed_path_prefixes"]]
+            options["allowed_path_prefixes"] = [
+                prefix[:-1] if prefix.endswith("/") else prefix for prefix in options["allowed_path_prefixes"]
+            ]
             reader = HTTPServiceRangeReader(
                 **options,
                 binding_identity=_http_binding_identity(base_url),

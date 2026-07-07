@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import io
-import json
 import os
 import tempfile
 import threading
@@ -18,8 +17,17 @@ from datetime import datetime
 from types import MappingProxyType
 from typing import IO, Any, Optional, Union, cast
 
+from .._io import write_all as _write_all
 from ..file import RemoteFileReader
-from ..manifest.bindings import RangeReader, ServiceBinding, ServiceBindings, SourceBinding, SourceBindings
+from ..manifest.bindings import (
+    ServiceBinding,
+    ServiceBindings,
+    SizedRangeReader,
+    SourceBinding,
+    SourceBindings,
+    reader_operation_is_callable,
+    validate_manifest_bindings,
+)
 from ..manifest.models import ManifestFile, PlannedChunkRead, ServiceChunk
 from ..manifest.parquet import load_virtual_manifest
 from ..manifest.planner import plan_download
@@ -73,7 +81,7 @@ class ManifestStorageProvider(BaseStorageProvider):
     def __init__(
         self,
         manifest_path: str,
-        manifest_reader: RangeReader,
+        manifest_reader: SizedRangeReader,
         source_bindings: SourceBindings,
         service_bindings: ServiceBindings,
         max_workers: int = 8,
@@ -93,12 +101,17 @@ class ManifestStorageProvider(BaseStorageProvider):
         manifest_path = _validate_manifest_path(manifest_path)
         if not isinstance(max_workers, int) or isinstance(max_workers, bool) or max_workers < 1:
             raise ValueError("max_workers must be a positive integer.")
+        for operation in ("info", "read"):
+            if not reader_operation_is_callable(manifest_reader, operation):
+                raise ValueError(f"manifest_reader must provide a callable {operation} method.")
 
+        validate_manifest_bindings(source_bindings, service_bindings)
         resolved_source_bindings = MappingProxyType(dict(source_bindings))
         resolved_service_bindings = MappingProxyType(dict(service_bindings))
         manifest_metadata = manifest_reader.info(manifest_path)
-        if manifest_metadata.content_length < 0:
-            raise ValueError("Manifest content length must be non-negative.")
+        manifest_size = manifest_metadata.content_length
+        if not isinstance(manifest_size, int) or isinstance(manifest_size, bool) or manifest_size < 0:
+            raise ValueError("Manifest content length must be a non-negative integer.")
 
         def read_manifest_range(offset: int, size: int) -> bytes:
             data = manifest_reader.read(manifest_path, Range(offset=offset, size=size))
@@ -108,7 +121,7 @@ class ManifestStorageProvider(BaseStorageProvider):
 
         with RemoteFileReader(
             manifest_path,
-            manifest_metadata.content_length,
+            manifest_size,
             read_range=read_manifest_range,
         ) as stream:
             files = load_virtual_manifest(
@@ -184,18 +197,24 @@ class ManifestStorageProvider(BaseStorageProvider):
             read = next(read_iterator)
             pending[self._submit_read(read)] = read
 
-        while pending:
-            completed, _ = wait(pending, return_when=FIRST_COMPLETED)
-            for future in completed:
-                read = pending.pop(future)
-                data = future.result()
-                output[read.output_offset : read.output_offset + read.size_bytes] = data
-            for _ in completed:
-                try:
-                    next_read = next(read_iterator)
-                except StopIteration:
-                    break
-                pending[self._submit_read(next_read)] = next_read
+        try:
+            while pending:
+                completed, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for future in completed:
+                    read = pending.pop(future)
+                    data = future.result()
+                    output[read.output_offset : read.output_offset + read.size_bytes] = data
+                for _ in completed:
+                    try:
+                        next_read = next(read_iterator)
+                    except StopIteration:
+                        break
+                    pending[self._submit_read(next_read)] = next_read
+        except BaseException:
+            running = [future for future in pending if not future.cancel()]
+            if running:
+                wait(running)
+            raise
         return bytes(output)
 
     def _ensure_open(self) -> None:
@@ -401,7 +420,6 @@ class ManifestStorageProvider(BaseStorageProvider):
 
     @staticmethod
     def _metadata(file: ManifestFile) -> ObjectMetadata:
-        metadata = json.loads(file.metadata_json) if file.metadata_json is not None else None
         return ObjectMetadata(
             key=f"/{file.key}",
             content_length=file.size_bytes,
@@ -409,7 +427,7 @@ class ManifestStorageProvider(BaseStorageProvider):
             content_type=file.content_type,
             etag=file.etag,
             storage_class=file.storage_class,
-            metadata=metadata,
+            metadata=dict(file.metadata) if file.metadata is not None else None,
         )
 
     @staticmethod
@@ -494,18 +512,14 @@ class ManifestStorageProvider(BaseStorageProvider):
         while offset < file.size_bytes:
             size = min(_DOWNLOAD_WINDOW_SIZE, file.size_bytes - offset)
             data = self._get_object(file.key, Range(offset=offset, size=size))
-            written = writer.write(data)
-            if written is not None and written != len(data):
-                raise IOError(f"Binary destination accepted {written} of {len(data)} bytes.")
+            _write_all(writer, data)
             offset += size
 
     @staticmethod
     def _copy_staged_file(source: IO[bytes], writer: IO) -> None:
         """Publish a reconstructed virtual file to a caller-owned binary writer."""
         while data := source.read(_DOWNLOAD_WINDOW_SIZE):
-            written = writer.write(data)
-            if written is not None and written != len(data):
-                raise IOError(f"Binary destination accepted {written} of {len(data)} bytes.")
+            _write_all(writer, data)
 
     @staticmethod
     def _require_binary_writer(writer: IO) -> None:

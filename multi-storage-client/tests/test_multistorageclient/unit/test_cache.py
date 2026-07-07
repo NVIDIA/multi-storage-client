@@ -56,6 +56,31 @@ class RangeAwareStorageProvider:
         return self._data[byte_range.offset : byte_range.offset + byte_range.size]
 
 
+class _TruncatingReadFile:
+    """File proxy that truncates its inode immediately before its first read."""
+
+    def __init__(self, file, truncate) -> None:
+        self._file = file
+        self._truncate = truncate
+        self._truncated = False
+
+    def read(self, size: int = -1):
+        if not self._truncated:
+            self._truncated = True
+            self._truncate()
+        return self._file.read(size)
+
+    def __enter__(self):
+        self._file.__enter__()
+        return self
+
+    def __exit__(self, *args):
+        return self._file.__exit__(*args)
+
+    def __getattr__(self, name):
+        return getattr(self._file, name)
+
+
 @pytest.fixture
 def profile_name():
     return "test-cache"
@@ -876,6 +901,232 @@ def test_full_cache_operations_remain_bound_to_the_descriptor_validated_for_the_
     assert result == [old_data]
 
 
+@pytest.mark.parametrize("operation", ["read", "open"])
+def test_full_cache_operations_reject_a_newly_published_entry_truncated_after_publication(tmpdir, operation):
+    """Full-cache metadata records the published size and detects later in-place truncation."""
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir)),
+    )
+    key = "bucket/truncated-full-cache.bin"
+    data = b"newly published full-cache data"
+    cache_manager.set(key, data)
+    cache_path = cache_manager._get_cache_file_path(key)
+    cache_manager._make_writable(cache_path)
+    os.truncate(cache_path, len(data) - 1)
+    cache_manager._make_readonly(cache_path)
+
+    if operation == "read":
+        assert cache_manager.read(key) is None
+    else:
+        assert cache_manager.open(key) is None
+
+    assert not os.path.exists(cache_path)
+
+
+def test_range_read_replaces_a_newly_published_full_cache_entry_truncated_after_publication(tmpdir):
+    """The full-cache range fast path falls back to a fresh range instead of returning a short cached slice."""
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir)),
+    )
+    key = "bucket/truncated-full-cache-range.bin"
+    data = b"fresh full-cache range bytes"
+    cache_manager.set(key, data)
+    cache_path = cache_manager._get_cache_file_path(key)
+    cache_manager._make_writable(cache_path)
+    os.truncate(cache_path, len(data) - 1)
+    cache_manager._make_readonly(cache_path)
+    provider = RangeAwareStorageProvider(data)
+
+    assert (
+        cache_manager.read(
+            key,
+            byte_range=Range(offset=0, size=len(data)),
+            storage_provider=provider,
+            source_size=len(data),
+        )
+        == data
+    )
+    assert provider.call_count == 1
+
+
+def test_full_cache_size_cleanup_preserves_a_concurrent_replacement(tmpdir, monkeypatch):
+    """Size-mismatch cleanup only unlinks the descriptor it inspected, never a replacement."""
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir)),
+    )
+    key = "bucket/truncated-full-cache-race.bin"
+    old_data = b"old full-cache data"
+    replacement_data = b"replacement full-cache data"
+    cache_manager.set(key, old_data)
+    cache_path = cache_manager._get_cache_file_path(key)
+    cache_manager._make_writable(cache_path)
+    os.truncate(cache_path, len(old_data) - 1)
+    cache_manager._make_readonly(cache_path)
+
+    object_size_read = threading.Event()
+    allow_cleanup = threading.Event()
+    original_get_object_size = cache_manager._get_chunk_object_size
+
+    def pause_after_object_size(*args, **kwargs):
+        object_size = original_get_object_size(*args, **kwargs)
+        object_size_read.set()
+        assert allow_cleanup.wait(timeout=5), "timed out waiting to replace the corrupt cache entry"
+        return object_size
+
+    monkeypatch.setattr(cache_manager, "_get_chunk_object_size", pause_after_object_size)
+    result: list[bytes | None] = []
+    errors: list[BaseException] = []
+
+    def read_from_cache() -> None:
+        try:
+            result.append(cache_manager.read(key))
+        except BaseException as error:  # pragma: no cover - asserted below
+            errors.append(error)
+
+    reader = threading.Thread(target=read_from_cache)
+    reader.start()
+    assert object_size_read.wait(timeout=5), "full-cache read did not inspect stored object size"
+    cache_manager.set(key, replacement_data)
+    allow_cleanup.set()
+    reader.join(timeout=5)
+
+    assert not reader.is_alive()
+    assert not errors
+    assert result == [None]
+    assert cache_manager.read(key) == replacement_data
+
+
+def test_full_cache_read_rejects_same_inode_truncation_after_validation_without_removing_replacement(
+    tmpdir, monkeypatch
+):
+    """A post-validation short read cannot erase a replacement published at the same path."""
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir)),
+    )
+    key = "bucket/post-validation-full-read.bin"
+    data = b"validated data is truncated before it is read"
+    replacement_data = b"concurrent replacement stays published"
+    cache_manager.set(key, data)
+    cache_path = cache_manager._get_cache_file_path(key)
+    cache_manager._make_writable(cache_path)
+
+    truncated = threading.Event()
+    allow_read = threading.Event()
+    original_open = open
+
+    def truncate_after_validation() -> None:
+        os.truncate(cache_path, len(data) - 1)
+        truncated.set()
+        assert allow_read.wait(timeout=5), "timed out waiting to replace the truncated cache entry"
+
+    def open_with_truncating_read(path, mode="r", *args, **kwargs):
+        file = original_open(path, mode, *args, **kwargs)
+        if os.fspath(path) == cache_path and mode == "rb" and not truncated.is_set():
+            return _TruncatingReadFile(file, truncate_after_validation)
+        return file
+
+    monkeypatch.setattr(cache_module, "open", open_with_truncating_read, raising=False)
+    result: list[bytes | None] = []
+    errors: list[BaseException] = []
+
+    def read_from_cache() -> None:
+        try:
+            result.append(cache_manager.read(key))
+        except BaseException as error:  # pragma: no cover - asserted below
+            errors.append(error)
+
+    reader = threading.Thread(target=read_from_cache)
+    reader.start()
+    assert truncated.wait(timeout=5), "full-cache read did not reach the post-validation truncation point"
+    cache_manager.set(key, replacement_data)
+    allow_read.set()
+    reader.join(timeout=5)
+
+    assert not reader.is_alive()
+    assert not errors
+    assert result == [None]
+    assert cache_manager.read(key) == replacement_data
+
+
+def test_full_cache_range_read_rejects_same_inode_truncation_after_validation(tmpdir, monkeypatch):
+    """A full-cache range fast path falls back instead of returning a post-validation short slice."""
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir)),
+    )
+    key = "bucket/post-validation-full-range.bin"
+    data = b"range reads must not lose their final byte"
+    byte_range = Range(offset=len(data) - 3, size=3)
+    cache_manager.set(key, data)
+    cache_path = cache_manager._get_cache_file_path(key)
+    cache_manager._make_writable(cache_path)
+    original_open = open
+    truncated = threading.Event()
+
+    def open_with_truncating_read(path, mode="r", *args, **kwargs):
+        file = original_open(path, mode, *args, **kwargs)
+        if os.fspath(path) == cache_path and mode == "rb" and not truncated.is_set():
+
+            def truncate_after_validation() -> None:
+                cache_manager._make_writable(cache_path)
+                os.truncate(cache_path, len(data) - 1)
+                truncated.set()
+
+            return _TruncatingReadFile(file, truncate_after_validation)
+        return file
+
+    monkeypatch.setattr(cache_module, "open", open_with_truncating_read, raising=False)
+    provider = RangeAwareStorageProvider(data)
+
+    assert (
+        cache_manager.read(
+            key,
+            byte_range=byte_range,
+            storage_provider=provider,
+            source_size=len(data),
+        )
+        == data[-3:]
+    )
+    assert provider.call_count == 1
+
+
+def test_full_cache_open_read_rejects_same_inode_truncation_after_validation(tmpdir, monkeypatch):
+    """An opened full-cache descriptor reports a post-validation short read instead of returning it."""
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir)),
+    )
+    key = "bucket/post-validation-open.bin"
+    data = b"opened cache data must remain complete"
+    cache_manager.set(key, data)
+    cache_path = cache_manager._get_cache_file_path(key)
+    cache_manager._make_writable(cache_path)
+    original_open = open
+
+    def open_with_truncating_read(path, mode="r", *args, **kwargs):
+        file = original_open(path, mode, *args, **kwargs)
+        if os.fspath(path) == cache_path and mode == "rb":
+
+            def truncate_after_validation() -> None:
+                cache_manager._make_writable(cache_path)
+                os.truncate(cache_path, len(data) - 1)
+
+            return _TruncatingReadFile(file, truncate_after_validation)
+        return file
+
+    monkeypatch.setattr(cache_module, "open", open_with_truncating_read, raising=False)
+    cached_file = cache_manager.open(key)
+
+    assert cached_file is not None
+    with cached_file, pytest.raises(OSError, match="short|size"):
+        cached_file.read()
+    assert not os.path.exists(cache_path)
+
+
 def test_full_cache_read_and_open_accept_a_promoted_portable_metadata_sidecar(tmpdir, monkeypatch):
     """Full-cache APIs validate a no-xattr promoted entry against its identity-bound sidecar."""
     cache_manager = CacheManager(
@@ -1178,6 +1429,221 @@ def test_range_read_from_a_promoted_chunk_uses_the_file_validated_by_portable_si
 
     assert not reader.is_alive()
     assert result == [old_data]
+
+
+def test_range_chunk_assembly_reads_the_promoted_descriptor_after_the_initial_full_cache_probe_misses(
+    tmpdir, monkeypatch
+):
+    """A same-sized replacement after promotion cannot change the bytes selected by chunk assembly."""
+    probe_path = os.path.join(str(tmpdir), "xattr-probe")
+    with open(probe_path, "wb") as probe_file:
+        probe_file.write(b"probe")
+    try:
+        xattr.setxattr(probe_path, "user.etag", b"probe")
+        xattr.getxattr(probe_path, "user.etag")
+    except OSError:
+        pytest.skip("xattr is not supported on this filesystem")
+    finally:
+        os.unlink(probe_path)
+
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir)),
+    )
+    key = "bucket/promoted-after-probe-miss.bin"
+    source_version = "revision-1"
+    old_data = b"old"
+    replacement_data = b"new"
+    cache_path = cache_manager._get_cache_file_path(key)
+    chunk_path = cache_manager._get_chunk_path(cache_path, 0)
+    cache_manager._write_chunk_to_cache(
+        chunk_path,
+        old_data,
+        source_version,
+        chunk_idx=0,
+        cache_line_size=1024 * 1024,
+        source_size=len(old_data),
+    )
+    assert not os.path.exists(cache_path)
+
+    replacement_path = os.path.join(os.path.dirname(cache_path), "same-size-replacement.bin")
+    os.makedirs(os.path.dirname(replacement_path), exist_ok=True)
+    with open(replacement_path, "wb") as replacement:
+        replacement.write(replacement_data)
+    xattr.setxattr(replacement_path, "user.etag", source_version.encode("utf-8"))
+    xattr.setxattr(replacement_path, "user.cache_line_size", str(1024 * 1024).encode("utf-8"))
+    xattr.setxattr(replacement_path, "user.size", str(len(replacement_data)).encode("utf-8"))
+
+    full_cache_probe_missed = threading.Event()
+    descriptor_validated = threading.Event()
+    allow_read = threading.Event()
+    original_full_cache_probe = cache_manager._read_range_from_full_cached_file
+    original_download_missing = cache_manager._download_missing_chunks
+    original_getxattr = cache_module.xattr.getxattr
+
+    def record_full_cache_probe(*args, **kwargs):
+        result = original_full_cache_probe(*args, **kwargs)
+        assert result is None
+        assert not os.path.exists(cache_path)
+        full_cache_probe_missed.set()
+        return result
+
+    def promote_after_chunk_probe(*args, **kwargs) -> None:
+        original_download_missing(*args, **kwargs)
+        assert full_cache_probe_missed.is_set()
+        cache_manager._handle_chunk0_renaming(cache_path, chunk_path, 0, 1024 * 1024)
+
+    def pause_after_descriptor_revision_validation(target, name, *args, **kwargs):
+        value = original_getxattr(target, name, *args, **kwargs)
+        if (
+            name == "user.etag"
+            and (target == cache_path or isinstance(target, int))
+            and not descriptor_validated.is_set()
+        ):
+            descriptor_validated.set()
+            assert allow_read.wait(timeout=5), "timed out waiting to replace the promoted cache entry"
+        return value
+
+    monkeypatch.setattr(cache_manager, "_read_range_from_full_cached_file", record_full_cache_probe)
+    monkeypatch.setattr(cache_manager, "_download_missing_chunks", promote_after_chunk_probe)
+    monkeypatch.setattr(cache_module.xattr, "getxattr", pause_after_descriptor_revision_validation)
+
+    results: list[bytes] = []
+    errors: list[BaseException] = []
+    provider = RangeAwareStorageProvider(b"unexpected")
+
+    def read_range() -> None:
+        try:
+            result = cache_manager.read(
+                key,
+                source_version=source_version,
+                byte_range=Range(offset=0, size=len(old_data)),
+                storage_provider=provider,
+                source_size=len(old_data),
+            )
+            assert result is not None
+            results.append(result)
+        except BaseException as error:  # pragma: no cover - asserted below
+            errors.append(error)
+
+    reader = threading.Thread(target=read_range)
+    reader.start()
+    assert descriptor_validated.wait(timeout=5), "chunk assembly never validated the promoted descriptor"
+    os.replace(replacement_path, cache_path)
+    allow_read.set()
+    reader.join(timeout=5)
+
+    assert not reader.is_alive()
+    assert not errors
+    assert results == [old_data]
+    assert provider.call_count == 0
+
+
+def test_range_chunk_assembly_does_not_remove_a_same_sized_replacement_of_a_corrupt_promoted_descriptor(
+    tmpdir, monkeypatch
+):
+    """Corruption cleanup is conditional on the current path still naming the inspected descriptor."""
+    probe_path = os.path.join(str(tmpdir), "xattr-probe")
+    with open(probe_path, "wb") as probe_file:
+        probe_file.write(b"probe")
+    try:
+        xattr.setxattr(probe_path, "user.etag", b"probe")
+        xattr.getxattr(probe_path, "user.etag")
+    except OSError:
+        pytest.skip("xattr is not supported on this filesystem")
+    finally:
+        os.unlink(probe_path)
+
+    cache_manager = CacheManager(
+        profile="test",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir)),
+    )
+    key = "bucket/corrupt-promoted-after-probe-miss.bin"
+    source_version = "revision-1"
+    corrupt_data = b"old"
+    replacement_data = b"new"
+    expected_size = len(corrupt_data) + 1
+    cache_path = cache_manager._get_cache_file_path(key)
+    chunk_path = cache_manager._get_chunk_path(cache_path, 0)
+    cache_manager._write_chunk_to_cache(
+        chunk_path,
+        corrupt_data,
+        source_version,
+        chunk_idx=0,
+        cache_line_size=1024 * 1024,
+        source_size=expected_size,
+    )
+    assert not os.path.exists(cache_path)
+
+    replacement_path = os.path.join(os.path.dirname(cache_path), "same-size-replacement.bin")
+    os.makedirs(os.path.dirname(replacement_path), exist_ok=True)
+    with open(replacement_path, "wb") as replacement:
+        replacement.write(replacement_data)
+    xattr.setxattr(replacement_path, "user.etag", source_version.encode("utf-8"))
+    xattr.setxattr(replacement_path, "user.cache_line_size", str(1024 * 1024).encode("utf-8"))
+    xattr.setxattr(replacement_path, "user.size", str(len(replacement_data)).encode("utf-8"))
+
+    full_cache_probe_missed = threading.Event()
+    object_size_read = threading.Event()
+    allow_cleanup = threading.Event()
+    original_full_cache_probe = cache_manager._read_range_from_full_cached_file
+    original_download_missing = cache_manager._download_missing_chunks
+    original_getxattr = cache_module.xattr.getxattr
+
+    def record_full_cache_probe(*args, **kwargs):
+        result = original_full_cache_probe(*args, **kwargs)
+        assert result is None
+        assert not os.path.exists(cache_path)
+        full_cache_probe_missed.set()
+        return result
+
+    def promote_after_chunk_probe(*args, **kwargs) -> None:
+        original_download_missing(*args, **kwargs)
+        assert full_cache_probe_missed.is_set()
+        cache_manager._handle_chunk0_renaming(cache_path, chunk_path, 0, 1024 * 1024)
+
+    def pause_after_descriptor_object_size_validation(target, name, *args, **kwargs):
+        value = original_getxattr(target, name, *args, **kwargs)
+        if name == "user.size" and (target == cache_path or isinstance(target, int)) and not object_size_read.is_set():
+            object_size_read.set()
+            assert allow_cleanup.wait(timeout=5), "timed out waiting to replace the corrupt cache entry"
+        return value
+
+    monkeypatch.setattr(cache_manager, "_read_range_from_full_cached_file", record_full_cache_probe)
+    monkeypatch.setattr(cache_manager, "_download_missing_chunks", promote_after_chunk_probe)
+    monkeypatch.setattr(cache_module.xattr, "getxattr", pause_after_descriptor_object_size_validation)
+
+    results: list[bytes] = []
+    errors: list[BaseException] = []
+    provider = RangeAwareStorageProvider(b"read")
+
+    def read_range() -> None:
+        try:
+            result = cache_manager.read(
+                key,
+                source_version=source_version,
+                byte_range=Range(offset=0, size=expected_size),
+                storage_provider=provider,
+                source_size=expected_size,
+            )
+            assert result is not None
+            results.append(result)
+        except BaseException as error:  # pragma: no cover - asserted below
+            errors.append(error)
+
+    reader = threading.Thread(target=read_range)
+    reader.start()
+    assert object_size_read.wait(timeout=5), "chunk assembly never inspected the promoted descriptor size"
+    os.replace(replacement_path, cache_path)
+    allow_cleanup.set()
+    reader.join(timeout=5)
+
+    assert not reader.is_alive()
+    assert not errors
+    assert results == [b"read"]
+    assert provider.call_count == 1
+    assert cache_path == os.path.realpath(cache_path)
+    assert open(cache_path, "rb").read() == replacement_data
 
 
 def test_range_cache_sidecars_do_not_collide_with_logical_metadata_keys(tmpdir, monkeypatch):
@@ -1725,10 +2191,10 @@ def test_cache_manager_serializes_explicit_delete_with_no_xattr_publication(tmpd
     original_delete = cache_manager._delete_cache_file_at_path
     original_replace = cache_module.os.replace
 
-    def observe_delete(path: str) -> None:
+    def observe_delete(path: str, expected_identity: str | None = None) -> None:
         transition.put("body")
         assert allow_delete.wait(timeout=5), "delete was never allowed to continue"
-        original_delete(path)
+        original_delete(path, expected_identity)
 
     monkeypatch.setattr(cache_manager, "_delete_cache_file_at_path", observe_delete)
 
@@ -1865,6 +2331,27 @@ def test_cache_manager_rejects_profiles_reserved_for_legacy_temp_downloads(tmpdi
 
 @pytest.mark.parametrize(
     "profile",
+    [
+        ".MSC-CACHE-INTERNAL",
+        ".TMP-user",
+        ".TmP-legacy",
+        ".ｍｓｃ－ｃａｃｈｅ－ｉｎｔｅｒｎａｌ",
+        ".ｔｍｐ－legacy",
+    ],
+)
+def test_cache_manager_rejects_casefold_equivalents_of_reserved_profile_names(tmpdir, profile):
+    """Reserved cache namespaces remain unavailable on case-folding filesystems."""
+    with pytest.raises(ValueError, match="reserved"):
+        CacheManager(
+            profile=profile,
+            cache_config=CacheConfig(
+                size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir)
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "profile",
     [".msc-cache-internal", "nested/profile", r"nested\\profile", "nested/./..", ".", ".."],
 )
 def test_cache_manager_rejects_profiles_that_can_escape_or_alias_internal_paths(tmpdir, profile):
@@ -1901,6 +2388,188 @@ def test_cache_manager_rejects_an_internal_root_symlink_that_escapes_the_cache_r
                 size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir)
             ),
         )
+
+
+@pytest.mark.parametrize("identity_kind", ["key", "profile"])
+@pytest.mark.parametrize("disable_xattrs", [False, True], ids=["xattrs", "portable-sidecar"])
+def test_full_cache_identity_rejects_forced_path_aliases_without_deleting_the_owner(
+    tmpdir,
+    monkeypatch,
+    identity_kind,
+    disable_xattrs,
+):
+    """One host path cannot return, replace, or delete bytes belonging to another logical cache identity."""
+    cache_config = CacheConfig(size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir))
+    owner = CacheManager(profile="owner-profile", cache_config=cache_config)
+    alias = owner if identity_kind == "key" else CacheManager(profile="alias-profile", cache_config=cache_config)
+    owner_key = "bucket/CaseSensitive.bin"
+    alias_key = "bucket/casesensitive.bin" if identity_kind == "key" else owner_key
+    owner_data = b"owner cache bytes"
+    alias_data = b"alias cache bytes"
+    shared_path = os.path.join(str(tmpdir), "forced-full-cache-alias.bin")
+
+    for manager in (owner,) if alias is owner else (owner, alias):
+        monkeypatch.setattr(manager, "_get_cache_file_path", lambda _key, path=shared_path: path)
+        monkeypatch.setattr(manager, "_resolve_profile_cache_delete_path", lambda _key, path=shared_path: path)
+
+    if disable_xattrs:
+
+        def raise_xattr_error(*_args, **_kwargs):
+            raise OSError("xattr unsupported")
+
+        monkeypatch.setattr(cache_module.xattr, "setxattr", raise_xattr_error)
+        monkeypatch.setattr(cache_module.xattr, "getxattr", raise_xattr_error)
+
+    owner.set(owner_key, owner_data, source_version="owner-r1")
+    if disable_xattrs:
+        metadata = owner._read_chunk_metadata_sidecar(shared_path)
+        assert metadata is not None
+        assert metadata["cache_identity"]
+
+    alias.set(alias_key, alias_data, source_version="alias-r1")
+
+    assert owner.read(owner_key, check_source_version=SourceVersionCheckMode.DISABLE) == owner_data
+    assert alias.read(alias_key, check_source_version=SourceVersionCheckMode.DISABLE) is None
+    assert alias.open(alias_key, check_source_version=SourceVersionCheckMode.DISABLE) is None
+    assert not alias.contains(alias_key, check_source_version=SourceVersionCheckMode.DISABLE)
+
+    provider = RangeAwareStorageProvider(alias_data)
+    assert (
+        alias.read(
+            alias_key,
+            byte_range=Range(offset=0, size=len(alias_data)),
+            storage_provider=provider,
+            source_size=len(alias_data),
+            check_source_version=SourceVersionCheckMode.DISABLE,
+        )
+        == alias_data
+    )
+    assert provider.call_count == 1
+
+    alias.delete(alias_key)
+
+    assert owner.read(owner_key, check_source_version=SourceVersionCheckMode.DISABLE) == owner_data
+    assert alias.read(alias_key, check_source_version=SourceVersionCheckMode.DISABLE) is None
+    refetched = RangeAwareStorageProvider(alias_data)
+    assert (
+        alias.read(
+            alias_key,
+            byte_range=Range(offset=0, size=len(alias_data)),
+            storage_provider=refetched,
+            source_size=len(alias_data),
+            check_source_version=SourceVersionCheckMode.DISABLE,
+        )
+        == alias_data
+    )
+    assert refetched.call_count == 1
+
+
+def test_no_xattr_full_cache_publication_hides_an_unbound_entry_from_alias_readers(tmpdir, monkeypatch):
+    """An alias cannot bypass no-xattr publication or identity protection."""
+    cache_manager = CacheManager(
+        profile="owner-profile",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir)),
+    )
+    owner_key = "bucket/owner.bin"
+    alias_key = "bucket/alias.bin"
+    owner_data = b"owner cache bytes"
+    owner_path = os.path.join(str(tmpdir), "publication-owner.bin")
+    alias_path = os.path.join(str(tmpdir), "publication-alias.bin")
+    reader_started = threading.Event()
+    reader_finished = threading.Event()
+    reader: list[threading.Thread] = []
+    alias_results: list[bytes | None] = []
+
+    def raise_xattr_error(*_args, **_kwargs):
+        raise OSError("xattr unsupported")
+
+    monkeypatch.setattr(cache_module.xattr, "setxattr", raise_xattr_error)
+    monkeypatch.setattr(cache_module.xattr, "getxattr", raise_xattr_error)
+    monkeypatch.setattr(
+        cache_manager,
+        "_get_cache_file_path",
+        lambda key: owner_path if key == owner_key else alias_path,
+    )
+    original_open = open
+    original_exists = cache_module.os.path.exists
+
+    def open_native_alias(path, *args, **kwargs):
+        return original_open(owner_path if os.fspath(path) == alias_path else path, *args, **kwargs)
+
+    def native_alias_exists(path):
+        return original_exists(owner_path if os.fspath(path) == alias_path else path)
+
+    monkeypatch.setattr(cache_module, "open", open_native_alias, raising=False)
+    monkeypatch.setattr(cache_module.os.path, "exists", native_alias_exists)
+    original_replace = cache_module.os.replace
+
+    def start_alias_reader_after_data_replace(source: str, destination: str) -> None:
+        original_replace(source, destination)
+        if destination != owner_path:
+            return
+
+        def read_alias() -> None:
+            reader_started.set()
+            alias_results.append(cache_manager.read(alias_key, check_source_version=SourceVersionCheckMode.DISABLE))
+            reader_finished.set()
+
+        thread = threading.Thread(target=read_alias)
+        reader.append(thread)
+        thread.start()
+        assert reader_started.wait(timeout=5), "alias reader did not start"
+        assert reader_finished.wait(timeout=5), "alias reader did not observe the publication marker"
+        assert alias_results == [None]
+
+    monkeypatch.setattr(cache_module.os, "replace", start_alias_reader_after_data_replace)
+
+    cache_manager.set(owner_key, owner_data)
+
+    assert len(reader) == 1
+    reader[0].join(timeout=5)
+    assert not reader[0].is_alive()
+    assert alias_results == [None]
+    assert cache_manager.read(alias_key, check_source_version=SourceVersionCheckMode.DISABLE) is None
+
+
+@pytest.mark.parametrize(
+    ("owner_profile", "alias_profile", "owner_key", "alias_key"),
+    [
+        pytest.param("test", "test", "bucket/CaseSensitive.bin", "bucket/casesensitive.bin", id="key-case"),
+        pytest.param("test", "test", "bucket/caf\u00e9.bin", "bucket/cafe\u0301.bin", id="key-nfc-nfd"),
+        pytest.param("CacheProfile", "cacheprofile", "bucket/object.bin", "bucket/object.bin", id="profile-case"),
+        pytest.param(
+            "caf\u00e9-profile", "cafe\u0301-profile", "bucket/object.bin", "bucket/object.bin", id="profile-nfc-nfd"
+        ),
+    ],
+)
+def test_full_cache_identity_preserves_native_filesystem_aliases_when_present(
+    tmpdir,
+    owner_profile,
+    alias_profile,
+    owner_key,
+    alias_key,
+):
+    """Native case- and normalization-alias filesystems receive the same identity protection."""
+    cache_config = CacheConfig(size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir))
+    owner = CacheManager(profile=owner_profile, cache_config=cache_config)
+    alias = owner if alias_profile == owner_profile else CacheManager(profile=alias_profile, cache_config=cache_config)
+    owner_data = b"owner cache bytes"
+    alias_data = b"alias cache bytes"
+    owner.set(owner_key, owner_data)
+    owner_path = owner._get_cache_file_path(owner_key)
+    alias_path = alias._get_cache_file_path(alias_key)
+
+    try:
+        aliases = os.path.samefile(owner_path, alias_path)
+    except OSError:
+        aliases = False
+    if not aliases:
+        pytest.skip("filesystem keeps these logical cache paths distinct")
+
+    alias.set(alias_key, alias_data)
+
+    assert owner.read(owner_key, check_source_version=SourceVersionCheckMode.DISABLE) == owner_data
+    assert alias.read(alias_key, check_source_version=SourceVersionCheckMode.DISABLE) is None
 
 
 def test_cache_manager_generate_temp_file_path(cache_manager):

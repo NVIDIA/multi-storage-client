@@ -26,6 +26,7 @@ from fsspec.asyn import AsyncFileSystem, _run_coros_in_chunks
 from fsspec.callbacks import Callback
 from fsspec.utils import isfilelike
 
+from .._io import write_all as _write_all
 from ..client import StorageClient
 from ..file import ObjectFile, PosixFile
 from ..shortcuts import resolve_storage_client
@@ -34,22 +35,6 @@ from ..types import MSC_PROTOCOL_NAME
 _GLOBAL_THREAD_POOL = ThreadPoolExecutor(max_workers=int(os.getenv("MSC_MAX_WORKERS", "8")))
 
 atexit.register(lambda: _GLOBAL_THREAD_POOL.shutdown(wait=False))
-
-
-def _write_all(destination: IO[bytes], data: bytes) -> int:
-    """Write one chunk completely or fail instead of silently dropping a short-write suffix."""
-    offset = 0
-    while offset < len(data):
-        written = destination.write(data[offset:])
-        if written is None:
-            return len(data)
-        if not isinstance(written, int) or isinstance(written, bool) or written <= 0:
-            raise IOError("Destination made no progress while writing a download chunk.")
-        remaining = len(data) - offset
-        if written > remaining:
-            raise IOError("Destination reported writing more bytes than the supplied download chunk.")
-        offset += written
-    return offset
 
 
 # pyright: reportIncompatibleMethodOverride=false
@@ -257,25 +242,15 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
         :param lpath: The local path or writable binary file-like object.
         :param callback: Transfer progress callback.
         :param outfile: Optional already-open destination for path-based callers.
-        :param kwargs: Additional arguments for file retrieval functionality.
+        :param kwargs: Additional arguments for file retrieval functionality. File-like and
+            ``outfile`` destinations use streamed uncached reads; path destinations use the
+            storage client's native download operation.
         """
         storage_client, rpath = self.resolve_path_and_storage_client(rpath)
         progress = Callback.as_callback(callback)
         destination = cast(IO[bytes], lpath) if isfilelike(lpath) else outfile
-        open_kwargs = dict(kwargs)
-        open_kwargs["prefetch_file"] = False
 
-        with storage_client.open(rpath, "rb", **open_kwargs) as source:
-            progress.set_size(getattr(source, "size", None))
-
-            def stream_to(output: IO[bytes]) -> None:
-                while data := source.read(self.blocksize):
-                    progress.relative_update(_write_all(output, data))
-
-            if destination is not None:
-                stream_to(destination)
-                return
-
+        if destination is None:
             local_path = os.fspath(cast(Union[str, os.PathLike[str]], lpath))
             parent = os.path.dirname(os.path.abspath(local_path))
             os.makedirs(parent, exist_ok=True)
@@ -288,9 +263,13 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
                     delete=False,
                 ) as temporary:
                     temporary_path = temporary.name
-                    stream_to(temporary)
-                    temporary.flush()
+                storage_client.download_file(rpath, temporary_path)
+                with open(temporary_path, "rb") as temporary:
                     os.fsync(temporary.fileno())
+                downloaded_size = os.path.getsize(temporary_path)
+                progress.set_size(downloaded_size)
+                if downloaded_size:
+                    progress.relative_update(downloaded_size)
                 os.replace(temporary_path, local_path)
                 temporary_path = None
             finally:
@@ -299,6 +278,20 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
                         os.unlink(temporary_path)
                     except FileNotFoundError:
                         pass
+            return
+
+        open_kwargs = dict(kwargs)
+        open_kwargs["prefetch_file"] = False
+        open_kwargs["disable_read_cache"] = True
+
+        with storage_client.open(rpath, "rb", **open_kwargs) as source:
+            progress.set_size(getattr(source, "size", None))
+
+            def stream_to(output: IO[bytes]) -> None:
+                while data := source.read(self.blocksize):
+                    progress.relative_update(_write_all(output, data))
+
+            stream_to(destination)
 
     async def _get_file(
         self,

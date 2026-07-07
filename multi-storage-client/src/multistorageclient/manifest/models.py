@@ -19,14 +19,6 @@ class QueryParameter:
 
 
 @dataclass(frozen=True, slots=True)
-class EmptyChunk:
-    """Sentinel representing a zero-byte logical file."""
-
-    index: int = 0
-    size_bytes: int = 0
-
-
-@dataclass(frozen=True, slots=True)
 class ObjectChunk:
     """Byte range from a configured storage profile."""
 
@@ -48,7 +40,7 @@ class ServiceChunk:
     service_query: tuple[QueryParameter, ...]
 
 
-ManifestChunk = Union[EmptyChunk, ObjectChunk, ServiceChunk]
+ManifestChunk = Union[ObjectChunk, ServiceChunk]
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +52,7 @@ class ManifestFile:
     last_modified: datetime
     content_type: Optional[str]
     storage_class: Optional[str]
-    metadata_json: Optional[str]
+    metadata: Optional[tuple[tuple[str, str], ...]]
     chunks: tuple[ManifestChunk, ...]
     cumulative_ends: tuple[int, ...]
     etag: str
