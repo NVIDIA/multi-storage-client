@@ -109,12 +109,11 @@ jobs:
         run: |
           just python-binary=${{ matrix.python-binary }} build
           just python-binary=${{ matrix.python-binary }} run-minimal-verification
-      # TODO: Re-enable after MSC 1.0 is released and compare against the 1.0 tag.
-      # - if: ${{ steps.build-cache.outputs.cache-hit != 'true' }}
-      #   working-directory: multi-storage-client-scripts
-      #   run: |
-      #     git fetch --no-tags --prune origin main:refs/remotes/origin/main
-      #     uv run msc-scripts check-api-compat
+      - if: ${{ steps.build-cache.outputs.cache-hit != 'true' }}
+        working-directory: multi-storage-client-scripts
+        run: |
+          git fetch --no-tags --depth=1 origin tag 1.0.0
+          uv run msc-scripts check-api-compat
       - uses: actions/upload-artifact@v7
         with:
           if-no-files-found: error
