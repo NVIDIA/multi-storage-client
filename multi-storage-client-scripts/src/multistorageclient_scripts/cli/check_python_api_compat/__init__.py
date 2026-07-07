@@ -51,8 +51,7 @@ CONTRACT_FILES: Final[Mapping[str, pathlib.PurePosixPath]] = {
     ),
     "multistorageclient.schema": pathlib.PurePosixPath("multi-storage-client/src/multistorageclient/schema.py"),
 }
-# TODO: After MSC 1.0 is released, check compatibility against the 1.0 tag instead of origin/main.
-BASE_REVISION: Final[str] = "origin/main"
+BASE_REVISION: Final[str] = "1.0.0"
 HEAD_REVISION: Final[str] = "."
 
 

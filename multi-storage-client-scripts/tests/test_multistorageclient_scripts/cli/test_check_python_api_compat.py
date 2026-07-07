@@ -39,6 +39,10 @@ def test_cli_uses_check_api_compat_command_name_without_revision_arguments() -> 
     assert not hasattr(arguments, "head")
 
 
+def test_check_api_compat_uses_1_0_release_tag_as_base_revision() -> None:
+    assert check_python_api_compat.BASE_REVISION == "1.0.0"
+
+
 def test_run_cli_returns_success_for_warn_only_compatibility_issues(monkeypatch) -> None:
     monkeypatch.setattr(
         "sys.argv",
