@@ -130,7 +130,7 @@ just python-binary=python3.10 build
 
 ### Support
 
-- Level: Experimental
+- Level: Stable
 - How to get help: Issues/Discussions
 
 ## License
