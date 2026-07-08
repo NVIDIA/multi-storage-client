@@ -9,7 +9,7 @@ import base64
 import hashlib
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import IO, Any, Optional
@@ -382,13 +382,70 @@ def _finalize_file(
     )
 
 
-def _insert_file(files: dict[str, ManifestFile], file: ManifestFile) -> None:
-    ancestor = file.key.rsplit("/", 1)[0] if "/" in file.key else None
-    while ancestor is not None:
-        if ancestor in files:
-            raise _error(f"file key {ancestor!r} is an ancestor of file key {file.key!r}")
-        ancestor = ancestor.rsplit("/", 1)[0] if "/" in ancestor else None
-    files[file.key] = file
+def validate_virtual_manifest_parquet_file(parquet_file: Any, pa: Optional[Any] = None) -> None:
+    """Validate the exact v2 footer identity and physical Parquet schema."""
+    _validate_schema(parquet_file, pa if pa is not None else _require_pyarrow())
+
+
+def iter_virtual_manifest_files(
+    rows: Iterable[Mapping[str, Any]],
+    source_bindings: Mapping[str, SourceBinding],
+    service_bindings: Mapping[str, ServiceBinding],
+) -> Iterator[ManifestFile]:
+    """Validate physical rows incrementally and yield complete logical files."""
+    first: Optional[_DecodedRow] = None
+    chunks: list[ManifestChunk] = []
+    cumulative_ends: list[int] = []
+    previous_position: Optional[tuple[str, int]] = None
+
+    for row in rows:
+        raw_key = row.get("key")
+        if first is not None and raw_key != first.key:
+            yield _finalize_file(first, chunks, cumulative_ends, source_bindings, service_bindings)
+            first = None
+            chunks = []
+            cumulative_ends = []
+
+        decoded = _decode_row(row, source_bindings, service_bindings)
+        position = (decoded.key, decoded.chunk.index)
+        if previous_position is not None and position <= previous_position:
+            raise _error("rows must be strictly sorted by key and chunk_index")
+
+        if first is None:
+            first = decoded
+        elif _file_metadata(decoded) != _file_metadata(first):
+            raise _error(f"file {decoded.key!r} has conflicting file metadata")
+
+        expected_index = len(chunks)
+        if decoded.chunk.index != expected_index:
+            raise _error(f"file {decoded.key!r} chunk indexes must be contiguous and unique")
+        total = cumulative_ends[-1] if cumulative_ends else 0
+        if total > _INT64_MAX - decoded.chunk.size_bytes:
+            raise _error(f"file {decoded.key!r} chunk total overflows int64")
+        chunks.append(decoded.chunk)
+        cumulative_ends.append(total + decoded.chunk.size_bytes)
+        previous_position = position
+
+    if first is not None:
+        yield _finalize_file(first, chunks, cumulative_ends, source_bindings, service_bindings)
+
+
+def decode_virtual_manifest_file(
+    rows: Iterable[Mapping[str, Any]],
+    source_bindings: Mapping[str, SourceBinding],
+    service_bindings: Mapping[str, ServiceBinding],
+) -> ManifestFile:
+    """Decode exactly one complete logical file from its physical rows."""
+    files = iter_virtual_manifest_files(rows, source_bindings, service_bindings)
+    try:
+        file = next(files)
+    except StopIteration as exc:
+        raise _error("logical file has no rows") from exc
+    try:
+        next(files)
+    except StopIteration:
+        return file
+    raise _error("logical file lookup returned multiple keys")
 
 
 def load_virtual_manifest(
@@ -412,50 +469,14 @@ def load_virtual_manifest(
         ) from exc
 
     try:
-        parquet_file = pq.ParquetFile(stream)
-        _validate_schema(parquet_file, pa)
-        files: dict[str, ManifestFile] = {}
-        first: Optional[_DecodedRow] = None
-        chunks: list[ManifestChunk] = []
-        cumulative_ends: list[int] = []
-        previous_position: Optional[tuple[str, int]] = None
-        for batch in parquet_file.iter_batches(batch_size=_BATCH_SIZE):
-            for row in batch.to_pylist():
-                decoded = _decode_row(row, source_bindings, service_bindings)
-                position = (decoded.key, decoded.chunk.index)
-                if previous_position is not None and position <= previous_position:
-                    raise _error("rows must be strictly sorted by key and chunk_index")
+        parquet_file = pq.ParquetFile(stream, pre_buffer=False)
+        validate_virtual_manifest_parquet_file(parquet_file, pa)
 
-                if first is not None and decoded.key != first.key:
-                    _insert_file(
-                        files,
-                        _finalize_file(first, chunks, cumulative_ends, source_bindings, service_bindings),
-                    )
-                    first = None
-                    chunks = []
-                    cumulative_ends = []
+        def rows() -> Iterator[Mapping[str, Any]]:
+            for batch in parquet_file.iter_batches(batch_size=_BATCH_SIZE):
+                yield from batch.to_pylist()
 
-                if first is None:
-                    first = decoded
-                elif _file_metadata(decoded) != _file_metadata(first):
-                    raise _error(f"file {decoded.key!r} has conflicting file metadata")
-
-                expected_index = len(chunks)
-                if decoded.chunk.index != expected_index:
-                    raise _error(f"file {decoded.key!r} chunk indexes must be contiguous and unique")
-                total = cumulative_ends[-1] if cumulative_ends else 0
-                if total > _INT64_MAX - decoded.chunk.size_bytes:
-                    raise _error(f"file {decoded.key!r} chunk total overflows int64")
-                chunks.append(decoded.chunk)
-                cumulative_ends.append(total + decoded.chunk.size_bytes)
-                previous_position = position
-
-        if first is not None:
-            _insert_file(
-                files,
-                _finalize_file(first, chunks, cumulative_ends, source_bindings, service_bindings),
-            )
-        return files
+        return {file.key: file for file in iter_virtual_manifest_files(rows(), source_bindings, service_bindings)}
     except ManifestValidationError:
         raise
     except Exception as exc:

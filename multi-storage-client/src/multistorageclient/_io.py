@@ -12,9 +12,12 @@ def write_all(destination: IO[bytes], data: bytes) -> int:
     offset = 0
     while offset < len(view):
         written = destination.write(view[offset:])
-        if written is None or not isinstance(written, int) or isinstance(written, bool) or written <= 0:
-            raise IOError("Binary destination made no progress while writing.")
         remaining = len(view) - offset
+        if written is None:
+            offset += remaining
+            continue
+        if not isinstance(written, int) or isinstance(written, bool) or written <= 0:
+            raise IOError("Binary destination made no progress while writing.")
         if written > remaining:
             raise IOError("Binary destination reported writing more bytes than provided.")
         offset += written

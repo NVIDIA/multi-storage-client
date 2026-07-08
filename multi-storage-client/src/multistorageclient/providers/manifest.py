@@ -9,9 +9,9 @@ import io
 import os
 import tempfile
 import threading
-from bisect import bisect_left
 from collections.abc import Callable, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from types import MappingProxyType
@@ -28,8 +28,9 @@ from ..manifest.bindings import (
     reader_operation_is_callable,
     validate_manifest_bindings,
 )
+from ..manifest.constants import DEFAULT_ROW_GROUP_CACHE_SIZE_BYTES, MAX_ROW_GROUP_CACHE_SIZE_BYTES
+from ..manifest.index import PyArrowManifestCatalog
 from ..manifest.models import ManifestFile, PlannedChunkRead, ServiceChunk
-from ..manifest.parquet import load_virtual_manifest
 from ..manifest.planner import plan_download
 from ..telemetry import Telemetry
 from ..types import ObjectMetadata, Range, SymlinkHandling
@@ -87,6 +88,7 @@ class ManifestStorageProvider(BaseStorageProvider):
         max_workers: int = 8,
         config_dict: Optional[dict[str, Any]] = None,
         telemetry_provider: Optional[Callable[[], Telemetry]] = None,
+        manifest_row_group_cache_size_bytes: int = DEFAULT_ROW_GROUP_CACHE_SIZE_BYTES,
     ) -> None:
         """Create a virtual manifest provider from already resolved bindings.
 
@@ -97,10 +99,22 @@ class ManifestStorageProvider(BaseStorageProvider):
         :param max_workers: Maximum number of touched chunks fetched concurrently.
         :param config_dict: Provider configuration used by telemetry and diagnostics.
         :param telemetry_provider: Optional telemetry factory.
+        :param manifest_row_group_cache_size_bytes: Maximum retained decoded Parquet row-group bytes. Defaults to
+            64 MiB; zero disables row-group retention.
         """
         manifest_path = _validate_manifest_path(manifest_path)
         if not isinstance(max_workers, int) or isinstance(max_workers, bool) or max_workers < 1:
             raise ValueError("max_workers must be a positive integer.")
+        if (
+            not isinstance(manifest_row_group_cache_size_bytes, int)
+            or isinstance(manifest_row_group_cache_size_bytes, bool)
+            or manifest_row_group_cache_size_bytes < 0
+            or manifest_row_group_cache_size_bytes > MAX_ROW_GROUP_CACHE_SIZE_BYTES
+        ):
+            raise ValueError(
+                "manifest_row_group_cache_size_bytes must be an integer from 0 through "
+                f"{MAX_ROW_GROUP_CACHE_SIZE_BYTES}."
+            )
         for operation in ("info", "read"):
             if not reader_operation_is_callable(manifest_reader, operation):
                 raise ValueError(f"manifest_reader must provide a callable {operation} method.")
@@ -119,16 +133,21 @@ class ManifestStorageProvider(BaseStorageProvider):
                 raise IOError(f"Manifest range expected {size} bytes but received {len(data)} bytes.")
             return data
 
-        with RemoteFileReader(
-            manifest_path,
-            manifest_size,
-            read_range=read_manifest_range,
-        ) as stream:
-            files = load_virtual_manifest(
-                cast(IO[bytes], stream),
-                resolved_source_bindings,
-                resolved_service_bindings,
-            )
+        @contextmanager
+        def open_manifest_stream() -> Iterator[IO[bytes]]:
+            with RemoteFileReader(
+                manifest_path,
+                manifest_size,
+                read_range=read_manifest_range,
+            ) as stream:
+                yield cast(IO[bytes], stream)
+
+        catalog = PyArrowManifestCatalog(
+            open_manifest_stream,
+            resolved_source_bindings,
+            resolved_service_bindings,
+            manifest_row_group_cache_size_bytes,
+        )
 
         super().__init__(
             base_path="/",
@@ -141,20 +160,11 @@ class ManifestStorageProvider(BaseStorageProvider):
         self._source_bindings = resolved_source_bindings
         self._service_bindings = resolved_service_bindings
         self._max_workers = max_workers
+        self._manifest_row_group_cache_size_bytes = manifest_row_group_cache_size_bytes
         self._read_executor: Optional[ThreadPoolExecutor] = None
         self._read_executor_lock = threading.Lock()
         self._closed = False
-        self._files = MappingProxyType(dict(files))
-        self._sorted_keys = tuple(sorted(files))
-        directory_last_modified: dict[str, datetime] = {}
-        for file in files.values():
-            segments = file.key.split("/")
-            for depth in range(1, len(segments)):
-                directory = "/".join(segments[:depth])
-                previous = directory_last_modified.get(directory)
-                if previous is None or file.last_modified > previous:
-                    directory_last_modified[directory] = file.last_modified
-        self._directory_last_modified = MappingProxyType(directory_last_modified)
+        self._catalog = catalog
 
     @property
     def default_read_prefetch(self) -> Optional[bool]:
@@ -179,18 +189,15 @@ class ManifestStorageProvider(BaseStorageProvider):
     def _get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
         self._ensure_open()
         file = self._file(path)
+        return self._read_file(file, byte_range)
+
+    def _read_file(self, file: ManifestFile, byte_range: Optional[Range] = None) -> bytes:
         plan = plan_download(file, byte_range)
         if not plan.reads:
             return b""
 
         reads = self._execution_reads(plan.reads)
         output = bytearray(plan.size_bytes)
-        if len(reads) == 1:
-            read = reads[0]
-            data = self._execute_read(read)
-            output[read.output_offset : read.output_offset + read.size_bytes] = data
-            return bytes(output)
-
         pending: dict[Future[bytes], _ExecutionRead] = {}
         read_iterator = iter(reads)
         for _ in range(min(self._max_workers, len(reads))):
@@ -259,6 +266,9 @@ class ManifestStorageProvider(BaseStorageProvider):
             self._read_executor = None
             if executor is not None:
                 executor.shutdown(wait=False, cancel_futures=True)
+        catalog = getattr(self, "_catalog", None)
+        if catalog is not None:
+            catalog.close()
 
     def __del__(self) -> None:
         try:
@@ -277,14 +287,17 @@ class ManifestStorageProvider(BaseStorageProvider):
 
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         key = self._logical_path(path)
-        file = self._files.get(key)
-        if file is not None:
-            return self._metadata(file)
+        if key and not key.endswith("/"):
+            try:
+                return self._metadata(self._catalog.get_file(key))
+            except FileNotFoundError:
+                pass
 
-        directory_last_modified = self._directory_last_modified.get(key.rstrip("/"))
-        if directory_last_modified is not None and key:
-            return self._directory_metadata(key.rstrip("/"), directory_last_modified)
-        raise FileNotFoundError(key)
+        directory_key = key.rstrip("/")
+        directory_last_modified = self._catalog.directory_last_modified(directory_key)
+        if directory_last_modified is None or not directory_key:
+            raise FileNotFoundError(key)
+        return self._directory_metadata(directory_key, directory_last_modified)
 
     def _list_objects(
         self,
@@ -301,63 +314,115 @@ class ManifestStorageProvider(BaseStorageProvider):
         end_key = self._logical_path(end_at) if end_at is not None else None
 
         if not logical_path.endswith("/"):
-            exact_file = self._files.get(prefix_key)
+            try:
+                exact_file = self._catalog.get_file(prefix_key)
+            except FileNotFoundError:
+                exact_file = None
             if exact_file is not None:
                 if (start_key is None or prefix_key > start_key) and (end_key is None or prefix_key <= end_key):
                     yield self._metadata(exact_file)
                 return
 
         if not include_directories:
-            index = bisect_left(self._sorted_keys, prefix)
-            while index < len(self._sorted_keys):
-                key = self._sorted_keys[index]
-                if not key.startswith(prefix):
-                    break
-                if start_key is not None and key <= start_key:
-                    index += 1
-                    continue
-                if end_key is not None and key > end_key:
-                    break
-                yield self._metadata(self._files[key])
-                index += 1
+            for file in self._catalog.iter_files(prefix=prefix, start_after=start_key, end_at=end_key):
+                yield self._metadata(file)
             return
 
-        emitted_entries: set[str] = set()
-        index = bisect_left(self._sorted_keys, prefix)
-        while index < len(self._sorted_keys):
-            key = self._sorted_keys[index]
-            if not key.startswith(prefix):
-                break
-            remainder = key[len(prefix) :]
-            if "/" not in remainder:
-                entry_key = key
-                entry = self._metadata(self._files[key])
-                index += 1
-            else:
-                entry_key = prefix + remainder.split("/", 1)[0]
-                entry = self._directory_metadata(
-                    entry_key,
-                    self._directory_last_modified[entry_key],
-                )
-                index = bisect_left(self._sorted_keys, self._prefix_successor(f"{entry_key}/"), index + 1)
+        current_entry_key: Optional[str] = None
+        current_entry_predecessor_key: Optional[str] = None
+        previous_file_key: Optional[str] = None
+        direct_file: Optional[ManifestFile] = None
+        descendant_last_modified: Optional[datetime] = None
 
-            if entry_key in emitted_entries:
-                continue
-            emitted_entries.add(entry_key)
-            if start_key is not None and entry_key <= start_key:
-                continue
-            if end_key is not None and entry_key > end_key:
-                break
-            yield entry
+        def current_entry() -> Optional[ObjectMetadata]:
+            if current_entry_key is None:
+                return None
+            if direct_file is not None:
+                return self._metadata(direct_file)
+            if descendant_last_modified is None:
+                return None
+            if self._directory_has_prior_shallow_entry(current_entry_key, current_entry_predecessor_key):
+                return None
+            return self._directory_metadata(current_entry_key, descendant_last_modified)
+
+        for file in self._catalog.iter_files(prefix=prefix):
+            remainder = file.key[len(prefix) :]
+            segment, separator, _ = remainder.partition("/")
+            entry_key = f"{prefix}{segment}"
+            if current_entry_key is not None and entry_key != current_entry_key:
+                entry = current_entry()
+                if end_key is not None and current_entry_key > end_key:
+                    return
+                if entry is not None and (start_key is None or current_entry_key > start_key):
+                    yield entry
+                direct_file = None
+                descendant_last_modified = None
+                current_entry_key = None
+
+            if current_entry_key is None:
+                current_entry_key = entry_key
+                current_entry_predecessor_key = previous_file_key
+                for directory_key, directory_last_modified in self._preempted_directories(prefix, entry_key, file.key):
+                    if start_key is not None and directory_key <= start_key:
+                        continue
+                    if end_key is not None and directory_key > end_key:
+                        return
+                    yield self._directory_metadata(directory_key, directory_last_modified)
+            if not separator:
+                direct_file = file
+            elif descendant_last_modified is None or file.last_modified > descendant_last_modified:
+                descendant_last_modified = file.last_modified
+            previous_file_key = file.key
+
+        entry = current_entry()
+        if current_entry_key is not None and (end_key is None or current_entry_key <= end_key):
+            if entry is not None and (start_key is None or current_entry_key > start_key):
+                yield entry
 
     @staticmethod
-    def _prefix_successor(prefix: str) -> str:
-        """Return the first lexical string strictly after every key beginning with ``prefix``."""
-        for index in range(len(prefix) - 1, -1, -1):
-            codepoint = ord(prefix[index])
-            if codepoint < 0x10FFFF:
-                return prefix[:index] + chr(codepoint + 1)
-        return prefix + "\x00"
+    def _directory_has_prior_shallow_entry(directory_key: str, predecessor_key: Optional[str]) -> bool:
+        """Return whether an exact file or a prior punctuation sibling takes this directory's shallow slot."""
+        if predecessor_key is None or not predecessor_key.startswith(directory_key):
+            return False
+        suffix = predecessor_key[len(directory_key) :]
+        return not suffix or suffix[0] < "/"
+
+    def _preempted_directories(
+        self,
+        prefix: str,
+        entry_key: str,
+        source_key: str,
+    ) -> Iterator[tuple[str, datetime]]:
+        """Yield implicit directories whose punctuation siblings physically sort before their descendants."""
+        segment = entry_key[len(prefix) :]
+        for index in range(1, len(segment)):
+            if segment[index] >= "/":
+                continue
+            directory_key = f"{prefix}{segment[:index]}"
+            if not self._catalog.may_contain_descendants(directory_key):
+                continue
+            if self._first_preempting_sibling(directory_key) != source_key:
+                continue
+            directory_last_modified = self._catalog.directory_last_modified(directory_key)
+            if directory_last_modified is not None:
+                yield directory_key, directory_last_modified
+
+    def _first_preempting_sibling(self, directory_key: str) -> Optional[str]:
+        """Return the first physical file that would force one directory ahead of a shallow sibling."""
+        files = self._catalog.iter_files(prefix=directory_key)
+        try:
+            try:
+                first = next(files)
+            except StopIteration:
+                return None
+            suffix = first.key[len(directory_key) :]
+            if not suffix or suffix.startswith("/") or suffix[0] >= "/":
+                return None
+            return first.key
+        finally:
+            close = getattr(files, "close", None)
+            if callable(close):
+                close()
 
     def _upload_file(
         self,
@@ -413,10 +478,7 @@ class ManifestStorageProvider(BaseStorageProvider):
 
     def _file(self, path: str) -> ManifestFile:
         key = self._logical_path(path)
-        try:
-            return self._files[key]
-        except KeyError as exc:
-            raise FileNotFoundError(key) from exc
+        return self._catalog.get_file(key)
 
     @staticmethod
     def _metadata(file: ManifestFile) -> ObjectMetadata:
@@ -511,7 +573,7 @@ class ManifestStorageProvider(BaseStorageProvider):
         offset = 0
         while offset < file.size_bytes:
             size = min(_DOWNLOAD_WINDOW_SIZE, file.size_bytes - offset)
-            data = self._get_object(file.key, Range(offset=offset, size=size))
+            data = self._read_file(file, Range(offset=offset, size=size))
             _write_all(writer, data)
             offset += size
 

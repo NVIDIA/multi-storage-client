@@ -23,7 +23,7 @@ import threading
 import time
 import unicodedata
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import datetime
 from typing import Any, NoReturn, Optional, Union
 
@@ -33,10 +33,20 @@ from filelock import BaseFileLock, FileLock, Timeout
 from .caching.cache_config import CacheConfig
 from .caching.cache_item import CacheItem
 from .caching.eviction_policy import FIFO, LRU, MRU, NO_EVICTION, RANDOM, EvictionPolicyFactory
-from .types import Range, SourceVersionCheckMode
+from .types import Range, RetryableError, SourceVersionCheckMode
 from .utils import safe_makedirs
 
 DEFAULT_CACHE_SIZE = "10G"
+
+
+class _SourceReadError(Exception):
+    """Carry a source exception through cache-local fallback boundaries."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__(str(error))
+        self.error = error
+
+
 DEFAULT_CACHE_SIZE_MB = "10000"
 DEFAULT_CACHE_REFRESH_INTERVAL = 300  # 5 minutes
 DEFAULT_LOCK_TIMEOUT = 600  # 10 minutes
@@ -290,7 +300,7 @@ class CacheManager:
         """
         abs_path = self._resolve_profile_cache_delete_path(file_path)
         with self._cache_refresh_lock_file:
-            self._delete_cache_file_at_path(abs_path, self._cache_identity(file_path))
+            self._delete_cache_file_at_path(abs_path, self._cache_identity(file_path), legacy_key=file_path)
 
     def _resolve_profile_cache_delete_path(self, file_path: str) -> str:
         """Resolve a profile-relative delete path and ensure it stays within the profile cache root."""
@@ -311,11 +321,18 @@ class CacheManager:
 
         return abs_path
 
-    def _delete_cache_file_at_path(self, abs_path: str, expected_identity: Optional[str] = None) -> None:
+    def _delete_cache_file_at_path(
+        self,
+        abs_path: str,
+        expected_identity: Optional[str] = None,
+        *,
+        legacy_key: Optional[str] = None,
+    ) -> None:
         """Delete a cached file and its sibling lock file using an absolute cache path."""
         is_range_cache_file = self._is_range_cache_path(abs_path)
         published_identity: Optional[str] = None
         descriptor_marker_path: Optional[str] = None
+        legacy_owned = False
         if not is_range_cache_file:
             try:
                 with open(abs_path, "rb") as cached_file:
@@ -327,12 +344,17 @@ class CacheManager:
                         cached_file.fileno(),
                         allow_descriptor_size_mismatch=expected_identity is None,
                     )
+                    legacy_owned = (
+                        descriptor_identity is None
+                        and legacy_key is not None
+                        and self._legacy_cache_path_has_exact_native_ownership(legacy_key, cached_file.fileno())
+                    )
             except FileNotFoundError:
                 descriptor_identity = None
             except OSError:
                 descriptor_identity = _INVALID_CACHE_IDENTITY
 
-            if expected_identity is not None and descriptor_identity not in (None, expected_identity):
+            if expected_identity is not None and descriptor_identity != expected_identity and not legacy_owned:
                 self._invalidate_chunks(abs_path, expected_identity, infer_cache_identity=False)
                 return
             if isinstance(descriptor_identity, str):
@@ -521,6 +543,27 @@ class CacheManager:
             raise ValueError(f"Cache key escapes the profile cache root: {key}") from exc
         return cache_path
 
+    def _legacy_cache_path_has_exact_native_ownership(self, key: str, file_descriptor: int) -> bool:
+        """Return whether a legacy descriptor has this request's exact native path spelling."""
+        components = (self._profile, *self._logical_cache_key(key).split(os.sep))
+        parent = self._cache_dir
+        try:
+            descriptor_stat = os.fstat(file_descriptor)
+            for index, component in enumerate(components):
+                with os.scandir(parent) as entries:
+                    entry = next((candidate for candidate in entries if candidate.name == component), None)
+                if entry is None or entry.is_symlink():
+                    return False
+                entry_stat = entry.stat(follow_symlinks=False)
+                if index == len(components) - 1:
+                    return os.path.samestat(entry_stat, descriptor_stat)
+                if not stat.S_ISDIR(entry_stat.st_mode):
+                    return False
+                parent = os.path.join(parent, component)
+        except OSError:
+            return False
+        return False
+
     def read(
         self,
         key: str,
@@ -529,6 +572,7 @@ class CacheManager:
         storage_provider: Optional[Any] = None,
         source_size: Optional[int] = None,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
+        source_size_resolver: Optional[Callable[[], int]] = None,
     ) -> Optional[bytes]:
         """Read the contents of a file from the cache if it exists.
 
@@ -542,6 +586,7 @@ class CacheManager:
         :param storage_provider: Storage provider required for range reads
         :param source_size: Optional size of the source object in bytes
         :param check_source_version: Source-version policy for full-file cache validation
+        :param source_size_resolver: Optional lazy source-size lookup used only when a range-cache miss needs fetching
         :return: The file contents as bytes, or None if not found in cache
         """
         # If this is a range read, check for full cached file first
@@ -563,6 +608,7 @@ class CacheManager:
                 effective_source_version,
                 cache_identity=cache_identity,
                 require_source_version=validate_source_version,
+                legacy_key=key,
             )
             if range_data is not None:
                 return range_data
@@ -577,6 +623,7 @@ class CacheManager:
                 key,
                 cache_identity=cache_identity,
                 require_source_version=validate_source_version,
+                source_size_resolver=source_size_resolver,
             )
 
         # Full-file cached read (existing behavior)
@@ -663,7 +710,7 @@ class CacheManager:
                 cache_identity=cache_identity,
             )
             with self._cache_refresh_lock_file:
-                if self._cache_path_is_bound_to_other_identity(file_path, cache_identity):
+                if self._cache_path_is_bound_to_other_identity(file_path, cache_identity, key):
                     return
                 marker_paths = (
                     () if metadata_in_xattrs else self._mark_full_cache_publication(file_path, temporary_path)
@@ -719,14 +766,16 @@ class CacheManager:
                 with open(file_path, "rb") as cached_file:
                     if self._full_cache_publication_in_progress(file_path, cached_file.fileno()):
                         return False
+                    requires_source_version_check = self._requires_source_version_check(check_source_version)
                     if not self._descriptor_matches_cache_identity(
                         file_path,
                         cached_file.fileno(),
                         self._cache_identity(key),
+                        legacy_key=key,
                     ):
                         return False
-                    # If etag checking is disabled, a matching identity is sufficient.
-                    if not self._requires_source_version_check(check_source_version):
+                    # With source checks disabled, an identity-bound entry is sufficient.
+                    if not requires_source_version_check:
                         return True
                     # Verify source revision against xattrs or an identity-bound sidecar.
                     if not self._has_source_version(source_version):
@@ -777,10 +826,16 @@ class CacheManager:
         file_path: str,
         file_descriptor: int,
         expected_identity: str,
+        *,
+        legacy_key: Optional[str] = None,
     ) -> bool:
-        """Return whether a published identity matches, accepting metadata-free legacy entries."""
+        """Return whether a published identity matches or a legacy path has exact native ownership."""
         stored_identity = self._descriptor_cache_identity(file_path, file_descriptor)
-        return stored_identity is None or (isinstance(stored_identity, str) and stored_identity == expected_identity)
+        if stored_identity is None:
+            return legacy_key is not None and self._legacy_cache_path_has_exact_native_ownership(
+                legacy_key, file_descriptor
+            )
+        return isinstance(stored_identity, str) and stored_identity == expected_identity
 
     def _descriptor_cache_identity(
         self,
@@ -813,11 +868,21 @@ class CacheManager:
         stored_identity = metadata[_CACHE_IDENTITY_METADATA_NAME]
         return stored_identity if isinstance(stored_identity, str) else _INVALID_CACHE_IDENTITY
 
-    def _cache_path_is_bound_to_other_identity(self, file_path: str, expected_identity: str) -> bool:
+    def _cache_path_is_bound_to_other_identity(
+        self,
+        file_path: str,
+        expected_identity: str,
+        key: str,
+    ) -> bool:
         """Conservatively detect an existing full-cache entry belonging to another logical identity."""
         try:
             with open(file_path, "rb") as cached_file:
-                return not self._descriptor_matches_cache_identity(file_path, cached_file.fileno(), expected_identity)
+                return not self._descriptor_matches_cache_identity(
+                    file_path,
+                    cached_file.fileno(),
+                    expected_identity,
+                    legacy_key=key,
+                )
         except FileNotFoundError:
             return False
         except OSError:
@@ -873,12 +938,17 @@ class CacheManager:
         try:
             if self._full_cache_publication_in_progress(file_path, cached_file.fileno()):
                 return None
-            if not self._descriptor_matches_cache_identity(file_path, cached_file.fileno(), self._cache_identity(key)):
+            requires_source_version_check = self._requires_source_version_check(check_source_version)
+            if not self._descriptor_matches_cache_identity(
+                file_path,
+                cached_file.fileno(),
+                self._cache_identity(key),
+                legacy_key=key,
+            ):
                 return None
             expected_size = self._validated_descriptor_size(file_path, cached_file.fileno())
             if expected_size is None:
                 return None
-            requires_source_version_check = self._requires_source_version_check(check_source_version)
             if requires_source_version_check and not self._descriptor_matches_source_version(
                 file_path, cached_file.fileno(), source_version
             ):
@@ -1179,6 +1249,48 @@ class CacheManager:
         except OSError:
             pass
 
+    def _cached_range_object_size(
+        self,
+        cache_path: str,
+        cache_line_size: int,
+        source_version: Optional[str],
+        *,
+        cache_identity: Optional[str] = None,
+        require_source_version: bool,
+    ) -> Optional[int]:
+        """Return the object size recorded by a valid cached range chunk, if available."""
+        entry_dir = self._get_range_cache_entry_dir(cache_path, cache_identity)
+        try:
+            with os.scandir(entry_dir) as entries:
+                for entry in entries:
+                    chunk_suffix = entry.name.removeprefix("chunk-")
+                    if chunk_suffix == entry.name or not chunk_suffix.isdigit():
+                        continue
+                    try:
+                        if not entry.is_file(follow_symlinks=False):
+                            continue
+                        with open(entry.path, "rb") as chunk_file:
+                            if not self._is_chunk_valid(
+                                entry.path,
+                                source_version,
+                                cache_line_size,
+                                remove_invalid=False,
+                                require_source_version=require_source_version,
+                                file_descriptor=chunk_file.fileno(),
+                            ):
+                                continue
+                            object_size = self._get_chunk_object_size(
+                                entry.path,
+                                file_descriptor=chunk_file.fileno(),
+                            )
+                    except OSError:
+                        continue
+                    if object_size is not None and object_size >= 0:
+                        return object_size
+        except OSError:
+            pass
+        return None
+
     def _download_missing_chunks(
         self,
         cache_path: str,
@@ -1192,11 +1304,51 @@ class CacheManager:
         *,
         cache_identity: Optional[str] = None,
         require_source_version: bool,
-    ) -> None:
+        source_size_resolver: Optional[Callable[[], int]] = None,
+        request_offset: Optional[int] = None,
+    ) -> Optional[int]:
         """Download all missing chunks for a given range with optimized performance."""
 
-        # Identify which chunks need to be downloaded
-        chunks_to_download = self._identify_missing_chunks(
+        if source_size is None:
+            source_size = self._cached_range_object_size(
+                cache_path,
+                configured_cache_line_size,
+                source_version,
+                cache_identity=cache_identity,
+                require_source_version=require_source_version,
+            )
+
+        if source_size is None and source_size_resolver is not None:
+            first_missing_chunk = next(
+                self._identify_missing_chunks(
+                    cache_path,
+                    start_chunk,
+                    end_chunk,
+                    configured_cache_line_size,
+                    source_version,
+                    cache_identity=cache_identity,
+                    require_source_version=require_source_version,
+                ),
+                None,
+            )
+            if first_missing_chunk is None:
+                return None
+            source_size = source_size_resolver()
+
+        if source_size is not None:
+            set_source_size = getattr(storage_provider, "set_source_size", None)
+            if callable(set_source_size):
+                set_source_size(source_size)
+            if source_size <= 0:
+                return source_size
+            if request_offset is not None and request_offset >= source_size:
+                return source_size
+            end_chunk = min(end_chunk, (source_size - 1) // configured_cache_line_size)
+            if start_chunk > end_chunk:
+                return source_size
+
+        # Download missing chunks with minimal locking.
+        for chunk_idx in self._identify_missing_chunks(
             cache_path,
             start_chunk,
             end_chunk,
@@ -1204,10 +1356,7 @@ class CacheManager:
             source_version,
             cache_identity=cache_identity,
             require_source_version=require_source_version,
-        )
-
-        # Download missing chunks with minimal locking
-        for chunk_idx in chunks_to_download:
+        ):
             self._download_single_chunk(
                 cache_path,
                 original_key,
@@ -1219,6 +1368,7 @@ class CacheManager:
                 cache_identity=cache_identity,
                 require_source_version=require_source_version,
             )
+        return source_size
 
     def _identify_missing_chunks(
         self,
@@ -1230,10 +1380,8 @@ class CacheManager:
         *,
         cache_identity: Optional[str] = None,
         require_source_version: bool,
-    ) -> list[int]:
-        """Identify which chunks are missing or invalid."""
-        chunks_to_download = []
-
+    ) -> Iterator[int]:
+        """Yield chunks that are missing or invalid without materializing the request span."""
         for chunk_idx in range(start_chunk, end_chunk + 1):
             chunk_path = self._get_chunk_path(cache_path, chunk_idx, cache_identity)
 
@@ -1244,9 +1392,7 @@ class CacheManager:
                 remove_invalid=False,
                 require_source_version=require_source_version,
             ):
-                chunks_to_download.append(chunk_idx)
-
-        return chunks_to_download
+                yield chunk_idx
 
     def _is_chunk_valid(
         self,
@@ -1815,6 +1961,7 @@ class CacheManager:
         *,
         cache_identity: Optional[str] = None,
         require_source_version: bool = False,
+        legacy_key: Optional[str] = None,
     ) -> bytes:
         """Assemble the requested byte range from locally cached chunks.
 
@@ -1862,6 +2009,7 @@ class CacheManager:
                             cache_path,
                             file_descriptor,
                             cache_identity,
+                            legacy_key=legacy_key,
                         )
                     ):
                         raise IOError(f"Chunk file {actual_path} belongs to another logical cache identity")
@@ -1970,6 +2118,7 @@ class CacheManager:
         *,
         cache_identity: str,
         require_source_version: bool = False,
+        legacy_key: Optional[str] = None,
     ) -> Optional[bytes]:
         """Read a byte range from a full cached file if it exists and is valid.
 
@@ -1989,7 +2138,12 @@ class CacheManager:
                 file_descriptor = cached_file.fileno()
                 if self._full_cache_publication_in_progress(cache_path, file_descriptor):
                     return None
-                if not self._descriptor_matches_cache_identity(cache_path, file_descriptor, cache_identity):
+                if not self._descriptor_matches_cache_identity(
+                    cache_path,
+                    file_descriptor,
+                    cache_identity,
+                    legacy_key=legacy_key,
+                ):
                     return None
                 expected_size = self._validated_descriptor_size(cache_path, file_descriptor)
                 if expected_size is None:
@@ -2026,6 +2180,7 @@ class CacheManager:
         *,
         cache_identity: Optional[str] = None,
         require_source_version: bool,
+        source_size_resolver: Optional[Callable[[], int]] = None,
     ) -> bytes:
         """Read a byte range using optimized chunk-based caching.
 
@@ -2049,6 +2204,8 @@ class CacheManager:
         )  # Type checker knows this is not None due to range_cache_enabled check
         if configured_cache_line_size is None:
             raise RuntimeError("Cache line size is not configured")
+        if byte_range.size == 0:
+            return b""
 
         # Calculate needed chunks
         start_chunk = byte_range.offset // configured_cache_line_size
@@ -2056,7 +2213,7 @@ class CacheManager:
 
         try:
             # Step 1: Download all missing chunks (optimized)
-            self._download_missing_chunks(
+            source_size = self._download_missing_chunks(
                 cache_path,
                 original_key,
                 start_chunk,
@@ -2067,7 +2224,16 @@ class CacheManager:
                 source_size,
                 cache_identity=cache_identity,
                 require_source_version=require_source_version,
+                source_size_resolver=source_size_resolver,
+                request_offset=byte_range.offset,
             )
+
+            if source_size is not None:
+                remaining = source_size - byte_range.offset
+                if remaining <= 0:
+                    return b""
+                byte_range = Range(offset=byte_range.offset, size=min(byte_range.size, remaining))
+                end_chunk = (byte_range.offset + byte_range.size - 1) // configured_cache_line_size
 
             # Step 2: Assemble result from cached chunks (streaming)
             return self._assemble_result_from_chunks(
@@ -2079,7 +2245,12 @@ class CacheManager:
                 source_version,
                 cache_identity=cache_identity,
                 require_source_version=require_source_version,
+                legacy_key=original_key,
             )
+        except _SourceReadError:
+            raise
+        except RetryableError:
+            raise
         except Exception as e:
             # If any step fails, fall back to getting the object directly
             logging.warning(f"Failed to process chunks for {original_key}: {e}")

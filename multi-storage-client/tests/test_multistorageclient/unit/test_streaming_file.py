@@ -222,6 +222,28 @@ def test_prefetch_falls_back_to_an_uncached_stream_after_a_post_set_cache_miss(t
     stream.close()
 
 
+def test_prefetch_cleans_a_rejected_cache_temp_path_before_uncached_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_config = CacheConfig(size="10M", cache_line_size="1M", check_source_version=False, location=str(tmp_path))
+    owner = CacheManager(profile="owner", cache_config=cache_config)
+    alias = CacheManager(profile="alias", cache_config=cache_config)
+    owner_key = "virtual/data.bin"
+    alias_key = "virtual/alias.bin"
+    owner.set(owner_key, b"owner data")
+    owner_path = owner._get_cache_file_path(owner_key)
+    monkeypatch.setattr(alias, "_get_cache_file_path", lambda _key: owner_path)
+    storage_client = _RangeStorageClient(b"alias data", cache_manager=alias)
+    stream = _object_file(storage_client, alias_key, mode="rb", prefetch_file=True)
+
+    assert stream.read() == b"alias data"
+    assert owner.read(owner_key, check_source_version=SourceVersionCheckMode.DISABLE) == b"owner data"
+    assert storage_client.uncached_range_requests
+    assert list(Path(alias._cache_temp_dir).iterdir()) == []
+    stream.close()
+
+
 def test_prefetch_reuses_portable_full_cache_metadata_without_xattrs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -635,6 +657,6 @@ def test_text_object_file_materializes_original_bytes_without_newline_translatio
 
     assert Path(materialized_path).read_bytes() == content
     assert stream.tell() == position
-    assert storage_client.download_calls == 1
+    assert storage_client.download_calls == 0
 
     stream.close()

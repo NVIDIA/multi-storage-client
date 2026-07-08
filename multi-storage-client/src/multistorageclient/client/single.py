@@ -18,13 +18,14 @@ import contextlib
 import logging
 import os
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import PurePosixPath
 from typing import IO, Any, Optional, Union, cast
 
+from ..cache import _SourceReadError
 from ..config import StorageClientConfig
 from ..constants import DEFAULT_SYNC_BATCH_SIZE, MEMORY_LOAD_LIMIT
 from ..file import ObjectFile, PosixFile
@@ -41,6 +42,7 @@ from ..types import (
     Range,
     Replica,
     ResolvedPathState,
+    RetryableError,
     SignerType,
     SourceVersionCheckMode,
     StorageProvider,
@@ -51,6 +53,87 @@ from ..utils import NullStorageClient, PatternMatcher, join_paths
 from .types import AbstractStorageClient
 
 logger = logging.getLogger(__name__)
+
+
+class _RangeSessionStorageProvider:
+    """Adapt one bounded range session to the cache's storage-provider interface."""
+
+    def __init__(
+        self,
+        remote_path: str,
+        range_reader: Callable[[int, int], bytes],
+        source_size: Optional[int],
+        source_size_reader: Callable[[], int],
+    ) -> None:
+        self._remote_path = remote_path
+        self._range_reader = range_reader
+        self._source_size = source_size
+        self._source_size_reader = source_size_reader
+
+    def source_size(self) -> int:
+        """Resolve the primary object's size only if a cache miss needs it."""
+        if self._source_size is None:
+            try:
+                self._source_size = self._source_size_reader()
+            except RetryableError:
+                raise
+            except Exception as error:
+                raise _SourceReadError(error) from error
+        return self._source_size
+
+    def set_source_size(self, source_size: int) -> None:
+        """Seed the range session with a size recovered from cached chunk metadata."""
+        self._source_size = source_size
+
+    def get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
+        """Read one cache-requested bounded range without allowing full-object fallback."""
+        if path != self._remote_path:
+            raise ValueError(f"Range session path mismatch: expected {self._remote_path}, got {path}.")
+        if byte_range is None:
+            raise ValueError("A range session cannot fetch an unbounded object.")
+
+        source_size = self.source_size()
+        remaining = source_size - byte_range.offset
+        if remaining <= 0 or byte_range.size == 0:
+            return b""
+        try:
+            return self._range_reader(byte_range.offset, min(byte_range.size, remaining))
+        except RetryableError:
+            raise
+        except Exception as error:
+            raise _SourceReadError(error) from error
+
+
+class _DirectRangeReadSession:
+    """Retain one resolved source and range reader through a direct read's retries."""
+
+    def __init__(self, storage_client: Any, path: str) -> None:
+        self._storage_client = storage_client
+        self._unresolved_path = path
+        self._resolved_path: Optional[str] = None
+        self._range_reader: Optional[Callable[[int, int], bytes]] = None
+
+    @property
+    def path(self) -> str:
+        """Resolve the logical path once, retrying resolution through the outer read boundary when needed."""
+        if self._resolved_path is None:
+            if self._storage_client._metadata_provider:
+                self._resolved_path = self._storage_client._resolve_read_path(self._unresolved_path)
+            else:
+                self._resolved_path = self._unresolved_path
+        assert self._resolved_path is not None
+        return self._resolved_path
+
+    @property
+    def range_reader(self) -> Callable[[int, int], bytes]:
+        """Create one direct-read range source without adding an inner retry loop."""
+        if self._range_reader is None:
+            if self._storage_client._replica_manager:
+                self._range_reader = self._storage_client._replica_range_reader(self.path, retry_primary=False)
+            else:
+                self._range_reader = self._storage_client._primary_range_reader(self.path, retry_primary=False)
+        assert self._range_reader is not None
+        return self._range_reader
 
 
 class SingleStorageClient(AbstractStorageClient):
@@ -178,15 +261,180 @@ class SingleStorageClient(AbstractStorageClient):
         """
         return getattr(self._storage_provider, "_rust_client", None) is not None
 
-    def _read_from_replica_or_primary(self, path: str) -> bytes:
+    def _read_primary_range_once(self, path: str, byte_range: Range) -> bytes:
+        """Read one bounded range from the configured primary without retrying."""
+        return self._storage_provider.get_object(path, byte_range=byte_range)
+
+    @retry
+    def _read_primary_range(self, path: str, byte_range: Range) -> bytes:
+        """Read one bounded range from the configured primary with retry support."""
+        return self._read_primary_range_once(path, byte_range)
+
+    def _primary_range_reader(self, path: str, *, retry_primary: bool = True) -> Callable[[int, int], bytes]:
+        """Create a primary range reader with an explicit retry boundary."""
+        if retry_primary:
+            return lambda offset, size: self._read_primary_range(path, Range(offset=offset, size=size))
+        return lambda offset, size: self._read_primary_range_once(path, Range(offset=offset, size=size))
+
+    def _read_from_replica_or_primary(
+        self,
+        path: str,
+        byte_range: Optional[Range] = None,
+        *,
+        retry_primary: bool = True,
+    ) -> bytes:
         """
         Read from replica or primary storage provider. Use BytesIO to avoid creating temporary files.
         """
         if self._replica_manager is None:
             raise RuntimeError("Replica manager is not initialized")
+        if byte_range is not None:
+            return self._read_replica_range_with_eof_clipping(
+                path,
+                byte_range,
+                self._replica_range_reader(path, retry_primary=retry_primary),
+            )
         file_obj = BytesIO()
         self._replica_manager.download_from_replica_or_primary(path, file_obj, self._storage_provider)
         return file_obj.getvalue()
+
+    def _replica_range_reader(self, path: str, *, retry_primary: bool = True) -> Callable[[int, int], bytes]:
+        """Create one replica-aware range reader for an already-resolved object path."""
+        if self._replica_manager is None:
+            raise RuntimeError("Replica manager is not initialized")
+        return self._replica_manager.range_reader_from_replica_or_primary(
+            path,
+            self._storage_provider,
+            primary_range_reader=self._primary_range_reader(path, retry_primary=retry_primary),
+        )
+
+    def _streaming_replica_range_reader(self, path: str) -> Callable[[int, int], bytes]:
+        """Resolve a streaming path before creating its replica-aware range reader."""
+        if self._metadata_provider:
+            path = self._resolve_read_path(path)
+        return self._replica_range_reader(path, retry_primary=True)
+
+    def _cache_aware_range_reader(
+        self,
+        path: str,
+        range_reader: Callable[[int, int], bytes],
+        source_size: Optional[int],
+        source_version: Optional[str],
+        check_source_version: SourceVersionCheckMode,
+    ) -> Callable[[int, int], bytes]:
+        """Wrap one pinned range reader with cache lookup and lazy primary-size discovery."""
+        cache_manager = self._cache_manager
+        if not self._is_cache_enabled() or cache_manager is None:
+            return range_reader
+
+        require_source_version = check_source_version == SourceVersionCheckMode.ENABLE or (
+            check_source_version == SourceVersionCheckMode.INHERIT and cache_manager.check_source_version()
+        )
+        if require_source_version and (not isinstance(source_version, str) or not source_version):
+            return range_reader
+        effective_source_version = source_version if require_source_version else None
+
+        range_source = _RangeSessionStorageProvider(
+            path,
+            range_reader,
+            source_size,
+            lambda: self._storage_provider.get_object_metadata(path).content_length,
+        )
+
+        def read_range(offset: int, size: int) -> bytes:
+            if size == 0:
+                return b""
+            try:
+                cached_data = cache_manager.read(
+                    key=path,
+                    source_version=effective_source_version,
+                    byte_range=Range(offset=offset, size=size),
+                    storage_provider=range_source,
+                    source_size=source_size,
+                    source_size_resolver=range_source.source_size,
+                    check_source_version=check_source_version,
+                )
+                if cached_data is not None:
+                    return cached_data
+            except _SourceReadError as error:
+                raise error.error
+            except RetryableError:
+                raise
+            except Exception:
+                pass
+            return range_reader(offset, size)
+
+        return read_range
+
+    def _read_replica_range_with_eof_clipping(
+        self,
+        path: str,
+        byte_range: Range,
+        range_reader: Callable[[int, int], bytes],
+    ) -> bytes:
+        """Retry an initially malformed range only when primary metadata proves it crossed EOF."""
+        try:
+            return range_reader(byte_range.offset, byte_range.size)
+        except IOError as error:
+            try:
+                source_size = self._storage_provider.get_object_metadata(path).content_length
+            except Exception:
+                raise error
+
+            clipped_size = max(min(byte_range.size, source_size - byte_range.offset), 0)
+            if clipped_size == byte_range.size:
+                raise error
+            if clipped_size == 0:
+                return b""
+            return range_reader(byte_range.offset, clipped_size)
+
+    def _read_range(
+        self,
+        path: str,
+        byte_range: Range,
+        check_source_version: SourceVersionCheckMode,
+        range_reader: Callable[[int, int], bytes],
+    ) -> bytes:
+        """Read a bounded range through the cache before selecting a replica or primary source."""
+
+        cache_manager = self._cache_manager
+        if not self._is_cache_enabled() or cache_manager is None:
+            if self._replica_manager:
+                return self._read_replica_range_with_eof_clipping(path, byte_range, range_reader)
+            return range_reader(byte_range.offset, byte_range.size)
+
+        source_size = None
+        source_version = None
+        require_source_version = check_source_version == SourceVersionCheckMode.ENABLE or (
+            check_source_version == SourceVersionCheckMode.INHERIT and cache_manager.check_source_version()
+        )
+        if require_source_version:
+            try:
+                metadata = self._storage_provider.get_object_metadata(path)
+            except Exception:
+                if self._replica_manager:
+                    return self._read_replica_range_with_eof_clipping(path, byte_range, range_reader)
+                return range_reader(byte_range.offset, byte_range.size)
+            source_size = metadata.content_length
+            source_version = metadata.etag
+
+        return self._cache_aware_range_reader(
+            path,
+            range_reader,
+            source_size,
+            source_version,
+            check_source_version,
+        )(byte_range.offset, byte_range.size)
+
+    @retry
+    def _read_range_with_retry(
+        self,
+        session: _DirectRangeReadSession,
+        byte_range: Range,
+        check_source_version: SourceVersionCheckMode,
+    ) -> bytes:
+        """Read one direct bounded range with a single outer retry boundary."""
+        return self._read_range(session.path, byte_range, check_source_version, session.range_reader)
 
     def __del__(self):
         if self._stop_event:
@@ -396,7 +644,6 @@ class SingleStorageClient(AbstractStorageClient):
             max_workers,
         )
 
-    @retry
     def read(
         self,
         path: str,
@@ -412,6 +659,21 @@ class SingleStorageClient(AbstractStorageClient):
         :return: The content of the object as bytes.
         :raises FileNotFoundError: If the file at the specified path does not exist.
         """
+        if byte_range is not None:
+            return self._read_range_with_retry(
+                _DirectRangeReadSession(self, path),
+                byte_range,
+                check_source_version,
+            )
+        return self._read_full(path, check_source_version)
+
+    @retry
+    def _read_full(
+        self,
+        path: str,
+        check_source_version: SourceVersionCheckMode,
+    ) -> bytes:
+        """Read one complete object through the configured cache and replica policy."""
         if self._metadata_provider:
             path = self._resolve_read_path(path)
 
@@ -420,80 +682,43 @@ class SingleStorageClient(AbstractStorageClient):
             require_source_version = check_source_version == SourceVersionCheckMode.ENABLE or (
                 check_source_version == SourceVersionCheckMode.INHERIT and self._cache_manager.check_source_version()
             )
-            if byte_range:
-                # Range request with cache
-                try:
-                    # Fetch metadata for source version checking (if needed)
-                    metadata = None
-                    source_version = None
-                    if require_source_version:
-                        metadata = self._storage_provider.get_object_metadata(path)
-                        source_version = metadata.etag
+            # Full file read with cache
+            # Only fetch source version if check_source_version is enabled
+            source_version = None
+            if require_source_version:
+                source_version = self._get_source_version(path)
 
-                    if require_source_version and (not isinstance(source_version, str) or not source_version):
-                        return self._storage_provider.get_object(path, byte_range=byte_range)
+            if require_source_version and (not isinstance(source_version, str) or not source_version):
+                if self._replica_manager:
+                    return self._read_from_replica_or_primary(path)
+                return self._storage_provider.get_object(path)
 
-                    # Optimization: For full-file reads (offset=0, size >= file_size), cache whole file instead of chunking
-                    # This avoids creating many small chunks when the user requests the entire file.
-                    # Only apply this optimization when metadata is already available (i.e., when version checking is enabled),
-                    # to respect the user's choice to disable version checking and avoid extra HEAD requests.
-                    if byte_range.offset == 0 and metadata and byte_range.size >= metadata.content_length:
-                        full_file_data = self._storage_provider.get_object(path)
-                        self._cache_manager.set(path, full_file_data, source_version)
-                        return full_file_data[: metadata.content_length]
-
-                    # Use chunk-based caching for partial reads or when optimization doesn't apply
-                    data = self._cache_manager.read(
-                        key=path,
-                        source_version=source_version,
-                        byte_range=byte_range,
-                        storage_provider=self._storage_provider,
-                        source_size=metadata.content_length if metadata else None,
-                        check_source_version=check_source_version,
-                    )
-                    if data is not None:
-                        return data
-                    # Fallback (should not normally happen)
-                    return self._storage_provider.get_object(path, byte_range=byte_range)
-                except (FileNotFoundError, Exception):
-                    # Fall back to direct read if metadata fetching fails
-                    return self._storage_provider.get_object(path, byte_range=byte_range)
-            else:
-                # Full file read with cache
-                # Only fetch source version if check_source_version is enabled
-                source_version = None
-                if require_source_version:
-                    source_version = self._get_source_version(path)
-
-                if require_source_version and (not isinstance(source_version, str) or not source_version):
-                    if self._replica_manager:
-                        return self._read_from_replica_or_primary(path)
-                    return self._storage_provider.get_object(path)
-
-                data = self._cache_manager.read(
-                    path,
-                    source_version,
-                    check_source_version=check_source_version,
-                )
-                if data is None:
-                    if self._replica_manager:
-                        data = self._read_from_replica_or_primary(path)
-                    else:
-                        data = self._storage_provider.get_object(path)
-                    self._cache_manager.set(path, data, source_version)
-                return data
+            data = self._cache_manager.read(
+                path,
+                source_version,
+                check_source_version=check_source_version,
+            )
+            if data is None:
+                if self._replica_manager:
+                    data = self._read_from_replica_or_primary(path)
+                else:
+                    data = self._storage_provider.get_object(path)
+                self._cache_manager.set(path, data, source_version)
+            return data
         elif self._replica_manager:
             # No cache, but replicas available
             return self._read_from_replica_or_primary(path)
         else:
             # No cache, no replicas - direct storage provider read
-            return self._storage_provider.get_object(path, byte_range=byte_range)
+            return self._storage_provider.get_object(path)
 
     @retry
     def _read_uncached(self, path: str, byte_range: Optional[Range] = None) -> bytes:
         """Read a logical path directly from its resolved provider without consulting the cache."""
         if self._metadata_provider:
             path = self._resolve_read_path(path)
+        if self._replica_manager:
+            return self._read_from_replica_or_primary(path, byte_range, retry_primary=False)
         return self._storage_provider.get_object(path, byte_range=byte_range)
 
     def info(self, path: str, strict: bool = True) -> ObjectMetadata:
@@ -995,6 +1220,9 @@ class SingleStorageClient(AbstractStorageClient):
                 attributes=attributes,
                 prefetch_file=effective_prefetch,
                 buffering=buffering,
+                range_reader_factory=(
+                    self._streaming_replica_range_reader if self._replica_manager is not None else None
+                ),
             )
 
     def get_posix_path(self, path: str) -> Optional[str]:

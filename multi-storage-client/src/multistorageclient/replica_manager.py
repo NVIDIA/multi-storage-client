@@ -18,11 +18,12 @@ import logging
 import os
 import tempfile
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO, StringIO
 from typing import IO, Union
 
-from .types import StorageProvider
+from .types import Range, RetryableError, StorageProvider
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,85 @@ class ReplicaManager:
             logger.debug(
                 f"Submitted background replica upload for {remote_path} to {len(replicas_that_need_updates)} replicas"
             )
+
+    def range_reader_from_replica_or_primary(
+        self,
+        remote_path: str,
+        storage_provider: StorageProvider,
+        primary_range_reader: Callable[[int, int], bytes] | None = None,
+    ) -> Callable[[int, int], bytes]:
+        """Return a range reader that pins one replica or primary source for its session."""
+        selected_reader: Callable[[int, int], bytes] | None = None
+        selection_lock = threading.Lock()
+
+        def normalize_and_validate(data: bytes, offset: int, size: int, source: str) -> bytes:
+            to_bytes = getattr(data, "to_bytes", None)
+            normalized_value = to_bytes() if callable(to_bytes) else data
+            if not isinstance(normalized_value, (bytes, bytearray, memoryview)):
+                raise IOError(f"Range reader for {source} returned a non-bytes result.")
+            normalized = bytes(normalized_value)
+            if len(normalized) != size:
+                raise IOError(
+                    f"Range reader for {source} returned {len(normalized)} bytes; "
+                    f"expected {size} bytes at offset {offset}."
+                )
+            return normalized
+
+        def primary_reader(offset: int, size: int) -> bytes:
+            if primary_range_reader is not None:
+                return primary_range_reader(offset, size)
+            return storage_provider.get_object(remote_path, byte_range=Range(offset=offset, size=size))
+
+        def validated_primary_reader(offset: int, size: int) -> bytes:
+            return normalize_and_validate(primary_reader(offset, size), offset, size, "primary storage provider")
+
+        def read_range(offset: int, size: int) -> bytes:
+            nonlocal selected_reader
+            with selection_lock:
+                if selected_reader is not None:
+                    return selected_reader(offset, size)
+
+                byte_range = Range(offset=offset, size=size)
+                for replica_client in self._storage_client.replicas:
+                    try:
+                        if not replica_client.is_file(remote_path):
+                            continue
+                        data = normalize_and_validate(
+                            replica_client.read(remote_path, byte_range=byte_range),
+                            offset,
+                            size,
+                            f"replica {replica_client.profile}",
+                        )
+                    except FileNotFoundError:
+                        logger.error(f"File not found in replica: {remote_path}")
+                        continue
+                    except Exception as error:
+                        logger.error(f"Error reading from replica: {error}")
+                        continue
+
+                    def replica_reader(next_offset: int, next_size: int, replica=replica_client) -> bytes:
+                        return normalize_and_validate(
+                            replica.read(
+                                remote_path,
+                                byte_range=Range(offset=next_offset, size=next_size),
+                            ),
+                            next_offset,
+                            next_size,
+                            f"replica {replica.profile}",
+                        )
+
+                    selected_reader = replica_reader
+                    return data
+
+                try:
+                    data = validated_primary_reader(offset, size)
+                except RetryableError:
+                    selected_reader = validated_primary_reader
+                    raise
+                selected_reader = validated_primary_reader
+                return data
+
+        return read_range
 
     def _prepare_file_for_upload(self, file: Union[str, IO]) -> tuple[str, bool]:
         """Convert file object to path and determine if cleanup is needed.

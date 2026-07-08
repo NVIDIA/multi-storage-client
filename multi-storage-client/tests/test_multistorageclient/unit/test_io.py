@@ -25,7 +25,6 @@ class _FixedReturnWriter:
 @pytest.mark.parametrize(
     ("result", "message"),
     [
-        pytest.param(None, "no progress", id="none"),
         pytest.param(0, "no progress", id="zero"),
         pytest.param(-1, "no progress", id="negative"),
         pytest.param(True, "no progress", id="bool"),
@@ -40,6 +39,14 @@ def test_write_all_rejects_invalid_binary_writer_results(result: object, message
     with pytest.raises(OSError, match=message):
         write_all(cast(Any, writer), b"abc")
 
+    assert writer.calls == [b"abc"]
+
+
+def test_write_all_treats_none_as_full_buffer_consumption() -> None:
+    """File-like writers may signal successful full consumption by returning ``None``."""
+    writer = _FixedReturnWriter(None)
+
+    assert write_all(cast(Any, writer), b"abc") == 3
     assert writer.calls == [b"abc"]
 
 

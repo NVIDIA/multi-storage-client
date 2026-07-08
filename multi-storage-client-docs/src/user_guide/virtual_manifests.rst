@@ -4,7 +4,7 @@ Single-Parquet Virtual Manifests (v2)
 
 Virtual manifests expose an immutable logical dataset from one Parquet file. Each logical file is reconstructed by concatenating ordered byte ranges from configured object-storage profiles and, optionally, deterministic HTTP services. MSC does not interpret the resulting bytes: MP4, Parquet, JSONL, and other formats all use the same concatenation path.
 
-MSC validates the complete manifest footer, schema, row order, and row-level contract before exposing any file. Construction does not read referenced object bytes or call HTTP transports, so source immutability remains part of the publication contract described below.
+With respect to the manifest itself, construction validates only the Parquet footer and exact schema together with the structural metadata needed to index row groups, including ``key`` statistics when present. It does not decode manifest data rows at construction time. Row-level and logical-file semantic validation is lazy; construction also does not read referenced object bytes or call HTTP transports. This separation is what makes the manifest object itself part of the publication contract described below.
 
 This is a storage provider (``storage_provider.type: manifest``), not the legacy metadata-provider feature. The existing :doc:`/user_guide/manifests` guide documents **v1 metadata manifests**: an index and parts used to accelerate listing and metadata lookup for another storage provider. A v2 virtual manifest supplies the file bytes itself.
 
@@ -33,7 +33,7 @@ Referenced-profile restrictions
 
 The manifest-storage profile and every object-source profile must be suitable for exact byte-range reads. MSC rejects a referenced profile with ``autocommit`` configured, because a virtual manifest is immutable and does not participate in metadata commits. Hugging Face direct profiles are also rejected because they do not provide this exact range-read contract.
 
-The manifest-storage profile cannot enable ``rust_client``: MSC uses its Python range reader to validate the one Parquet manifest before exposing a dataset. This restriction does not apply to direct object-source profiles. An object source may use ``rust_client`` when that direct provider supports the required exact byte-range reads; MSC will use it for the source ranges after manifest validation.
+The manifest-storage profile cannot enable ``rust_client``: MSC uses its Python range reader to inspect the Parquet footer and lazily read manifest row groups. This restriction does not apply to direct object-source profiles. An object source may use ``rust_client`` when that direct provider supports the required exact byte-range reads; MSC will use it for the source ranges after manifest validation.
 
 Configuration
 =============
@@ -66,6 +66,8 @@ The following example has both an object chunk source and an HTTP service source
            manifest_storage_profile: manifest-store
            manifest_path: releases/2026-07-02/catalog.parquet
            max_workers: 8
+           # Defaults to 64 MiB; 0 disables decoded row-group retention.
+           manifest_row_group_cache_size_bytes: 67108864
 
            source_profiles:
              raw:
@@ -181,11 +183,24 @@ The helper is a conformance aid, not a production manifest writer. In the physic
      - optional list of required ``element`` structs with required UTF-8 ``name`` and ``value`` fields
      - Ordered service query pairs; required, but allowed to be empty, for ``service`` chunks.
 
-Rows must be strictly sorted in ascending ``(key, chunk_index)`` order. Keys use unsigned lexicographic order over their valid UTF-8 bytes (equivalent to Unicode scalar-value order), and ``chunk_index`` uses numeric order. MSC rejects duplicate, descending, or noncontiguous key/chunk positions instead of regrouping an unsorted manifest in memory. Each logical file requires contiguous indexes beginning at zero, positive file and chunk sizes, and a checked signed-64-bit chunk sum equal to ``size_bytes``. Every row for a key must agree on the file-level columns after native-map normalization. Logical keys are prefix-free: a manifest cannot contain both a file ``a`` and a descendant file ``a/b``.
+Rows must be strictly sorted in ascending ``(key, chunk_index)`` order. Keys use unsigned lexicographic order over their valid UTF-8 bytes (equivalent to Unicode scalar-value order), and ``chunk_index`` uses numeric order. MSC rejects duplicate, descending, or noncontiguous key/chunk positions instead of regrouping an unsorted manifest in memory. Each logical file requires contiguous indexes beginning at zero, positive file and chunk sizes, and a checked signed-64-bit chunk sum equal to ``size_bytes``. Every row for a key must agree on the file-level columns after native-map normalization. Logical keys are not prefix-free: a file ``a`` may coexist with descendants such as ``a/b``.
 
 Sorted rows for one key may cross batches, data pages, and row groups, and row groups remain physical batching rather than semantic partitions. Producers should nevertheless keep all rows for a key in one row group when practical, and should avoid splitting a key across data pages, because key-local layout improves manifest scan locality. A key must never be interleaved with another key.
 
 A zero-row Parquet file with the complete schema represents an empty dataset. V2 does not represent zero-byte logical files and does not define an ``empty`` chunk kind. Object rows require only their three ``source_*`` fields; service rows require only their three ``service_*`` fields. Cross-kind fields are rejected. ``source_offset + chunk_size_bytes`` must also remain representable as a signed 64-bit integer.
+
+Lazy Validation, Lookup, and Retention
+======================================
+
+The footer/schema check establishes the manifest artifact and its row-group layout, but it is not an eager validation pass over every row. Path normalization, row ordering, chunk semantics, binding references, file metadata consistency, and file-size totals are validated when the relevant rows are decoded. An exact-key operation, including ``info``, ``is_file``, ``read``, or ``open``, decodes and validates the whole selected logical file before it plans or performs object-source or service I/O. A ranged logical read therefore still validates every chunk row for its file, not merely the chunks that overlap the requested range.
+
+``list_objects_recursive`` is intentionally streaming. It traverses manifest/key order, validates each complete logical file as it is reached, and can yield valid earlier files before discovering a malformed later row or file. Callers that require an all-or-nothing validation result must force a complete traversal before treating the listing as authoritative.
+
+For exact-key lookup, complete authoritative ``key`` minimum/maximum statistics permit a binary search to the candidate row groups. If any nonempty row group lacks usable ``key`` statistics, MSC emits a warning at construction and exact lookups fall back to a potentially slow linear row-group scan. Statistics that are structurally inconsistent (for example, invalid key values, inverted bounds, reported null keys, or globally unordered intervals) fail construction. Structurally valid but incorrect bounds cannot be detected by the reader; they are a producer contract violation and can make lookup results incorrect.
+
+PyArrow presently reports only whether the ``key`` column advertises both column and offset page indexes; it does not read or use their contents. A future Rust Arrow backend could consume those indexes. We strongly recommend that producers write complete and exact ``key`` statistics, use reasonable row-group sizes, keep one logical key in one row group and, where practical, in one data page, and write page indexes. Those choices preserve both the current binary row-group search and a future page-level lookup path.
+
+``manifest_row_group_cache_size_bytes`` bounds retained decoded Parquet row groups. It defaults to ``67108864`` bytes (64 MiB), and ``0`` disables row-group retention. The cache is an LRU over complete immutable row groups, accounts Arrow buffers conservatively, and bypasses retention for a row group that cannot fit as a whole; it never retains only part of an oversized row group. This cache is independent of MSC's logical-content read cache. The provider retains no decoded logical-file plans, chunks, or range plans outside the bounded row-group cache.
 
 Reading Files
 =============
@@ -260,7 +275,7 @@ Capabilities
 Path and HTTP Contract
 ======================
 
-Logical keys and object ``source_path`` values are normalized relative POSIX paths. They must not be empty, absolute, URI-like, use backslashes or NUL bytes, contain repeated/trailing separators, or contain ``.`` or ``..`` segments.
+Logical keys and object ``source_path`` values are normalized relative POSIX paths. They must not be empty, absolute, URI-like, use backslashes or NUL bytes, contain repeated/trailing separators, or contain ``.`` or ``..`` segments. A bare path ``a`` resolves an exact logical file ``a`` when it exists, even if ``a/b`` also exists. A path ending in ``a/`` explicitly selects descendants. In a shallow listing where the file ``a`` and descendants such as ``a/b`` would otherwise map to the same visible entry, the direct file has precedence over a synthesized directory.
 
 Service paths are stricter: they are unescaped relative Unicode paths. They also reject percent escapes, queries, fragments, authorities, and paths outside an allowlisted prefix. Prefix matching is segment-aware: an allowed ``render`` prefix accepts ``render`` and ``render/...``, but not ``rendered/...``. Service query names must be non-empty and appear in ``allowed_query_parameters``; query values may be empty, and duplicate name/value pairs retain their order. The configured HTTP base URL rejects controls, backslashes, encoded or userinfo authorities, and ambiguous separators before MSC rebuilds its canonical transport origin. Configured header names must be RFC HTTP tokens; protocol-controlled headers such as ``Range`` and ``Host`` cannot be supplied, including whitespace lookalikes.
 
@@ -275,18 +290,18 @@ Each logical file receives a synthetic ETag beginning with ``msc-v2-sha256:``. I
 
 Changing file metadata, chunk paths/offsets/boundaries, query order, a used binding identity, or a used binding revision changes the ETag. Changing an unused binding does not. This gives normal MSC caches a stable, dependency-aware identity without exposing credentials.
 
-The ETag identifies the decoded manifest plan and configured bindings; it is not a checksum of reconstructed file bytes. The manifest object, referenced source objects, deterministic service outputs, and binding locations must remain immutable for the manifest lifetime. If any dependency can produce new bytes, publish a new manifest and/or change its ``binding_revision``. MSC verifies only the exact length of each fetched range. Same-length byte drift is undetectable and can produce mixed-version reads or apparently valid stale cache hits under an unchanged ETag. Disabling source-version checking intentionally permits cached logical bytes to remain stale.
+The ETag identifies the decoded file plan and configured bindings; it is not a checksum of reconstructed file bytes. The manifest object, referenced source objects, deterministic service outputs, and binding locations must remain immutable for the manifest lifetime. In particular, the manifest object must never be replaced at its configured path: MSC reads the footer at construction, then opens independent streams for later lazy row-group reads. Replacing it can combine one artifact's footer with another artifact's rows. If any dependency can produce new bytes, publish a new manifest and/or change its ``binding_revision``. MSC verifies only the exact length of each fetched range. Same-length byte drift is undetectable and can produce mixed-version reads or apparently valid stale cache hits under an unchanged ETag. Disabling source-version checking intentionally permits cached logical bytes to remain stale.
 
 The cache belongs to the virtual logical profile. Object-source aliases invoke their configured direct provider range API and bypass that source profile's logical routing, replicas, metadata provider, and MSC read cache.
 
-Decoded manifest files, chunks, range plans, and ordered query pairs are immutable. An initialized provider exposes one immutable snapshot; callers cannot mutate the decoded plan in place.
+Decoded logical-file plans, chunks, range plans, and ordered query pairs are immutable for their use, but an initialized provider does not retain a whole decoded manifest snapshot. It retains footer metadata and, subject to ``manifest_row_group_cache_size_bytes``, decoded row groups; later file lookups decode their plans from those rows or from new row-group reads.
 
 Publishing and Reloading
 ========================
 
-Publish a complete, validated Parquet file at a new immutable path, such as a release- or content-addressed path. Do not overwrite a manifest that existing clients may use. After publication, update ``manifest_path`` in configuration and construct a new client (or reload its configuration) to adopt the release.
+Publish a complete, validated Parquet file at a new immutable path, such as a release- or content-addressed path. Do not overwrite or replace a manifest that existing clients may use, even if the replacement has the same schema or length: footer and later row-group reads are separate operations. After publication, update ``manifest_path`` in configuration and construct a new client (or reload its configuration) to adopt the release.
 
-There is no live manifest reload. Existing manifest providers deliberately continue using the snapshot loaded at initialization, including its synthetic ETags and binding revisions.
+There is no live manifest reload. Existing providers continue using their construction-time footer metadata and configured binding revisions, while later lookups read row groups lazily from the same immutable manifest object.
 
 Limitations
 ===========

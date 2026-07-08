@@ -207,7 +207,7 @@ def expand_env_vars(data: Any) -> Any:
         ValueError: If there are any unresolved environment variables in the strings after expansion.
     """
     if isinstance(data, dict):
-        return {key: expand_env_vars(value) for key, value in data.items()}
+        return {key: expand_env_vars(data[key]) for key in data}
     elif isinstance(data, list):
         return [expand_env_vars(element) for element in data]
     elif isinstance(data, str):

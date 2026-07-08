@@ -49,15 +49,16 @@ def test_load_virtual_manifest_accepts_an_empty_dataset() -> None:
     assert _decode([]) == {}
 
 
-def test_load_virtual_manifest_rejects_a_file_key_that_is_another_file_key_prefix() -> None:
-    """Logical files cannot collide with the synthetic directory required by a descendant key."""
-    with pytest.raises(ManifestValidationError, match="ancestor"):
-        _decode(
-            [
-                object_row(key="a", source_path="objects/a.bin"),
-                object_row(key="a/b", source_path="objects/a-b.bin"),
-            ]
-        )
+def test_load_virtual_manifest_allows_a_file_key_to_share_a_descendant_prefix() -> None:
+    """Object-store-style exact files may coexist with descendants below a trailing slash."""
+    files = _decode(
+        [
+            object_row(key="a", source_path="objects/a.bin"),
+            object_row(key="a/b", source_path="objects/a-b.bin"),
+        ]
+    )
+
+    assert tuple(files) == ("a", "a/b")
 
 
 @pytest.mark.parametrize("physical_schema_mutation", ["chunk_index_type", "extra_column"])

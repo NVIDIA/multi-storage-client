@@ -85,24 +85,6 @@ class _ConcurrencyProbe:
                         pair_event.set()
 
 
-class _CountingSortedKeys(tuple):
-    """Tuple fixture that distinguishes indexed prefix traversal from a full scan."""
-
-    def __new__(cls, values: Sequence[str]):
-        instance = super().__new__(cls, values)
-        instance.index_accesses = 0
-        instance.iterations = 0
-        return instance
-
-    def __getitem__(self, index):
-        self.index_accesses += 1
-        return super().__getitem__(index)
-
-    def __iter__(self):
-        self.iterations += 1
-        return super().__iter__()
-
-
 class _RecordingRangeReader:
     def __init__(
         self,
@@ -379,8 +361,10 @@ def _provider(
     source_bindings: Optional[Mapping[str, SourceBinding]] = None,
     service_bindings: Optional[Mapping[str, ServiceBinding]] = None,
     max_workers: int = 4,
+    manifest_row_group_cache_size_bytes: int = 64 * 1024 * 1024,
+    row_group_size: Optional[int] = None,
 ) -> ManifestStorageProvider:
-    manifest_bytes = write_manifest(rows).getvalue()
+    manifest_bytes = write_manifest(rows, row_group_size=row_group_size).getvalue()
     manifest_reader = _RecordingRangeReader(
         {"catalog.parquet": manifest_bytes},
         binding_identity="file:///manifests",
@@ -391,7 +375,45 @@ def _provider(
         source_bindings=source_bindings or {},
         service_bindings=service_bindings or {},
         max_workers=max_workers,
+        manifest_row_group_cache_size_bytes=manifest_row_group_cache_size_bytes,
     )
+
+
+@pytest.mark.parametrize("invalid_budget", [-1, (1 << 63), True, 1.5, "64M"])
+def test_manifest_provider_rejects_invalid_row_group_cache_budgets(invalid_budget: object) -> None:
+    manifest_reader = MagicMock()
+
+    with pytest.raises(ValueError, match="manifest_row_group_cache_size_bytes"):
+        ManifestStorageProvider(
+            manifest_path="catalog.parquet",
+            manifest_reader=manifest_reader,
+            source_bindings={},
+            service_bindings={},
+            manifest_row_group_cache_size_bytes=cast(Any, invalid_budget),
+        )
+
+    manifest_reader.info.assert_not_called()
+
+
+def test_manifest_provider_preserves_existing_positional_constructor_arguments() -> None:
+    manifest_bytes = write_manifest([]).getvalue()
+    reader = _RecordingRangeReader({"catalog.parquet": manifest_bytes}, binding_identity="file:///manifests")
+    config_dict = {"profile": "sentinel"}
+    telemetry_provider = MagicMock()
+
+    provider = ManifestStorageProvider(
+        "catalog.parquet",
+        reader,
+        {},
+        {},
+        4,
+        config_dict,
+        telemetry_provider,
+    )
+
+    assert provider._config_dict is config_dict
+    assert provider._telemetry_provider is telemetry_provider
+    assert provider._manifest_row_group_cache_size_bytes == 64 * 1024 * 1024
 
 
 @pytest.mark.parametrize(
@@ -650,6 +672,123 @@ def test_manifest_provider_list_objects_returns_an_exact_file_path_with_bounds()
     assert list(provider.list_objects("dir/exact.bin", end_at="dir/alpha.bin")) == []
 
 
+@pytest.mark.parametrize(
+    ("include_exact", "start_after", "end_at", "expected"),
+    [
+        pytest.param(
+            False,
+            None,
+            None,
+            [("a", "directory"), ("a-b", "file")],
+            id="implicit-directory",
+        ),
+        pytest.param(
+            False,
+            "a",
+            "a-b",
+            [("a-b", "file")],
+            id="implicit-directory-bounded",
+        ),
+        pytest.param(
+            False,
+            None,
+            "a",
+            [("a", "directory")],
+            id="implicit-directory-end-bound",
+        ),
+        pytest.param(
+            True,
+            None,
+            None,
+            [("a", "file"), ("a-b", "file")],
+            id="exact-file-precedence",
+        ),
+        pytest.param(
+            True,
+            "a",
+            "a-b",
+            [("a-b", "file")],
+            id="exact-file-precedence-bounded",
+        ),
+        pytest.param(
+            True,
+            None,
+            "a",
+            [("a", "file")],
+            id="exact-file-precedence-end-bound",
+        ),
+    ],
+)
+def test_manifest_provider_shallow_listing_orders_prefix_collisions_and_applies_bounds(
+    include_exact: bool,
+    start_after: Optional[str],
+    end_at: Optional[str],
+    expected: list[tuple[str, str]],
+) -> None:
+    """Shallow listing orders synthesized parents before punctuation siblings without duplicating exact files."""
+    rows = [
+        *_single_object_rows("a-b", "a-b.bin", b"dash"),
+        *_single_object_rows("a/b", "a-child.bin", b"child"),
+    ]
+    objects = {"a-b.bin": b"dash", "a-child.bin": b"child"}
+    if include_exact:
+        rows = [*_single_object_rows("a", "a.bin", b"exact"), *rows]
+        objects["a.bin"] = b"exact"
+
+    source = _RecordingRangeReader(objects, binding_identity="file:///objects")
+    provider = _provider(rows, source_bindings={"objects": SourceBinding(source, "objects-r1")})
+
+    entries = list(provider.list_objects("", start_after=start_after, end_at=end_at, include_directories=True))
+
+    assert [(entry.key, entry.type) for entry in entries] == expected
+
+
+def test_manifest_provider_shallow_listing_scans_descendant_timestamps_only_for_winning_punctuation_prefixes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sibling punctuation probes inspect descendant timestamps only after their lexical winner is known."""
+    logical_keys = [
+        "nested/a-b/leaf.bin",
+        "nested/a-c/leaf.bin",
+        "nested/a-d/leaf.bin",
+        "nested/a/child.bin",
+        "nested/é-b/leaf.bin",
+        "nested/é-c/leaf.bin",
+        "nested/é/child.bin",
+    ]
+    objects = {key: key.encode() for key in logical_keys}
+    rows = [row for key in logical_keys for row in _single_object_rows(key, key, objects[key])]
+    source = _RecordingRangeReader(objects, binding_identity="file:///objects")
+    provider = _provider(rows, source_bindings={"objects": SourceBinding(source, "objects-r1")})
+    timestamp_prefixes: list[str] = []
+    original = provider._catalog.directory_last_modified
+
+    def track_timestamp_scan(key: str) -> Optional[datetime]:
+        timestamp_prefixes.append(key)
+        return original(key)
+
+    monkeypatch.setattr(provider._catalog, "directory_last_modified", track_timestamp_scan)
+
+    entries = list(
+        provider.list_objects(
+            "nested",
+            start_after="nested/a",
+            end_at="nested/é-c",
+            include_directories=True,
+        )
+    )
+
+    assert [(entry.key, entry.type) for entry in entries] == [
+        ("nested/a-b", "directory"),
+        ("nested/a-c", "directory"),
+        ("nested/a-d", "directory"),
+        ("nested/é", "directory"),
+        ("nested/é-b", "directory"),
+        ("nested/é-c", "directory"),
+    ]
+    assert timestamp_prefixes == ["nested/a", "nested/é"]
+
+
 def test_manifest_provider_list_objects_recursive_returns_an_exact_file_path_with_bounds() -> None:
     """Recursive manifest listing applies the same exact-path and bound semantics as shallow listing."""
     source = _RecordingRangeReader(
@@ -840,7 +979,7 @@ def test_manifest_provider_waits_for_running_siblings_before_propagating_a_subre
     provider.close()
 
 
-def test_manifest_provider_executes_one_touched_chunk_inline_without_creating_a_read_pool() -> None:
+def test_manifest_provider_executes_one_touched_chunk_through_the_shared_read_pool() -> None:
     source = _RecordingRangeReader({"data.bin": b"abc"}, binding_identity="file:///objects")
     provider = _provider(
         _single_object_rows("data.bin", "data.bin", b"abc"),
@@ -849,7 +988,57 @@ def test_manifest_provider_executes_one_touched_chunk_inline_without_creating_a_
 
     assert provider._read_executor is None
     assert provider.get_object("data.bin") == b"abc"
-    assert provider._read_executor is None
+    assert provider._read_executor is not None
+    provider.close()
+
+
+def test_manifest_provider_bounds_concurrent_one_chunk_reads_across_callers() -> None:
+    class BlockingReader(_RecordingRangeReader):
+        def __init__(self) -> None:
+            super().__init__({"one.bin": b"1", "two.bin": b"2"}, binding_identity="file:///objects")
+            self._active_lock = threading.Lock()
+            self.active = 0
+            self.maximum_active = 0
+            self.started = threading.Event()
+            self.multiple_active = threading.Event()
+            self.release = threading.Event()
+
+        def read(self, path: str, byte_range: Optional[Range] = None) -> bytes:
+            if byte_range is not None:
+                with self._active_lock:
+                    self.active += 1
+                    self.maximum_active = max(self.maximum_active, self.active)
+                    self.started.set()
+                    if self.active > 1:
+                        self.multiple_active.set()
+                try:
+                    assert self.release.wait(timeout=5), "bounded source read was never released"
+                finally:
+                    with self._active_lock:
+                        self.active -= 1
+            return super().read(path, byte_range)
+
+    source = BlockingReader()
+    provider = _provider(
+        [
+            *_single_object_rows("one.bin", "one.bin", b"1"),
+            *_single_object_rows("two.bin", "two.bin", b"2"),
+        ],
+        source_bindings={"objects": SourceBinding(source, "objects-r1")},
+        max_workers=1,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as callers:
+        first = callers.submit(provider.get_object, "one.bin")
+        assert source.started.wait(timeout=5), "first source read did not start"
+        second = callers.submit(provider.get_object, "two.bin")
+        assert not source.multiple_active.wait(timeout=0.2)
+        source.release.set()
+        assert first.result(timeout=5) == b"1"
+        assert second.result(timeout=5) == b"2"
+
+    assert source.maximum_active == 1
+    provider.close()
 
 
 def test_manifest_provider_reuses_one_bounded_read_pool_for_multi_chunk_reads() -> None:
@@ -1003,27 +1192,33 @@ def test_manifest_provider_bounds_queued_reads_to_the_worker_limit() -> None:
     provider.close()
 
 
-def test_manifest_provider_prefix_listing_indexes_only_the_matching_key_window() -> None:
+def test_manifest_provider_prefix_listing_decodes_only_the_matching_row_group_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     source = _RecordingRangeReader(
         {"target/direct.bin": b"a", "target/nested/leaf.bin": b"b"},
         binding_identity="file:///objects",
     )
     provider = _provider(
         [
+            *_single_object_rows("before/00000", "before/00000", b"x"),
+            *_single_object_rows("before/00001", "before/00001", b"y"),
             *_single_object_rows("target/direct.bin", "target/direct.bin", b"a"),
             *_single_object_rows("target/nested/leaf.bin", "target/nested/leaf.bin", b"b"),
+            *_single_object_rows("z/00000", "z/00000", b"z"),
+            *_single_object_rows("z/00001", "z/00001", b"z"),
         ],
         source_bindings={"objects": SourceBinding(source, "objects-r1")},
+        row_group_size=1,
     )
-    keys = _CountingSortedKeys(
-        [
-            *(f"before/{index:05d}" for index in range(4096)),
-            "target/direct.bin",
-            "target/nested/leaf.bin",
-            *(f"z/{index:05d}" for index in range(4096)),
-        ]
-    )
-    provider._sorted_keys = keys
+    decoded_row_groups: list[int] = []
+    original = provider._catalog._iter_row_group_batches
+
+    def track(row_group: int):
+        decoded_row_groups.append(row_group)
+        yield from original(row_group)
+
+    monkeypatch.setattr(provider._catalog, "_iter_row_group_batches", track)
 
     entries = list(provider.list_objects("target", include_directories=True))
 
@@ -1031,8 +1226,7 @@ def test_manifest_provider_prefix_listing_indexes_only_the_matching_key_window()
         ("target/direct.bin", "file"),
         ("target/nested", "directory"),
     ]
-    assert keys.iterations == 0
-    assert keys.index_accesses < 50
+    assert decoded_row_groups == [2, 3, 4]
 
 
 @pytest.mark.parametrize(
@@ -1117,6 +1311,7 @@ def test_manifest_provider_fetches_exact_physical_subranges_for_every_touched_ch
         rows,
         source_bindings={"objects": SourceBinding(source, "objects-r1")},
         service_bindings={"renderer": ServiceBinding(service, "renderer-r1")},
+        row_group_size=3,
     )
 
     assert provider.get_object("spanning.bin", byte_range) == expected
@@ -1354,7 +1549,7 @@ def test_manifest_provider_rejects_overlong_range_results(source_kind: str) -> N
     assert len(expected_calls) == 1
 
 
-def test_manifest_provider_rejects_a_late_invalid_row_without_source_reads_or_partial_side_effects() -> None:
+def test_manifest_provider_defers_a_late_invalid_row_without_source_reads_or_partial_side_effects() -> None:
     source = _RecordingRangeReader(
         {"valid.bin": b"abc"},
         binding_identity="file:///objects",
@@ -1381,15 +1576,20 @@ def test_manifest_provider_rejects_a_late_invalid_row_without_source_reads_or_pa
         ),
     ]
 
-    with pytest.raises(ValueError, match="not allowlisted"):
-        _provider(
-            rows,
-            source_bindings={"objects": SourceBinding(source, "objects-r1")},
-            service_bindings={"renderer": ServiceBinding(service, "renderer-r1")},
-        )
+    provider = _provider(
+        rows,
+        source_bindings={"objects": SourceBinding(source, "objects-r1")},
+        service_bindings={"renderer": ServiceBinding(service, "renderer-r1")},
+    )
 
-    assert ("render/valid", ()) in service.validations
-    assert ("admin/secrets", (("token", "secret"),)) in service.validations
+    assert service.validations == []
+    assert provider.get_object("00-valid-object.bin") == b"abc"
+    source.calls.clear()
+
+    with pytest.raises(ManifestValidationError, match="not allowlisted"):
+        provider.get_object("99-invalid-service.bin")
+
+    assert service.validations == [("admin/secrets", (("token", "secret"),))]
     assert source.calls == []
     assert service.calls == []
 
@@ -1484,7 +1684,7 @@ def test_manifest_download_accepts_only_binary_file_like_destinations() -> None:
         provider.download_file("data.bin", io.StringIO())
 
 
-def test_manifest_file_like_download_rejects_a_writer_that_reports_no_progress() -> None:
+def test_manifest_file_like_download_accepts_a_writer_that_returns_none_after_consuming_a_window() -> None:
     content = b"binary-data"
     source = _RecordingRangeReader({"data.bin": content}, binding_identity="file:///objects")
     provider = _provider(
@@ -1495,11 +1695,38 @@ def test_manifest_file_like_download_rejects_a_writer_that_reports_no_progress()
     class NoneWritingDestination:
         def __init__(self) -> None:
             self.writes: list[bytes] = []
+            self.data = bytearray()
 
         def write(self, data: bytes) -> None:
-            self.writes.append(data)
+            payload = bytes(data)
+            self.writes.append(payload)
+            self.data.extend(payload)
 
     destination = NoneWritingDestination()
+
+    provider.download_file("data.bin", cast(Any, destination))
+
+    assert bytes(destination.data) == content
+    assert destination.writes == [content]
+
+
+def test_manifest_file_like_download_rejects_a_writer_that_returns_zero_progress() -> None:
+    content = b"binary-data"
+    source = _RecordingRangeReader({"data.bin": content}, binding_identity="file:///objects")
+    provider = _provider(
+        _single_object_rows("data.bin", "data.bin", content),
+        source_bindings={"objects": SourceBinding(source, "objects-r1")},
+    )
+
+    class ZeroWritingDestination:
+        def __init__(self) -> None:
+            self.writes: list[bytes] = []
+
+        def write(self, data: bytes) -> int:
+            self.writes.append(bytes(data))
+            return 0
+
+    destination = ZeroWritingDestination()
 
     with pytest.raises(OSError, match="no progress"):
         provider.download_file("data.bin", cast(Any, destination))
@@ -1844,19 +2071,21 @@ def _write_integration_manifest(manifest_root: Path, source_root: Path, service_
     }
 
 
-def test_manifest_fsspec_traversal_rejects_a_file_prefix_collision(
+def test_manifest_fsspec_distinguishes_an_exact_file_from_its_child_prefix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """fsspec listing fails at manifest construction instead of hiding a colliding synthetic directory."""
+    """An exact file wins at its bare path while its trailing-slash prefix remains traversable."""
     source_root = tmp_path / "objects"
     manifest_root = tmp_path / "manifests"
     source_root.mkdir()
     manifest_root.mkdir()
+    (source_root / "a.bin").write_bytes(b"one")
+    (source_root / "a-b.bin").write_bytes(b"two")
     (manifest_root / "catalog.parquet").write_bytes(
         write_manifest(
             [
-                object_row(key="a", source_profile="objects", source_path="a.bin"),
-                object_row(key="a/b", source_profile="objects", source_path="a-b.bin"),
+                object_row(key="a", source_profile="objects", source_path="a.bin", source_offset=0),
+                object_row(key="a/b", source_profile="objects", source_path="a-b.bin", source_offset=0),
             ]
         ).getvalue()
     )
@@ -1870,8 +2099,54 @@ def test_manifest_fsspec_traversal_rejects_a_file_prefix_collision(
 
     filesystem = fsspec.filesystem("msc", skip_instance_cache=True)
 
-    with pytest.raises(ManifestValidationError, match="ancestor"):
-        filesystem.ls("virtual")
+    assert filesystem.info("virtual/a")["type"] == "file"
+    assert filesystem.info("virtual/a/")["type"] == "directory"
+    assert filesystem.isfile("virtual/a")
+    assert filesystem.isdir("virtual/a/")
+    assert filesystem.cat_file("virtual/a") == b"one"
+    assert filesystem.cat_file("virtual/a/b") == b"two"
+    assert filesystem.ls("virtual", detail=False) == ["virtual/a"]
+    assert filesystem.ls("virtual/a", detail=False) == ["virtual/a/b"]
+    assert filesystem.ls("virtual/a/", detail=False) == ["virtual/a/b"]
+    assert filesystem.glob("virtual/a") == ["virtual/a"]
+    assert filesystem.glob("virtual/a/*") == ["virtual/a/b"]
+
+
+def test_manifest_config_defers_unused_row_validation_until_exact_access(tmp_path: Path) -> None:
+    """Construction and an unrelated read succeed before an invalid logical file is touched."""
+    source_root = tmp_path / "objects"
+    manifest_root = tmp_path / "manifests"
+    source_root.mkdir()
+    manifest_root.mkdir()
+    (source_root / "good.bin").write_bytes(b"good")
+    rows = [
+        object_row(
+            key="good.bin",
+            size_bytes=4,
+            chunk_size_bytes=4,
+            source_profile="objects",
+            source_path="good.bin",
+            source_offset=0,
+        ),
+        object_row(
+            key="unused-invalid.bin",
+            source_profile="objects",
+            source_path="missing.bin",
+            source_offset=-1,
+        ),
+    ]
+    (manifest_root / "catalog.parquet").write_bytes(write_manifest(rows, row_group_size=2).getvalue())
+
+    client = StorageClient(
+        StorageClientConfig.from_dict(
+            _manifest_config(manifest_root=manifest_root, source_root=source_root),
+            profile="virtual",
+        )
+    )
+
+    assert client.read("good.bin") == b"good"
+    with pytest.raises(ManifestValidationError, match="source offset"):
+        client.read("unused-invalid.bin")
 
 
 def test_manifest_config_reconstructs_mixed_virtual_files_with_local_ranges_and_http(

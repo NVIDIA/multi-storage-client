@@ -107,6 +107,9 @@ def write_manifest(
     schema: Optional[pa.Schema] = None,
     footer_metadata: Optional[Mapping[bytes, bytes]] = None,
     row_group_size: Optional[int] = None,
+    write_statistics: bool | list[str] = True,
+    write_page_index: bool = False,
+    max_rows_per_page: Optional[int] = None,
 ) -> BytesIO:
     """Encode manifest rows into an in-memory Parquet stream."""
     effective_schema = schema or virtual_manifest_v2_schema()
@@ -122,6 +125,13 @@ def write_manifest(
         )
 
     output = BytesIO()
-    pq.write_table(table, output, row_group_size=row_group_size)
+    pq.write_table(
+        table,
+        output,
+        row_group_size=row_group_size,
+        write_statistics=write_statistics,
+        write_page_index=write_page_index,
+        max_rows_per_page=max_rows_per_page,
+    )
     output.seek(0)
     return output

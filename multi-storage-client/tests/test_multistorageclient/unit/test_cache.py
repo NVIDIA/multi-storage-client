@@ -2191,10 +2191,10 @@ def test_cache_manager_serializes_explicit_delete_with_no_xattr_publication(tmpd
     original_delete = cache_manager._delete_cache_file_at_path
     original_replace = cache_module.os.replace
 
-    def observe_delete(path: str, expected_identity: str | None = None) -> None:
+    def observe_delete(path: str, expected_identity: str | None = None, *, legacy_key: str | None = None) -> None:
         transition.put("body")
         assert allow_delete.wait(timeout=5), "delete was never allowed to continue"
-        original_delete(path, expected_identity)
+        original_delete(path, expected_identity, legacy_key=legacy_key)
 
     monkeypatch.setattr(cache_manager, "_delete_cache_file_at_path", observe_delete)
 
@@ -2570,6 +2570,319 @@ def test_full_cache_identity_preserves_native_filesystem_aliases_when_present(
 
     assert owner.read(owner_key, check_source_version=SourceVersionCheckMode.DISABLE) == owner_data
     assert alias.read(alias_key, check_source_version=SourceVersionCheckMode.DISABLE) is None
+
+
+@pytest.mark.parametrize(
+    ("owner_profile", "alias_profile", "owner_key", "alias_key"),
+    [
+        pytest.param("test", "test", "bucket/CaseSensitive.bin", "bucket/casesensitive.bin", id="key-case"),
+        pytest.param("test", "test", "bucket/caf\u00e9.bin", "bucket/cafe\u0301.bin", id="key-nfc-nfd"),
+        pytest.param("CacheProfile", "cacheprofile", "bucket/object.bin", "bucket/object.bin", id="profile-case"),
+        pytest.param(
+            "caf\u00e9-profile", "cafe\u0301-profile", "bucket/object.bin", "bucket/object.bin", id="profile-nfc-nfd"
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "check_source_version",
+    [SourceVersionCheckMode.ENABLE, SourceVersionCheckMode.DISABLE],
+    ids=["source-checks-enabled", "source-checks-disabled"],
+)
+def test_legacy_etag_only_entries_require_exact_native_paths_regardless_of_source_version_checks(
+    tmpdir,
+    owner_profile,
+    alias_profile,
+    owner_key,
+    alias_key,
+    check_source_version,
+):
+    """An ETag-only legacy entry may serve only its exact native profile/key spelling."""
+    cache_config = CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir))
+    owner = CacheManager(profile=owner_profile, cache_config=cache_config)
+    alias = owner if alias_profile == owner_profile else CacheManager(profile=alias_profile, cache_config=cache_config)
+    owner_path = owner._get_cache_file_path(owner_key)
+    alias_path = alias._get_cache_file_path(alias_key)
+    os.makedirs(os.path.dirname(owner_path), exist_ok=True)
+    with open(owner_path, "wb") as cached_file:
+        cached_file.write(b"legacy owner data")
+    try:
+        xattr.setxattr(owner_path, "user.etag", b"legacy-r1")
+    except OSError:
+        pytest.skip("xattr is not supported on this filesystem")
+
+    try:
+        aliases = os.path.samefile(owner_path, alias_path)
+    except OSError:
+        aliases = False
+    if not aliases:
+        pytest.skip("filesystem keeps these logical cache paths distinct")
+
+    assert (
+        owner.read(
+            owner_key,
+            source_version="legacy-r1",
+            check_source_version=check_source_version,
+        )
+        == b"legacy owner data"
+    )
+    alias.set(alias_key, b"alias replacement", source_version="legacy-r1")
+    alias.delete(alias_key)
+    assert (
+        owner.read(
+            owner_key,
+            source_version="legacy-r1",
+            check_source_version=check_source_version,
+        )
+        == b"legacy owner data"
+    )
+    assert (
+        alias.read(
+            alias_key,
+            source_version="legacy-r1",
+            check_source_version=check_source_version,
+        )
+        is None
+    )
+    assert (
+        alias.open(
+            alias_key,
+            source_version="legacy-r1",
+            check_source_version=check_source_version,
+        )
+        is None
+    )
+    assert not alias.contains(
+        alias_key,
+        source_version="legacy-r1",
+        check_source_version=check_source_version,
+    )
+
+    source = RangeAwareStorageProvider(b"alias source data")
+    assert (
+        alias.read(
+            alias_key,
+            byte_range=Range(offset=0, size=len(b"alias source data")),
+            storage_provider=source,
+            source_size=len(b"alias source data"),
+            source_version="legacy-r1",
+            check_source_version=check_source_version,
+        )
+        == b"alias source data"
+    )
+    assert source.call_count == 1
+
+
+def test_legacy_etag_only_entry_accepts_its_exact_native_path_with_enabled_checks(tmpdir):
+    """The original legacy path remains readable when its ETag matches."""
+    cache_manager = CacheManager(
+        profile="exact-profile",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir)),
+    )
+    key = "bucket/exact-native.bin"
+    cache_path = cache_manager._get_cache_file_path(key)
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    with open(cache_path, "wb") as cached_file:
+        cached_file.write(b"exact legacy data")
+    try:
+        xattr.setxattr(cache_path, "user.etag", b"exact-r1")
+    except OSError:
+        pytest.skip("xattr is not supported on this filesystem")
+
+    assert cache_manager.contains(key, source_version="exact-r1", check_source_version=SourceVersionCheckMode.ENABLE)
+    assert (
+        cache_manager.read(key, source_version="exact-r1", check_source_version=SourceVersionCheckMode.ENABLE)
+        == b"exact legacy data"
+    )
+    with cache_manager.open(
+        key,
+        source_version="exact-r1",
+        check_source_version=SourceVersionCheckMode.ENABLE,
+    ) as cached_file:
+        assert cached_file.read() == b"exact legacy data"
+
+
+def test_legacy_etag_only_entry_uses_exact_native_ownership_when_source_checks_are_disabled(tmpdir):
+    """A matching native legacy path is usable without an ETag when checks are explicitly disabled."""
+    cache_manager = CacheManager(
+        profile="exact-profile",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir)),
+    )
+    key = "bucket/exact-native.bin"
+    cached_data = b"exact legacy data"
+    cache_path = cache_manager._get_cache_file_path(key)
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    with open(cache_path, "wb") as cached_file:
+        cached_file.write(cached_data)
+    try:
+        xattr.setxattr(cache_path, "user.etag", b"exact-r1")
+    except OSError:
+        pytest.skip("xattr is not supported on this filesystem")
+
+    assert cache_manager.contains(key, check_source_version=SourceVersionCheckMode.DISABLE)
+    assert cache_manager.read(key, check_source_version=SourceVersionCheckMode.DISABLE) == cached_data
+    with cache_manager.open(key, check_source_version=SourceVersionCheckMode.DISABLE) as cached_file:
+        assert cached_file.read() == cached_data
+
+    source = RangeAwareStorageProvider(b"unexpected remote data")
+    assert (
+        cache_manager.read(
+            key,
+            byte_range=Range(offset=7, size=9),
+            storage_provider=source,
+            source_size=len(cached_data),
+            check_source_version=SourceVersionCheckMode.DISABLE,
+        )
+        == cached_data[7:16]
+    )
+    assert source.call_count == 0
+
+
+def test_legacy_etag_only_entry_is_replaced_and_upgraded_when_its_source_version_changes(tmpdir):
+    """Exact legacy ownership permits a new revision to atomically replace and identity-bind the cache entry."""
+    cache_manager = CacheManager(
+        profile="exact-profile",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir)),
+    )
+    key = "bucket/exact-native.bin"
+    cache_path = cache_manager._get_cache_file_path(key)
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    with open(cache_path, "wb") as cached_file:
+        cached_file.write(b"legacy data")
+    try:
+        xattr.setxattr(cache_path, "user.etag", b"revision-1")
+    except OSError:
+        pytest.skip("xattr is not supported on this filesystem")
+
+    cache_manager.set(key, b"replacement data", source_version="revision-2")
+
+    assert (
+        cache_manager.read(
+            key,
+            source_version="revision-2",
+            check_source_version=SourceVersionCheckMode.ENABLE,
+        )
+        == b"replacement data"
+    )
+    with open(cache_path, "rb") as cached_file:
+        assert cache_manager._descriptor_cache_identity(
+            cache_path, cached_file.fileno()
+        ) == cache_manager._cache_identity(key)
+
+
+def test_legacy_etag_only_entry_is_deleted_from_its_exact_native_path(tmpdir):
+    """Explicit deletion recognizes the exact native logical owner of a legacy cache entry."""
+    cache_manager = CacheManager(
+        profile="exact-profile",
+        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir)),
+    )
+    key = "bucket/exact-native.bin"
+    cache_path = cache_manager._get_cache_file_path(key)
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    with open(cache_path, "wb") as cached_file:
+        cached_file.write(b"legacy data")
+    try:
+        xattr.setxattr(cache_path, "user.etag", b"revision-1")
+    except OSError:
+        pytest.skip("xattr is not supported on this filesystem")
+
+    cache_manager.delete(key)
+
+    assert not os.path.exists(cache_path)
+
+
+@pytest.mark.parametrize(
+    ("owner_profile", "alias_profile", "owner_key", "alias_key"),
+    [
+        pytest.param("test", "test", "bucket/CaseSensitive.bin", "bucket/casesensitive.bin", id="key-case"),
+        pytest.param("test", "test", "bucket/caf\u00e9.bin", "bucket/cafe\u0301.bin", id="key-nfc-nfd"),
+        pytest.param("CacheProfile", "cacheprofile", "bucket/object.bin", "bucket/object.bin", id="profile-case"),
+        pytest.param(
+            "caf\u00e9-profile", "cafe\u0301-profile", "bucket/object.bin", "bucket/object.bin", id="profile-nfc-nfd"
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "check_source_version",
+    [SourceVersionCheckMode.ENABLE, SourceVersionCheckMode.DISABLE],
+    ids=["source-checks-enabled", "source-checks-disabled"],
+)
+def test_legacy_etag_only_entry_rejects_forced_native_path_aliases_regardless_of_source_version_checks(
+    tmpdir,
+    monkeypatch,
+    owner_profile,
+    alias_profile,
+    owner_key,
+    alias_key,
+    check_source_version,
+):
+    """A resolver alias cannot use or replace another logical path's ETag-only entry."""
+    cache_config = CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir))
+    owner = CacheManager(profile=owner_profile, cache_config=cache_config)
+    alias = owner if alias_profile == owner_profile else CacheManager(profile=alias_profile, cache_config=cache_config)
+    owner_path = owner._get_cache_file_path(owner_key)
+    os.makedirs(os.path.dirname(owner_path), exist_ok=True)
+    with open(owner_path, "wb") as cached_file:
+        cached_file.write(b"legacy owner data")
+    try:
+        xattr.setxattr(owner_path, "user.etag", b"legacy-r1")
+    except OSError:
+        pytest.skip("xattr is not supported on this filesystem")
+
+    original_path = alias._get_cache_file_path
+    if alias is owner:
+        monkeypatch.setattr(
+            alias,
+            "_get_cache_file_path",
+            lambda key: owner_path if key == alias_key else original_path(key),
+        )
+    else:
+        monkeypatch.setattr(alias, "_get_cache_file_path", lambda _key: owner_path)
+
+    original_delete_path = alias._resolve_profile_cache_delete_path
+    if alias is owner:
+        monkeypatch.setattr(
+            alias,
+            "_resolve_profile_cache_delete_path",
+            lambda key: owner_path if key == alias_key else original_delete_path(key),
+        )
+    else:
+        monkeypatch.setattr(alias, "_resolve_profile_cache_delete_path", lambda _key: owner_path)
+
+    assert (
+        owner.read(
+            owner_key,
+            source_version="legacy-r1",
+            check_source_version=check_source_version,
+        )
+        == b"legacy owner data"
+    )
+    alias.set(alias_key, b"alias replacement", source_version="legacy-r1")
+    alias.delete(alias_key)
+    assert (
+        owner.read(
+            owner_key,
+            source_version="legacy-r1",
+            check_source_version=check_source_version,
+        )
+        == b"legacy owner data"
+    )
+    assert alias.read(alias_key, source_version="legacy-r1", check_source_version=check_source_version) is None
+    assert alias.open(alias_key, source_version="legacy-r1", check_source_version=check_source_version) is None
+    assert not alias.contains(alias_key, source_version="legacy-r1", check_source_version=check_source_version)
+
+    source = RangeAwareStorageProvider(b"alias source data")
+    assert (
+        alias.read(
+            alias_key,
+            byte_range=Range(offset=0, size=len(b"alias source data")),
+            storage_provider=source,
+            source_size=len(b"alias source data"),
+            source_version="legacy-r1",
+            check_source_version=check_source_version,
+        )
+        == b"alias source data"
+    )
+    assert source.call_count == 1
 
 
 def test_cache_manager_generate_temp_file_path(cache_manager):

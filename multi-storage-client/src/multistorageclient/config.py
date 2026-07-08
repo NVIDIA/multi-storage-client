@@ -29,6 +29,7 @@ import yaml
 from .cache import DEFAULT_CACHE_LINE_SIZE, DEFAULT_CACHE_SIZE, CacheManager
 from .caching.cache_config import CacheConfig, EvictionPolicyConfig
 from .manifest.bindings import ServiceBinding, SourceBinding, StorageProviderRangeReader
+from .manifest.constants import DEFAULT_ROW_GROUP_CACHE_SIZE_BYTES
 from .manifest.http import HTTPServiceRangeReader, normalize_http_base_url
 from .providers.manifest_metadata import ManifestMetadataProvider
 from .rclone import read_rclone_config
@@ -799,6 +800,10 @@ class StorageClientConfigLoader:
             source_bindings=source_bindings,
             service_bindings=service_bindings,
             max_workers=storage_options.get("max_workers", 8),
+            manifest_row_group_cache_size_bytes=storage_options.get(
+                "manifest_row_group_cache_size_bytes",
+                DEFAULT_ROW_GROUP_CACHE_SIZE_BYTES,
+            ),
             config_dict=copy.deepcopy(self._resolved_config_dict),
             telemetry_provider=self._telemetry_provider,
         )

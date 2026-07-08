@@ -85,24 +85,22 @@ def test_validate_profiles_accepts_legal_names_that_resemble_cache_internals(pro
 
 
 @pytest.mark.parametrize("profile_name", [".tmp-user", ".tmp-legacy-profile", ".tmp-"])
-def test_validate_profiles_rejects_names_reserved_for_legacy_temp_downloads(profile_name: str) -> None:
-    """Schema validation rejects names that collide with legacy temporary-download directories."""
-    with pytest.raises(RuntimeError, match="Failed to validate"):
-        validate_config(
-            {"profiles": {profile_name: {"storage_provider": {"type": "file", "options": {"base_path": "/objects"}}}}}
-        )
+def test_validate_profiles_accepts_names_reserved_by_path_cache_runtime(profile_name: str) -> None:
+    """Schema-only validation permits names when path-based caching is not in use."""
+    validate_config(
+        {"profiles": {profile_name: {"storage_provider": {"type": "file", "options": {"base_path": "/objects"}}}}}
+    )
 
 
 @pytest.mark.parametrize(
     "profile_name",
     [".msc-cache-internal", "nested/profile", r"nested\\profile", "nested/./..", ".", ".."],
 )
-def test_validate_profiles_rejects_names_that_alias_cache_paths(profile_name: str) -> None:
-    """Configured profile keys must be safe single components outside the exact internal root."""
-    with pytest.raises(RuntimeError, match="Failed to validate"):
-        validate_config(
-            {"profiles": {profile_name: {"storage_provider": {"type": "file", "options": {"base_path": "/objects"}}}}}
-        )
+def test_validate_profiles_accepts_names_constrained_only_by_path_cache_runtime(profile_name: str) -> None:
+    """Schema-only validation leaves path-cache profile constraints to cache construction."""
+    validate_config(
+        {"profiles": {profile_name: {"storage_provider": {"type": "file", "options": {"base_path": "/objects"}}}}}
+    )
 
 
 def _manifest_schema_config() -> dict:

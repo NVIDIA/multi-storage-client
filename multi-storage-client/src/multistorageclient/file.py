@@ -255,6 +255,7 @@ class ObjectFile(IOBase, IO):
         attributes: Optional[dict[str, Any]] = None,
         prefetch_file: Optional[bool] = None,
         buffering: int = -1,
+        range_reader_factory: Optional[Callable[[str], Callable[[int, int], bytes]]] = None,
     ):
         """
         Initialize the ObjectFile instance.
@@ -269,6 +270,7 @@ class ObjectFile(IOBase, IO):
         :param attributes: The attributes to add to the file if a new file is created.
         :param prefetch_file: If True, downloads the entire file to cache in the background for faster subsequent reads. If False, uses RemoteFileReader for streaming reads without caching. If None, inherits from cache configuration.
         :param buffering: The buffer size for streamed reads. Use 0 for unbuffered binary reads.
+        :param range_reader_factory: Optional factory for one stream-consistent ``(offset, size)`` range reader.
         """
         if mode not in ("r", "w", "rb", "wb", "a", "ab"):
             raise ValueError(f'Invalid mode "{mode}", only "w", "r", "a", "wb", "rb" and "ab" are supported.')
@@ -292,6 +294,8 @@ class ObjectFile(IOBase, IO):
         self._open_files = []
         self._check_source_version = check_source_version
         self._buffering = buffering
+        self._range_reader_factory = range_reader_factory
+        self._streaming_range_reader: Optional[Callable[[int, int], bytes]] = None
         self._local_path = None
         self._disable_read_cache = disable_read_cache
         self._download_error: Optional[Exception] = None
@@ -467,8 +471,14 @@ class ObjectFile(IOBase, IO):
                     if file_object is None:
                         # The process writes the file to a temporary file and move it to the cache directory.
                         temp_file_path = self._generate_temp_file_path()
-                        self._storage_client.download_file(self._streaming_path, temp_file_path)
-                        self._cache_manager.set(self._remote_path, temp_file_path, source_version)
+                        try:
+                            self._storage_client.download_file(self._streaming_path, temp_file_path)
+                            self._cache_manager.set(self._remote_path, temp_file_path, source_version)
+                        finally:
+                            try:
+                                os.unlink(temp_file_path)
+                            except OSError:
+                                pass
 
                         file_object = self._cache_manager.open(
                             self._remote_path, "rb", source_version, self._check_source_version
@@ -532,7 +542,35 @@ class ObjectFile(IOBase, IO):
         Use RemoteFileReader to open the file without keeping the data in memory.
         """
         file_size = self._object_metadata.content_length
-        if self._disable_read_cache or uncached:
+        if self._range_reader_factory is not None:
+            if self._streaming_range_reader is None:
+                self._streaming_range_reader = self._range_reader_factory(self._streaming_path)
+                cache_range_reader = getattr(self._storage_client, "_cache_aware_range_reader", None)
+                if (
+                    self._cache_manager is not None
+                    and not (self._disable_read_cache or uncached)
+                    and callable(cache_range_reader)
+                ):
+                    cache_range_reader_factory = cast(
+                        Callable[
+                            [str, Callable[[int, int], bytes], Optional[int], Optional[str], SourceVersionCheckMode],
+                            Callable[[int, int], bytes],
+                        ],
+                        cache_range_reader,
+                    )
+                    self._streaming_range_reader = cache_range_reader_factory(
+                        self._streaming_path,
+                        self._streaming_range_reader,
+                        file_size,
+                        self._object_metadata.etag,
+                        self._check_source_version,
+                    )
+            raw_file = RemoteFileReader(
+                self._streaming_path,
+                file_size,
+                read_range=self._streaming_range_reader,
+            )
+        elif self._disable_read_cache or uncached:
             raw_file = RemoteFileReader(
                 self._streaming_path,
                 file_size,
@@ -771,10 +809,7 @@ class ObjectFile(IOBase, IO):
             materialized_path = temp_file.name
 
         try:
-            if self._uses_remote_reader():
-                self._storage_client.download_file(self._streaming_path, materialized_path)
-            else:
-                self._materialize_open_bytes(materialized_path)
+            self._materialize_open_bytes(materialized_path)
         except BaseException:
             try:
                 os.unlink(materialized_path)

@@ -39,7 +39,6 @@ from multistorageclient.config import (
     _merge_profiles,
     _resolve_include_path,
 )
-from multistorageclient.manifest import ManifestValidationError
 from multistorageclient.manifest.http import HTTPServiceRangeReader
 from multistorageclient.providers import (
     ManifestMetadataProvider,
@@ -106,12 +105,12 @@ def test_yaml_config() -> None:
 
 
 @pytest.mark.parametrize("entrypoint", ["from_dict", "from_yaml", "from_file"])
-def test_config_loading_rejects_profiles_reserved_for_legacy_temp_downloads(
+def test_config_loading_allows_cache_reserved_profile_names_when_caching_is_disabled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     entrypoint: str,
 ) -> None:
-    """Reserved cache-profile names fail schema validation before client construction."""
+    """Non-cached profiles retain their long-standing configuration-name compatibility."""
     config = {
         "profiles": {
             ".tmp-user": {
@@ -123,19 +122,19 @@ def test_config_loading_rejects_profiles_reserved_for_legacy_temp_downloads(
         }
     }
 
-    with pytest.raises(RuntimeError, match="Failed to validate the config file"):
-        if entrypoint == "from_dict":
-            StorageClientConfig.from_dict(config, profile=".tmp-user")
-        elif entrypoint == "from_yaml":
-            StorageClientConfig.from_yaml(yaml.safe_dump(config), profile=".tmp-user")
-        else:
-            config_path = tmp_path / "config.yaml"
-            config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
-            monkeypatch.setattr(config_module, "read_rclone_config", lambda: ({}, None))
-            StorageClientConfig.from_file([str(config_path)], profile=".tmp-user")
+    if entrypoint == "from_dict":
+        loaded = StorageClientConfig.from_dict(config, profile=".tmp-user")
+    elif entrypoint == "from_yaml":
+        loaded = StorageClientConfig.from_yaml(yaml.safe_dump(config), profile=".tmp-user")
+    else:
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+        monkeypatch.setattr(config_module, "read_rclone_config", lambda: ({}, None))
+        loaded = StorageClientConfig.from_file([str(config_path)], profile=".tmp-user")
+
+    assert loaded.profile == ".tmp-user"
 
 
-@pytest.mark.parametrize("entrypoint", ["from_dict", "from_yaml", "from_file"])
 @pytest.mark.parametrize(
     "profile_name",
     [
@@ -146,13 +145,11 @@ def test_config_loading_rejects_profiles_reserved_for_legacy_temp_downloads(
         ".ｔｍｐ－legacy",
     ],
 )
-def test_config_loading_rejects_casefold_equivalents_of_reserved_cache_profiles(
+def test_config_loading_allows_casefold_equivalents_of_cache_reserved_profile_names_when_caching_is_disabled(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    entrypoint: str,
     profile_name: str,
 ) -> None:
-    """Schema validation keeps case-folding cache filesystem aliases out of profile names."""
+    """Cache path constraints are checked only when a cache manager is constructed."""
     config = {
         "profiles": {
             profile_name: {
@@ -164,16 +161,24 @@ def test_config_loading_rejects_casefold_equivalents_of_reserved_cache_profiles(
         }
     }
 
-    with pytest.raises(RuntimeError, match="Failed to validate the config file"):
-        if entrypoint == "from_dict":
-            StorageClientConfig.from_dict(config, profile=profile_name)
-        elif entrypoint == "from_yaml":
-            StorageClientConfig.from_yaml(yaml.safe_dump(config), profile=profile_name)
-        else:
-            config_path = tmp_path / "config.yaml"
-            config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
-            monkeypatch.setattr(config_module, "read_rclone_config", lambda: ({}, None))
-            StorageClientConfig.from_file([str(config_path)], profile=profile_name)
+    assert StorageClientConfig.from_dict(config, profile=profile_name).profile == profile_name
+
+
+def test_config_loading_rejects_a_cache_reserved_profile_name_when_path_based_caching_is_enabled(
+    tmp_path: Path,
+) -> None:
+    config = {
+        "profiles": {
+            ".tmp-user": {
+                "storage_provider": {"type": "file", "options": {"base_path": str(tmp_path)}},
+                "caching_enabled": True,
+            }
+        },
+        "cache": {"size": "10M", "cache_line_size": "1M", "location": str(tmp_path / "cache")},
+    }
+
+    with pytest.raises(ValueError, match="Cache profile"):
+        StorageClientConfig.from_dict(config, profile=".tmp-user")
 
 
 def test_override_default_profile() -> None:
@@ -1258,21 +1263,20 @@ def test_cache_config_line_size_within_cache_size_no_error():
     assert config.cache_config.cache_line_size == "32M"
 
 
-def test_profile_name_with_underscore() -> None:
-    """Test that profile names cannot start with an underscore."""
-    with pytest.raises(RuntimeError) as e:
-        StorageClientConfig.from_yaml(
-            """
-            profiles:
-              _invalid_profile:
-                storage_provider:
-                  type: file
-                  options:
-                    base_path: /invalid_path
-            """
-        )
+def test_profile_name_with_underscore_is_allowed_when_caching_is_disabled() -> None:
+    config = StorageClientConfig.from_yaml(
+        """
+        profiles:
+          _profile:
+            storage_provider:
+              type: file
+              options:
+                base_path: /valid_path
+        """,
+        profile="_profile",
+    )
 
-    assert "Failed to validate the config file" in str(e.value)
+    assert config.profile == "_profile"
 
 
 def test_path_mapping_section() -> None:
@@ -1507,6 +1511,27 @@ def test_replica_validation_valid_config():
     # Verify specific (replica_profile, read_priority) pairs to detect ordering/auto-assignment regressions
     replicas = [(r.replica_profile, r.read_priority) for r in config.replicas]
     assert replicas == [("replica1", 1), ("replica2", 2)]
+
+
+def test_replica_config_revalidates_from_a_frozen_parent_snapshot():
+    """Child construction thaws frozen list values before post-expansion schema validation."""
+    config_dict = {
+        "profiles": {
+            "primary": {
+                "storage_provider": {"type": "file", "options": {"base_path": "/tmp/primary"}},
+                "replicas": [{"replica_profile": "replica", "read_priority": 1}],
+            },
+            "replica": {
+                "storage_provider": {"type": "file", "options": {"base_path": "/tmp/replica"}},
+            },
+        }
+    }
+    primary = StorageClientConfig.from_dict(config_dict, "primary")
+
+    assert primary._config_dict is not None
+    replica = StorageClientConfig.from_dict(primary._config_dict, "replica")
+
+    assert replica.profile == "replica"
 
 
 def test_replica_validation_circular_reference():
@@ -2842,6 +2867,49 @@ def _virtual_manifest_config() -> dict:
     }
 
 
+@pytest.mark.parametrize("cache_size", [0, 1024, (1 << 63) - 1])
+def test_manifest_config_forwards_row_group_cache_size_bytes(tmp_path: Path, cache_size: int) -> None:
+    manifest_root = tmp_path / "manifests"
+    object_root = tmp_path / "objects"
+    manifest_root.mkdir()
+    object_root.mkdir()
+    (manifest_root / "catalog.parquet").write_bytes(write_manifest([]).getvalue())
+    config = _virtual_manifest_config()
+    config["profiles"]["manifest-store"]["storage_provider"]["options"]["base_path"] = str(manifest_root)
+    config["profiles"]["objects"]["storage_provider"]["options"]["base_path"] = str(object_root)
+    config["profiles"]["virtual"]["storage_provider"]["options"]["manifest_row_group_cache_size_bytes"] = cache_size
+
+    provider = cast(ManifestStorageProvider, StorageClientConfig.from_dict(config, profile="virtual").storage_provider)
+
+    assert provider._manifest_row_group_cache_size_bytes == cache_size
+
+
+def test_manifest_config_defaults_row_group_cache_to_64_mib(tmp_path: Path) -> None:
+    manifest_root = tmp_path / "manifests"
+    object_root = tmp_path / "objects"
+    manifest_root.mkdir()
+    object_root.mkdir()
+    (manifest_root / "catalog.parquet").write_bytes(write_manifest([]).getvalue())
+    config = _virtual_manifest_config()
+    config["profiles"]["manifest-store"]["storage_provider"]["options"]["base_path"] = str(manifest_root)
+    config["profiles"]["objects"]["storage_provider"]["options"]["base_path"] = str(object_root)
+
+    provider = cast(ManifestStorageProvider, StorageClientConfig.from_dict(config, profile="virtual").storage_provider)
+
+    assert provider._manifest_row_group_cache_size_bytes == 64 * 1024 * 1024
+
+
+@pytest.mark.parametrize("invalid_cache_size", [-1, 1 << 63, True, 1.5, "64M"])
+def test_manifest_config_rejects_invalid_row_group_cache_size_bytes(invalid_cache_size: object) -> None:
+    config = _virtual_manifest_config()
+    config["profiles"]["virtual"]["storage_provider"]["options"]["manifest_row_group_cache_size_bytes"] = (
+        invalid_cache_size
+    )
+
+    with pytest.raises(RuntimeError, match="Failed to validate"):
+        StorageClientConfig.from_dict(config, profile="virtual")
+
+
 @pytest.mark.parametrize("entrypoint", ["from_dict", "from_yaml", "from_file", "from_file_include"])
 def test_manifest_config_validates_whole_value_environment_interpolation_after_expansion(
     tmp_path: Path,
@@ -2961,8 +3029,8 @@ def test_manifest_config_rejects_repeated_service_allowlist_trailing_separators(
         StorageClientConfig.from_dict(config, profile="virtual").storage_provider
 
 
-def test_manifest_config_rejects_file_prefix_collisions_before_constructing_a_client(tmp_path: Path) -> None:
-    """A config-backed virtual client cannot expose both a file and its synthetic child directory."""
+def test_manifest_config_allows_an_exact_file_to_share_a_child_prefix(tmp_path: Path) -> None:
+    """Config construction accepts object-store-style exact-file and descendant coexistence."""
     manifest_root = tmp_path / "manifests"
     object_root = tmp_path / "objects"
     manifest_root.mkdir()
@@ -2979,8 +3047,9 @@ def test_manifest_config_rejects_file_prefix_collisions_before_constructing_a_cl
     config["profiles"]["manifest-store"]["storage_provider"]["options"]["base_path"] = str(manifest_root)
     config["profiles"]["objects"]["storage_provider"]["options"]["base_path"] = str(object_root)
 
-    with pytest.raises(ManifestValidationError, match="ancestor"):
-        StorageClient(StorageClientConfig.from_dict(config, profile="virtual"))
+    client = StorageClient(StorageClientConfig.from_dict(config, profile="virtual"))
+
+    assert isinstance(client._storage_provider, ManifestStorageProvider)
 
 
 @pytest.mark.parametrize(

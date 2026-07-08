@@ -18,7 +18,7 @@ from typing import Any
 
 from jsonschema import validate
 
-from .cache import _validate_cache_profile_name
+from .manifest.constants import MAX_ROW_GROUP_CACHE_SIZE_BYTES
 
 EXTENSION_SCHEMA = {
     "type": "object",
@@ -202,6 +202,11 @@ MANIFEST_STORAGE_PROVIDER_SCHEMA = {
                     ),
                 },
                 "max_workers": {"type": "integer", "minimum": 1},
+                "manifest_row_group_cache_size_bytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": MAX_ROW_GROUP_CACHE_SIZE_BYTES,
+                },
                 "source_profiles": {
                     "type": "object",
                     "propertyNames": MANIFEST_BINDING_ALIAS_SCHEMA,
@@ -299,13 +304,6 @@ PROFILE_SCHEMA = {
             }
         ],
     },
-    "propertyNames": {
-        "pattern": (
-            r"^(?:__filesystem__|(?!(?:\.|\.\.)$)(?!(?i:\.msc-cache-internal)$)"
-            r"(?!(?i:\.tmp-))"
-            r"(?!.*[\\/\x00-\x1f\x7f])[^_][^\\/\x00-\x1f\x7f]*)$"
-        ),
-    },
 }
 
 # Schema for the path_mapping section
@@ -393,11 +391,7 @@ def validate_config(config_dict: dict[str, Any]) -> None:
 
     # Custom validation: ensure replica_profile uniqueness within each profile's replicas
     profiles = config_dict.get("profiles", {})
-    for profile_name, profile in profiles.items():
-        try:
-            _validate_cache_profile_name(profile_name)
-        except ValueError as exc:
-            raise RuntimeError("Failed to validate the config file", exc) from exc
+    for profile in profiles.values():
         replicas = profile.get("replicas", [])
         replica_profiles = [r.get("replica_profile") for r in replicas]
         counter = Counter(replica_profiles)

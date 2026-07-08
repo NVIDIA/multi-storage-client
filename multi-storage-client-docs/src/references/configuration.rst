@@ -256,11 +256,9 @@ Each profile in the configuration defines how to interact with storage services 
 
    * The ``options`` field contains provider-specific configuration that will be passed to the provider's constructor. The available options depend on the specific provider implementation being used.
 
-   * Profile names must be a non-reserved single path component. Configuration rejects ``.``, ``..``, ``.msc-cache-internal`` and every case-folding or Unicode-normalization equivalent of that internal name, names containing a slash (``/``), backslash (``\\``), or control character, and every name beginning with an underscore (``_``) except the built-in ``__filesystem__`` profile, to avoid collisions with :ref:`implicit profiles <implicit-profiles>`.
+   * Profile-map keys are not restricted by cache filesystem rules when caching is disabled. This preserves existing configurations, including names that are not safe as local path components.
 
-   * Profile names matching ``.tmp-*`` are also reserved, including case-folding or Unicode-normalization equivalents of that prefix, because older MSC clients use ``<cache root>/.tmp-<profile>`` for in-progress downloads.
-
-   To migrate any newly rejected profile name, stop clients that share its cache root, rename it to a non-reserved single component, and update every reference to it. As applicable, this includes ``storage_provider_profiles``, replica ``replica_profile`` values, profile-addressing provider-bundle settings, ``metadata_provider.options.storage_provider_profile``, ``path_mapping`` entries, and virtual-manifest ``manifest_storage_profile`` and ``source_profiles.<alias>.profile`` values. For a legacy ``.tmp-`` profile, move or discard its cache directory only after separately identifying or clearing any legacy in-progress temporary-download data. Range-cache entries live in a hashed private namespace, so moving only ``<cache-root>/<old-profile>`` cannot migrate them to the renamed profile; clear and repopulate affected cache state instead.
+   * When ``caching_enabled`` is ``true`` and a path-based cache is configured, the selected profile name must be a non-reserved single path component. The cache rejects ``.``, ``..``, ``.msc-cache-internal`` and case-folding or Unicode-normalization equivalents, names containing a slash (``/``), backslash (``\\``), or control character, and names matching ``.tmp-*`` because older MSC clients use ``<cache root>/.tmp-<profile>`` for in-progress downloads. Rename that cached profile or disable caching for it; non-cached profiles do not need a migration.
 
    * The ``caching_enabled`` field controls whether caching is enabled for this specific profile. When set to ``true``, the profile will use the global cache configuration if provided. When set to ``false`` or omitted, caching is disabled for this profile regardless of global cache settings.
 
@@ -550,6 +548,7 @@ Required options:
 Optional options:
 
 * ``max_workers``: maximum concurrently fetched touched chunks (default ``8``);
+* ``manifest_row_group_cache_size_bytes``: integer maximum retained decoded Parquet row-group bytes from ``0`` through ``9223372036854775807`` (default ``67108864`` / 64 MiB; ``0`` disables row-group retention);
 * ``source_profiles``: mapping from manifest object aliases to ``profile`` and non-empty ``binding_revision``;
 * ``services``: mapping from service aliases to strict ``http`` service options.
 
@@ -576,6 +575,7 @@ Optional options:
            manifest_storage_profile: manifest-store
            manifest_path: releases/catalog.parquet
            max_workers: 8
+           manifest_row_group_cache_size_bytes: 67108864
            source_profiles:
              raw:
                profile: objects
@@ -595,6 +595,8 @@ Optional options:
                  verify_tls: true
 
 The manifest-store and object-source profiles must be direct profiles. They cannot be virtual manifests, composite ``storage_provider_profiles`` profiles, provider bundles, replica profiles, or profiles with a metadata provider. The virtual profile itself is read-only and cannot define a credentials provider, metadata provider, replicas, provider bundle, or autocommit settings. It may be a sync source, but attempts to use it as a sync target fail before workers are constructed.
+
+Provider construction validates the v2 footer/schema and row-group ``key`` metadata, then decodes row and logical-file semantics lazily. The row-group cache is a byte-bounded LRU with conservative Arrow-buffer accounting; an oversized row group bypasses retention rather than being partially cached. It is independent of the normal logical-content read cache and does not retain decoded logical-file plans. See :doc:`/user_guide/virtual_manifests` for validation timing, statistics requirements, page-index behavior, and publication immutability.
 
 For HTTP services, ``base_url`` is HTTPS by default (plain HTTP requires the exact boolean ``allow_insecure_http: true``), and path/query allowlists are mandatory. The service configuration may also specify ``headers`` and the exact boolean ``verify_tls``. Header names are case-insensitively unique HTTP tokens and values cannot contain control characters. Do not configure protocol-controlled ``Range``, ``Accept-Encoding``, ``Host``, or ``Content-Length`` headers.
 
@@ -1510,7 +1512,7 @@ Here are examples of non-MSC URLs that are automatically translated to MSC URIs:
 * ``s3://bucket1/path/to/object`` → ``msc://_s3-bucket1/path/to/object``
 * ``/path/to/another/file`` → ``msc://_file/path/to/another/file``
 
-Implicit profiles are identified by their leading underscore prefix, which is why user-defined profile names cannot start with an underscore.
+Implicit profiles use a leading underscore prefix. Explicitly configured profiles may use the same convention; an explicit configured profile takes precedence over an inferred implicit profile with that name.
 
 *********************
 Environment Variables
