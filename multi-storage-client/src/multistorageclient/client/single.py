@@ -36,9 +36,12 @@ from ..types import (
     AWARE_DATETIME_MIN,
     MSC_PROTOCOL,
     ExecutionMode,
+    FileRangeMapping,
+    InlineBytesMapping,
     ObjectMetadata,
     PatternList,
     Range,
+    RangeMappingMetadataProvider,
     Replica,
     ResolvedPathState,
     SignerType,
@@ -249,6 +252,24 @@ class SingleStorageClient(AbstractStorageClient):
 
     # -- Metadata resolution helpers --
 
+    def _read_mapped(self, logical_path: str, byte_range: Optional[Range] = None) -> bytes:
+        """
+        Assemble bytes for a MAPPED logical path by fetching each RangeMapping in order.
+
+        :param logical_path: The logical path whose realpath() returns MAPPED.
+        :param byte_range: Optional sub-range of the logical file to read.
+        """
+        assert isinstance(self._metadata_provider, RangeMappingMetadataProvider)
+        mappings = self._metadata_provider.real_mappings(logical_path, byte_range)
+        parts: list[bytes] = []
+        for mapping in mappings:
+            if isinstance(mapping, FileRangeMapping):
+                parts.append(self._storage_provider.get_object(mapping.physical_path, byte_range=mapping.range))
+            else:
+                assert isinstance(mapping, InlineBytesMapping)
+                parts.append(mapping.data)
+        return b"".join(parts)
+
     def _resolve_read_path(self, logical_path: str) -> str:
         """
         Resolve a logical path to its physical storage path for read operations.
@@ -413,6 +434,10 @@ class SingleStorageClient(AbstractStorageClient):
         :raises FileNotFoundError: If the file at the specified path does not exist.
         """
         if self._metadata_provider:
+            if isinstance(self._metadata_provider, RangeMappingMetadataProvider):
+                resolved = self._metadata_provider.realpath(path)
+                if resolved.state == ResolvedPathState.MAPPED:
+                    return self._read_mapped(path, byte_range)
             path = self._resolve_read_path(path)
 
         # Handle caching logic

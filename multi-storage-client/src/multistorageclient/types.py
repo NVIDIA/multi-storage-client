@@ -508,6 +508,7 @@ class ResolvedPathState(str, Enum):
     EXISTS = "exists"  # File currently exists
     DELETED = "deleted"  # File existed before but has been deleted
     UNTRACKED = "untracked"  # File never existed or was never tracked
+    MAPPED = "mapped"  # File is served via real_mappings() on a RangeMappingMetadataProvider
 
 
 class ResolvedPath(NamedTuple):
@@ -690,6 +691,51 @@ class MetadataProvider(ABC):
 
         When ``False``, delete operations will remove both the metadata and the physical file from storage
         (hard delete).
+        """
+        pass
+
+
+@dataclass
+class FileRangeMapping:
+    """A mapping that points to a byte range within a physical file."""
+
+    physical_path: str
+    range: Range
+
+
+@dataclass
+class InlineBytesMapping:
+    """A mapping that carries its content directly, requiring no storage read."""
+
+    data: bytes
+
+
+RangeMapping = Union[FileRangeMapping, InlineBytesMapping]
+
+
+class RangeMappingMetadataProvider(MetadataProvider):
+    """
+    Extension of :py:class:`MetadataProvider` for providers that serve logical files
+    as an ordered list of byte-range mappings rather than a single physical file.
+
+    When :py:meth:`realpath` returns :py:attr:`ResolvedPathState.MAPPED`, the storage
+    client calls :py:meth:`real_mappings` to obtain the list of segments that make up
+    the logical file, then assembles them in order.
+    """
+
+    @abstractmethod
+    def real_mappings(self, logical_path: str, byte_range: Optional[Range] = None) -> list[RangeMapping]:
+        """
+        Return the ordered list of segments that make up the logical file.
+
+        Each segment is either a :py:class:`FileRangeMapping` (fetch bytes from a
+        physical file) or an :py:class:`InlineBytesMapping` (return bytes directly).
+
+        :param logical_path: The logical path as passed to :py:meth:`realpath`.
+        :param byte_range: If given, return only segments that cover this logical
+            byte range, clipped to its boundaries.  ``None`` means return segments
+            for the entire file.
+        :return: Ordered list of :py:class:`RangeMapping` entries.
         """
         pass
 

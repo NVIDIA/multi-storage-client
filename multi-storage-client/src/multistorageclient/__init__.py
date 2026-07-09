@@ -43,7 +43,11 @@ from .shortcuts import (
 )
 from .types import (
     DryrunResult,
+    FileRangeMapping,
+    InlineBytesMapping,
     ProviderBundleV2,
+    RangeMapping,
+    RangeMappingMetadataProvider,
     ResolvedPath,
     ResolvedPathState,
     SignerType,
@@ -61,6 +65,10 @@ __all__ = [
     "CacheConfig",
     "Path",
     # Types
+    "FileRangeMapping",
+    "InlineBytesMapping",
+    "RangeMapping",
+    "RangeMappingMetadataProvider",
     "ResolvedPath",
     "ResolvedPathState",
     "ProviderBundleV2",

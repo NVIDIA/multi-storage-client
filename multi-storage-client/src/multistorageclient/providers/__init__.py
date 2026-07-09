@@ -17,6 +17,7 @@ import importlib
 import logging
 from typing import Any
 
+from .inverted_metadata import InvertedFileMetadataProvider
 from .manifest_metadata import ManifestMetadataProvider
 from .posix_file import PosixFileStorageProvider
 
@@ -116,6 +117,7 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "InvertedFileMetadataProvider",
     "ManifestMetadataProvider",
     "PosixFileStorageProvider",
 ]
