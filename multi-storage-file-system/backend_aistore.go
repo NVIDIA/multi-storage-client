@@ -327,7 +327,7 @@ func (aisContext *aistoreContextStruct) listObjects(listObjectsInput *listObject
 
 	// Set start after if provided
 	if listObjectsInput.startAfter != "" {
-		lsmsg.StartAfter = listObjectsInput.startAfter
+		lsmsg.StartAfter = backend.prefix + listObjectsInput.startAfter
 	}
 
 	// Set continuation token if provided

@@ -281,7 +281,7 @@ func (gcsContext *gcsContextStruct) listObjects(listObjectsInput *listObjectsInp
 
 	query = &storage.Query{
 		Prefix:      gcsContext.backend.prefix + listObjectsInput.prefix,
-		StartOffset: listObjectsInput.startAfter,
+		StartOffset: gcsContext.backend.prefix + listObjectsInput.startAfter,
 	}
 
 	objectIterator = bucketHandle.Objects(context.Background(), query)
