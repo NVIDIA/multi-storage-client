@@ -417,6 +417,7 @@ func (s3Context *s3ContextStruct) readFile(readFileInput *readFileInputStruct) (
 
 	s3GetObjectOutput, err = s3Context.s3Client.GetObject(context.Background(), s3GetObjectInput)
 	if err == nil {
+		defer s3GetObjectOutput.Body.Close()
 		readFileOutput = &readFileOutputStruct{}
 		if s3GetObjectOutput.ETag == nil {
 			readFileOutput.eTag = ""
