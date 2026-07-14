@@ -1426,7 +1426,7 @@ func checkConfigFile() (err error) {
 					}
 
 					backendConfigGCSAsStruct.retryNextDelayMultiplier, ok = parseFloat64(backendConfigGCSAsMap, "retry_next_delay_multiplier", defaultGCSRetryNextDelayMultiplier)
-					if !ok || (backendConfigS3AsStruct.retryNextDelayMultiplier < float64(1.0)) {
+					if !ok || (backendConfigGCSAsStruct.retryNextDelayMultiplier < float64(1.0)) {
 						err = fmt.Errorf("bad GCS.retry_next_delay_multiplier at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
 						return
 					}
