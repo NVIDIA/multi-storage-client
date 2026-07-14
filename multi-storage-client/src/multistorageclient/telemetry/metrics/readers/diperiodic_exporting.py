@@ -238,9 +238,14 @@ class DiperiodicExportingMetricReader(sdk_metrics_export.MetricReader):
 
         with self._shutdown_event_lock:
             if not self._shutdown_event.is_set():
+                # Signal the collect + export daemons to stop first. Their loops only
+                # exit once this event is set, and the export daemon performs a final
+                # collect + export on the way out. Joining before setting the event
+                # would block for the full timeout and then run that final export
+                # against an already-shut-down exporter.
+                self._shutdown_event.set()
                 if self._collect_daemon is not None:
                     self._collect_daemon.join(timeout=(deadline_ns - time.time_ns()) / 10**9)
                 if self._export_daemon is not None:
                     self._export_daemon.join(timeout=(deadline_ns - time.time_ns()) / 10**9)
                 self._exporter.shutdown(timeout_millis=(deadline_ns - time.time_ns()) / 10**6)
-                self._shutdown_event.set()
