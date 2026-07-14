@@ -444,9 +444,7 @@ class GoogleStorageProvider(BaseStorageProvider):
             blob = bucket_obj.blob(key)
             if byte_range:
                 if self._rust_client:
-                    return run_async_rust_client_method(
-                        self._rust_client, "get", key, byte_range.offset, byte_range.offset + byte_range.size - 1
-                    )
+                    return run_async_rust_client_method(self._rust_client, "get", key, byte_range)
                 else:
                     return blob.download_as_bytes(
                         start=byte_range.offset, end=byte_range.offset + byte_range.size - 1, single_shot_download=True
