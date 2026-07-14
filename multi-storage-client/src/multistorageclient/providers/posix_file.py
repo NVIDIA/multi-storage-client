@@ -431,7 +431,12 @@ class PosixFileStorageProvider(BaseStorageProvider):
         if isinstance(f, str):
             filesize = os.path.getsize(f)
         elif isinstance(f, StringIO):
-            filesize = len(f.getvalue().encode("utf-8"))
+            # atomic_write writes the source in binary mode; a StringIO would yield
+            # str from read() and raise TypeError on the binary write, so materialize
+            # the text as a bytes buffer here.
+            data = f.getvalue().encode("utf-8")
+            filesize = len(data)
+            f = BytesIO(data)
         else:
             filesize = len(f.getvalue())  # type: ignore
 
