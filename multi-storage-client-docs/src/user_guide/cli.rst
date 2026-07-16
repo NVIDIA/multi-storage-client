@@ -2,7 +2,7 @@
 Command-Line Interface
 ######################
 
-After installing the ``multi-storage-client`` package (see :doc:`installation`), you can use the ``msc`` command to interact with your storage services.
+After installing the ``multi-storage-client`` package (see :doc:`installation`), you can use the ``msc`` command to interact with your storage services. The package also installs the standalone ``msc-benchmark`` command for measuring storage performance.
 
 Below are the available sub-commands under ``msc``.
 
@@ -30,6 +30,77 @@ The ``msc help`` command displays general help information and available command
    mcp-server Start the Multi-Storage Client MCP (Model Context Protocol) server
    rm       Delete files or directories
    sync     Synchronize files from the source storage to the target storage
+
+
+*************
+msc-benchmark
+*************
+
+The ``msc-benchmark`` command measures upload and download throughput and response times for an MSC storage profile. It uploads generated objects, downloads them, reports total throughput plus average, 50th, 90th, and 99th percentile response times, and then deletes the test objects.
+
+``msc-benchmark`` is a standalone command rather than an ``msc`` sub-command, so invoke it directly instead of using ``msc benchmark``.
+
+.. code-block:: text
+  :caption: msc-benchmark help output
+
+  $ msc-benchmark --help
+  usage: msc-benchmark [-h] [--prefix PREFIX] [--config CONFIG]
+                       --profile PROFILE [--include-file-tests]
+                       [--file-tests-dir FILE_TESTS_DIR]
+
+  Upload/Download performance tests with Multi-Storage Client
+
+  options:
+    -h, --help            show this help message and exit
+    --prefix PREFIX       The path prefix to use for the test
+    --config CONFIG       Path to configuration file
+    --profile PROFILE     MSC profile to use
+    --include-file-tests  Include additional file-based tests (use upload_file
+                          and download_file)
+    --file-tests-dir FILE_TESTS_DIR
+                          Directory for file-based tests (if --include-file-
+                          tests is used). This directory will be deleted after
+                          test finishes. Default: /tmp/msc_benchmark
+
+Run a benchmark against a configured profile and keep its temporary objects under a dedicated prefix:
+
+.. code-block:: shell
+
+  $ msc-benchmark --profile s3-bucket --prefix benchmarks/run-001
+
+By default, the benchmark uses 8 processes, 4 threads per process, 12,800 objects of 4 MB, and 800 objects of 64 MB. To compare multiple concurrency settings or run a smaller workload, provide a JSON configuration file:
+
+.. code-block:: json
+  :caption: benchmark.json
+
+  {
+    "processes": [1, 4],
+    "threads": [1, 8],
+    "test_object_sizes": {
+      "1MB": 100,
+      "16MB": 10
+    }
+  }
+
+.. code-block:: shell
+
+  $ msc-benchmark --profile s3-bucket --prefix benchmarks/run-002 --config benchmark.json
+
+The command runs the workload for every combination in ``processes`` and ``threads``. Object sizes use an integer followed by ``KB``, ``MB``, ``GB``, ``TB``, or ``PB``.
+
+By default, generated test payloads remain in memory while the benchmark exercises the ``write`` and ``read`` APIs. Use ``--include-file-tests`` to additionally write generated test data to a local directory and benchmark the ``upload_file`` and ``download_file`` APIs, including local file I/O:
+
+.. code-block:: shell
+
+  $ msc-benchmark --profile s3-bucket --prefix benchmarks/file-run --config benchmark.json --include-file-tests --file-tests-dir /tmp/msc-file-benchmark
+
+.. warning::
+
+  Use a dedicated, unique ``--prefix``. The benchmark deletes the objects it creates after each run, and matching pre-existing objects may be overwritten and deleted.
+
+  The default workload transfers a substantial amount of data. Review the object counts, storage capacity, transfer costs, and request costs before running it against a cloud profile.
+
+  When ``--include-file-tests`` is enabled, ``--file-tests-dir`` and all of its contents are recursively deleted after the test. Never point it at a directory containing important files.
 
 
 ******
