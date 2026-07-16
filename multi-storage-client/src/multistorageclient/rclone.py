@@ -235,7 +235,7 @@ def _parse_config_section(section: configparser.SectionProxy) -> dict[str, Any]:
         storage_type = "oci"
     elif storage_type == "ais":
         storage_provider_options, credentials_provider = _parse_ais_storage_provider_config(section)
-    elif storage_type in ("file"):
+    elif storage_type == "file":
         # Gather all generic config keys for all other supported storage providers.
         storage_provider_options = {k: v for k, v in section.items()}
     else:
