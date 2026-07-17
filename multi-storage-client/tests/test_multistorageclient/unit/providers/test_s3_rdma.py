@@ -22,6 +22,8 @@ empty-body PUT / sized GET), not the RDMA transfer itself. The transfer is
 covered end-to-end against a live RDMA endpoint by ``examples/rdma_roundtrip.py``.
 """
 
+import base64
+import struct
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -34,6 +36,8 @@ from multistorageclient.providers.s3 import (
     StaticS3CredentialsProvider,
 )
 from multistorageclient.types import Range
+
+_FAKE_CHECKSUM = "ZmFrZWNyYzY0"
 
 
 def _make_rdma_provider(engine_cls: MagicMock, **extra: Any) -> S3StorageProvider:
@@ -79,8 +83,9 @@ def test_rdma_enables_single_shot_and_installs_hooks(engine_cls: MagicMock):
     engine_cls.return_value.install_hooks.assert_called_once_with(provider._s3_client)
 
 
+@patch.object(S3StorageProvider, "_rdma_checksum", staticmethod(lambda buffer: _FAKE_CHECKSUM))
 @patch("multistorageclient.providers.s3.CuObjEngine")
-def test_rdma_put_sends_empty_body_and_registers_buffer(engine_cls: MagicMock):
+def test_rdma_put_sends_empty_body_checksum_and_registers_buffer(engine_cls: MagicMock):
     provider = _make_rdma_provider(engine_cls)
     provider._s3_client = MagicMock()
     engine = engine_cls.return_value
@@ -91,7 +96,40 @@ def test_rdma_put_sends_empty_body_and_registers_buffer(engine_cls: MagicMock):
     assert engine.transfer.call_args.kwargs["is_put"] is True
     _, put_kwargs = provider._s3_client.put_object.call_args
     assert put_kwargs["Body"] == b""
+    # Precomputed CRC64NVME sent so a non-RDMA endpoint rejects the empty body
+    # instead of storing a 0-byte object.
+    assert put_kwargs["ChecksumCRC64NVME"] == _FAKE_CHECKSUM
     engine.check_reply.assert_called_once()
+
+
+@patch.object(S3StorageProvider, "_rdma_checksum", staticmethod(lambda buffer: _FAKE_CHECKSUM))
+@patch("multistorageclient.providers.s3.CuObjEngine")
+def test_rdma_put_reuses_writable_buffer_and_copies_readonly(engine_cls: MagicMock):
+    provider = _make_rdma_provider(engine_cls)
+    provider._s3_client = MagicMock()
+    engine = engine_cls.return_value
+
+    # Writable buffers (bytearray, writable memoryview) are registered in place.
+    writable = bytearray(b"writable payload")
+    provider._put_object(path="test-bucket/k1", body=writable)
+    assert engine.transfer.call_args.args[0] is writable
+
+    view = memoryview(bytearray(b"view payload"))
+    provider._put_object(path="test-bucket/k2", body=view)
+    assert engine.transfer.call_args.args[0] is view
+
+    # Read-only bytes are copied into a writable bytearray (cannot be pinned).
+    provider._put_object(path="test-bucket/k3", body=b"immutable payload")
+    copied = engine.transfer.call_args.args[0]
+    assert isinstance(copied, bytearray)
+    assert bytes(copied) == b"immutable payload"
+
+
+def test_rdma_checksum_matches_awscrt():
+    checksums = pytest.importorskip("awscrt.checksums")
+    data = b"the quick brown fox" * 1000
+    expected = base64.b64encode(struct.pack(">Q", checksums.crc64nvme(data))).decode("ascii")
+    assert S3StorageProvider._rdma_checksum(data) == expected
 
 
 @patch("multistorageclient.providers.s3.CuObjEngine")

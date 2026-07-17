@@ -13,9 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import base64
 import codecs
 import io
 import os
+import struct
 import tempfile
 from collections.abc import Callable, Iterator
 from typing import IO, Any, Optional, TypeVar, Union
@@ -531,16 +533,40 @@ class S3StorageProvider(BaseStorageProvider):
                 f"Failed to {operation} object(s) at {bucket}/{key}, error type: {type(error).__name__}, error: {error}"
             ) from error
 
+    @staticmethod
+    def _rdma_checksum(buffer) -> str:
+        """Base64 CRC64NVME of ``buffer`` for the ``x-amz-checksum-crc64nvme`` header.
+
+        CRC64NVME is hardware-accelerated and computed via ``awscrt`` (the same
+        implementation botocore uses for this algorithm).
+        """
+        try:
+            from awscrt import checksums
+        except ImportError as error:
+            raise RuntimeError(
+                "RDMA PUT computes a CRC64NVME checksum and requires the 'awscrt' package (pip install awscrt)."
+            ) from error
+        return base64.b64encode(struct.pack(">Q", checksums.crc64nvme(buffer))).decode("ascii")
+
     def _rdma_put(self, kwargs: dict[str, Any], body: bytes) -> int:
-        """Single-shot RDMA PUT: cuObject transfers the registered buffer; the HTTP body is empty."""
+        """Single-shot RDMA PUT: cuObject transfers the registered buffer; the HTTP body is empty.
+
+        A CRC64NVME checksum of the payload is computed on the client and sent as
+        ``x-amz-checksum-crc64nvme``. On an RDMA-capable endpoint it is validated
+        against the bytes delivered over RDMA; on an endpoint that ignores the
+        RDMA token it is validated against the (empty) HTTP body and fails with a
+        checksum mismatch, so the upload is rejected rather than silently storing
+        a 0-byte object.
+        """
         engine = self._rdma_engine
         assert engine is not None
-        # cuObject pins a stable, writable region, so an immutable body is copied once.
-        buffer = body if isinstance(body, bytearray) else bytearray(body)
+        # cuObject pins a writable region: reuse the caller's buffer when it is
+        # writable, and copy only a read-only (immutable) body such as bytes.
+        buffer = bytearray(body) if memoryview(body).readonly else body
         if len(buffer) == 0:
             self._s3_client.put_object(**kwargs)
             return 0
-        kwargs = {**kwargs, "Body": b""}
+        kwargs = {**kwargs, "Body": b"", "ChecksumCRC64NVME": self._rdma_checksum(buffer)}
         with engine.transfer(buffer, is_put=True):
             response = self._s3_client.put_object(**kwargs)
             engine.check_reply(response)
