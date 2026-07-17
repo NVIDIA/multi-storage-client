@@ -17,6 +17,7 @@
 import glob
 import os
 import tempfile
+from io import StringIO
 from unittest.mock import patch
 
 from multistorageclient.providers.posix_file import PosixFileStorageProvider
@@ -78,6 +79,22 @@ def test_list_objects_with_ascending_order():
         ]
         glob_file_keys.sort()
         assert file_keys == glob_file_keys, "Files not sorted"
+
+
+def test_upload_file_from_stringio_writes_utf8_bytes():
+    # atomic_write opens the destination in binary mode and writes source.read()
+    # chunks. A StringIO yields str from read(), so without materializing it to a
+    # bytes buffer first the binary write raises
+    # "TypeError: a bytes-like object is required, not 'str'".
+    with tempfile.TemporaryDirectory() as temp_dir:
+        provider = PosixFileStorageProvider(base_path=temp_dir)
+
+        text = "héllo, wörld"  # non-ASCII to also pin UTF-8 encoding
+        provider.upload_file("notes.txt", StringIO(text))
+
+        dest = os.path.join(temp_dir, "notes.txt")
+        with open(dest, "rb") as fp:
+            assert fp.read() == text.encode("utf-8")
 
 
 def test_make_symlink_creates_relative_symlink():
