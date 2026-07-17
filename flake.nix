@@ -74,7 +74,7 @@
         # Override inputs.
         #
         # https://nixos.org/manual/nixpkgs/unstable#function-library-lib.attrsets.recursiveUpdate
-        finalInputs = inputs.nixpkgs.lib.attrsets.recursiveUpdate inputs {
+        developmentInputs = inputs.nixpkgs.lib.attrsets.recursiveUpdate inputs {
           nixpkgs = {
             # https://nixos.org/manual/nixpkgs/unstable#function-library-lib.attrsets.mapAttrs
             legacyPackages = inputs.nixpkgs.lib.attrsets.mapAttrs (
@@ -103,21 +103,21 @@
         # Return an attribute set of system to the result of applying `f`.
         #
         # https://nixos.org/manual/nixpkgs/unstable#function-library-lib.attrsets.genAttrs
-        genSystemAttrs = f: finalInputs.nixpkgs.lib.attrsets.genAttrs systems f;
+        genSystemAttrs = f: inputs.nixpkgs.lib.attrsets.genAttrs systems f;
       in
       {
         # Packages.
         #
         # For `nix build`.
         packages = genSystemAttrs (
-          system: finalInputs.nixpkgs.legacyPackages.${system}.multi-storage-client.packages
+          system: developmentInputs.nixpkgs.legacyPackages.${system}.multi-storage-client.packages
         );
 
         # Development shells.
         #
         # For `nix develop` and direnv's `use flake`.
         devShells = genSystemAttrs (
-          system: finalInputs.nixpkgs.legacyPackages.${system}.multi-storage-client.devShells
+          system: developmentInputs.nixpkgs.legacyPackages.${system}.multi-storage-client.devShells
         );
       }
     );
