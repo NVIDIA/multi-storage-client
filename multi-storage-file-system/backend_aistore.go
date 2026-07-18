@@ -484,7 +484,7 @@ func (aisContext *aistoreContextStruct) statFile(statFileInput *statFileInputStr
 
 	statFileOutput = &statFileOutputStruct{
 		eTag:  props.Cksum.Value(),
-		mTime: time.UnixMicro(props.Atime),
+		mTime: time.Unix(0, props.Atime),
 		size:  uint64(props.Size),
 	}
 
