@@ -23,6 +23,7 @@ covered end-to-end against a live RDMA endpoint by ``examples/rdma_roundtrip.py`
 """
 
 import base64
+import io
 import struct
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -176,3 +177,61 @@ def test_rdma_get_full_object_heads_for_size(engine_cls: MagicMock):
     assert engine.transfer.call_args.kwargs["is_put"] is False
     _, get_kwargs = provider._s3_client.get_object.call_args
     assert "Range" not in get_kwargs
+
+
+@patch.object(S3StorageProvider, "_rdma_checksum", staticmethod(lambda buffer: _FAKE_CHECKSUM))
+@patch("multistorageclient.providers.s3.CuObjEngine")
+def test_rdma_upload_small_uses_single_shot(engine_cls: MagicMock):
+    provider = _make_rdma_provider(engine_cls)
+    provider._s3_client = MagicMock()
+    provider._rdma_multipart_chunksize = 16
+
+    provider._upload_file(remote_path="test-bucket/small.bin", f=io.BytesIO(b"x" * 10))
+
+    provider._s3_client.create_multipart_upload.assert_not_called()
+    provider._s3_client.put_object.assert_called_once()
+
+
+@patch.object(S3StorageProvider, "_rdma_checksum", staticmethod(lambda buffer: _FAKE_CHECKSUM))
+@patch("multistorageclient.providers.s3.CuObjEngine")
+def test_rdma_upload_multipart_splits_and_completes(engine_cls: MagicMock):
+    provider = _make_rdma_provider(engine_cls)
+    provider._s3_client = MagicMock()
+    provider._rdma_multipart_chunksize = 16
+    provider._s3_client.create_multipart_upload.return_value = {"UploadId": "uid"}
+    provider._s3_client.upload_part.side_effect = [{"ETag": f"etag{i}"} for i in range(1, 4)]
+    engine = engine_cls.return_value
+
+    written = provider._upload_file(remote_path="test-bucket/big.bin", f=io.BytesIO(b"a" * 40))
+
+    assert written == 40
+    # 40 bytes / 16 => parts of 16, 16, 8.
+    assert provider._s3_client.upload_part.call_count == 3
+    assert engine.transfer.call_count == 3
+    for call in provider._s3_client.upload_part.call_args_list:
+        assert call.kwargs["Body"] == b""
+        assert call.kwargs["ChecksumCRC64NVME"] == _FAKE_CHECKSUM
+    part_numbers = [c.kwargs["PartNumber"] for c in provider._s3_client.upload_part.call_args_list]
+    assert part_numbers == [1, 2, 3]
+    _, complete_kwargs = provider._s3_client.complete_multipart_upload.call_args
+    assert complete_kwargs["MultipartUpload"]["Parts"] == [
+        {"PartNumber": 1, "ETag": "etag1"},
+        {"PartNumber": 2, "ETag": "etag2"},
+        {"PartNumber": 3, "ETag": "etag3"},
+    ]
+
+
+@patch.object(S3StorageProvider, "_rdma_checksum", staticmethod(lambda buffer: _FAKE_CHECKSUM))
+@patch("multistorageclient.providers.s3.CuObjEngine")
+def test_rdma_upload_multipart_aborts_on_failure(engine_cls: MagicMock):
+    provider = _make_rdma_provider(engine_cls)
+    provider._s3_client = MagicMock()
+    provider._rdma_multipart_chunksize = 16
+    provider._s3_client.create_multipart_upload.return_value = {"UploadId": "uid"}
+    provider._s3_client.upload_part.side_effect = [{"ETag": "etag1"}, RuntimeError("part failed")]
+
+    with pytest.raises(RuntimeError):
+        provider._upload_file(remote_path="test-bucket/big.bin", f=io.BytesIO(b"a" * 40))
+
+    provider._s3_client.abort_multipart_upload.assert_called_once()
+    provider._s3_client.complete_multipart_upload.assert_not_called()

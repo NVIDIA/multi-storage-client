@@ -66,10 +66,16 @@ IO_CHUNKSIZE = 32 * MiB
 PYTHON_MAX_CONCURRENCY = 8
 MAX_POOL_CONNECTIONS = DEFAULT_MAX_POOL_CONNECTIONS
 
-# When RDMA is enabled, cuObject transfers the whole registered buffer in a
-# single shot, so multipart is disabled by raising the threshold past any
-# practical object size and routing all transfers through the single-shot path.
+# When RDMA is enabled, small objects and every GET move as a single registered
+# buffer, so the boto multipart threshold is raised past any practical object
+# size and those transfers take the single-shot path. Larger uploads are split
+# by the RDMA multipart path below (single PutObject caps at 5 GiB, and parts
+# bound the size of any one registered buffer / RDMA transfer).
 RDMA_SINGLE_SHOT_THRESHOLD = 1 << 62
+
+# Default RDMA multipart part size. Uploads larger than this are sent as an
+# RDMA multipart upload (one registered buffer + token + CRC64NVME per part).
+RDMA_MULTIPART_CHUNKSIZE = 512 * MiB
 
 PROVIDER = "s3"
 
@@ -260,11 +266,15 @@ class S3StorageProvider(BaseStorageProvider):
         self._checksum_algorithm: Optional[str] = self._validate_checksum_algorithm(kwargs.get("checksum_algorithm"))
 
         self._rdma_engine: Optional[CuObjEngine] = None
+        self._rdma_multipart_chunksize = RDMA_MULTIPART_CHUNKSIZE
         if self._rdma_options is not None:
             self._rdma_engine = CuObjEngine()
             self._rdma_engine.install_hooks(self._s3_client)
             self._checksum_algorithm = None
             self._multipart_threshold = RDMA_SINGLE_SHOT_THRESHOLD
+            self._rdma_multipart_chunksize = int(
+                self._rdma_options.get("multipart_chunksize", RDMA_MULTIPART_CHUNKSIZE)
+            )
 
         self._rust_client = None
         if "rust_client" in kwargs:
@@ -597,6 +607,101 @@ class S3StorageProvider(BaseStorageProvider):
             return buffer
 
         return self._translate_errors(_invoke_api, operation="GET", bucket=bucket, key=key)
+
+    def _rdma_create_extra(
+        self, bucket: str, attributes: Optional[dict[str, str]], content_type: Optional[str]
+    ) -> dict[str, Any]:
+        extra: dict[str, Any] = {}
+        if content_type:
+            extra["ContentType"] = content_type
+        if self._is_directory_bucket(bucket):
+            extra["StorageClass"] = EXPRESS_ONEZONE_STORAGE_CLASS
+        validated = validate_attributes(attributes)
+        if validated:
+            extra["Metadata"] = validated
+        return extra
+
+    def _rdma_upload(
+        self,
+        remote_path: str,
+        f: Union[str, IO],
+        attributes: Optional[dict[str, str]],
+        content_type: Optional[str],
+    ) -> int:
+        """RDMA upload entry point: single-shot below the part size, multipart above it."""
+        bucket, key = split_path(remote_path)
+        if isinstance(f, str):
+            size = os.path.getsize(f)
+            with open(f, "rb") as fp:
+                if size > self._rdma_multipart_chunksize:
+                    extra = self._rdma_create_extra(bucket, attributes, content_type)
+                    return self._rdma_upload_multipart(bucket, key, fp, size, extra)
+                return self._put_object(remote_path, fp.read(), attributes=attributes, content_type=content_type)
+
+        f.seek(0, io.SEEK_END)
+        size = f.tell()
+        f.seek(0)
+        if size > self._rdma_multipart_chunksize and not isinstance(f, io.StringIO):
+            extra = self._rdma_create_extra(bucket, attributes, content_type)
+            return self._rdma_upload_multipart(bucket, key, f, size, extra)
+        data = f.read()
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        return self._put_object(remote_path, data, attributes=attributes, content_type=content_type)
+
+    def _rdma_upload_multipart(self, bucket: str, key: str, fp: IO, size: int, extra: dict[str, Any]) -> int:
+        """RDMA multipart upload: each part is transferred as its own registered buffer.
+
+        cuObject transfers one part-sized buffer per ``UploadPart`` (empty HTTP
+        body + RDMA token), each carrying a CRC64NVME the endpoint validates
+        against the RDMA-delivered bytes -- so the 0-byte-save guard applies per
+        part. Multipart is required past the single-PutObject size limit and
+        bounds the size of any one registered buffer / RDMA transfer.
+        """
+        engine = self._rdma_engine
+        assert engine is not None
+        part_size = self._rdma_multipart_chunksize
+
+        def _invoke_api() -> int:
+            upload_id = self._s3_client.create_multipart_upload(Bucket=bucket, Key=key, **extra)["UploadId"]
+            parts: list[dict[str, Any]] = []
+            try:
+                part_number = 1
+                remaining = size
+                while remaining > 0:
+                    n = min(part_size, remaining)
+                    chunk = bytearray()
+                    while len(chunk) < n:
+                        data = fp.read(n - len(chunk))
+                        if not data:
+                            raise RuntimeError(f"unexpected end of input for {bucket}/{key} at part {part_number}")
+                        chunk.extend(data)
+                    checksum = self._rdma_checksum(chunk)
+                    with engine.transfer(chunk, is_put=True):
+                        response = self._s3_client.upload_part(
+                            Bucket=bucket,
+                            Key=key,
+                            UploadId=upload_id,
+                            PartNumber=part_number,
+                            Body=b"",
+                            ChecksumCRC64NVME=checksum,
+                        )
+                        engine.check_reply(response)
+                    parts.append({"PartNumber": part_number, "ETag": response["ETag"]})
+                    remaining -= n
+                    part_number += 1
+                self._s3_client.complete_multipart_upload(
+                    Bucket=bucket, Key=key, UploadId=upload_id, MultipartUpload={"Parts": parts}
+                )
+            except BaseException:
+                try:
+                    self._s3_client.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id)
+                except Exception:
+                    pass
+                raise
+            return size
+
+        return self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
 
     def _put_object(
         self,
@@ -1004,6 +1109,9 @@ class S3StorageProvider(BaseStorageProvider):
         attributes: Optional[dict[str, str]] = None,
         content_type: Optional[str] = None,
     ) -> int:
+        if self._rdma_engine is not None:
+            return self._rdma_upload(remote_path, f, attributes, content_type)
+
         file_size: int = 0
 
         if isinstance(f, str):
