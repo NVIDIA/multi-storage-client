@@ -115,9 +115,16 @@ int cuobj_put_rdma_token(const char* token) {
       return 0;
     }
     desc = it->second;
-    tokenRegistry().erase(it);
   }
-  return getClient()->cuMemObjPutRDMAToken(desc) == CU_OBJ_SUCCESS ? 0 : -1;
+  // Release the descriptor before dropping the registry entry: if the release
+  // fails the entry is retained so the caller can retry rather than leaking the
+  // only handle to the descriptor.
+  if (getClient()->cuMemObjPutRDMAToken(desc) != CU_OBJ_SUCCESS) {
+    return -1;
+  }
+  std::lock_guard<std::mutex> lock(tokenMutex());
+  tokenRegistry().erase(std::string(token));
+  return 0;
 }
 
 } // extern "C"

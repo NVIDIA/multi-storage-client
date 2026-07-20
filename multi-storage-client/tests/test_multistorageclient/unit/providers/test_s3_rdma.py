@@ -25,6 +25,7 @@ covered end-to-end against a live RDMA endpoint by ``examples/rdma_roundtrip.py`
 import base64
 import io
 import struct
+from array import array
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -235,3 +236,65 @@ def test_rdma_upload_multipart_aborts_on_failure(engine_cls: MagicMock):
 
     provider._s3_client.abort_multipart_upload.assert_called_once()
     provider._s3_client.complete_multipart_upload.assert_not_called()
+
+
+def test_install_hooks_registers_token_for_put_get_and_upload_part():
+    engine = object.__new__(_RealCuObjEngine)
+    s3_client = MagicMock()
+
+    engine.install_hooks(s3_client)
+
+    registered = {call.args[0] for call in s3_client.meta.events.register.call_args_list}
+    assert registered == {
+        "before-sign.s3.PutObject",
+        "before-sign.s3.GetObject",
+        "before-sign.s3.UploadPart",
+    }
+
+
+def test_transfer_registers_full_nbytes_for_multibyte_memoryview():
+    import multistorageclient.providers._cuobj as cuobj
+
+    engine = object.__new__(_RealCuObjEngine)
+    buffer = memoryview(array("H", [0x1111, 0x2222, 0x3333, 0x4444]))  # 4 items, 8 bytes
+    assert len(buffer) == 4 and buffer.nbytes == 8
+
+    with (
+        patch.object(cuobj, "register_buffer") as register,
+        patch.object(cuobj, "get_rdma_token", return_value="tok") as get_token,
+        patch.object(cuobj, "put_rdma_token"),
+        patch.object(cuobj, "deregister_buffer"),
+    ):
+        with engine.transfer(buffer, is_put=False):
+            pass
+
+    assert register.call_args.args[1] == 8  # nbytes, not len() == 4
+    assert get_token.call_args.args[1] == 8
+
+
+@patch("multistorageclient.providers.s3.CuObjEngine")
+def test_rdma_get_full_object_binds_ifmatch_to_head_version(engine_cls: MagicMock):
+    provider = _make_rdma_provider(engine_cls)
+    provider._s3_client = MagicMock()
+
+    metadata = MagicMock()
+    metadata.content_length = 64
+    metadata.etag = '"abc123"'
+    with patch.object(provider, "_get_object_metadata", return_value=metadata):
+        provider._get_object(path="test-bucket/key.bin")
+
+    _, get_kwargs = provider._s3_client.get_object.call_args
+    assert get_kwargs["IfMatch"] == '"abc123"'
+
+
+@patch("multistorageclient.providers.s3.CuObjEngine")
+def test_rdma_multipart_chunksize_must_be_positive(engine_cls: MagicMock):
+    engine_cls.client_config_overrides.return_value = _RealCuObjEngine.client_config_overrides()
+    with pytest.raises(ValueError, match="multipart_chunksize"):
+        S3StorageProvider(
+            region_name="us-east-1",
+            endpoint_url="https://s3.example.com",
+            base_path="test-bucket",
+            credentials_provider=StaticS3CredentialsProvider(access_key="a", secret_key="b"),
+            rdma={"multipart_chunksize": 0},
+        )

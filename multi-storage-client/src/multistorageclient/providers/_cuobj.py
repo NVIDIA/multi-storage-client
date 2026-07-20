@@ -177,14 +177,15 @@ def put_rdma_token(token: str) -> None:
         raise CuObjError("cuMemObjPutRDMAToken failed")
 
 
-def _buffer_address(buffer: Union[bytearray, memoryview]) -> int:
+def _buffer_address(buffer: Union[bytearray, memoryview], nbytes: int) -> int:
     """Return the address of a writable, contiguous buffer for RDMA registration.
 
     A writable buffer is required: GET delivers payload into it over RDMA, and a
     PUT source is copied into one by the caller so cuObject can pin a stable,
-    non-immutable region.
+    non-immutable region. ``nbytes`` is the byte length (``memoryview.nbytes``),
+    which differs from ``len()`` for multi-byte item formats.
     """
-    array = (ctypes.c_char * len(buffer)).from_buffer(buffer)
+    array = (ctypes.c_char * nbytes).from_buffer(buffer)
     return ctypes.addressof(array)
 
 
@@ -223,6 +224,7 @@ class CuObjEngine:
         events = s3_client.meta.events
         events.register("before-sign.s3.PutObject", self._inject_token)
         events.register("before-sign.s3.GetObject", self._inject_token)
+        events.register("before-sign.s3.UploadPart", self._inject_token)
 
     @staticmethod
     def _inject_token(request, **kwargs) -> None:
@@ -254,8 +256,8 @@ class CuObjEngine:
         The descriptor is formatted ``<cuobject-descriptor>:<hex addr>:<hex size>``
         so the endpoint can locate the exact registered region.
         """
-        nbytes = len(buffer)
-        addr = _buffer_address(buffer)
+        nbytes = memoryview(buffer).nbytes
+        addr = _buffer_address(buffer, nbytes)
         register_buffer(addr, nbytes)
         token: Optional[str] = None
         try:
@@ -266,6 +268,10 @@ class CuObjEngine:
             finally:
                 _thread_state.rdma_token = None
         finally:
-            if token is not None:
-                put_rdma_token(token)
-            deregister_buffer(addr)
+            # Deregister the buffer even if releasing the token raises, so a
+            # failed release never leaks the pinned region.
+            try:
+                if token is not None:
+                    put_rdma_token(token)
+            finally:
+                deregister_buffer(addr)

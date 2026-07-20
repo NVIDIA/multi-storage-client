@@ -115,7 +115,12 @@ PROFILE_SCHEMA = {
                         "properties": {
                             "base_path": {"type": "string", "minLength": 0},
                             "rust_client": {"type": "object"},
-                            "rdma": {"type": "object"},
+                            "rdma": {
+                                "type": "object",
+                                "properties": {
+                                    "multipart_chunksize": {"type": "integer", "minimum": 1},
+                                },
+                            },
                         },
                         "required": ["base_path"],
                     },

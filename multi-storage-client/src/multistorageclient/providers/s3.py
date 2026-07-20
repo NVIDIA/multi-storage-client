@@ -275,6 +275,10 @@ class S3StorageProvider(BaseStorageProvider):
             self._rdma_multipart_chunksize = int(
                 self._rdma_options.get("multipart_chunksize", RDMA_MULTIPART_CHUNKSIZE)
             )
+            if self._rdma_multipart_chunksize < 1:
+                raise ValueError(
+                    f"rdma.multipart_chunksize must be a positive integer, got {self._rdma_multipart_chunksize}"
+                )
 
         self._rust_client = None
         if "rust_client" in kwargs:
@@ -586,12 +590,18 @@ class S3StorageProvider(BaseStorageProvider):
         """Single-shot RDMA GET into a registered buffer; returns the buffer."""
         engine = self._rdma_engine
         assert engine is not None
+        if_match: Optional[str] = None
         if byte_range is not None:
             size = byte_range.size
             bytes_range: Optional[str] = f"bytes={byte_range.offset}-{byte_range.offset + byte_range.size - 1}"
         else:
-            size = self._get_object_metadata(path).content_length
+            metadata = self._get_object_metadata(path)
+            size = metadata.content_length
             bytes_range = None
+            # Bind the GET to the object version the buffer was sized against; if
+            # the object is replaced between the HEAD and the GET the endpoint
+            # returns 412 instead of delivering bytes into a mismatched buffer.
+            if_match = metadata.etag
 
         def _invoke_api() -> bytearray:
             buffer = bytearray(size)
@@ -600,6 +610,8 @@ class S3StorageProvider(BaseStorageProvider):
             get_kwargs: dict[str, Any] = {"Bucket": bucket, "Key": key}
             if bytes_range is not None:
                 get_kwargs["Range"] = bytes_range
+            if if_match:
+                get_kwargs["IfMatch"] = if_match
             with engine.transfer(buffer, is_put=False):
                 response = self._s3_client.get_object(**get_kwargs)
                 response["Body"].read()
