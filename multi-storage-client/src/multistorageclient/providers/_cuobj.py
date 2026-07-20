@@ -31,27 +31,40 @@ primitives (:func:`is_available`, :func:`register_buffer`,
 the boto3 request -- the MSC equivalent of ``BotoCuObjClient``.
 
 cuObject is a C++ library whose client object requires an I/O-ops callback table
-at construction, so it cannot be driven directly from ctypes. PyTorch compiles
-the equivalent calls into ``torch._C`` via ``CuObjClient.cpp``; MSC has no such
-extension build, so a thin ``extern "C"`` shim (``cuobj_shim.cpp`` in this
-directory) wraps a process-wide ``cuObjClient`` and exposes the five calls this
-module needs. Build it into ``libmsc_cuobj.so`` on a host with the cuObject SDK
-(see ``cuobj_shim.cpp`` for the command) and point :env:`MSC_CUOBJ_SHIM` at it.
+at construction, so it cannot be driven directly from ctypes. The token API is
+instead reached through the ``multistorageclient_rust`` extension: an
+``extern "C"`` shim over ``cuObjClient`` (``rust/csrc/cuobj_shim.cc``) bound by a
+PyO3 module (``rust/src/cuobj.rs``) and compiled into the wheel by Maturin. The
+shim is behind the crate's optional ``rdma`` feature, so it is present only when
+the wheel is built with cuObject support::
 
-This module is import-safe without the shim or the native library present; the
-five primitives raise and :func:`is_available` returns ``False``, exactly like
-the ``_dummy_fn`` fallback in ``torch/cuda/cuobj.py``. The S3 provider only
+    maturin develop --features rdma          # into an existing venv, or
+    maturin build   --features rdma           # a distributable wheel
+
+built on a host with the cuObject runtime (``libcufile``/``libcuobjclient``).
+
+This module is import-safe when the extension was built without the ``rdma``
+feature (the ``cuobj_*`` symbols are absent): the five primitives raise
+:class:`CuObjError` and :func:`is_available` returns ``False``, exactly like the
+``_dummy_fn`` fallback in ``torch/cuda/cuobj.py``. The S3 provider only
 instantiates :class:`CuObjEngine` when the ``rdma`` option is configured.
 """
 
 import ctypes
-import os
 import threading
 from contextlib import contextmanager
 from typing import Iterator, Optional, Union
 
-# Default shim filename searched on the loader path when MSC_CUOBJ_SHIM is unset.
-_DEFAULT_SHIM = "libmsc_cuobj.so"
+# The cuObject token API lives in the multistorageclient_rust extension behind
+# the crate's `rdma` feature. Import the compiled module defensively: a default
+# (non-rdma) wheel omits the cuobj_* functions entirely, and a source checkout
+# may not have the extension built at all.
+try:
+    from multistorageclient_rust import multistorageclient_rust as _rust_ext
+except Exception:  # pragma: no cover - extension unbuilt
+    _rust_ext = None
+
+_HAS_CUOBJ = _rust_ext is not None and hasattr(_rust_ext, "cuobj_available")
 
 # The boto3 ``before-sign`` hook runs per request, possibly on transfer-manager
 # worker threads, so the token in flight for the current request is kept in
@@ -64,80 +77,27 @@ class CuObjError(RuntimeError):
     """Raised when a cuObject token-API call fails."""
 
 
-class _Shim:
-    """Lazily-loaded, process-wide ctypes binding to the cuObject ``extern "C"`` shim."""
-
-    _instance: Optional["_Shim"] = None
-    _load_error: Optional[Exception] = None
-    _lock = threading.Lock()
-
-    def __init__(self, path: str) -> None:
-        lib = ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
-
-        lib.cuobj_available.restype = ctypes.c_int
-        lib.cuobj_available.argtypes = []
-
-        lib.cuobj_register_buffer.restype = ctypes.c_int
-        lib.cuobj_register_buffer.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
-
-        lib.cuobj_deregister_buffer.restype = ctypes.c_int
-        lib.cuobj_deregister_buffer.argtypes = [ctypes.c_void_p]
-
-        # The shim owns the descriptor string in an internal registry and frees
-        # it by value in cuobj_put_rdma_token (as CuObjClient.cpp does), so the
-        # returned char* is only ever read here -- c_char_p is safe.
-        lib.cuobj_get_rdma_token.restype = ctypes.c_char_p
-        lib.cuobj_get_rdma_token.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_size_t,
-            ctypes.c_size_t,
-            ctypes.c_int,
-        ]
-
-        lib.cuobj_put_rdma_token.restype = ctypes.c_int
-        lib.cuobj_put_rdma_token.argtypes = [ctypes.c_char_p]
-
-        self._lib = lib
-        self.path = path
-
-    @classmethod
-    def load(cls) -> Optional["_Shim"]:
-        if cls._instance is not None or cls._load_error is not None:
-            return cls._instance
-        with cls._lock:
-            if cls._instance is None and cls._load_error is None:
-                path = os.environ.get("MSC_CUOBJ_SHIM", _DEFAULT_SHIM)
-                try:
-                    cls._instance = cls(path)
-                except OSError as error:
-                    cls._load_error = error
-        return cls._instance
-
-
-def _require_shim() -> _Shim:
-    shim = _Shim.load()
-    if shim is None:
-        path = os.environ.get("MSC_CUOBJ_SHIM", _DEFAULT_SHIM)
+def _require_cuobj() -> None:
+    if not _HAS_CUOBJ:
         raise CuObjError(
-            f"cuObject support is not available: failed to load the shim ({path!r}). Build "
-            f"cuobj_shim.cpp into {_DEFAULT_SHIM} on a host with the cuObject SDK and set "
-            f"MSC_CUOBJ_SHIM, or ensure it is on the loader path. Original error: {_Shim._load_error}"
+            "cuObject support is not available: the multistorageclient_rust extension was built "
+            "without the 'rdma' feature (or is not built). Rebuild the wheel with cuObject support "
+            "on a host with the cuObject runtime, e.g. `maturin develop --features rdma`."
         )
-    return shim
 
 
 def is_available() -> bool:
     """Return whether NVIDIA cuObject (S3-over-RDMA) support is usable.
 
-    ``True`` only when the shim loads and a cuObject client connection can be
-    established (RDMA-capable NIC and a reachable RDMA S3 endpoint).
+    ``True`` only when the extension was built with the ``rdma`` feature and a
+    cuObject client connection can be established (RDMA-capable NIC and a
+    reachable RDMA S3 endpoint).
     """
-    shim = _Shim.load()
-    if shim is None:
+    if not _HAS_CUOBJ:
         return False
     try:
-        return bool(shim._lib.cuobj_available())
-    except OSError:
+        return bool(_rust_ext.cuobj_available())
+    except Exception:
         return False
 
 
@@ -146,14 +106,20 @@ def register_buffer(addr: int, size: int) -> None:
 
     Registration is required before requesting an RDMA token for the buffer.
     """
-    if _require_shim()._lib.cuobj_register_buffer(ctypes.c_void_p(addr), ctypes.c_size_t(size)) != 0:
-        raise CuObjError(f"cuMemObjGetDescriptor failed for buffer at 0x{addr:x} ({size} bytes)")
+    _require_cuobj()
+    try:
+        _rust_ext.cuobj_register_buffer(addr, size)
+    except Exception as error:
+        raise CuObjError(f"cuMemObjGetDescriptor failed for buffer at 0x{addr:x} ({size} bytes)") from error
 
 
 def deregister_buffer(addr: int) -> None:
     """Deregister a buffer previously passed to :func:`register_buffer`."""
-    if _require_shim()._lib.cuobj_deregister_buffer(ctypes.c_void_p(addr)) != 0:
-        raise CuObjError(f"cuMemObjPutDescriptor failed for buffer at 0x{addr:x}")
+    _require_cuobj()
+    try:
+        _rust_ext.cuobj_deregister_buffer(addr)
+    except Exception as error:
+        raise CuObjError(f"cuMemObjPutDescriptor failed for buffer at 0x{addr:x}") from error
 
 
 def get_rdma_token(addr: int, size: int, offset: int = 0, is_put: bool = True) -> str:
@@ -163,18 +129,20 @@ def get_rdma_token(addr: int, size: int, offset: int = 0, is_put: bool = True) -
     for a GET (the server writes into it). Release the descriptor with
     :func:`put_rdma_token` once the request finishes.
     """
-    descriptor = _require_shim()._lib.cuobj_get_rdma_token(
-        ctypes.c_void_p(addr), ctypes.c_size_t(size), ctypes.c_size_t(offset), ctypes.c_int(1 if is_put else 0)
-    )
-    if not descriptor:
-        raise CuObjError(f"cuMemObjGetRDMAToken failed for buffer at 0x{addr:x} ({size} bytes)")
-    return descriptor.decode("ascii")
+    _require_cuobj()
+    try:
+        return _rust_ext.cuobj_get_rdma_token(addr, size, offset, is_put)
+    except Exception as error:
+        raise CuObjError(f"cuMemObjGetRDMAToken failed for buffer at 0x{addr:x} ({size} bytes)") from error
 
 
 def put_rdma_token(token: str) -> None:
     """Release an RDMA descriptor returned by :func:`get_rdma_token`."""
-    if _require_shim()._lib.cuobj_put_rdma_token(token.encode("ascii")) != 0:
-        raise CuObjError("cuMemObjPutRDMAToken failed")
+    _require_cuobj()
+    try:
+        _rust_ext.cuobj_put_rdma_token(token)
+    except Exception as error:
+        raise CuObjError("cuMemObjPutRDMAToken failed") from error
 
 
 def _buffer_address(buffer: Union[bytearray, memoryview], nbytes: int) -> int:

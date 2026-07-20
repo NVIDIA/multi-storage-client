@@ -44,6 +44,8 @@ use aws_smithy_http_client::{tls, Builder};
 use aws_config::BehaviorVersion;
 
 mod credentials;
+#[cfg(feature = "rdma")]
+mod cuobj;
 mod types;
 
 use credentials::{AwsCredentialsProvider, AwsSdkCredentialsProvider, GcpCredentialsProvider};
@@ -1083,6 +1085,8 @@ fn multistorageclient_rust(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()>
     m.add_class::<RustRetryConfig>()?;
     m.add("RustRetryableError", _py.get_type::<RustRetryableError>())?;
     m.add("RustClientError", _py.get_type::<RustClientError>())?;
+    #[cfg(feature = "rdma")]
+    cuobj::register(m)?;
     Ok(())
 }
 

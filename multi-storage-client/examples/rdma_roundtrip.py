@@ -21,10 +21,11 @@ This requires an RDMA-capable S3 endpoint and the cuObject runtime, so it is a
 standalone script rather than a CI test. Run it on a cluster client (e.g. coe09)
 against the RDMA MinIO endpoint (e.g. coe01:9000):
 
-    # Build the shim once on a host with the cuObject SDK (see cuobj_shim.cpp):
-    #   g++ -O2 -fPIC -shared cuobj_shim.cpp -o libmsc_cuobj.so -lcuobjclient -lcufile
+    # Build the wheel once on a host with the cuObject runtime, enabling the
+    # crate's `rdma` feature so the cuObject shim is compiled into the extension:
+    #   maturin develop --features rdma        # into the active venv, or
+    #   maturin build   --features rdma        # a distributable wheel
 
-    export MSC_CUOBJ_SHIM=/path/to/libmsc_cuobj.so
     export CUFILE_ENV_PATH_JSON=/path/to/cuobj.json   # rdma_dev_addr_list, use_pci_p2pdma, ...
     export LD_LIBRARY_PATH=/path/to/sdklib:$LD_LIBRARY_PATH   # version-matched libcufile/libcuobjclient
     export S3_ENDPOINT=http://coe01:9000
