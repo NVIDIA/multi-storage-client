@@ -32,20 +32,20 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from multistorageclient.providers._cuobj import CuObjEngine as _RealCuObjEngine
-from multistorageclient.providers.s3 import (
+from multistorageclient.providers.s3 import StaticS3CredentialsProvider
+from multistorageclient.providers.s3_cuobject import (
     RDMA_SINGLE_SHOT_THRESHOLD,
-    S3StorageProvider,
-    StaticS3CredentialsProvider,
+    S3CuObjectStorageProvider,
 )
 from multistorageclient.types import Range
 
 _FAKE_CHECKSUM = "ZmFrZWNyYzY0"
 
 
-def _make_rdma_provider(engine_cls: MagicMock, **extra: Any) -> S3StorageProvider:
+def _make_rdma_provider(engine_cls: MagicMock, **extra: Any) -> S3CuObjectStorageProvider:
     """Construct an RDMA-enabled provider with the cuObject engine mocked out."""
     engine_cls.client_config_overrides.return_value = _RealCuObjEngine.client_config_overrides()
-    return S3StorageProvider(
+    return S3CuObjectStorageProvider(
         region_name="us-east-1",
         endpoint_url="https://s3.example.com",
         base_path="test-bucket",
@@ -57,7 +57,7 @@ def _make_rdma_provider(engine_cls: MagicMock, **extra: Any) -> S3StorageProvide
 
 def test_rdma_and_rust_client_are_mutually_exclusive():
     with pytest.raises(ValueError, match="mutually exclusive"):
-        S3StorageProvider(
+        S3CuObjectStorageProvider(
             region_name="us-east-1",
             endpoint_url="https://s3.example.com",
             base_path="test-bucket",
@@ -74,7 +74,7 @@ def test_client_config_overrides_enforce_empty_body_contract():
     assert overrides["s3"]["payload_signing_enabled"] is False
 
 
-@patch("multistorageclient.providers.s3.CuObjEngine")
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
 def test_rdma_enables_single_shot_and_installs_hooks(engine_cls: MagicMock):
     provider = _make_rdma_provider(engine_cls)
 
@@ -85,8 +85,8 @@ def test_rdma_enables_single_shot_and_installs_hooks(engine_cls: MagicMock):
     engine_cls.return_value.install_hooks.assert_called_once_with(provider._s3_client)
 
 
-@patch.object(S3StorageProvider, "_rdma_checksum", staticmethod(lambda buffer: _FAKE_CHECKSUM))
-@patch("multistorageclient.providers.s3.CuObjEngine")
+@patch.object(S3CuObjectStorageProvider, "_rdma_checksum", staticmethod(lambda buffer: _FAKE_CHECKSUM))
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
 def test_rdma_put_sends_empty_body_checksum_and_registers_buffer(engine_cls: MagicMock):
     provider = _make_rdma_provider(engine_cls)
     provider._s3_client = MagicMock()
@@ -104,8 +104,8 @@ def test_rdma_put_sends_empty_body_checksum_and_registers_buffer(engine_cls: Mag
     engine.check_reply.assert_called_once()
 
 
-@patch.object(S3StorageProvider, "_rdma_checksum", staticmethod(lambda buffer: _FAKE_CHECKSUM))
-@patch("multistorageclient.providers.s3.CuObjEngine")
+@patch.object(S3CuObjectStorageProvider, "_rdma_checksum", staticmethod(lambda buffer: _FAKE_CHECKSUM))
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
 def test_rdma_put_reuses_writable_buffer_and_copies_readonly(engine_cls: MagicMock):
     provider = _make_rdma_provider(engine_cls)
     provider._s3_client = MagicMock()
@@ -131,10 +131,10 @@ def test_rdma_checksum_matches_awscrt():
     checksums = pytest.importorskip("awscrt.checksums")
     data = b"the quick brown fox" * 1000
     expected = base64.b64encode(struct.pack(">Q", checksums.crc64nvme(data))).decode("ascii")
-    assert S3StorageProvider._rdma_checksum(data) == expected
+    assert S3CuObjectStorageProvider._rdma_checksum(data) == expected
 
 
-@patch("multistorageclient.providers.s3.CuObjEngine")
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
 def test_rdma_put_empty_payload_skips_rdma(engine_cls: MagicMock):
     provider = _make_rdma_provider(engine_cls)
     provider._s3_client = MagicMock()
@@ -147,7 +147,7 @@ def test_rdma_put_empty_payload_skips_rdma(engine_cls: MagicMock):
     provider._s3_client.put_object.assert_called_once()
 
 
-@patch("multistorageclient.providers.s3.CuObjEngine")
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
 def test_rdma_get_byte_range_sizes_buffer_and_passes_range(engine_cls: MagicMock):
     provider = _make_rdma_provider(engine_cls)
     provider._s3_client = MagicMock()
@@ -162,7 +162,7 @@ def test_rdma_get_byte_range_sizes_buffer_and_passes_range(engine_cls: MagicMock
     assert get_kwargs["Range"] == "bytes=10-41"
 
 
-@patch("multistorageclient.providers.s3.CuObjEngine")
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
 def test_rdma_get_full_object_heads_for_size(engine_cls: MagicMock):
     provider = _make_rdma_provider(engine_cls)
     provider._s3_client = MagicMock()
@@ -180,8 +180,8 @@ def test_rdma_get_full_object_heads_for_size(engine_cls: MagicMock):
     assert "Range" not in get_kwargs
 
 
-@patch.object(S3StorageProvider, "_rdma_checksum", staticmethod(lambda buffer: _FAKE_CHECKSUM))
-@patch("multistorageclient.providers.s3.CuObjEngine")
+@patch.object(S3CuObjectStorageProvider, "_rdma_checksum", staticmethod(lambda buffer: _FAKE_CHECKSUM))
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
 def test_rdma_upload_small_uses_single_shot(engine_cls: MagicMock):
     provider = _make_rdma_provider(engine_cls)
     provider._s3_client = MagicMock()
@@ -193,8 +193,8 @@ def test_rdma_upload_small_uses_single_shot(engine_cls: MagicMock):
     provider._s3_client.put_object.assert_called_once()
 
 
-@patch.object(S3StorageProvider, "_rdma_checksum", staticmethod(lambda buffer: _FAKE_CHECKSUM))
-@patch("multistorageclient.providers.s3.CuObjEngine")
+@patch.object(S3CuObjectStorageProvider, "_rdma_checksum", staticmethod(lambda buffer: _FAKE_CHECKSUM))
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
 def test_rdma_upload_multipart_splits_and_completes(engine_cls: MagicMock):
     provider = _make_rdma_provider(engine_cls)
     provider._s3_client = MagicMock()
@@ -222,8 +222,8 @@ def test_rdma_upload_multipart_splits_and_completes(engine_cls: MagicMock):
     ]
 
 
-@patch.object(S3StorageProvider, "_rdma_checksum", staticmethod(lambda buffer: _FAKE_CHECKSUM))
-@patch("multistorageclient.providers.s3.CuObjEngine")
+@patch.object(S3CuObjectStorageProvider, "_rdma_checksum", staticmethod(lambda buffer: _FAKE_CHECKSUM))
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
 def test_rdma_upload_multipart_aborts_on_failure(engine_cls: MagicMock):
     provider = _make_rdma_provider(engine_cls)
     provider._s3_client = MagicMock()
@@ -272,7 +272,7 @@ def test_transfer_registers_full_nbytes_for_multibyte_memoryview():
     assert get_token.call_args.args[1] == 8
 
 
-@patch("multistorageclient.providers.s3.CuObjEngine")
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
 def test_rdma_get_full_object_binds_ifmatch_to_head_version(engine_cls: MagicMock):
     provider = _make_rdma_provider(engine_cls)
     provider._s3_client = MagicMock()
@@ -287,11 +287,11 @@ def test_rdma_get_full_object_binds_ifmatch_to_head_version(engine_cls: MagicMoc
     assert get_kwargs["IfMatch"] == '"abc123"'
 
 
-@patch("multistorageclient.providers.s3.CuObjEngine")
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
 def test_rdma_multipart_chunksize_must_be_positive(engine_cls: MagicMock):
     engine_cls.client_config_overrides.return_value = _RealCuObjEngine.client_config_overrides()
     with pytest.raises(ValueError, match="multipart_chunksize"):
-        S3StorageProvider(
+        S3CuObjectStorageProvider(
             region_name="us-east-1",
             endpoint_url="https://s3.example.com",
             base_path="test-bucket",

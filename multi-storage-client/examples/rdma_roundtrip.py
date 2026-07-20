@@ -49,7 +49,10 @@ def _config() -> dict:
         "profiles": {
             _PROFILE: {
                 "storage_provider": {
-                    "type": "s3",
+                    # The `s3_cuobject` provider moves payloads over RDMA via
+                    # cuObject; it subclasses `s3` and forces the empty-body,
+                    # unsigned-payload wire contract.
+                    "type": "s3_cuobject",
                     "options": {
                         "base_path": _BUCKET,
                         "endpoint_url": _ENDPOINT,
@@ -57,9 +60,8 @@ def _config() -> dict:
                         # MinIO AIStor RDMA endpoints are path-addressed; the
                         # provider leaves addressing style to the user.
                         "s3": {"addressing_style": "path"},
-                        # Presence of "rdma" enables the cuObject data plane and
-                        # forces the empty-body/unsigned-payload wire contract.
-                        "rdma": {},
+                        # Optional: tune the RDMA multipart part size.
+                        # "rdma": {"multipart_chunksize": 536870912},
                     },
                 }
             }

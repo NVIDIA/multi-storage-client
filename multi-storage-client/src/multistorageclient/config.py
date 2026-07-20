@@ -91,6 +91,7 @@ STORAGE_PROVIDER_MAPPING = {
     "ais_s3": "AIStoreS3StorageProvider",
     "s8k": "S8KStorageProvider",
     "gcs_s3": "GoogleS3StorageProvider",
+    "s3_cuobject": "S3CuObjectStorageProvider",
     "huggingface": "HuggingFaceStorageProvider",
 }
 
