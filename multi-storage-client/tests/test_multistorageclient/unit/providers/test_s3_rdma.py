@@ -298,3 +298,20 @@ def test_rdma_multipart_chunksize_must_be_positive(engine_cls: MagicMock):
             credentials_provider=StaticS3CredentialsProvider(access_key="a", secret_key="b"),
             rdma={"multipart_chunksize": 0},
         )
+
+
+@patch.object(S3CuObjectStorageProvider, "_rdma_checksum", staticmethod(lambda buffer: _FAKE_CHECKSUM))
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
+def test_rdma_upload_text_stream_uses_single_shot(engine_cls: MagicMock):
+    provider = _make_rdma_provider(engine_cls)
+    provider._s3_client = MagicMock()
+    provider._rdma_multipart_chunksize = 16
+
+    # A text-mode stream larger than the part size (and not a StringIO) must not
+    # take the multipart path -- its chunks are str and would crash the raw
+    # bytearray reader -- so it falls through to the single-shot encode path.
+    text_stream = io.TextIOWrapper(io.BytesIO(b"a" * 40))
+    provider._upload_file(remote_path="test-bucket/text.bin", f=text_stream)
+
+    provider._s3_client.create_multipart_upload.assert_not_called()
+    provider._s3_client.put_object.assert_called_once()

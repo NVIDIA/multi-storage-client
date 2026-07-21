@@ -216,19 +216,20 @@ fn cuobj_get_rdma_token(addr: usize, size: usize, offset: usize, is_put: bool) -
 }
 
 /// Release an RDMA descriptor returned by `cuobj_get_rdma_token`. Unknown or
-/// already-released tokens are a no-op. Raises when the release call fails,
-/// keeping the registry entry so the caller can retry.
+/// already-released tokens are a no-op.
 #[pyfunction]
 fn cuobj_put_rdma_token(token: String) -> PyResult<()> {
     let client = client()?;
-    let ptr = match TOKEN_REGISTRY.lock().unwrap().get(&token) {
-        Some(&ptr) => ptr,
+    // Claim the descriptor by removing it under the lock: `remove` returns the
+    // pointer to exactly one caller, so concurrent releases of the same token
+    // can't double-free the pinned registration.
+    let ptr = match TOKEN_REGISTRY.lock().unwrap().remove(&token) {
+        Some(ptr) => ptr,
         None => return Ok(()),
     };
     if !unsafe { client.put_rdma_token(ptr as *mut c_char) } {
         return Err(PyRuntimeError::new_err("cuMemObjPutRDMAToken failed"));
     }
-    TOKEN_REGISTRY.lock().unwrap().remove(&token);
     Ok(())
 }
 

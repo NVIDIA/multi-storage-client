@@ -23,6 +23,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=MSC_CUOBJ_HOME");
     println!("cargo:rerun-if-env-changed=CUDA_HOME");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
+    println!("cargo:rerun-if-env-changed=CUDA_ROOT");
 
     // The cuObject (RDMA) data plane is opt-in. Without the `rdma` feature the
     // crate builds as a pure-Rust cdylib with no C++ compiler or cuObject SDK,

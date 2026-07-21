@@ -237,7 +237,10 @@ class S3CuObjectStorageProvider(S3StorageProvider):
         f.seek(0, io.SEEK_END)
         size = f.tell()
         f.seek(0)
-        if size > self._rdma_multipart_chunksize and not isinstance(f, io.StringIO):
+        # Multipart reads raw chunks into a bytearray, so only binary streams
+        # can take it; any text-mode stream (StringIO, TextIOWrapper, open in
+        # "r") reads str and falls through to the single-shot encode path.
+        if size > self._rdma_multipart_chunksize and not isinstance(f, io.TextIOBase):
             extra = self._rdma_create_extra(bucket, attributes, content_type)
             return self._rdma_upload_multipart(bucket, key, f, size, extra)
         data = f.read()
