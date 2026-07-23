@@ -17,9 +17,9 @@ import io
 import os
 from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
-from typing import IO, Any, Optional, TypeVar, Union
+from typing import IO, Any, Optional, TypeVar, Union, cast
 
-from aistore.sdk import Client
+from aistore.sdk import Client, RetryConfig
 from aistore.sdk.authn import AuthNClient
 from aistore.sdk.errors import AISError
 from aistore.sdk.obj.object_props import ObjectProps
@@ -123,7 +123,8 @@ class AIStoreStorageProvider(BaseStorageProvider):
         :param timeout: Request timeout in seconds; a single float
             for both connect/read timeouts (e.g., ``5.0``), a tuple for separate connect/read
             timeouts (e.g., ``(3.0, 10.0)``), or ``None`` to disable timeout.
-        :param retry: ``urllib3.util.Retry`` parameters.
+        :param retry: ``urllib3.util.Retry`` parameters. Applied as the ``http_retry`` of the client's
+            ``aistore.sdk.RetryConfig`` (the network-level retry defaults are preserved).
         :param base_path: The root prefix path within the bucket where all operations will be scoped.
         :param credentials_provider: The provider to retrieve AIStore credentials.
         :param config_dict: Resolved MSC config.
@@ -137,7 +138,10 @@ class AIStoreStorageProvider(BaseStorageProvider):
         )
 
         # https://aistore.nvidia.com/docs/python-sdk#client.Client
-        client_retry = None if retry is None else Retry(**retry)
+        retry_config = None
+        if retry is not None:
+            retry_config = RetryConfig.default()
+            retry_config.http_retry = Retry(**retry)
         token = None
         if timeout is None:
             timeout = float(DEFAULT_READ_TIMEOUT)
@@ -145,7 +149,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
             token = credentials_provider.get_credentials().token
             self.client = Client(
                 endpoint=endpoint,
-                retry=client_retry,
+                retry_config=retry_config,
                 skip_verify=skip_verify,
                 ca_cert=ca_cert,
                 timeout=timeout,
@@ -153,7 +157,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
             )
         else:
             self.client = Client(
-                endpoint=endpoint, retry=client_retry, timeout=timeout, skip_verify=skip_verify, ca_cert=ca_cert
+                endpoint=endpoint, retry_config=retry_config, timeout=timeout, skip_verify=skip_verify, ca_cert=ca_cert
             )
         self.provider = provider
 
@@ -209,10 +213,11 @@ class AIStoreStorageProvider(BaseStorageProvider):
 
         def _invoke_api() -> int:
             obj = self.client.bucket(bucket, self.provider).object(obj_name=key)
-            obj.put_content(body)
             validated_attributes = validate_attributes(attributes)
+            writer = obj.get_writer()
+            writer.put_content(body)
             if validated_attributes:
-                obj.set_custom_props(custom_metadata=validated_attributes, replace_existing=True)
+                writer.set_custom_props(custom_metadata=validated_attributes, replace_existing=True)
 
             return len(body)
 
@@ -228,10 +233,11 @@ class AIStoreStorageProvider(BaseStorageProvider):
         def _invoke_api() -> bytes:
             obj = self.client.bucket(bucket, self.provider).object(obj_name=key)
             if byte_range:
-                reader = obj.get(byte_range=bytes_range)  # pyright: ignore [reportArgumentType]
+                reader = obj.get_reader(byte_range=bytes_range)  # pyright: ignore [reportArgumentType]
             else:
-                reader = obj.get()
-            return reader.read_all()
+                reader = obj.get_reader()
+            # Without ``num_workers``, ``read_all()`` returns ``bytes`` (single-stream GET).
+            return cast(bytes, reader.read_all())
 
         return self._translate_errors(_invoke_api, operation="GET", bucket=bucket, key=key)
 
@@ -294,8 +300,9 @@ class AIStoreStorageProvider(BaseStorageProvider):
 
         def _invoke_api() -> None:
             obj = self.client.bucket(bucket, self.provider).object(obj_name=key)
-            obj.put_content(b"")
-            obj.set_custom_props(custom_metadata={"msc-symlink-target": relative_target}, replace_existing=True)
+            writer = obj.get_writer()
+            writer.put_content(b"")
+            writer.set_custom_props(custom_metadata={"msc-symlink-target": relative_target}, replace_existing=True)
 
         self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
 
