@@ -237,7 +237,6 @@ class AIStoreStorageProvider(BaseStorageProvider):
                 reader = obj.get_reader(byte_range=bytes_range)  # pyright: ignore [reportArgumentType]
             else:
                 reader = obj.get_reader()
-            # bytes | ParallelBuffer
             content = reader.read_all()
             if isinstance(content, bytes):
                 return content
