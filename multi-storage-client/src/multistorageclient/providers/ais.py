@@ -17,11 +17,12 @@ import io
 import os
 from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
-from typing import IO, Any, Optional, TypeVar, Union, cast
+from typing import IO, Any, Optional, TypeVar, Union
 
 from aistore.sdk import Client, RetryConfig
 from aistore.sdk.authn import AuthNClient
 from aistore.sdk.errors import AISError
+from aistore.sdk.obj.content_iterator import ParallelBuffer
 from aistore.sdk.obj.object_props import ObjectProps
 from dateutil.parser import parse as dateutil_parser
 from requests.exceptions import HTTPError
@@ -236,8 +237,17 @@ class AIStoreStorageProvider(BaseStorageProvider):
                 reader = obj.get_reader(byte_range=bytes_range)  # pyright: ignore [reportArgumentType]
             else:
                 reader = obj.get_reader()
-            # Without ``num_workers``, ``read_all()`` returns ``bytes`` (single-stream GET).
-            return cast(bytes, reader.read_all())
+            # bytes | ParallelBuffer
+            content = reader.read_all()
+            if isinstance(content, bytes):
+                return content
+            elif isinstance(content, ParallelBuffer):
+                try:
+                    return content.tobytes()
+                finally:
+                    content.close()
+            else:
+                raise TypeError(f"Unexpected read_all() return type: {type(content)}")
 
         return self._translate_errors(_invoke_api, operation="GET", bucket=bucket, key=key)
 
