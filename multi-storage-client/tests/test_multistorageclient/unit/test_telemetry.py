@@ -307,6 +307,30 @@ def test_telemetry_init_server_client(process_start_method: str) -> None:
     )
 
 
+def test_metric_instrument_proxies_expose_mutating_methods() -> None:
+    """
+    The shared metric instrument proxies declare their mutating method explicitly.
+
+    Relying on ``multiprocessing``'s default ``public_methods`` discovery is fragile: an
+    OpenTelemetry build whose ``Counter``/``Gauge`` delegates ``add``/``set`` (instead of
+    defining it on the class) isn't surfaced by ``dir()``, so the generated ``AutoProxy``
+    drops the method and every record raises ``AutoProxy[...] object has no attribute 'add'``.
+    Pinning ``exposed`` keeps the proxy method set independent of the instrument's runtime shape.
+    """
+    # BaseManager registry entries are ``(callable, exposed, method_to_typeid, proxytype)``.
+    registry = telemetry.TelemetryManager._registry  # pyright: ignore [reportAttributeAccessIssue]
+    counter_exposed = registry[telemetry._fully_qualified_name(Counter)][1]
+    gauge_exposed = registry[telemetry._fully_qualified_name(_Gauge)][1]
+
+    assert counter_exposed is not None and "add" in counter_exposed
+    assert gauge_exposed is not None and "set" in gauge_exposed
+
+    # The constructor must stay unexposed: an exposed ``__init__`` would override
+    # ``BaseProxy.__init__`` and break proxy construction.
+    assert "__init__" not in counter_exposed
+    assert "__init__" not in gauge_exposed
+
+
 def _test_telemetry_init_automatic() -> None:
     telemetry.init()
 
