@@ -14,6 +14,8 @@
 # limitations under the License.
 
 import asyncio
+import logging
+import multiprocessing
 import tempfile
 import time
 from collections.abc import Iterator
@@ -24,7 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import pytest
 
 from multistorageclient.providers.base import BaseStorageProvider
-from multistorageclient.telemetry import Telemetry
+from multistorageclient.telemetry import Telemetry, TelemetryManager
 from multistorageclient.types import BatchTransferError, ObjectMetadata, Range, RetryableError, SymlinkHandling
 
 
@@ -1206,3 +1208,150 @@ def test_download_file_follows_symlink():
         import os
 
         os.unlink(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Telemetry crash-safety.
+#
+# Telemetry is best-effort observability and must never crash a storage
+# operation. These mirror ``test_async_metrics_handles_errors_in_worker`` for
+# the synchronous record path, plus the manager-mode disabled-instrument and
+# kill-switch cases.
+# ---------------------------------------------------------------------------
+
+
+def _sync_metrics_config() -> dict[str, Any]:
+    return {
+        "opentelemetry": {
+            "metrics": {
+                "exporter": {"type": "console"},
+                "reader": {"options": {}},
+            }
+        }
+    }
+
+
+@pytest.mark.parametrize("failing_instrument", ["counter", "gauge"])
+@pytest.mark.parametrize("error_type", [EOFError, BrokenPipeError, ConnectionResetError, RuntimeError, Exception])
+def test_sync_metrics_recording_error_does_not_propagate(error_type, failing_instrument, caplog):
+    """A failing synchronous metric record must not propagate out of a storage operation,
+    must be logged once, and must latch metrics off."""
+    caplog.set_level(logging.WARNING, logger="multistorageclient.providers.base")
+
+    # Distinct instruments so either the counter's .add() or the gauge's .set() can be the failing call.
+    mock_gauge = Mock()
+    mock_counter = Mock()
+    if failing_instrument == "gauge":
+        mock_gauge.set.side_effect = error_type("telemetry gone")
+    else:
+        mock_counter.add.side_effect = error_type("telemetry gone")
+    mock_telemetry = Mock(spec=Telemetry)
+    mock_telemetry.gauge = Mock(return_value=mock_gauge)
+    mock_telemetry.counter = Mock(return_value=mock_counter)
+
+    provider = MockBaseStorageProvider(
+        base_path="bucket",
+        provider_name="mock",
+        config_dict=_sync_metrics_config(),
+        telemetry_provider=lambda: mock_telemetry,
+    )
+    provider._init_metrics()
+    assert provider._async_metrics_enabled is False
+
+    # The storage operation must return normally despite the record failure.
+    assert provider.get_object("file.txt") == b""
+    assert provider._metrics_disabled is True
+    # The failure is logged (the "logged warning" half of the best-effort contract).
+    assert [record for record in caplog.records if "disabling metrics" in record.getMessage().lower()]
+
+    # Metrics latch off after the failure; subsequent operations silently no-op and do not re-log.
+    calls_after_first = mock_counter.add.call_count + mock_gauge.set.call_count
+    assert provider.get_object("file.txt") == b""
+    assert mock_counter.add.call_count + mock_gauge.set.call_count == calls_after_first
+    assert len([record for record in caplog.records if "disabling metrics" in record.getMessage().lower()]) == 1
+
+
+def test_async_rust_transfer_metrics_error_does_not_fail_transfer():
+    """A failing sync record in the async Rust download finally must not fail the transfer."""
+    mock_gauge = Mock()
+    mock_gauge.set.side_effect = BrokenPipeError("telemetry gone")
+    mock_counter = Mock()
+    mock_counter.add.side_effect = BrokenPipeError("telemetry gone")
+    mock_telemetry = Mock(spec=Telemetry)
+    mock_telemetry.gauge = Mock(return_value=mock_gauge)
+    mock_telemetry.counter = Mock(return_value=mock_counter)
+
+    provider = MockBaseStorageProvider(
+        base_path="bucket",
+        provider_name="mock",
+        config_dict=_sync_metrics_config(),
+        telemetry_provider=lambda: mock_telemetry,
+    )
+
+    mock_rust_client = MagicMock()
+    mock_rust_client.download = AsyncMock(return_value=100)
+    provider._rust_client = mock_rust_client
+
+    metadata = [ObjectMetadata(key="remote-a", content_length=1, last_modified=datetime.now())]
+    with patch("multistorageclient.providers.base.safe_makedirs"):
+        # Must not raise BatchTransferError from the telemetry record failure.
+        provider.download_files(remote_paths=["remote-a"], local_paths=["/tmp/local-a"], metadata=metadata)
+
+    assert mock_rust_client.download.await_count == 1
+    assert provider._metrics_disabled is True
+
+
+def test_manager_mode_disabled_metrics_do_not_crash_record():
+    """A disabled meter returned through a real manager proxy is an auto-proxy wrapping ``None``.
+    Recording through it must not crash the storage operation: the record-time latch disables
+    metrics after the first failure."""
+    # No exporter configured -> meter_provider returns None -> disabled instruments.
+    config = {"opentelemetry": {"metrics": {"reader": {"options": {}}}}}
+
+    manager = TelemetryManager(address=("127.0.0.1", 0), ctx=multiprocessing.get_context("spawn"))
+    manager.start()
+    try:
+        telemetry_proxy = manager.Telemetry()  # pyright: ignore [reportAttributeAccessIssue]
+
+        provider = MockBaseStorageProvider(
+            base_path="bucket",
+            provider_name="mock",
+            config_dict=config,
+            telemetry_provider=lambda: telemetry_proxy,
+        )
+        provider._init_metrics()
+
+        # The storage operation must not crash on record; the first failing record latches metrics off.
+        assert provider.get_object("file.txt") == b""
+        assert provider._metrics_disabled is True
+    finally:
+        manager.shutdown()
+
+
+@pytest.mark.parametrize("env_var", ["OTEL_SDK_DISABLED", "MSC_TELEMETRY_DISABLED"])
+def test_init_metrics_skipped_when_disabled_via_env(monkeypatch, env_var):
+    """An explicit kill-switch short-circuits metrics init before any telemetry work."""
+    monkeypatch.setenv(env_var, "true")
+
+    provider_calls: list[bool] = []
+
+    def _telemetry_provider() -> Telemetry:
+        provider_calls.append(True)
+        return Mock(spec=Telemetry)
+
+    provider = MockBaseStorageProvider(
+        base_path="bucket",
+        provider_name="mock",
+        config_dict=_sync_metrics_config(),
+        telemetry_provider=_telemetry_provider,
+    )
+    provider._init_metrics()
+
+    # No exporter/manager/proxy work happened.
+    assert provider_calls == []
+    assert provider._metric_gauges == {}
+    assert provider._metric_counters == {}
+    assert provider._async_metrics_enabled is False
+
+    # The storage operation still succeeds with metrics disabled.
+    assert provider.get_object("file.txt") == b""

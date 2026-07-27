@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
 import logging
 from typing import Any
 
@@ -67,7 +68,21 @@ class _OTLPmTLSVaultMetricExporter(OTLPMetricExporter):
             - key_key: Key name for client key (default: "key")
             - ca_key: Key name for CA certificate (default: "ca")
         :param exporter: OTLP metric exporter config dictionary (passed through to OTLPMetricExporter).
+        :raises RuntimeError: If the installed OTLP exporter does not support mTLS client certificate options.
         """
+        # mTLS client certificate options were added in opentelemetry-exporter-otlp-proto-http 1.32.1.
+        # Fail fast with a clear error (instead of an opaque TypeError from the parent) on older versions.
+        parameters = inspect.signature(OTLPMetricExporter.__init__).parameters
+        supports_client_certificate = "client_certificate_file" in parameters or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+        )
+        if not supports_client_certificate:
+            raise RuntimeError(
+                "The installed opentelemetry-exporter-otlp-proto-http does not support the mTLS client "
+                "certificate options (client_certificate_file / client_key_file). Upgrade to "
+                "opentelemetry-exporter-otlp-proto-http >= 1.32.1 to use the _otlp_mtls_vault exporter."
+            )
+
         provider = VaultCertificateProvider(**auth)
         cert_paths = provider.get_certificates()
 

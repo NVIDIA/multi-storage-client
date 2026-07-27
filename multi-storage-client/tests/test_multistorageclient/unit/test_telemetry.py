@@ -17,6 +17,7 @@ from multiprocessing import get_context
 from multiprocessing.managers import BaseProxy
 from multiprocessing.pool import Pool
 from typing import Any, Optional
+from unittest.mock import patch
 
 import psutil
 import pytest
@@ -445,3 +446,57 @@ def test_telemetry_local_instance_fork_safety() -> None:
 
         # Verify parent still has its telemetry instance
         assert telemetry._TELEMETRY is telemetry_instance
+
+
+# Any exporter-construction failure must disable metrics/traces uniformly (return None)
+# rather than propagating; propagating a None through the manager yields a broken proxy.
+@pytest.mark.parametrize("error_type", [ImportError, AttributeError, RuntimeError, TypeError])
+def test_meter_provider_disables_metrics_on_exporter_construction_failure(error_type) -> None:
+    config = {
+        "exporter": {"type": telemetry._fully_qualified_name(InMemoryMetricExporter)},
+        "reader": {"options": {}},
+    }
+
+    class _FailingExporter:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            raise error_type("exporter construction failed")
+
+    telemetry_resources = telemetry.Telemetry()
+    with patch("multistorageclient.utils.import_class", return_value=_FailingExporter):
+        assert telemetry_resources.meter_provider(config=config) is None
+
+
+@pytest.mark.parametrize("error_type", [ImportError, AttributeError, RuntimeError, TypeError])
+def test_tracer_provider_disables_traces_on_exporter_construction_failure(error_type) -> None:
+    config = {"exporter": {"type": telemetry._fully_qualified_name(InMemorySpanExporter)}}
+
+    class _FailingExporter:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            raise error_type("exporter construction failed")
+
+    telemetry_resources = telemetry.Telemetry()
+    with patch("multistorageclient.utils.import_class", return_value=_FailingExporter):
+        assert telemetry_resources.tracer_provider(config=config) is None
+
+
+# A disabled config must be cached so (possibly expensive/networked) exporter construction isn't
+# retried once per instrument. _init_metrics requests 3 gauges + 3 counters for the same config.
+def test_meter_provider_caches_disabled_state_to_avoid_reconstruction() -> None:
+    config = {
+        "exporter": {"type": telemetry._fully_qualified_name(InMemoryMetricExporter)},
+        "reader": {"options": {}},
+    }
+    construct_count = 0
+
+    class _FailingExporter:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            nonlocal construct_count
+            construct_count += 1
+            raise RuntimeError("exporter construction failed")
+
+    telemetry_resources = telemetry.Telemetry()
+    with patch("multistorageclient.utils.import_class", return_value=_FailingExporter):
+        for _ in range(6):
+            assert telemetry_resources.meter_provider(config=config) is None
+
+    assert construct_count == 1

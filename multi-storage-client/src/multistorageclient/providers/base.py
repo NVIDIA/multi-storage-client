@@ -243,6 +243,10 @@ class BaseStorageProvider(StorageProvider):
         self._metrics_dropped_count = 0
         self._metrics_dropped_count_lock = threading.Lock()
 
+        # Latched off after an unrecoverable metric-record failure so telemetry never
+        # crashes a storage operation and failures aren't logged per-operation.
+        self._metrics_disabled = False
+
     def __str__(self) -> str:
         return self._provider_name
 
@@ -253,6 +257,15 @@ class BaseStorageProvider(StorageProvider):
                 self._shutdown_async_telemetry()
             except Exception as e:
                 logger.warning(f"Failed to shutdown async telemetry: {e}", exc_info=True)
+
+    @staticmethod
+    def _telemetry_disabled_via_env() -> bool:
+        """Whether telemetry is explicitly disabled via environment variable."""
+        for name in ("MSC_TELEMETRY_DISABLED", "OTEL_SDK_DISABLED"):
+            value = os.environ.get(name)
+            if value is not None and value.strip().lower() in ("1", "true", "yes"):
+                return True
+        return False
 
     def _init_metrics(self) -> None:
         """
@@ -266,6 +279,10 @@ class BaseStorageProvider(StorageProvider):
         """
         with self._metric_init_lock:
             if not self._metric_init_event.is_set():
+                if self._telemetry_disabled_via_env():
+                    logger.debug("Telemetry disabled via environment variable; skipping metrics initialization.")
+                    self._metric_init_event.set()
+                    return
                 if self._config_dict is not None and self._telemetry_provider is not None:
                     opentelemetry_config: Optional[dict[str, Any]] = self._config_dict.get("opentelemetry")
                     if opentelemetry_config is not None:
@@ -571,7 +588,14 @@ class BaseStorageProvider(StorageProvider):
         Unlike :meth:`_emit_metrics` which wraps a callable, this method accepts
         pre-computed metric values. Used by :meth:`_emit_metrics_sync`, :meth:`_emit_metrics_async`,
         and directly when the operation is performed outside the standard wrapper (e.g. async Rust downloads).
+
+        Telemetry is best-effort: a failing synchronous record (e.g. a dead telemetry manager
+        or a disabled instrument) must never crash the storage operation. Any failure latches
+        metrics off so subsequent operations silently no-op instead of logging per-operation.
         """
+        if self._metrics_disabled:
+            return
+
         if self._async_metrics_enabled and self._metrics_queue is not None:
             metric_data = {
                 "operation": operation,
@@ -585,7 +609,14 @@ class BaseStorageProvider(StorageProvider):
                 with self._metrics_dropped_count_lock:
                     self._metrics_dropped_count += 1
         else:
-            self._record_metrics(operation, latency, data_size, error_type)
+            try:
+                self._record_metrics(operation, latency, data_size, error_type)
+            except (EOFError, BrokenPipeError, ConnectionError):
+                self._metrics_disabled = True
+                logger.warning("Telemetry manager connection closed; disabling metrics.")
+            except Exception:
+                self._metrics_disabled = True
+                logger.warning("Failed to record metrics; disabling metrics.", exc_info=True)
 
     def _append_delimiter(self, s: str, delimiter: str = "/") -> str:
         if not s.endswith(delimiter):
