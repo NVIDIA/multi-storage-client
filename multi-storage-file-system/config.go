@@ -2132,7 +2132,7 @@ func checkConfigFile() (err error) {
 		}
 
 		if globals.config.physChildDirEntryMapPageEvictLowLimit != config.physChildDirEntryMapPageEvictLowLimit {
-			err = errors.New("cannot change inode_eviction_queue_page_evict_low_limit via SIGHUP")
+			err = errors.New("cannot change phys_child_dir_entry_map_page_evict_low_limit via SIGHUP")
 			return
 		}
 
@@ -2156,7 +2156,7 @@ func checkConfigFile() (err error) {
 			return
 		}
 
-		if globals.config.physChildDirEntryMapPageEvictLowLimit != config.physChildDirEntryMapPageEvictLowLimit {
+		if globals.config.virtChildDirEntryMapPageEvictLowLimit != config.virtChildDirEntryMapPageEvictLowLimit {
 			err = errors.New("cannot change virt_child_dir_entry_map_page_evict_low_limit via SIGHUP")
 			return
 		}
