@@ -166,6 +166,37 @@ class TestOTLPmTLSVaultMetricExporter:
                 assert "client_key_file" not in exporter_config
                 assert "certificate_file" not in exporter_config
 
+    def test_exporter_raises_clear_error_when_client_certificate_unsupported(self, mock_vault_provider):
+        """An OTLP exporter lacking client_certificate_file support must raise a clear
+        RuntimeError, not an opaque TypeError, into the caller."""
+
+        # Models opentelemetry-exporter-otlp-proto-http < 1.32.1: no mTLS client cert options.
+        def _legacy_init(self, endpoint=None, certificate_file=None, headers=None, timeout=None, compression=None):
+            pass
+
+        with patch(
+            "multistorageclient.telemetry.metrics.exporters.otlp_mtls_vault.VaultCertificateProvider",
+            return_value=mock_vault_provider,
+        ):
+            with patch(
+                "opentelemetry.exporter.otlp.proto.http.metric_exporter.OTLPMetricExporter.__init__",
+                _legacy_init,
+            ):
+                from multistorageclient.telemetry.metrics.exporters.otlp_mtls_vault import (
+                    _OTLPmTLSVaultMetricExporter,
+                )
+
+                auth_config = {
+                    "vault_endpoint": "https://vault.example.com",
+                    "vault_namespace": "test-namespace",
+                    "approle_id": "test-role-id",
+                    "approle_secret": "test-secret-id",
+                }
+                exporter_config = {"endpoint": "https://otlp.example.com/v1/metrics"}
+
+                with pytest.raises(RuntimeError, match="client_certificate_file"):
+                    _OTLPmTLSVaultMetricExporter(auth=auth_config, exporter=exporter_config)
+
     def test_vault_provider_receives_auth_config(self, mock_vault_provider):
         """Test that VaultCertificateProvider is initialized with auth config."""
         with patch(

@@ -93,6 +93,22 @@ If the default telemetry provider creation doesn't behave as desired, you can ma
    # Use an MSC shortcut to create a storage client for a profile and open an object/file.
    multistorageclient.open("msc://data/file.txt")
 
+*******************
+Disabling Telemetry
+*******************
+
+Telemetry is best-effort observability and never crashes a storage operation. Any telemetry failure (e.g. an exporter that fails to construct, missing optional dependencies, or an unreachable telemetry process) is logged and metrics are disabled for the affected storage client; the storage operation always proceeds.
+
+Telemetry can also be disabled explicitly, before any telemetry process, exporter, or IPC setup, by setting either of these environment variables to a truthy value (``1``, ``true``, or ``yes``):
+
+.. code-block:: shell
+
+   # MSC-specific switch.
+   export MSC_TELEMETRY_DISABLED=true
+
+   # OpenTelemetry SDK standard switch (also honored).
+   export OTEL_SDK_DISABLED=true
+
 **************
 Authentication
 **************
