@@ -114,7 +114,8 @@ class Telemetry:
     }
 
     # Map of config as a sorted JSON string (since dictionaries can't be hashed) to meter provider.
-    _meter_provider_cache: dict[str, api_metrics.MeterProvider]
+    # A cached ``None`` means the config is disabled; it prevents re-running (failed) exporter construction.
+    _meter_provider_cache: dict[str, api_metrics.MeterProvider | None]
     _meter_provider_cache_lock: threading.Lock
     # Map of config as a sorted JSON string (since dictionaries can't be hashed) to meter.
     _meter_cache: dict[str, api_metrics.Meter]
@@ -126,7 +127,8 @@ class Telemetry:
     _counter_cache: dict[str, dict[CounterName, api_metrics.Counter]]
     _counter_cache_lock: threading.Lock
     # Map of config as a sorted JSON string (since dictionaries can't be hashed) to tracer provider.
-    _tracer_provider_cache: dict[str, api_trace.TracerProvider]
+    # A cached ``None`` means the config is disabled; it prevents re-running (failed) exporter construction.
+    _tracer_provider_cache: dict[str, api_trace.TracerProvider | None]
     _tracer_provider_cache_lock: threading.Lock
     # Map of config as a sorted JSON string (since dictionaries can't be hashed) to tracer.
     _tracer_cache: dict[str, api_trace.Tracer]
@@ -194,15 +196,17 @@ class Telemetry:
                         return self._meter_provider_cache.setdefault(
                             config_json, sdk_metrics.MeterProvider(metric_readers=[reader])
                         )
-                    except (AttributeError, ImportError):
+                    except Exception:
                         logger.error(
-                            "Failed to import OpenTelemetry Python SDK or exporter! Disabling metrics.", exc_info=True
+                            "Failed to initialize the OpenTelemetry meter provider or exporter! Disabling metrics.",
+                            exc_info=True,
                         )
-                        return None
+                        # Cache the disabled state so (possibly expensive) exporter construction isn't retried.
+                        return self._meter_provider_cache.setdefault(config_json, None)
                 else:
                     # Don't return a no-op meter provider to avoid unnecessary overhead.
                     logger.error("No exporter configured! Disabling metrics.")
-                    return None
+                    return self._meter_provider_cache.setdefault(config_json, None)
 
     def meter(self, config: dict[str, Any]) -> Optional[api_metrics.Meter]:
         """
@@ -301,14 +305,16 @@ class Telemetry:
                             config_json,
                             sdk_trace.TracerProvider(active_span_processor=processor, sampler=sampler),
                         )
-                    except (AttributeError, ImportError):
+                    except Exception:
                         logger.error(
-                            "Failed to import OpenTelemetry Python SDK or exporter! Disabling traces.", exc_info=True
+                            "Failed to initialize the OpenTelemetry tracer provider or exporter! Disabling traces.",
+                            exc_info=True,
                         )
-                        return None
+                        # Cache the disabled state so (possibly expensive) exporter construction isn't retried.
+                        return self._tracer_provider_cache.setdefault(config_json, None)
                 else:
                     logger.error("No exporter configured! Disabling traces.")
-                    return None
+                    return self._tracer_provider_cache.setdefault(config_json, None)
 
     def tracer(self, config: dict[str, Any]) -> Optional[api_trace.Tracer]:
         """
@@ -429,8 +435,13 @@ def _fully_qualified_name(c: type[Any]) -> str:
 
 
 # Metrics proxy object setup.
-TelemetryManager.register(typeid=_fully_qualified_name(api_metrics._Gauge))
-TelemetryManager.register(typeid=_fully_qualified_name(api_metrics.Counter))
+#
+# ``exposed`` is set explicitly rather than relying on ``multiprocessing``'s default
+# discovery (``public_methods`` via ``dir()``): an OpenTelemetry build that delegates an
+# instrument's mutating method isn't surfaced by ``dir()``, so the ``AutoProxy`` would drop
+# it and raise ``AttributeError: 'AutoProxy[...]' object has no attribute 'add'`` on record.
+TelemetryManager.register(typeid=_fully_qualified_name(api_metrics._Gauge), exposed=["set"])
+TelemetryManager.register(typeid=_fully_qualified_name(api_metrics.Counter), exposed=["add"])
 TelemetryManager.register(
     typeid=_fully_qualified_name(api_metrics.Meter),
     method_to_typeid={
