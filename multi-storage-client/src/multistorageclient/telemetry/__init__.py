@@ -429,8 +429,30 @@ def _fully_qualified_name(c: type[Any]) -> str:
 
 
 # Metrics proxy object setup.
-TelemetryManager.register(typeid=_fully_qualified_name(api_metrics._Gauge))
-TelemetryManager.register(typeid=_fully_qualified_name(api_metrics.Counter))
+#
+# ``exposed`` is derived from the instrument class's public functions rather than relying on
+# ``multiprocessing``'s default discovery (``public_methods`` via ``dir()``): an OpenTelemetry build
+# that delegates an instrument's method isn't surfaced by ``dir()``, so the ``AutoProxy`` would drop
+# it and raise ``AttributeError: 'AutoProxy[...]' object has no attribute 'add'`` on record.
+#
+# Unlike ``Span`` below, the metric instrument classes define their own ``__init__``; it must be
+# excluded (public-only), otherwise it would override ``BaseProxy.__init__`` and break proxy setup.
+TelemetryManager.register(
+    typeid=_fully_qualified_name(api_metrics._Gauge),
+    exposed=[
+        name
+        for name, _ in inspect.getmembers(api_metrics._Gauge, predicate=inspect.isfunction)
+        if not name.startswith("_")
+    ],
+)
+TelemetryManager.register(
+    typeid=_fully_qualified_name(api_metrics.Counter),
+    exposed=[
+        name
+        for name, _ in inspect.getmembers(api_metrics.Counter, predicate=inspect.isfunction)
+        if not name.startswith("_")
+    ],
+)
 TelemetryManager.register(
     typeid=_fully_qualified_name(api_metrics.Meter),
     method_to_typeid={
