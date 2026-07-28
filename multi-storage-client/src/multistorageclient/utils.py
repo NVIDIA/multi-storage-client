@@ -567,7 +567,11 @@ class AttributeFilterEvaluator(Transformer):
 
     def number(self, n):
         """Handle numeric literals."""
-        return float(n[0])
+        # Return the literal as a string: equality/inequality compare against
+        # str(metadata[key]) (always a string), and the ordering operators coerce
+        # both sides with float(). Returning a float here would make '=' / '!=' on
+        # numeric literals never/always match string-typed metadata values.
+        return str(n[0])
 
     def parens(self, items):
         """Handle parenthesized expressions."""
