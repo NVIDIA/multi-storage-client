@@ -446,36 +446,199 @@ def _build_posix_storage_client_for_preserve_error(
     return storage_client, base_path
 
 
+def test_list_follows_absolute_symlink_within_symlinked_base_path():
+    """
+    Absolute symlinks whose targets resolve inside ``base_path`` must be followed,
+    even when ``base_path`` itself contains intermediate directory symlinks.
+
+    ``os.path.realpath`` on the symlink target yields the fully resolved path;
+    comparing that against a non-realpathed ``base_path`` with
+    ``os.path.relpath`` incorrectly makes the target look external.
+    """
+    profile = "data"
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        profile_config = temp_data_store.profile_config_dict()
+        storage_root = profile_config["storage_provider"]["options"]["base_path"]
+        real_base_path = os.path.join(storage_root, "real-base")
+        symlinked_base_path = os.path.join(storage_root, "symlinked-base")
+        os.mkdir(real_base_path)
+        os.symlink(real_base_path, symlinked_base_path)
+        profile_config["storage_provider"]["options"]["base_path"] = symlinked_base_path
+        storage_client = StorageClient(
+            config=StorageClientConfig.from_dict(
+                config_dict={"profiles": {profile: profile_config}},
+                profile=profile,
+            )
+        )
+
+        storage_client.write(path="real.txt", body=b"real content")
+        os.symlink(
+            os.path.join(symlinked_base_path, "real.txt"),
+            os.path.join(symlinked_base_path, "link.txt"),
+        )
+
+        objects = list(storage_client.list(path="", symlink_handling=SymlinkHandling.FOLLOW))
+        assert sorted(obj.key for obj in objects) == ["link.txt", "real.txt"]
+
+
+def test_list_follows_internal_symlink_to_dotdot_prefixed_name():
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        storage_client, base_path = _build_posix_storage_client_for_preserve_error(temp_data_store)
+        storage_client.write(path="..real.txt", body=b"real content")
+        os.symlink(os.path.join(base_path, "..real.txt"), os.path.join(base_path, "link.txt"))
+
+        objects = list(storage_client.list(path="", symlink_handling=SymlinkHandling.FOLLOW))
+        assert sorted(obj.key for obj in objects) == ["..real.txt", "c.txt", "link.txt"]
+
+
 @pytest.mark.parametrize(
-    argnames=["temp_data_store_type"],
-    argvalues=[[tempdatastore.TemporaryPOSIXDirectory]],
+    ("symlink_handling", "expected_symlink_target"),
+    [
+        (SymlinkHandling.FOLLOW, None),
+        (SymlinkHandling.FOLLOW_STRICT, None),
+        (SymlinkHandling.PRESERVE, "c.txt"),
+        (SymlinkHandling.PRESERVE_STRICT, "c.txt"),
+    ],
 )
-def test_list_symlinks_from_posix_with_preserve_raises_on_external_target(
-    temp_data_store_type: type[tempdatastore.TemporaryDataStore],
+@pytest.mark.parametrize("operation_name", ["list", "list_recursive"])
+def test_list_direct_internal_symlink_applies_handling(
+    operation_name: str,
+    symlink_handling: SymlinkHandling,
+    expected_symlink_target: str | None,
 ):
-    """
-    ``symlink_handling=SymlinkHandling.PRESERVE`` must raise ``ValueError``
-    when a symlink's resolved target lives outside ``base_path``.
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        storage_client, _ = _build_posix_storage_client_for_preserve_error(temp_data_store)
+        storage_client.make_symlink(path="link.txt", target="c.txt")
 
-    MSC surfaces preserved symlinks as portable relative paths that must
-    resolve to a key inside ``base_path``; a target outside ``base_path``
-    has no valid relative key to record, so the provider fails fast with a
-    message telling the caller to switch to ``FOLLOW`` (to dereference the
-    content) or ``SKIP`` (to ignore the symlink).
+        operation = getattr(storage_client, operation_name)
+        objects = list(operation(path="link.txt", symlink_handling=symlink_handling))
 
-    Layout created by this test::
+        assert len(objects) == 1
+        assert objects[0].key == "link.txt"
+        assert objects[0].symlink_target == expected_symlink_target
 
-        base_dir/
-        ├── c.txt
-        └── escaping    -> <outside_dir>/outside.txt   (points OUTSIDE base_dir)
-        <outside_dir>/
-        └── outside.txt
 
-    The symlink is created directly via :py:func:`os.symlink` so the
-    on-disk target unambiguously escapes ``base_dir``; this mirrors how
-    external symlinks end up on a real POSIX tree.
-    """
-    with temp_data_store_type() as temp_data_store:
+@pytest.mark.parametrize("operation_name", ["list", "list_recursive"])
+@pytest.mark.parametrize(
+    "symlink_handling",
+    [SymlinkHandling.PRESERVE, SymlinkHandling.PRESERVE_STRICT],
+)
+def test_list_direct_directory_symlink_with_trailing_slash_is_preserved(
+    operation_name: str,
+    symlink_handling: SymlinkHandling,
+):
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        storage_client, _ = _build_posix_storage_client_for_preserve_error(temp_data_store)
+        storage_client.write(path="target/file.txt", body=b"target content")
+        storage_client.make_symlink(path="link", target="target")
+        operation = getattr(storage_client, operation_name)
+
+        objects = list(operation(path="link/", symlink_handling=symlink_handling))
+
+        assert len(objects) == 1
+        assert objects[0].key == "link"
+        assert objects[0].type == "directory"
+        assert objects[0].symlink_target == "target"
+
+
+@pytest.mark.parametrize("operation_name", ["list", "list_recursive"])
+def test_list_direct_symlink_with_skip_returns_nothing(operation_name: str):
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        storage_client, _ = _build_posix_storage_client_for_preserve_error(temp_data_store)
+        storage_client.make_symlink(path="link.txt", target="c.txt")
+
+        operation = getattr(storage_client, operation_name)
+        assert list(operation(path="link.txt", symlink_handling=SymlinkHandling.SKIP)) == []
+
+
+@pytest.mark.parametrize("operation_name", ["list", "list_recursive"])
+def test_list_direct_symlink_applies_key_bounds(operation_name: str):
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        storage_client, _ = _build_posix_storage_client_for_preserve_error(temp_data_store)
+        storage_client.make_symlink(path="link.txt", target="c.txt")
+        operation = getattr(storage_client, operation_name)
+
+        assert list(operation(path="link.txt", start_after="z")) == []
+        assert list(operation(path="link.txt", end_at="a")) == []
+        assert len(list(operation(path="link.txt", start_after="a", end_at="z"))) == 1
+
+
+@pytest.mark.parametrize(
+    "symlink_handling",
+    [
+        SymlinkHandling.FOLLOW,
+        SymlinkHandling.FOLLOW_STRICT,
+        SymlinkHandling.PRESERVE,
+        SymlinkHandling.PRESERVE_STRICT,
+    ],
+)
+@pytest.mark.parametrize("operation_name", ["list", "list_recursive"])
+def test_list_direct_broken_symlink_raises(operation_name: str, symlink_handling: SymlinkHandling):
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        storage_client, base_path = _build_posix_storage_client_for_preserve_error(temp_data_store)
+        os.symlink(os.path.join(base_path, "missing.txt"), os.path.join(base_path, "broken"))
+
+        operation = getattr(storage_client, operation_name)
+        with pytest.raises(FileNotFoundError, match="Broken symlink"):
+            list(operation(path="broken", symlink_handling=symlink_handling))
+
+
+@pytest.mark.parametrize("operation_name", ["list", "list_recursive"])
+def test_list_direct_broken_symlink_with_skip_returns_nothing(operation_name: str):
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        storage_client, base_path = _build_posix_storage_client_for_preserve_error(temp_data_store)
+        os.symlink(os.path.join(base_path, "missing.txt"), os.path.join(base_path, "broken"))
+
+        operation = getattr(storage_client, operation_name)
+        assert list(operation(path="broken", symlink_handling=SymlinkHandling.SKIP)) == []
+
+
+@pytest.mark.parametrize("symlink_handling", [SymlinkHandling.FOLLOW, SymlinkHandling.PRESERVE])
+@pytest.mark.parametrize("operation_name", ["list", "list_recursive"])
+def test_list_direct_external_symlink_skips_target(operation_name: str, symlink_handling: SymlinkHandling):
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        storage_client, base_path = _build_posix_storage_client_for_preserve_error(temp_data_store)
+
+        with tempfile.TemporaryDirectory() as outside_dir:
+            outside_file = os.path.join(outside_dir, "outside.txt")
+            with open(outside_file, "wb") as f:
+                f.write(b"outside content")
+            os.symlink(outside_file, os.path.join(base_path, "escaping"))
+
+            operation = getattr(storage_client, operation_name)
+            assert list(operation(path="escaping", symlink_handling=symlink_handling)) == []
+
+
+@pytest.mark.parametrize(
+    "symlink_handling",
+    [SymlinkHandling.FOLLOW_STRICT, SymlinkHandling.PRESERVE_STRICT],
+)
+@pytest.mark.parametrize("operation_name", ["list", "list_recursive"])
+def test_list_direct_external_symlink_with_strict_handling_raises(
+    operation_name: str,
+    symlink_handling: SymlinkHandling,
+):
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        storage_client, base_path = _build_posix_storage_client_for_preserve_error(temp_data_store)
+
+        with tempfile.TemporaryDirectory() as outside_dir:
+            outside_file = os.path.join(outside_dir, "outside.txt")
+            with open(outside_file, "wb") as f:
+                f.write(b"outside content")
+            os.symlink(outside_file, os.path.join(base_path, "escaping"))
+
+            operation = getattr(storage_client, operation_name)
+            with pytest.raises(ValueError, match="points outside the base directory"):
+                list(operation(path="escaping", symlink_handling=symlink_handling))
+
+
+@pytest.mark.parametrize("operation_name", ["list", "list_recursive"])
+@pytest.mark.parametrize("symlink_handling", [SymlinkHandling.FOLLOW, SymlinkHandling.PRESERVE])
+def test_list_symlinks_from_posix_skips_external_target(
+    operation_name: str,
+    symlink_handling: SymlinkHandling,
+):
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
         storage_client, base_path = _build_posix_storage_client_for_preserve_error(temp_data_store)
 
         with tempfile.TemporaryDirectory() as outside_dir:
@@ -485,18 +648,22 @@ def test_list_symlinks_from_posix_with_preserve_raises_on_external_target(
 
             os.symlink(outside_file, os.path.join(base_path, "escaping"))
 
-            with pytest.raises(ValueError, match="points outside the base directory"):
-                list(storage_client.list(path="", symlink_handling=SymlinkHandling.PRESERVE))
+            operation = getattr(storage_client, operation_name)
+            objects = list(operation(path="", symlink_handling=symlink_handling))
+
+            assert [obj.key for obj in objects] == ["c.txt"]
 
 
+@pytest.mark.parametrize("operation_name", ["list", "list_recursive"])
 @pytest.mark.parametrize(
-    argnames=["temp_data_store_type"],
-    argvalues=[[tempdatastore.TemporaryPOSIXDirectory]],
+    "symlink_handling",
+    [SymlinkHandling.FOLLOW_STRICT, SymlinkHandling.PRESERVE_STRICT],
 )
-def test_list_recursive_symlinks_from_posix_with_preserve_raises_on_external_target(
-    temp_data_store_type: type[tempdatastore.TemporaryDataStore],
+def test_list_symlinks_from_posix_with_strict_handling_raises_on_external_target(
+    operation_name: str,
+    symlink_handling: SymlinkHandling,
 ):
-    with temp_data_store_type() as temp_data_store:
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
         storage_client, base_path = _build_posix_storage_client_for_preserve_error(temp_data_store)
 
         with tempfile.TemporaryDirectory() as outside_dir:
@@ -506,8 +673,9 @@ def test_list_recursive_symlinks_from_posix_with_preserve_raises_on_external_tar
 
             os.symlink(outside_file, os.path.join(base_path, "escaping"))
 
+            operation = getattr(storage_client, operation_name)
             with pytest.raises(ValueError, match="points outside the base directory"):
-                list(storage_client.list_recursive(path="", symlink_handling=SymlinkHandling.PRESERVE))
+                list(operation(path="", symlink_handling=symlink_handling))
 
 
 @pytest.mark.parametrize(

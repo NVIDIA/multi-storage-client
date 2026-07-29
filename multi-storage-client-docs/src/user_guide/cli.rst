@@ -435,11 +435,13 @@ Each JSONL file contains one JSON object per line with ``ObjectMetadata`` fields
 Symlink Handling
 ================
 
-The ``--symlink-handling`` option controls how symbolic links in the source are handled during a sync. Three modes are supported:
+The ``--symlink-handling`` option controls how symbolic links in the source are handled during a sync. Five modes are supported:
 
-* ``follow`` (default) — Symlinks are transparently dereferenced and the target's bytes are copied.
+* ``follow`` (default) — Internal symlinks are transparently dereferenced and the target's bytes are copied. External symlinks (targets outside the source ``base_path``) are skipped.
+* ``follow_strict`` — Same as ``follow`` for internal symlinks, but raises an error on external symlinks.
 * ``skip`` — Symlinks (both file and directory symlinks) are excluded from the sync.
-* ``preserve`` — Symlinks are recreated on the target instead of being dereferenced. A symlink entry is transferred as a pointer, so no duplicate content is written. Required for round-trip fidelity (e.g., upload to object storage, then download, and recover the original layout including symlinks).
+* ``preserve`` — Internal symlinks are recreated on the target instead of being dereferenced. External symlinks are skipped. Required for round-trip fidelity (e.g., upload to object storage, then download, and recover the original layout including internal symlinks).
+* ``preserve_strict`` — Same as ``preserve`` for internal symlinks, but raises an error on external symlinks.
 
 .. code-block:: shell
   :caption: Preserve symlinks when uploading to object storage
@@ -453,9 +455,11 @@ The ``--symlink-handling`` option controls how symbolic links in the source are 
 
 .. note::
 
-  Symlink targets pointing outside the source's ``base_path`` are rejected in ``preserve`` mode because the target is not reachable via the storage profile. Use ``follow`` to dereference such symlinks or ``skip`` to ignore them.
+  External-target and broken-symlink checks apply only to POSIX file providers. Object-storage providers ignore ``--symlink-handling``.
 
-  Broken symlinks (missing target) also raise an error in ``preserve`` mode; use ``skip`` to ignore them.
+  Symlink targets pointing outside the source's ``base_path`` are skipped in ``follow`` and ``preserve`` mode. Use ``follow_strict`` or ``preserve_strict`` to fail instead, or ``skip`` to ignore all symlinks.
+
+  Broken symlinks (missing target) raise an error in ``follow``, ``follow_strict``, ``preserve``, and ``preserve_strict`` mode; use ``skip`` to ignore them.
 
 See :doc:`/user_guide/concepts` and the storage provider documentation for the data model details and backend-specific representation of symlinks.
 

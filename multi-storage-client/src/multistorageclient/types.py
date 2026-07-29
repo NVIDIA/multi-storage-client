@@ -43,12 +43,19 @@ AWARE_DATETIME_MIN = datetime.min.replace(tzinfo=timezone.utc)
 class SymlinkHandling(str, Enum):
     """Controls how symbolic links are handled during listing and sync operations.
 
-    - ``FOLLOW``: Symlinks are transparent -- directory symlinks are recursed into,
-      file symlinks appear as regular files. This is the default and is backward-compatible.
+    External symlinks (targets outside ``base_path``) are skipped by default in
+    ``FOLLOW`` and ``PRESERVE``. Use ``FOLLOW_STRICT`` or ``PRESERVE_STRICT`` to
+    fail instead.
+
+    - ``FOLLOW``: Dereference internal symlinks; skip external symlinks. This is
+      the default.
+    - ``FOLLOW_STRICT``: Dereference internal symlinks; raise on external symlinks.
     - ``SKIP``: All symlinks are excluded from results.
-    - ``PRESERVE``: Symlinks are detected and yielded as leaf entries with
-      :py:attr:`ObjectMetadata.symlink_target` populated. Directory symlinks are
-      **not** recursed into.
+    - ``PRESERVE``: Surface internal symlinks as leaf entries with
+      :py:attr:`ObjectMetadata.symlink_target` populated; skip external symlinks.
+      Directory symlinks are **not** recursed into.
+    - ``PRESERVE_STRICT``: Same as ``PRESERVE`` for internal symlinks; raise on
+      external symlinks.
 
     .. note::
        This option is only meaningful for POSIX file storage providers, which
@@ -61,8 +68,10 @@ class SymlinkHandling(str, Enum):
     """
 
     FOLLOW = "follow"
+    FOLLOW_STRICT = "follow_strict"
     SKIP = "skip"
     PRESERVE = "preserve"
+    PRESERVE_STRICT = "preserve_strict"
 
 
 # Maximum number of symlink hops allowed when resolving a symlink chain.
