@@ -189,8 +189,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
             error_info = f"status_code: {status_code}, message: {error.message}"
             raise RuntimeError(f"Failed to {operation} object(s) at {bucket}/{key}. {error_info}") from error
         except HTTPError as error:
-            status_code = error.response.status_code
-            if status_code == 404:
+            if error.response is not None and error.response.status_code == 404:
                 raise FileNotFoundError(f"Object {bucket}/{key} does not exist.")  # pylint: disable=raise-missing-from
             else:
                 raise RuntimeError(
@@ -360,7 +359,8 @@ class AIStoreStorageProvider(BaseStorageProvider):
                     if isinstance(e, AISError):
                         status_code = e.status_code
                     elif isinstance(e, HTTPError):
-                        status_code = e.response.status_code
+                        if e.response is not None:
+                            status_code = e.response.status_code
 
                     if status_code == 404:
                         if self._is_dir(path):
