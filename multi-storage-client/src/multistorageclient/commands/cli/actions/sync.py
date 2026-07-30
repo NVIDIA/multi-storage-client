@@ -75,14 +75,16 @@ class SyncAction(Action):
         )
         parser.add_argument(
             "--symlink-handling",
-            choices=["follow", "skip", "preserve"],
+            choices=["follow", "follow_strict", "skip", "preserve", "preserve_strict"],
             default="follow",
             help=(
                 "How to handle symbolic links during sync. "
-                "'follow' (default) dereferences symlinks and copies target bytes. "
+                "'follow' (default) dereferences internal symlinks and skips external symlinks. "
+                "'follow_strict' dereferences internal symlinks and raises on external symlinks. "
                 "'skip' excludes symlinks. "
-                "'preserve' recreates symlinks on the target via make_symlink "
-                "(required for round-trip fidelity)."
+                "'preserve' recreates internal symlinks on the target via make_symlink and skips external symlinks. "
+                "'preserve_strict' recreates internal symlinks and raises on external symlinks. "
+                "These modes apply only to POSIX sources; object-storage providers ignore this option."
             ),
         )
         parser.add_argument(

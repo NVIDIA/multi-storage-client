@@ -820,6 +820,13 @@ class SingleStorageClient(AbstractStorageClient):
         if not path:
             return None, path
 
+        if self._is_posix_file_storage_provider() and not self._metadata_provider:
+            provider = cast(PosixFileStorageProvider, self._storage_provider)
+            normalized_path = path.rstrip("/") or path
+            physical_path = provider._prepend_base_path(normalized_path)
+            if os.path.islink(physical_path):
+                return None, normalized_path
+
         if self.is_file(path):
             if pattern_matcher and not pattern_matcher.should_include_file(path):
                 return None, None

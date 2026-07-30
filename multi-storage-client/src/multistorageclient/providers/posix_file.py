@@ -242,12 +242,39 @@ class PosixFileStorageProvider(BaseStorageProvider):
         end_at = os.path.relpath(end_at, self._base_path) if end_at else None
 
         def _invoke_api() -> Iterator[ObjectMetadata]:
+            symlink_path = path.rstrip("/") or path
+            if os.path.islink(symlink_path):
+                if symlink_handling == SymlinkHandling.SKIP:
+                    return
+
+                relative_path = self._validate_symlink_target(symlink_path, symlink_handling)
+                if relative_path is None:
+                    return
+
+                if (start_after is not None and relative_path <= start_after) or (
+                    end_at is not None and relative_path > end_at
+                ):
+                    return
+
+                if symlink_handling in (SymlinkHandling.PRESERVE, SymlinkHandling.PRESERVE_STRICT):
+                    relative_target, target_type = self._get_symlink_target_info(symlink_path)
+                    yield ObjectMetadata(
+                        key=relative_path,
+                        content_length=0,
+                        last_modified=datetime.fromtimestamp(os.path.getmtime(symlink_path), tz=timezone.utc),
+                        type=target_type,
+                        symlink_target=relative_target,
+                    )
+                    return
+
             if os.path.isfile(path):
-                yield ObjectMetadata(
-                    key=os.path.relpath(path, self._base_path),
-                    content_length=os.path.getsize(path),
-                    last_modified=datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc),
-                )
+                relative_path = os.path.relpath(path, self._base_path)
+                if (start_after is None or relative_path > start_after) and (end_at is None or relative_path <= end_at):
+                    yield ObjectMetadata(
+                        key=relative_path,
+                        content_length=os.path.getsize(path),
+                        last_modified=datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc),
+                    )
             dir_path = path.rstrip("/") + "/"
             if not os.path.isdir(dir_path):
                 return
@@ -284,6 +311,62 @@ class PosixFileStorageProvider(BaseStorageProvider):
 
         return prefixes, objects
 
+    def _symlink_target_is_external(self, real_target: str) -> bool:
+        """
+        Return True when ``real_target`` resolves outside ``base_path``.
+
+        Resolve ``base_path`` before comparing so intermediate directory
+        symlinks do not make an in-tree target look external.
+        """
+        real_base_path = os.path.realpath(self._base_path)
+        try:
+            return os.path.commonpath((real_base_path, real_target)) != real_base_path
+        except ValueError:
+            return True
+
+    def _validate_symlink_target(
+        self,
+        full_path: str,
+        symlink_handling: SymlinkHandling,
+    ) -> Optional[str]:
+        """
+        Validate a symlink target and return its path relative to ``base_path``.
+
+        Non-strict modes return ``None`` for external targets, while strict
+        modes raise. Broken symlinks always raise unless the caller skipped
+        validation through ``SymlinkHandling.SKIP``.
+        """
+        relative_path = os.path.relpath(full_path, self._base_path)
+        real_target = os.path.realpath(full_path)
+        if not os.path.exists(real_target):
+            raise FileNotFoundError(
+                f"Broken symlink '{relative_path}' points to a missing target "
+                f"({full_path} -> {real_target}). Use symlink_handling=SKIP to ignore."
+            )
+
+        if not self._symlink_target_is_external(real_target):
+            return relative_path
+
+        if symlink_handling in (SymlinkHandling.FOLLOW_STRICT, SymlinkHandling.PRESERVE_STRICT):
+            raise ValueError(
+                f"Symlink '{relative_path}' points outside the base directory "
+                f"({full_path} -> {real_target}). Use symlink_handling=SKIP to ignore."
+            )
+        return None
+
+    @staticmethod
+    def _get_symlink_target_info(full_path: str) -> tuple[str, str]:
+        """Return the encoded immediate target and resolved target type."""
+        raw_link = os.readlink(full_path)
+        immediate_target = (
+            raw_link
+            if os.path.isabs(raw_link)
+            else os.path.normpath(os.path.join(os.path.dirname(full_path), raw_link))
+        )
+        relative_target = ObjectMetadata.encode_symlink_target(full_path, immediate_target)
+        target_type = "directory" if os.path.isdir(full_path) else "file"
+        return relative_target, target_type
+
     def _explore_directory(
         self,
         dir_path: str,
@@ -315,37 +398,12 @@ class PosixFileStorageProvider(BaseStorageProvider):
                 if is_link and symlink_handling == SymlinkHandling.SKIP:
                     continue
 
-                if is_link and symlink_handling == SymlinkHandling.PRESERVE:
-                    relative_path = os.path.relpath(full_path, self._base_path)
+                if is_link and symlink_handling in (SymlinkHandling.PRESERVE, SymlinkHandling.PRESERVE_STRICT):
+                    relative_path = self._validate_symlink_target(full_path, symlink_handling)
+                    if relative_path is None:
+                        continue
 
-                    real_target = os.path.realpath(full_path)
-                    if not os.path.exists(real_target):
-                        raise FileNotFoundError(
-                            f"Broken symlink '{relative_path}' points to a missing target "
-                            f"({full_path} -> {real_target}). Use symlink_handling=SKIP to ignore."
-                        )
-
-                    try:
-                        target_key = os.path.relpath(real_target, self._base_path)
-                    except ValueError:
-                        target_key = None
-
-                    if target_key is None or target_key.startswith(".."):
-                        raise ValueError(
-                            f"Symlink '{relative_path}' points outside the base directory "
-                            f"({full_path} -> {real_target}). Use symlink_handling=FOLLOW "
-                            f"to dereference or symlink_handling=SKIP to ignore."
-                        )
-
-                    raw_link = os.readlink(full_path)
-                    immediate_target = (
-                        raw_link
-                        if os.path.isabs(raw_link)
-                        else os.path.normpath(os.path.join(os.path.dirname(full_path), raw_link))
-                    )
-                    relative_target = ObjectMetadata.encode_symlink_target(full_path, immediate_target)
-
-                    target_type = "directory" if os.path.isdir(full_path) else "file"
+                    relative_target, target_type = self._get_symlink_target_info(full_path)
 
                     if (start_after is None or start_after < relative_path) and (
                         end_at is None or relative_path <= end_at
@@ -354,16 +412,10 @@ class PosixFileStorageProvider(BaseStorageProvider):
                         symlink_info[relative_path] = (relative_target, target_type)
                     continue
 
-                if is_link and symlink_handling == SymlinkHandling.FOLLOW:
-                    # Broken symlinks have no target to dereference: isfile/isdir both return
-                    # False, so the entry would be silently dropped. Fail fast instead.
-                    real_target = os.path.realpath(full_path)
-                    if not os.path.exists(real_target):
-                        relative_path = os.path.relpath(full_path, self._base_path)
-                        raise FileNotFoundError(
-                            f"Broken symlink '{relative_path}' points to a missing target "
-                            f"({full_path} -> {real_target}). Use symlink_handling=SKIP to ignore."
-                        )
+                if is_link and symlink_handling in (SymlinkHandling.FOLLOW, SymlinkHandling.FOLLOW_STRICT):
+                    relative_path = self._validate_symlink_target(full_path, symlink_handling)
+                    if relative_path is None:
+                        continue
 
                 relative_path = os.path.relpath(full_path, self._base_path)
 
