@@ -17,8 +17,9 @@ import logging
 from typing import Any
 
 import requests
-import requests.adapters as requests_adapters
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from multistorageclient.instrumentation.auth import AccessTokenProvider, AzureAccessTokenProvider
 
@@ -33,7 +34,7 @@ class _OTLPMSALSpanExporter(OTLPSpanExporter):
     _MAX_RETRIES = 5
     _BACKOFF_FACTOR = 0.5
 
-    class AccessTokenHTTPAdapter(requests_adapters.HTTPAdapter):
+    class AccessTokenHTTPAdapter(HTTPAdapter):
         """
         HTTP adapter for retry and auth.
         """
@@ -42,7 +43,7 @@ class _OTLPMSALSpanExporter(OTLPSpanExporter):
 
         def __init__(self, access_token_provider: AccessTokenProvider, *args, **kwargs):
             max_retries = kwargs.get("max_retries", _OTLPMSALSpanExporter._MAX_RETRIES)
-            kwargs["max_retries"] = requests_adapters.Retry(
+            kwargs["max_retries"] = Retry(
                 total=max_retries,
                 backoff_factor=_OTLPMSALSpanExporter._BACKOFF_FACTOR,
                 connect=max_retries,

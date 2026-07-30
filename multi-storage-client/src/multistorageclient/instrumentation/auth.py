@@ -429,7 +429,8 @@ class AzureAccessTokenProvider(AccessTokenProvider):
         }
 
         import msal
-        from requests.adapters import HTTPAdapter, Retry
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
 
         msal_session = requests.Session()
         retries = Retry(
