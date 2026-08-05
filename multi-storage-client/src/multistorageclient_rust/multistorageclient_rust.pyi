@@ -46,7 +46,6 @@ class RustClient:
         :param credentials_provider: Credentials provider for the provider (e.g., StaticS3CredentialsProvider).
         :param retry: Retry configuration for the Rust client.
         """
-        ...
 
     async def put(self, path: str, data: bytes | memoryview | bytearray) -> int:
         """
@@ -55,7 +54,6 @@ class RustClient:
         :param data: The data to upload as bytes, memoryview, or bytearray (buffer protocol).
         :return: The number of bytes uploaded.
         """
-        ...
 
     async def get(self, path: str, range: Range | None = ...) -> bytes:
         """
@@ -64,7 +62,6 @@ class RustClient:
         :param range: Optional byte range for download.
         :return: The downloaded data as bytes.
         """
-        ...
 
     async def upload(self, local_path: str, remote_path: str) -> int:
         """
@@ -73,7 +70,6 @@ class RustClient:
         :param remote_path: The destination path in the storage backend.
         :return: The number of bytes uploaded.
         """
-        ...
 
     async def download(self, remote_path: str, local_path: str) -> int:
         """
@@ -82,7 +78,6 @@ class RustClient:
         :param local_path: Path to the local file to save the downloaded data.
         :return: The number of bytes downloaded.
         """
-        ...
 
     async def upload_multipart_from_file(
         self,
@@ -104,7 +99,6 @@ class RustClient:
         :param max_concurrency: The maximum number of concurrent operations.
         :return: The number of bytes uploaded.
         """
-        ...
 
     async def upload_multipart_from_bytes(
         self,
@@ -126,7 +120,6 @@ class RustClient:
         :param max_concurrency: The maximum number of concurrent operations.
         :return: The number of bytes uploaded.
         """
-        ...
 
     async def download_multipart_to_file(
         self,
@@ -148,7 +141,6 @@ class RustClient:
         :param max_concurrency: The maximum number of concurrent operations.
         :return: The number of bytes downloaded.
         """
-        ...
 
     async def download_multipart_to_bytes(
         self,
@@ -169,7 +161,6 @@ class RustClient:
         :param multipart_chunksize: The size of the multipart chunks.
         :param max_concurrency: The maximum number of concurrent operations.
         """
-        ...
 
     async def list_recursive(
         self,
@@ -193,7 +184,6 @@ class RustClient:
         :param max_depth: Maximum depth of the directory tree to traverse.
         :param max_concurrency: Maximum number of concurrent operations.
         """
-        ...
 
 class ObjectMetadata:
     """
@@ -219,14 +209,10 @@ class RustRetryableError(Exception):
     RustRetryableError is raised when a retryable error occurs.
     """
 
-    ...
-
 class RustClientError(Exception):
     """
     RustClientError is raised when a client error occurs.
     """
-
-    ...
 
 class RustRetryConfig:
     """
@@ -258,4 +244,3 @@ class RustRetryConfig:
         :param max_backoff: Maximum backoff delay in seconds (default: 15)
         :param backoff_multiplier: Exponential backoff multiplier (default: 2.0)
         """
-        ...

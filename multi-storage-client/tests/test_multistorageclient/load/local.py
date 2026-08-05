@@ -20,10 +20,9 @@ import uuid
 
 import pytest
 
-import multistorageclient.telemetry as telemetry
-import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
-from multistorageclient import StorageClient, StorageClientConfig
+from multistorageclient import StorageClient, StorageClientConfig, telemetry
 from multistorageclient.constants import MEMORY_LOAD_LIMIT
+from test_multistorageclient.unit.utils import tempdatastore
 
 
 @pytest.fixture(scope="session")
@@ -80,19 +79,19 @@ def test_storage_client(storage_client: StorageClient) -> None:
     # Check the file doesn't exist.
     try:
         storage_client.read(path=file_path)
-    except Exception:
+    except Exception:  # noqa: S110
         pass
     try:
         storage_client.info(path=file_path)
-    except Exception:
+    except Exception:  # noqa: S110
         pass
     try:
         storage_client.copy(src_path=file_path, dest_path=file_copy_path)
-    except Exception:
+    except Exception:  # noqa: S110
         pass
     try:
         storage_client.delete(path=file_path)
-    except Exception:
+    except Exception:  # noqa: S110
         pass
 
     # Write a file.

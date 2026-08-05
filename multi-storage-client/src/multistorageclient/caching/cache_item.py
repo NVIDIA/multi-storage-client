@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
@@ -55,7 +54,7 @@ class CacheItem:
         self.hashed_key = hashed_key
 
     @staticmethod
-    def from_path(file_path: str, hashed_key: str) -> Optional[CacheItem]:
+    def from_path(file_path: str, hashed_key: str) -> CacheItem | None:
         """
         Create a CacheItem instance from a file path.
 

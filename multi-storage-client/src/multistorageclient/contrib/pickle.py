@@ -16,19 +16,19 @@
 import os
 import pickle as _pickle
 from collections.abc import Callable, Iterable
-from typing import IO, Any, Optional, Union
+from typing import IO, Any
 
 from ..pathlib import MultiStoragePath
 from ..shortcuts import open as msc_open
 
 
 def load(
-    file: Union[str, os.PathLike[str], IO[bytes]],
+    file: str | os.PathLike[str] | IO[bytes],
     *,
     fix_imports: bool = True,
     encoding: str = "ASCII",
     errors: str = "strict",
-    buffers: Optional[Iterable[Any]] = None,
+    buffers: Iterable[Any] | None = None,
 ) -> Any:
     """
     Adapt ``pickle.load``.
@@ -65,12 +65,12 @@ def load(
 
 def dump(
     obj: Any,
-    file_path: Union[str, os.PathLike[str]],
-    protocol: Optional[int] = None,
+    file_path: str | os.PathLike[str],
+    protocol: int | None = None,
     *,
     fix_imports: bool = True,
-    buffer_callback: Optional[Callable[[Any], None]] = None,
-    attributes: Optional[dict[str, Any]] = None,
+    buffer_callback: Callable[[Any], None] | None = None,
+    attributes: dict[str, Any] | None = None,
 ) -> None:
     """
     Adapt ``pickle.dump``.

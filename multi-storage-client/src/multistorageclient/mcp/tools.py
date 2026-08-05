@@ -17,7 +17,6 @@
 
 import json
 import logging
-from typing import List, Optional
 
 from .server import mcp
 from .utils import get_storage_client_for_url, metadata_to_dict
@@ -28,12 +27,12 @@ logger = logging.getLogger(__name__)
 @mcp.tool
 def msc_list(
     url: str,
-    start_after: Optional[str] = None,
-    end_at: Optional[str] = None,
+    start_after: str | None = None,
+    end_at: str | None = None,
     include_directories: bool = False,
-    attribute_filter_expression: Optional[str] = None,
+    attribute_filter_expression: str | None = None,
     show_attributes: bool = False,
-    limit: Optional[int] = None,
+    limit: int | None = None,
 ) -> str:
     """
     Lists the contents of the specified URL prefix in Multi-Storage Client.
@@ -85,7 +84,7 @@ def msc_list(
         return json.dumps(result, indent=2, default=str)
 
     except Exception as e:
-        logger.error(f"Error listing objects at {url}: {str(e)}")
+        logger.error(f"Error listing objects at {url}: {e!s}")
         error_result = {"success": False, "error": str(e), "url": url}
         return json.dumps(error_result, indent=2)
 
@@ -114,13 +113,13 @@ def msc_info(url: str) -> str:
         return json.dumps(result, indent=2, default=str)
 
     except Exception as e:
-        logger.error(f"Error getting info for {url}: {str(e)}")
+        logger.error(f"Error getting info for {url}: {e!s}")
         error_result = {"success": False, "error": str(e), "url": url}
         return json.dumps(error_result, indent=2)
 
 
 @mcp.tool
-def msc_upload_file(url: str, local_path: str, attributes: Optional[dict] = None) -> str:
+def msc_upload_file(url: str, local_path: str, attributes: dict | None = None) -> str:
     """
     Upload a file to the given URL from a local path.
 
@@ -157,7 +156,7 @@ def msc_upload_file(url: str, local_path: str, attributes: Optional[dict] = None
         return json.dumps(result, indent=2, default=str)
 
     except Exception as e:
-        logger.error(f"Error uploading {local_path} to {url}: {str(e)}")
+        logger.error(f"Error uploading {local_path} to {url}: {e!s}")
         error_result = {"success": False, "error": str(e), "url": url, "local_path": local_path}
         return json.dumps(error_result, indent=2)
 
@@ -194,7 +193,7 @@ def msc_download_file(url: str, local_path: str) -> str:
         return json.dumps(result, indent=2, default=str)
 
     except Exception as e:
-        logger.error(f"Error downloading {url} to {local_path}: {str(e)}")
+        logger.error(f"Error downloading {url} to {local_path}: {e!s}")
         error_result = {"success": False, "error": str(e), "url": url, "local_path": local_path}
         return json.dumps(error_result, indent=2)
 
@@ -229,7 +228,7 @@ def msc_delete(url: str, recursive: bool = False) -> str:
         return json.dumps(result, indent=2, default=str)
 
     except Exception as e:
-        logger.error(f"Error deleting {url}: {str(e)}")
+        logger.error(f"Error deleting {url}: {e!s}")
         error_result = {"success": False, "error": str(e), "url": url, "recursive": recursive}
         return json.dumps(error_result, indent=2)
 
@@ -288,7 +287,7 @@ def msc_copy(source_url: str, target_url: str) -> str:
         return json.dumps(result, indent=2, default=str)
 
     except Exception as e:
-        logger.error(f"Error copying {source_url} to {target_url}: {str(e)}")
+        logger.error(f"Error copying {source_url} to {target_url}: {e!s}")
         error_result = {
             "success": False,
             "error": str(e),
@@ -327,7 +326,7 @@ def msc_is_file(url: str) -> str:
         return json.dumps(result, indent=2, default=str)
 
     except Exception as e:
-        logger.error(f"Error checking if {url} is a file: {str(e)}")
+        logger.error(f"Error checking if {url} is a file: {e!s}")
         error_result = {"success": False, "error": str(e), "url": url}
         return json.dumps(error_result, indent=2)
 
@@ -361,7 +360,7 @@ def msc_is_empty(url: str) -> str:
         return json.dumps(result, indent=2, default=str)
 
     except Exception as e:
-        logger.error(f"Error checking if {url} is empty: {str(e)}")
+        logger.error(f"Error checking if {url} is empty: {e!s}")
         error_result = {"success": False, "error": str(e), "url": url}
         return json.dumps(error_result, indent=2)
 
@@ -413,7 +412,7 @@ def msc_sync(
         return json.dumps(result, indent=2, default=str)
 
     except Exception as e:
-        logger.error(f"Error syncing {source_url} to {target_url}: {str(e)}")
+        logger.error(f"Error syncing {source_url} to {target_url}: {e!s}")
         error_result = {
             "success": False,
             "error": str(e),
@@ -426,7 +425,7 @@ def msc_sync(
 @mcp.tool
 def msc_sync_replicas(
     source_url: str,
-    replica_indices: Optional[List[int]] = None,
+    replica_indices: list[int] | None = None,
     delete_unmatched_files: bool = False,
 ) -> str:
     """
@@ -477,7 +476,7 @@ def msc_sync_replicas(
         return json.dumps(result, indent=2, default=str)
 
     except Exception as e:
-        logger.error(f"Error syncing replicas from {source_url}: {str(e)}")
+        logger.error(f"Error syncing replicas from {source_url}: {e!s}")
         error_result = {
             "success": False,
             "error": str(e),

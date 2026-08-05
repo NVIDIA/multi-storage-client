@@ -170,7 +170,7 @@ def test_shutil_rmtree(file_storage_config):
         create_file(msc.Path(f"{temp_dir}/dir1/dir3/testfile.txt"))
 
         path = msc.Path(f"{temp_dir}/")
-        shutil.rmtree(path)  # noqa: F821
+        shutil.rmtree(path)
         assert not path.exists()
 
 

@@ -17,10 +17,10 @@ import copy
 
 import pytest
 
-import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.commands.msc_benchmark import BenchmarkRunner
 from multistorageclient.providers.manifest_metadata import DEFAULT_MANIFEST_BASE_DIR
+from test_multistorageclient.unit.utils import tempdatastore
 
 
 @pytest.fixture

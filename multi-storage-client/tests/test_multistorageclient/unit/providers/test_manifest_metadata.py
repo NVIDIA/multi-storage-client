@@ -23,7 +23,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.providers.manifest_metadata import (
     DEFAULT_MANIFEST_BASE_DIR,
@@ -31,6 +30,7 @@ from multistorageclient.providers.manifest_metadata import (
 )
 from multistorageclient.providers.manifest_object_metadata import ManifestObjectMetadata
 from multistorageclient.types import ObjectMetadata, ResolvedPathState
+from test_multistorageclient.unit.utils import tempdatastore
 
 
 @pytest.mark.parametrize(

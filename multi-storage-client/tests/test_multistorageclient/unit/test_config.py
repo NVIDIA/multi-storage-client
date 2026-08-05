@@ -26,9 +26,7 @@ import pytest
 import yaml
 from oci.auth.signers import SecurityTokenSigner
 
-import multistorageclient.telemetry as telemetry
-import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
-from multistorageclient import StorageClient, StorageClientConfig
+from multistorageclient import StorageClient, StorageClientConfig, telemetry
 from multistorageclient.config import (
     SimpleProviderBundle,
     _find_config_file_paths,
@@ -46,6 +44,7 @@ from multistorageclient.providers import (
 )
 from multistorageclient.schema import CONFIG_SCHEMA
 from multistorageclient.types import StorageProviderConfig
+from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
 
 
@@ -358,7 +357,7 @@ def test_manifest_type_unrecognized() -> None:
             profile="default",
         )
 
-    assert "Expected a fully qualified class name" in str(e), f"Unexpected error message: {str(e)}"
+    assert "Expected a fully qualified class name" in str(e), f"Unexpected error message: {e!s}"
 
 
 def test_storage_provider_profile_unrecognized() -> None:
@@ -383,7 +382,7 @@ def test_storage_provider_profile_unrecognized() -> None:
         )
 
     assert "Profile 'non-existent-profile' referenced by storage_provider_profile does not exist" in str(e), (
-        f"Unexpected error message: {str(e)}"
+        f"Unexpected error message: {e!s}"
     )
 
 
@@ -418,7 +417,7 @@ def test_storage_provider_profile_with_manifest() -> None:
         )
 
     assert "Profile 'profile-manifest' cannot have a metadata provider when used for manifests" in str(e), (
-        f"Unexpected error message: {str(e)}"
+        f"Unexpected error message: {e!s}"
     )
 
 
@@ -501,7 +500,7 @@ def test_load_retry_config() -> None:
             profile="default",
         )
 
-    assert "Attempts must be at least 1." in str(e), f"Unexpected error message: {str(e)}"
+    assert "Attempts must be at least 1." in str(e), f"Unexpected error message: {e!s}"
 
     with pytest.raises(ValueError) as e:
         config = StorageClientConfig.from_yaml(
@@ -520,7 +519,7 @@ def test_load_retry_config() -> None:
             profile="default",
         )
 
-    assert "Backoff multiplier must be at least 1.0." in str(e), f"Unexpected error message: {str(e)}"
+    assert "Backoff multiplier must be at least 1.0." in str(e), f"Unexpected error message: {e!s}"
 
 
 def test_s3_storage_provider_on_public_bucket() -> None:
@@ -650,7 +649,7 @@ def test_azure_validate_content_requires_bool(value: object, expected: bool) -> 
 def test_azure_validate_content_invalid_value_raises() -> None:
     """Non-boolean values must fail loudly rather than relying on truthiness."""
     profile = "data"
-    with pytest.raises(ValueError, match=r"validate_content.*must be.*bool"):
+    with pytest.raises(TypeError, match=r"validate_content.*must be.*bool"):
         StorageClient(
             config=StorageClientConfig.from_dict(
                 config_dict={
@@ -686,7 +685,7 @@ def test_oci_storage_provider_passthrough_options() -> None:
         # Placeholder PEM file from `openssl genrsa -out oci_api_key.pem 2048`.
         #
         # https://docs.oracle.com/en-us/iaas/Content/API/Concepts/apisigningkey.htm#apisigningkey_topic_How_to_Generate_an_API_Signing_Key_Mac_Linux
-        oci_key_file_body = "\n".join(
+        oci_key_file_body = "\n".join(  # noqa: FLY002
             [
                 "-----BEGIN PRIVATE KEY-----",
                 "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCneEzaM/KC4cAd",
@@ -784,7 +783,7 @@ def test_oci_storage_provider_passthrough_options() -> None:
         # Placeholder PEM file from `openssl genrsa -out oci_api_key.pem 2048`.
         #
         # https://docs.oracle.com/en-us/iaas/Content/API/Concepts/apisigningkey.htm#apisigningkey_topic_How_to_Generate_an_API_Signing_Key_Mac_Linux
-        oci_key_file_body = "\n".join(
+        oci_key_file_body = "\n".join(  # noqa: FLY002
             [
                 "-----BEGIN PRIVATE KEY-----",
                 "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCneEzaM/KC4cAd",

@@ -23,6 +23,8 @@ from typing import Any
 
 from .types import BatchTransferError, BatchTransferFailure, RetryableError
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class _RetryDecision:
@@ -72,17 +74,17 @@ def _run_with_retry(
             decision = classify_error(e)
             if not decision.retryable:
                 if decision.log_non_retryable:
-                    logging.error("Non-retryable error occurred for %s: %s", operation_name, decision.error)
+                    logger.error("Non-retryable error occurred for %s: %s", operation_name, decision.error)
                 raise decision.error
 
             if retry_config is None:
                 raise decision.error
 
-            logging.warning("Attempt %d failed for %s: %s", attempt + 1, operation_name, decision.message)
+            logger.warning("Attempt %d failed for %s: %s", attempt + 1, operation_name, decision.message)
             if attempt < attempts - 1:
                 sleep_before_retry(retry_config, attempt)
             else:
-                logging.error("All retry attempts failed for %s", operation_name)
+                logger.error("All retry attempts failed for %s", operation_name)
                 raise decision.error
 
 
@@ -106,7 +108,7 @@ def retry(func: Callable) -> Callable:
             if isinstance(error, FileNotFoundError):
                 # FileNotFoundError is expected in many scenarios (e.g., zarr probing for metadata files)
                 # Log at debug level to avoid cluttering logs with expected 404s
-                logging.debug("File not found for %s: %s", func.__name__, error)
+                logger.debug("File not found for %s: %s", func.__name__, error)
                 return _RetryDecision(
                     retryable=False,
                     error=error,

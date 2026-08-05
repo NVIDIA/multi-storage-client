@@ -15,4 +15,4 @@
 
 from .multistorageclient_rust import RustClient, RustClientError, RustRetryableError, RustRetryConfig
 
-__all__ = ["RustClient", "RustClientError", "RustRetryableError", "RustRetryConfig"]
+__all__ = ["RustClient", "RustClientError", "RustRetryConfig", "RustRetryableError"]

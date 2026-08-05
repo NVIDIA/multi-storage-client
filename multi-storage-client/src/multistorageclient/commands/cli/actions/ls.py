@@ -16,7 +16,6 @@
 import argparse
 import json
 import sys
-from typing import Optional
 
 from prettytable import PrettyTable
 
@@ -212,7 +211,7 @@ class LsAction(Action):
 
             # Create ordered pattern list if patterns are provided
             ordered_patterns = getattr(args, "ordered_patterns", [])
-            patterns: Optional[PatternList] = ordered_patterns if ordered_patterns else None
+            patterns: PatternList | None = ordered_patterns if ordered_patterns else None
 
             # Use client.list with proper parameters
             results_iter = client.list(
@@ -272,8 +271,8 @@ class LsAction(Action):
             return 0
 
         except ValueError as e:
-            print(f"Error in command arguments: {str(e)}", file=sys.stderr)
+            print(f"Error in command arguments: {e!s}", file=sys.stderr)
             return 1
         except Exception as e:
-            print(f"Error during file listing: {str(e)}", file=sys.stderr)
+            print(f"Error during file listing: {e!s}", file=sys.stderr)
             return 1

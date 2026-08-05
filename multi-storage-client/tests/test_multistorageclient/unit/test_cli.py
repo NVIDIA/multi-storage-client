@@ -21,9 +21,8 @@ import string
 import subprocess
 import sys
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 import pytest
 import yaml
@@ -34,8 +33,8 @@ from multistorageclient.types import ObjectMetadata
 
 
 def create_test_files_with_random_structure(
-    source_dir: str, num_files: int = 200, file_extensions: Optional[List[str]] = None
-) -> List[Tuple[str, str, str, str]]:
+    source_dir: str, num_files: int = 200, file_extensions: list[str] | None = None
+) -> list[tuple[str, str, str, str]]:
     """
     Create test files with random 2-level directory structure.
 
@@ -88,7 +87,7 @@ def run_cli():
         # Pass through existing environment variables to the subprocess
         env = os.environ.copy()
 
-        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=120)
+        result = subprocess.run(cmd, capture_output=True, check=False, text=True, env=env, timeout=120)
 
         # Print output if return code doesn't match expected
         if result.returncode != expected_return_code:
@@ -103,19 +102,19 @@ def run_cli():
 
 
 def test_version_command(run_cli):
-    stdout, stderr = run_cli("--version")
+    stdout, _ = run_cli("--version")
     assert f"msc-cli/{msc.__version__}" in stdout
     assert "Python" in stdout
 
 
 def test_unknown_command(run_cli):
-    stdout, stderr = run_cli("unknown_command", expected_return_code=1)
+    stdout, _ = run_cli("unknown_command", expected_return_code=1)
     assert "Unknown command: unknown_command" in stdout
     assert "Run 'msc help'" in stdout
 
 
 def test_help_command(run_cli):
-    stdout, stderr = run_cli("help")
+    stdout, _ = run_cli("help")
     assert "commands:" in stdout
     assert "help" in stdout
 
@@ -135,7 +134,7 @@ def test_subcommand_help_without_required_args_error(run_cli):
 
 
 def test_sync_help_command(run_cli):
-    stdout, stderr = run_cli("help", "sync")
+    stdout, _ = run_cli("help", "sync")
     assert "Synchronize files" in stdout
     assert "--delete-unmatched-files" in stdout
     assert "--verbose" in stdout
@@ -150,7 +149,7 @@ def test_sync_help_command(run_cli):
 
 
 def test_sync_invalid_symlink_handling(run_cli):
-    stdout, stderr = run_cli(
+    _, stderr = run_cli(
         "sync",
         "/tmp/does-not-matter",
         "--target-url",
@@ -254,7 +253,7 @@ def test_sync_default_symlink_handling_matches_follow(run_cli):
 
 
 def test_sync_without_replicas(run_cli):
-    stdout, stderr = run_cli("sync", "msc://__filesystem__/data")
+    _, stderr = run_cli("sync", "msc://__filesystem__/data")
     assert "No replicas found in profile '__filesystem__'" in stderr
 
 
@@ -512,7 +511,7 @@ def test_rm_command(run_cli):
         assert (Path(test_dir) / "new_file2.bin").exists()
 
         # Test case 7: delete a file without recursive can also work
-        stdout, bc = run_cli("rm", "-y", "--recursive", f"{test_dir}/old_file2.bin")
+        stdout, _ = run_cli("rm", "-y", "--recursive", f"{test_dir}/old_file2.bin")
         assert not (Path(test_dir) / "old_file2.bin").exists()
         assert (Path(test_dir) / "new_file1.txt").exists()
         assert (Path(test_dir) / "new_file2.bin").exists()
@@ -554,7 +553,7 @@ def test_config_validate_command(run_cli):
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml") as f:
         yaml.dump(test_config, f, default_flow_style=False)
 
-        stdout, stderr = run_cli("config", "validate", "--config-file", f.name)
+        stdout, _ = run_cli("config", "validate", "--config-file", f.name)
 
         config = yaml.safe_load(stdout)
         assert "profiles" in config
@@ -571,7 +570,7 @@ def test_config_validate_command_json_format(run_cli):
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml") as f:
         yaml.dump(test_config, f, default_flow_style=False)
 
-        stdout, stderr = run_cli("config", "validate", "--config-file", f.name, "--format", "json")
+        stdout, _ = run_cli("config", "validate", "--config-file", f.name, "--format", "json")
 
         config = json.loads(stdout)
         assert "profiles" in config
@@ -584,29 +583,37 @@ def test_ls_command_with_path_prefix():
 
     result = action._remove_path_prefix(
         "dir1/dir2",
-        ObjectMetadata(key="dir1/dir2/file1.txt", type="file", last_modified=datetime.now(), content_length=100),
+        ObjectMetadata(
+            key="dir1/dir2/file1.txt", type="file", last_modified=datetime.now(tz=timezone.utc), content_length=100
+        ),
     )
     assert result == "file1.txt"
 
     result = action._remove_path_prefix(
         "dir1/",
-        ObjectMetadata(key="dir1/dir2/file1.txt", type="file", last_modified=datetime.now(), content_length=100),
+        ObjectMetadata(
+            key="dir1/dir2/file1.txt", type="file", last_modified=datetime.now(tz=timezone.utc), content_length=100
+        ),
     )
     assert result == "dir2/file1.txt"
 
     result = action._remove_path_prefix(
-        "/etc", ObjectMetadata(key="etc/hosts", type="file", last_modified=datetime.now(), content_length=100)
+        "/etc",
+        ObjectMetadata(key="etc/hosts", type="file", last_modified=datetime.now(tz=timezone.utc), content_length=100),
     )
     assert result == "hosts"
 
     result = action._remove_path_prefix(
-        "/etc/hosts", ObjectMetadata(key="etc/hosts", type="file", last_modified=datetime.now(), content_length=100)
+        "/etc/hosts",
+        ObjectMetadata(key="etc/hosts", type="file", last_modified=datetime.now(tz=timezone.utc), content_length=100),
     )
     assert result == "/etc/hosts"
 
     result = action._remove_path_prefix(
         "dir1/dir2/file1.txt",
-        ObjectMetadata(key="dir1/dir2/file1.txt", type="file", last_modified=datetime.now(), content_length=100),
+        ObjectMetadata(
+            key="dir1/dir2/file1.txt", type="file", last_modified=datetime.now(tz=timezone.utc), content_length=100
+        ),
     )
     assert result == "dir1/dir2/file1.txt"
 

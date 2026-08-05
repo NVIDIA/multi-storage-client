@@ -14,13 +14,12 @@
 # limitations under the License.
 
 import os
-from typing import Union
 
 from ...pathlib import MultiStoragePath as Path
-from .path import *  # noqa: F403
+from .path import *
 
 
-def makedirs(name: Union[str, os.PathLike], mode: int = 0o777, exist_ok: bool = False) -> None:
+def makedirs(name: str | os.PathLike, mode: int = 0o777, exist_ok: bool = False) -> None:
     """
     Create a directory and all its parents.
 

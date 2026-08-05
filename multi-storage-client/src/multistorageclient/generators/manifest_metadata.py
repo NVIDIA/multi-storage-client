@@ -15,7 +15,6 @@
 
 import json
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
 
 from multistorageclient.types import ObjectMetadata
 from multistorageclient.utils import calculate_worker_processes_and_threads
@@ -44,7 +43,7 @@ class ManifestMetadataGenerator:
     def generate_and_write_manifest(
         data_storage_client: StorageClient,
         manifest_storage_client: StorageClient,
-        partition_keys: Optional[list[str]] = None,
+        partition_keys: list[str] | None = None,
         manifest_format: ManifestFormat = ManifestFormat.JSONL,
         allow_overwrites: bool = True,
     ) -> None:

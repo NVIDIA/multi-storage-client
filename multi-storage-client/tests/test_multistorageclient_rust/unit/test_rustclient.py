@@ -19,10 +19,9 @@ import tempfile
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Type
 
 import pytest
-import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
+from test_multistorageclient.unit.utils import tempdatastore
 
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.constants import MEMORY_LOAD_LIMIT
@@ -74,7 +73,7 @@ async def run_rust_client_operations(rust_client: RustClient, storage_client: St
     with tempfile.NamedTemporaryFile(delete=False) as temp_file:
         temp_file.close()
         storage_client.download_file(remote_path=file_path, local_path=temp_file.name)
-        with open(temp_file.name, "rb") as f:
+        with open(temp_file.name, "rb") as f:  # noqa: ASYNC230
             assert f.read() == file_body_bytes
     os.unlink(temp_file.name)
 
@@ -97,7 +96,7 @@ async def run_rust_client_operations(rust_client: RustClient, storage_client: St
         storage_client.download_file(remote_path=large_file_path, local_path=temp_file.name)
         assert os.path.getsize(temp_file.name) == large_file_size
         # Assert file content is the same
-        with open(temp_file.name, "rb") as f:
+        with open(temp_file.name, "rb") as f:  # noqa: ASYNC230
             downloaded = f.read()
         assert downloaded == large_file_body
     os.unlink(temp_file.name)
@@ -107,7 +106,7 @@ async def run_rust_client_operations(rust_client: RustClient, storage_client: St
         temp_file.close()
         result = await rust_client.download(file_path, temp_file.name)
         assert result == len(file_body_bytes)
-        with open(temp_file.name, "rb") as f:
+        with open(temp_file.name, "rb") as f:  # noqa: ASYNC230
             assert f.read() == file_body_bytes
     os.unlink(temp_file.name)
 
@@ -118,7 +117,7 @@ async def run_rust_client_operations(rust_client: RustClient, storage_client: St
         assert result == large_file_size
         assert os.path.getsize(temp_file.name) == large_file_size
         # Assert file content is the same
-        with open(temp_file.name, "rb") as f:
+        with open(temp_file.name, "rb") as f:  # noqa: ASYNC230
             downloaded = f.read()
         assert downloaded == large_file_body
     os.unlink(temp_file.name)
@@ -153,7 +152,7 @@ async def run_rust_client_operations(rust_client: RustClient, storage_client: St
     ],
 )
 @pytest.mark.asyncio
-async def test_rustclient_basic_operations(temp_data_store_type: Type[tempdatastore.TemporaryDataStore]):
+async def test_rustclient_basic_operations(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
     with temp_data_store_type() as temp_data_store:
         # Create a Rust client from the temp data store profile config dict
         config_dict = temp_data_store.profile_config_dict()
@@ -200,7 +199,7 @@ async def test_rustclient_basic_operations(temp_data_store_type: Type[tempdatast
 )
 @pytest.mark.asyncio
 async def test_rustclient_basic_operations_with_sha256_checksum(
-    temp_data_store_type: Type[tempdatastore.TemporaryDataStore],
+    temp_data_store_type: type[tempdatastore.TemporaryDataStore],
 ):
     with temp_data_store_type() as temp_data_store:
         config_dict = temp_data_store.profile_config_dict()
@@ -251,7 +250,7 @@ def test_rustclient_invalid_checksum_algorithm_raises():
     ],
 )
 @pytest.mark.asyncio
-async def test_rustclient_with_refreshable_credentials(temp_data_store_type: Type[tempdatastore.TemporaryDataStore]):
+async def test_rustclient_with_refreshable_credentials(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
     with temp_data_store_type() as temp_data_store:
         config_dict = temp_data_store.profile_config_dict()
         # The credentials are valid for 605 seconds before the refresh, refresh threshold is 10 minutes for Rust Client.
@@ -294,7 +293,7 @@ async def test_rustclient_with_refreshable_credentials(temp_data_store_type: Typ
         assert credentials_provider.refresh_count == 0
 
         # Test Rust client proactively refreshes credentials 10 minutes before expiration, should call refresh_credentials and fail
-        time.sleep(6)
+        time.sleep(6)  # noqa: ASYNC251
         with pytest.raises(RustClientError) as exc_info:
             await rust_client.get(file_path)
         assert exc_info.value.args[1] == 403
@@ -317,7 +316,7 @@ async def test_rustclient_with_refreshable_credentials(temp_data_store_type: Typ
 )
 @pytest.mark.asyncio
 async def test_rustclient_with_refreshable_credentials_expect_error(
-    temp_data_store_type: Type[tempdatastore.TemporaryDataStore],
+    temp_data_store_type: type[tempdatastore.TemporaryDataStore],
 ):
     with temp_data_store_type() as temp_data_store:
         config_dict = temp_data_store.profile_config_dict()
@@ -366,7 +365,7 @@ async def test_rustclient_with_refreshable_credentials_expect_error(
     ],
 )
 @pytest.mark.asyncio
-async def test_rustclient_list_recursive(temp_data_store_type: Type[tempdatastore.TemporaryDataStore]):
+async def test_rustclient_list_recursive(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
     with temp_data_store_type() as temp_data_store:
         config_dict = temp_data_store.profile_config_dict()
         credentials_provider = StaticS3CredentialsProvider(
@@ -466,7 +465,7 @@ async def test_rustclient_list_recursive(temp_data_store_type: Type[tempdatastor
     ],
 )
 @pytest.mark.asyncio
-async def test_rustclient_explicit_multipart_chunksize(temp_data_store_type: Type[tempdatastore.TemporaryDataStore]):
+async def test_rustclient_explicit_multipart_chunksize(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
     with temp_data_store_type() as temp_data_store:
         config_dict = temp_data_store.profile_config_dict()
         credentials_provider = StaticS3CredentialsProvider(
@@ -548,7 +547,7 @@ async def test_rustclient_explicit_multipart_chunksize(temp_data_store_type: Typ
             assert result == large_file_size
             assert os.path.getsize(temp_file.name) == large_file_size
             # Assert file content is the same
-            with open(temp_file.name, "rb") as f:
+            with open(temp_file.name, "rb") as f:  # noqa: ASYNC230
                 downloaded = f.read()
             assert downloaded == large_data_bytes
         os.unlink(temp_file.name)
@@ -590,7 +589,7 @@ async def test_rustclient_public_bucket():
 )
 @pytest.mark.asyncio
 async def test_rustclient_with_aws_credentials(
-    temp_data_store_type: Type[tempdatastore.TemporaryDataStore], monkeypatch: pytest.MonkeyPatch
+    temp_data_store_type: type[tempdatastore.TemporaryDataStore], monkeypatch: pytest.MonkeyPatch
 ):
     with temp_data_store_type() as temp_data_store:
         # Create a Rust client from the temp data store profile config dict
@@ -626,7 +625,7 @@ async def test_rustclient_with_aws_credentials(
 )
 @pytest.mark.asyncio
 async def test_rustclient_with_aws_credentials_file(
-    temp_data_store_type: Type[tempdatastore.TemporaryDataStore], monkeypatch: pytest.MonkeyPatch
+    temp_data_store_type: type[tempdatastore.TemporaryDataStore], monkeypatch: pytest.MonkeyPatch
 ):
     with temp_data_store_type() as temp_data_store:
         # Create a Rust client from the temp data store profile config dict

@@ -140,5 +140,5 @@ def test_pickle_dump_with_attributes(temp_data_store_type: type[tempdatastore.Te
             try:
                 msc.delete(f"{MSC_PROTOCOL}test/{file_path}")
                 msc.delete(f"{MSC_PROTOCOL}test/{file_path2}")
-            except Exception:
+            except Exception:  # noqa: S110
                 pass

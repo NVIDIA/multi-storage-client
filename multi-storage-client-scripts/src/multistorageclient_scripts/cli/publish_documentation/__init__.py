@@ -21,15 +21,15 @@ import signal
 import sys
 from dataclasses import dataclass
 from types import FrameType
-from typing import Final, Optional
+from typing import Final
 
 import githubkit
 import httpx
 import httpx_retries
 
-import multistorageclient_scripts.cli as cli
-import multistorageclient_scripts.utils.argparse_extensions as argparse_extensions
 import multistorageclient_scripts.utils.httpx.auth
+from multistorageclient_scripts import cli
+from multistorageclient_scripts.utils import argparse_extensions
 from multistorageclient_scripts.utils.wait import wait
 
 logger = logging.getLogger(__name__)
@@ -179,7 +179,7 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
     if oidc_token is None:
         raise ValueError("GitHub Actions OIDC token is missing from response!")
     if not isinstance(oidc_token, str):
-        raise ValueError("GitHub Actions OIDC token is not a string!")
+        raise TypeError("GitHub Actions OIDC token is not a string!")
 
     create_pages_deployment_response = github_client.rest.repos.create_pages_deployment(
         owner="NVIDIA",
@@ -217,7 +217,7 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
         )
         logger.info(f"Canceled GitHub Pages deployment {create_pages_deployment_response.parsed_data.id}.")
 
-    def cancel_github_pages_deployment_signal_handler(signal_number: int, stack_frame: Optional[FrameType]) -> None:
+    def cancel_github_pages_deployment_signal_handler(signal_number: int, stack_frame: FrameType | None) -> None:
         cancel_github_pages_deployment()
         sys.exit(128 + signal_number)
 

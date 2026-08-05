@@ -17,7 +17,6 @@
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 import fastmcp
 
@@ -27,7 +26,7 @@ class MCPServerWrapper:
 
     def __init__(
         self,
-        config_path: Optional[Path] = None,
+        config_path: Path | None = None,
         server_name: str = "Multi-Storage Client MCP Server",
     ):
         """Initialize the MCP server wrapper.

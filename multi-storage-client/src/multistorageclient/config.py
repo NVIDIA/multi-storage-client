@@ -19,9 +19,9 @@ import logging
 import os
 import tempfile
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any, Iterable, Optional, Union
+from typing import Any
 from urllib.parse import urlparse
 
 import yaml
@@ -488,7 +488,7 @@ class ImmutableDict(dict):
         """
         Return a mutable copy of the value.
         """
-        return self[key] if key in self else default
+        return self[key] if key in self else default  # noqa: SIM401
 
     def __setitem__(self, key, value):
         raise TypeError("ImmutableDict is immutable")
@@ -516,9 +516,9 @@ class SimpleProviderBundle(ProviderBundle):
     def __init__(
         self,
         storage_provider_config: StorageProviderConfig,
-        credentials_provider: Optional[CredentialsProvider] = None,
-        metadata_provider: Optional[MetadataProvider] = None,
-        replicas: Optional[list[Replica]] = None,
+        credentials_provider: CredentialsProvider | None = None,
+        metadata_provider: MetadataProvider | None = None,
+        replicas: list[Replica] | None = None,
     ):
         if replicas is None:
             replicas = []
@@ -533,11 +533,11 @@ class SimpleProviderBundle(ProviderBundle):
         return self._storage_provider_config
 
     @property
-    def credentials_provider(self) -> Optional[CredentialsProvider]:
+    def credentials_provider(self) -> CredentialsProvider | None:
         return self._credentials_provider
 
     @property
-    def metadata_provider(self) -> Optional[MetadataProvider]:
+    def metadata_provider(self) -> MetadataProvider | None:
         return self._metadata_provider
 
     @property
@@ -546,9 +546,7 @@ class SimpleProviderBundle(ProviderBundle):
 
 
 class SimpleProviderBundleV2(ProviderBundleV2):
-    def __init__(
-        self, storage_backends: dict[str, StorageBackend], metadata_provider: Optional[MetadataProvider] = None
-    ):
+    def __init__(self, storage_backends: dict[str, StorageBackend], metadata_provider: MetadataProvider | None = None):
         self._storage_backends = storage_backends
         self._metadata_provider = metadata_provider
 
@@ -570,7 +568,7 @@ class SimpleProviderBundleV2(ProviderBundleV2):
         return self._storage_backends
 
     @property
-    def metadata_provider(self) -> Optional[MetadataProvider]:
+    def metadata_provider(self) -> MetadataProvider | None:
         return self._metadata_provider
 
 
@@ -583,16 +581,16 @@ class StorageClientConfigLoader:
     _profiles: dict[str, Any]
     _profile: str
     _profile_dict: dict[str, Any]
-    _opentelemetry_dict: Optional[dict[str, Any]]
-    _telemetry_provider: Optional[Callable[[], Telemetry]]
-    _cache_dict: Optional[dict[str, Any]]
+    _opentelemetry_dict: dict[str, Any] | None
+    _telemetry_provider: Callable[[], Telemetry] | None
+    _cache_dict: dict[str, Any] | None
 
     def __init__(
         self,
         config_dict: dict[str, Any],
         profile: str = RESERVED_POSIX_PROFILE_NAME,
-        provider_bundle: Optional[Union[ProviderBundle, ProviderBundleV2]] = None,
-        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
+        provider_bundle: ProviderBundle | ProviderBundleV2 | None = None,
+        telemetry_provider: Callable[[], Telemetry] | None = None,
     ) -> None:
         """
         Initializes a :py:class:`StorageClientConfigLoader` to create a
@@ -644,8 +642,8 @@ class StorageClientConfigLoader:
     def _build_storage_provider(
         self,
         storage_provider_name: str,
-        storage_options: Optional[dict[str, Any]] = None,
-        credentials_provider: Optional[CredentialsProvider] = None,
+        storage_options: dict[str, Any] | None = None,
+        credentials_provider: CredentialsProvider | None = None,
     ) -> StorageProvider:
         if storage_options is None:
             storage_options = {}
@@ -698,9 +696,9 @@ class StorageClientConfigLoader:
 
     def _build_credentials_provider(
         self,
-        credentials_provider_dict: Optional[dict[str, Any]],
-        storage_options: Optional[dict[str, Any]] = None,
-    ) -> Optional[CredentialsProvider]:
+        credentials_provider_dict: dict[str, Any] | None,
+        storage_options: dict[str, Any] | None = None,
+    ) -> CredentialsProvider | None:
         """
         Initializes the CredentialsProvider based on the provided dictionary.
 
@@ -729,7 +727,7 @@ class StorageClientConfigLoader:
         init_params = list(inspect.signature(cls.__init__).parameters)[1:]  # skip 'self'
         options = credentials_provider_dict.get("options", {})
         if storage_options:
-            for storage_provider_option in storage_options.keys():
+            for storage_provider_option in storage_options:
                 if storage_provider_option in init_params and storage_provider_option not in options:
                     options[storage_provider_option] = storage_options[storage_provider_option]
 
@@ -810,9 +808,7 @@ class StorageClientConfigLoader:
         options = provider_bundle_dict.get("options", {})
         return cls(**options)
 
-    def _build_provider_bundle(
-        self, provider_bundle: Optional[Union[ProviderBundle, ProviderBundleV2]]
-    ) -> ProviderBundleV2:
+    def _build_provider_bundle(self, provider_bundle: ProviderBundle | ProviderBundleV2 | None) -> ProviderBundleV2:
         if provider_bundle:
             bundle = provider_bundle
         else:
@@ -839,7 +835,7 @@ class StorageClientConfigLoader:
         uses StorageClientConfig.from_dict() to create replica clients, which looks up
         profiles in the config dict.
         """
-        self._child_configs: Optional[dict[str, StorageClientConfig]] = None
+        self._child_configs: dict[str, StorageClientConfig] | None = None
 
         backends = self._provider_bundle.storage_backends
         if len(backends) > 1:
@@ -984,7 +980,7 @@ class StorageClientConfigLoader:
             replica_profile_dict = self._profiles[replica_profile_name]
 
             # Check if the replica profile has its own replicas configuration
-            if "replicas" in replica_profile_dict and replica_profile_dict["replicas"]:
+            if replica_profile_dict.get("replicas"):
                 raise ValueError(
                     f"Invalid replica configuration: profile '{replica_profile_name}' has its own replicas. "
                     f"This creates a circular reference which is not allowed."
@@ -1025,7 +1021,7 @@ class StorageClientConfigLoader:
             return config
 
         # Single-backend (len == 1)
-        _, backend = list(backends.items())[0]
+        _, backend = next(iter(backends.items()))
         storage_provider = self._build_storage_provider(
             backend.storage_provider_config.type,
             backend.storage_provider_config.options,
@@ -1039,8 +1035,8 @@ class StorageClientConfigLoader:
         if replicas:
             self._validate_replicas(replicas)
 
-        cache_config: Optional[CacheConfig] = None
-        cache_manager: Optional[CacheManager] = None
+        cache_config: CacheConfig | None = None
+        cache_manager: CacheManager | None = None
 
         # Check if caching is enabled for this profile
         caching_enabled = self._profile_dict.get("caching_enabled", False)
@@ -1141,7 +1137,7 @@ class PathMapping:
         self._mapping = defaultdict(lambda: defaultdict(list))
 
     @classmethod
-    def from_config(cls, config_dict: Optional[dict[str, Any]] = None) -> "PathMapping":
+    def from_config(cls, config_dict: dict[str, Any] | None = None) -> "PathMapping":
         """
         Create a PathMapping instance from configuration dictionary.
 
@@ -1199,8 +1195,7 @@ class PathMapping:
                 # For object storage, extract bucket and prefix
                 bucket = pr.netloc
                 prefix = pr.path
-                if prefix.startswith("/"):
-                    prefix = prefix[1:]
+                prefix = prefix.removeprefix("/")
 
             # Add the mapping to the nested dict
             self._mapping[protocol][bucket].append((prefix, dest_profile))
@@ -1210,7 +1205,7 @@ class PathMapping:
             for bucket, prefixes in buckets.items():
                 self._mapping[protocol][bucket] = sorted(prefixes, key=lambda x: len(x[0]), reverse=True)
 
-    def find_mapping(self, url: str) -> Optional[tuple[str, str]]:
+    def find_mapping(self, url: str) -> tuple[str, str] | None:
         """
         Find the best matching mapping for the given URL.
 
@@ -1241,8 +1236,7 @@ class PathMapping:
         # For object storage
         bucket = pr.netloc
         path = pr.path
-        if path.startswith("/"):
-            path = path[1:]
+        path = path.removeprefix("/")
 
         # Check bucket-specific mapping
         possible_mapping = (
@@ -1255,8 +1249,7 @@ class PathMapping:
             if path.startswith(prefix):
                 rel_path = path[len(prefix) :]
                 # Remove leading slash if present
-                if rel_path.startswith("/"):
-                    rel_path = rel_path[1:]
+                rel_path = rel_path.removeprefix("/")
 
                 return profile, rel_path
 
@@ -1269,34 +1262,34 @@ class StorageClientConfig:
     """
 
     profile: str
-    storage_provider: Optional[StorageProvider]
-    credentials_provider: Optional[CredentialsProvider]
-    storage_provider_profiles: Optional[list[str]]
-    child_configs: Optional[dict[str, "StorageClientConfig"]]
-    metadata_provider: Optional[MetadataProvider]
-    cache_config: Optional[CacheConfig]
-    cache_manager: Optional[CacheManager]
-    retry_config: Optional[RetryConfig]
-    telemetry_provider: Optional[Callable[[], Telemetry]]
+    storage_provider: StorageProvider | None
+    credentials_provider: CredentialsProvider | None
+    storage_provider_profiles: list[str] | None
+    child_configs: dict[str, "StorageClientConfig"] | None
+    metadata_provider: MetadataProvider | None
+    cache_config: CacheConfig | None
+    cache_manager: CacheManager | None
+    retry_config: RetryConfig | None
+    telemetry_provider: Callable[[], Telemetry] | None
     replicas: list[Replica]
-    autocommit_config: Optional[AutoCommitConfig]
+    autocommit_config: AutoCommitConfig | None
 
-    _config_dict: Optional[dict[str, Any]]
+    _config_dict: dict[str, Any] | None
 
     def __init__(
         self,
         profile: str,
-        storage_provider: Optional[StorageProvider] = None,
-        credentials_provider: Optional[CredentialsProvider] = None,
-        storage_provider_profiles: Optional[list[str]] = None,
-        child_configs: Optional[dict[str, "StorageClientConfig"]] = None,
-        metadata_provider: Optional[MetadataProvider] = None,
-        cache_config: Optional[CacheConfig] = None,
-        cache_manager: Optional[CacheManager] = None,
-        retry_config: Optional[RetryConfig] = None,
-        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
-        replicas: Optional[list[Replica]] = None,
-        autocommit_config: Optional[AutoCommitConfig] = None,
+        storage_provider: StorageProvider | None = None,
+        credentials_provider: CredentialsProvider | None = None,
+        storage_provider_profiles: list[str] | None = None,
+        child_configs: dict[str, "StorageClientConfig"] | None = None,
+        metadata_provider: MetadataProvider | None = None,
+        cache_config: CacheConfig | None = None,
+        cache_manager: CacheManager | None = None,
+        retry_config: RetryConfig | None = None,
+        telemetry_provider: Callable[[], Telemetry] | None = None,
+        replicas: list[Replica] | None = None,
+        autocommit_config: AutoCommitConfig | None = None,
     ):
         # exactly one of storage_provider or storage_provider_profiles must be set
         if storage_provider and storage_provider_profiles:
@@ -1326,7 +1319,7 @@ class StorageClientConfig:
     def from_json(
         config_json: str,
         profile: str = RESERVED_POSIX_PROFILE_NAME,
-        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
+        telemetry_provider: Callable[[], Telemetry] | None = None,
     ) -> "StorageClientConfig":
         """
         Load a storage client configuration from a JSON string.
@@ -1344,7 +1337,7 @@ class StorageClientConfig:
     def from_yaml(
         config_yaml: str,
         profile: str = RESERVED_POSIX_PROFILE_NAME,
-        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
+        telemetry_provider: Callable[[], Telemetry] | None = None,
     ) -> "StorageClientConfig":
         """
         Load a storage client configuration from a YAML string.
@@ -1363,7 +1356,7 @@ class StorageClientConfig:
         config_dict: dict[str, Any],
         profile: str = RESERVED_POSIX_PROFILE_NAME,
         skip_validation: bool = False,
-        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
+        telemetry_provider: Callable[[], Telemetry] | None = None,
     ) -> "StorageClientConfig":
         """
         Load a storage client configuration from a Python dictionary.
@@ -1389,9 +1382,9 @@ class StorageClientConfig:
 
     @staticmethod
     def from_file(
-        config_file_paths: Optional[Iterable[str]] = None,
+        config_file_paths: Iterable[str] | None = None,
         profile: str = RESERVED_POSIX_PROFILE_NAME,
-        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
+        telemetry_provider: Callable[[], Telemetry] | None = None,
     ) -> "StorageClientConfig":
         """
         Load a storage client configuration from the first file found.
@@ -1453,8 +1446,8 @@ class StorageClientConfig:
     @staticmethod
     def from_provider_bundle(
         config_dict: dict[str, Any],
-        provider_bundle: Union[ProviderBundle, ProviderBundleV2],
-        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
+        provider_bundle: ProviderBundle | ProviderBundleV2,
+        telemetry_provider: Callable[[], Telemetry] | None = None,
     ) -> "StorageClientConfig":
         loader = StorageClientConfigLoader(
             config_dict=config_dict, provider_bundle=provider_bundle, telemetry_provider=telemetry_provider
@@ -1465,8 +1458,8 @@ class StorageClientConfig:
 
     @staticmethod
     def read_msc_config(
-        config_file_paths: Optional[Iterable[str]] = None,
-    ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+        config_file_paths: Iterable[str] | None = None,
+    ) -> tuple[dict[str, Any] | None, str | None]:
         """Get the MSC configuration dictionary and the path of the first file found.
 
         If no config paths are specified, configs are searched in the following order:
@@ -1480,7 +1473,7 @@ class StorageClientConfig:
                  path of the config file used, or ``None`` if no config file was found.
         """
         config_dict: dict[str, Any] = {}
-        config_file_path: Optional[str] = None
+        config_file_path: str | None = None
 
         config_file_paths = list(config_file_paths or [])
 

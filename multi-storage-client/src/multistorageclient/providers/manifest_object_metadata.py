@@ -14,7 +14,6 @@
 # limitations under the License.
 
 from dataclasses import dataclass
-from typing import Optional
 
 from ..types import ObjectMetadata
 
@@ -32,7 +31,7 @@ class ManifestObjectMetadata(ObjectMetadata):
     """
 
     # Extended manifest-specific fields
-    physical_path: Optional[str] = None  # Physical storage path
+    physical_path: str | None = None  # Physical storage path
 
     def __post_init__(self):
         """Initialize physical_path to match key if not provided."""
@@ -54,7 +53,7 @@ class ManifestObjectMetadata(ObjectMetadata):
 
     @classmethod
     def from_object_metadata(
-        cls, obj_metadata: ObjectMetadata, physical_path: Optional[str] = None
+        cls, obj_metadata: ObjectMetadata, physical_path: str | None = None
     ) -> "ManifestObjectMetadata":
         """Create ManifestObjectMetadata from standard ObjectMetadata.
 

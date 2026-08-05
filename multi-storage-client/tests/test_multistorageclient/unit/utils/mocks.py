@@ -17,7 +17,6 @@ import threading
 import time
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 from multistorageclient.types import (
     Credentials,
@@ -47,7 +46,7 @@ class TestCredentialsProvider(CredentialsProvider):
 
 
 class TestScopedCredentialsProvider(CredentialsProvider):
-    def __init__(self, base_path: Optional[str] = None, endpoint_url: Optional[str] = None, expiry: int = 1000):
+    def __init__(self, base_path: str | None = None, endpoint_url: str | None = None, expiry: int = 1000):
         self._base_path = base_path
         self._endpoint_url = endpoint_url
         self._expiry = expiry
@@ -71,10 +70,10 @@ class TestMetadataProvider(MetadataProvider):
     def list_objects(
         self,
         path: str,
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         include_directories: bool = False,
-        attribute_filter_expression: Optional[str] = None,
+        attribute_filter_expression: str | None = None,
         show_attributes: bool = False,
     ) -> Iterator[ObjectMetadata]:
         assert not include_directories, "Directories are not supported in the test metadata provider"
@@ -90,7 +89,7 @@ class TestMetadataProvider(MetadataProvider):
         assert not include_pending, "Not supported in tests"
         return ObjectMetadata(key=path, content_length=19283, last_modified=datetime.now(tz=timezone.utc))
 
-    def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
+    def glob(self, pattern: str, attribute_filter_expression: str | None = None) -> list[str]:
         return glob_util(list(self._files.keys()), pattern)
 
     def realpath(self, logical_path: str) -> ResolvedPath:
@@ -137,11 +136,11 @@ class TestProviderBundle(ProviderBundle):
         return StorageProviderConfig(type="file", options={"base_path": "/"})
 
     @property
-    def credentials_provider(self) -> Optional[CredentialsProvider]:
+    def credentials_provider(self) -> CredentialsProvider | None:
         return TestCredentialsProvider()
 
     @property
-    def metadata_provider(self) -> Optional[MetadataProvider]:
+    def metadata_provider(self) -> MetadataProvider | None:
         """
         Returns the metadata provider responsible for retrieving metadata about objects in the storage service.
         """
@@ -169,7 +168,7 @@ class TestProviderBundleV2SingleBackend(ProviderBundleV2):
         }
 
     @property
-    def metadata_provider(self) -> Optional[MetadataProvider]:
+    def metadata_provider(self) -> MetadataProvider | None:
         return TestMetadataProvider()
 
 
@@ -198,7 +197,7 @@ class TestProviderBundleV2MultiBackend(ProviderBundleV2):
         }
 
     @property
-    def metadata_provider(self) -> Optional[MetadataProvider]:
+    def metadata_provider(self) -> MetadataProvider | None:
         return TestMetadataProvider()
 
 

@@ -20,7 +20,7 @@ import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 import yaml
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -143,11 +143,11 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # Global state
-msc_config: Optional[Dict[str, Any]] = None
+msc_config: dict[str, Any] | None = None
 executor = ThreadPoolExecutor(max_workers=4)
 
 # Cache for StorageClient instances per profile
-_client_cache: Dict[str, Any] = {}
+_client_cache: dict[str, Any] = {}
 
 
 def get_msc_client_and_path(url: str) -> tuple[Any, str]:
@@ -177,7 +177,7 @@ def get_msc_client_and_path(url: str) -> tuple[Any, str]:
             _client_cache[profile] = StorageClient(storage_config)  # pyright: ignore[reportOptionalCall]
         except Exception as e:
             raise HTTPException(
-                status_code=500, detail=f"Failed to create StorageClient for profile '{profile}': {str(e)}"
+                status_code=500, detail=f"Failed to create StorageClient for profile '{profile}': {e!s}"
             )
 
     return _client_cache[profile], path
@@ -200,7 +200,7 @@ async def health():
 
 
 @app.post("/api/config/upload", response_model=ConfigUploadResponse)
-async def upload_config(config_file: UploadFile = File(...)):
+async def upload_config(config_file: UploadFile = File(...)):  # noqa: B008
     """
     Upload MSC configuration file
 
@@ -236,7 +236,7 @@ async def upload_config(config_file: UploadFile = File(...)):
             profiles=profiles,
         )
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to load configuration: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to load configuration: {e!s}")
 
 
 @app.get("/api/config/profiles")
@@ -289,8 +289,7 @@ async def list_files(request: ListRequest):
             # Extract name from key (last part of path)
             name = item.key.split("/")[-1] if "/" in item.key else item.key
             # Remove trailing slash from directory names
-            if name.endswith("/"):
-                name = name[:-1]
+            name = name.removesuffix("/")
 
             items.append(
                 {
@@ -308,9 +307,9 @@ async def list_files(request: ListRequest):
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Directory not found: {request.url}")
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=f"Permission denied: {str(e)}")
+        raise HTTPException(status_code=403, detail=f"Permission denied: {e!s}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {e!s}")
 
 
 @app.post("/api/files/info")
@@ -346,9 +345,9 @@ async def get_file_info(request: InfoRequest):
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"File not found: {request.url}")
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=f"Permission denied: {str(e)}")
+        raise HTTPException(status_code=403, detail=f"Permission denied: {e!s}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {e!s}")
 
 
 @app.post("/api/files/preview")
@@ -507,14 +506,14 @@ async def preview_file(request: PreviewRequest):
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"File not found: {request.url}")
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=f"Permission denied: {str(e)}")
+        raise HTTPException(status_code=403, detail=f"Permission denied: {e!s}")
     except Exception:
         # Re-raise to let global exception handler provide user-friendly message
         raise
 
 
 @app.post("/api/files/upload")
-async def upload_file(url: str = Form(...), file: UploadFile = File(...)):
+async def upload_file(url: str = Form(...), file: UploadFile = File(...)):  # noqa: B008
     """
     Upload a file to the specified URL
 
@@ -540,7 +539,7 @@ async def upload_file(url: str = Form(...), file: UploadFile = File(...)):
         return {"status": "success", "message": f"File '{file.filename}' uploaded successfully", "result": result}
 
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=f"Permission denied: {str(e)}")
+        raise HTTPException(status_code=403, detail=f"Permission denied: {e!s}")
     except Exception:
         # Re-raise to let global exception handler provide user-friendly message
         raise
@@ -591,7 +590,7 @@ async def download_file(request: DownloadRequest):
     except PermissionError as e:
         if temp_file and os.path.exists(temp_file):
             os.unlink(temp_file)
-        raise HTTPException(status_code=403, detail=f"Permission denied: {str(e)}")
+        raise HTTPException(status_code=403, detail=f"Permission denied: {e!s}")
     except Exception:
         if temp_file and os.path.exists(temp_file):
             os.unlink(temp_file)
@@ -620,7 +619,7 @@ async def delete_file(request: DeleteRequest):
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"File or directory not found: {request.url}")
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=f"Permission denied: {str(e)}")
+        raise HTTPException(status_code=403, detail=f"Permission denied: {e!s}")
     except Exception:
         # Re-raise to let global exception handler provide user-friendly message
         raise
@@ -655,7 +654,7 @@ async def copy_file(request: CopyRequest):
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Source file or directory not found: {request.source_url}")
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=f"Permission denied: {str(e)}")
+        raise HTTPException(status_code=403, detail=f"Permission denied: {e!s}")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
@@ -695,7 +694,7 @@ async def sync_files(request: SyncRequest):
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Source directory not found: {request.source_url}")
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=f"Permission denied: {str(e)}")
+        raise HTTPException(status_code=403, detail=f"Permission denied: {e!s}")
     except Exception:
         # Re-raise to let global exception handler provide user-friendly message
         raise

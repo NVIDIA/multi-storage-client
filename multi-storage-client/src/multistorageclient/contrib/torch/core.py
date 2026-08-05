@@ -14,7 +14,7 @@
 # limitations under the License.
 
 import os
-from typing import IO, Any, Union, cast
+from typing import IO, Any, cast
 
 import torch as _torch_module
 
@@ -24,7 +24,7 @@ from ...shortcuts import open as msc_open
 _torch = cast(Any, _torch_module)
 
 
-def load(f: Union[str, os.PathLike[str], IO[bytes]], *args: Any, **kwargs: Any) -> Any:
+def load(f: str | os.PathLike[str] | IO[bytes], *args: Any, **kwargs: Any) -> Any:
     """
     Adapt ``torch.load``.
     """
@@ -38,7 +38,7 @@ def load(f: Union[str, os.PathLike[str], IO[bytes]], *args: Any, **kwargs: Any) 
         return _torch.load(f, *args, **kwargs)
 
 
-def save(obj: object, f: Union[str, os.PathLike[str], IO[bytes]], *args: Any, **kwargs: Any) -> Any:
+def save(obj: object, f: str | os.PathLike[str] | IO[bytes], *args: Any, **kwargs: Any) -> Any:
     """
     Adapt ``torch.save``.
     """

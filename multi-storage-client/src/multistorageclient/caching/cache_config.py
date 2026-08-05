@@ -14,7 +14,6 @@
 # limitations under the License.
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass
@@ -62,7 +61,7 @@ class CacheConfig:
     #: Whether open() prefetches full files by default. False enables partial file caching by default.
     prefetch_file: bool = True
     #: The location of the cache. Default is tempdir/msc-cache.
-    location: Optional[str] = None
+    location: str | None = None
     #: Cache eviction policy configuration. Default is LRU with 300s refresh.
     eviction_policy: EvictionPolicyConfig = field(default_factory=default_eviction_policy)
 

@@ -23,7 +23,7 @@ from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from enum import Enum
 from io import BytesIO, StringIO
-from typing import IO, Any, Optional, TypeVar, Union
+from typing import IO, Any, TypeVar
 
 import xattr
 
@@ -56,7 +56,7 @@ class _EntryType(Enum):
     SYMLINK = 4
 
 
-def atomic_write(source: Union[str, IO], destination: str, attributes: Optional[dict[str, str]] = None):
+def atomic_write(source: str | IO, destination: str, attributes: dict[str, str] | None = None):
     """
     Writes the contents of a file to the specified destination path.
 
@@ -97,8 +97,8 @@ class PosixFileStorageProvider(BaseStorageProvider):
     def __init__(
         self,
         base_path: str,
-        config_dict: Optional[dict[str, Any]] = None,
-        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
+        config_dict: dict[str, Any] | None = None,
+        telemetry_provider: Callable[[], Telemetry] | None = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -147,9 +147,9 @@ class PosixFileStorageProvider(BaseStorageProvider):
         self,
         path: str,
         body: bytes,
-        if_match: Optional[str] = None,
-        if_none_match: Optional[str] = None,
-        attributes: Optional[dict[str, str]] = None,
+        if_match: str | None = None,
+        if_none_match: str | None = None,
+        attributes: dict[str, str] | None = None,
     ) -> int:
         def _invoke_api() -> int:
             safe_makedirs(os.path.dirname(path))
@@ -158,7 +158,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="PUT", path=path)
 
-    def _get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
+    def _get_object(self, path: str, byte_range: Range | None = None) -> bytes:
         def _invoke_api() -> bytes:
             if byte_range:
                 with open(path, "rb") as f:
@@ -181,7 +181,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="COPY", path=src_path)
 
-    def _delete_object(self, path: str, if_match: Optional[str] = None) -> None:
+    def _delete_object(self, path: str, if_match: str | None = None) -> None:
         def _invoke_api() -> None:
             if os.path.exists(path) and os.path.isfile(path):
                 os.remove(path)
@@ -208,13 +208,12 @@ class PosixFileStorageProvider(BaseStorageProvider):
             try:
                 json_bytes = xattr.getxattr(path, "user.json")
                 metadata_dict = json.loads(json_bytes.decode("utf-8"))
-            except (OSError, IOError, KeyError, json.JSONDecodeError, AttributeError) as e:
+            except (OSError, KeyError, json.JSONDecodeError, AttributeError) as e:
                 logger.debug(f"Failed to read extended attributes from {path}: {e}")
-                pass
 
             # ``os.readlink`` may return an absolute path; normalise to the
             # parent-relative form used by every backend.
-            symlink_target: Optional[str] = None
+            symlink_target: str | None = None
             if os.path.islink(path):
                 raw = os.readlink(path)
                 symlink_target = ObjectMetadata.encode_symlink_target(path, raw) if os.path.isabs(raw) else raw
@@ -233,8 +232,8 @@ class PosixFileStorageProvider(BaseStorageProvider):
     def _list_objects(
         self,
         path: str,
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         include_directories: bool = False,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
@@ -328,7 +327,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
         self,
         full_path: str,
         symlink_handling: SymlinkHandling,
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Validate a symlink target and return its path relative to ``base_path``.
 
@@ -370,8 +369,8 @@ class PosixFileStorageProvider(BaseStorageProvider):
     def _explore_directory(
         self,
         dir_path: str,
-        start_after: Optional[str],
-        end_at: Optional[str],
+        start_after: str | None,
+        end_at: str | None,
         include_directories: bool,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
@@ -476,7 +475,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
             logger.warning(f"Failed to list contents of {dir_path}, caused by: {e}")
             return
 
-    def _upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, str]] = None) -> int:
+    def _upload_file(self, remote_path: str, f: str | IO, attributes: dict[str, str] | None = None) -> int:
         safe_makedirs(os.path.dirname(remote_path))
 
         filesize: int = 0
@@ -499,7 +498,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="PUT", path=remote_path)
 
-    def _download_file(self, remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> int:
+    def _download_file(self, remote_path: str, f: str | IO, metadata: ObjectMetadata | None = None) -> int:
         filesize = metadata.content_length if metadata else os.path.getsize(remote_path)
 
         if isinstance(f, str):
@@ -533,7 +532,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
 
             return self._translate_errors(_invoke_api, operation="GET", path=remote_path)
 
-    def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
+    def glob(self, pattern: str, attribute_filter_expression: str | None = None) -> list[str]:
         pattern = self._prepend_base_path(pattern)
         keys = list(glob.glob(pattern, recursive=True))
         if attribute_filter_expression:

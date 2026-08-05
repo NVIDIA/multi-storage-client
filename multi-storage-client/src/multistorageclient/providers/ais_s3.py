@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Callable, Optional, Union
+from collections.abc import Callable
+from typing import Any
 
 # Import botocore patch to handle AIStore redirects.
 # See https://github.com/NVIDIA/aistore/tree/main/python/aistore/botocore_patch
@@ -41,10 +42,10 @@ class AIStoreS3StorageProvider(S3StorageProvider):
         region_name: str = "",
         endpoint_url: str = "",
         base_path: str = "",
-        credentials_provider: Optional[CredentialsProvider] = None,
-        config_dict: Optional[dict[str, Any]] = None,
-        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
-        verify: Optional[Union[bool, str]] = None,
+        credentials_provider: CredentialsProvider | None = None,
+        config_dict: dict[str, Any] | None = None,
+        telemetry_provider: Callable[[], Telemetry] | None = None,
+        verify: bool | str | None = None,
         **kwargs: Any,
     ) -> None:
         """

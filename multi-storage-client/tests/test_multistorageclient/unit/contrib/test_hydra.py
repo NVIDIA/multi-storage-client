@@ -196,4 +196,3 @@ class TestMSCConfigSourceCompliance(ConfigSourceTestSuite):
     @pytest.fixture(autouse=True)
     def setup_compliance(self, compliance_setup):
         """Auto-use the compliance setup for all tests in this class."""
-        pass

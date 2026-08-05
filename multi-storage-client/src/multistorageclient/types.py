@@ -21,7 +21,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
-from typing import IO, Any, NamedTuple, Optional, Tuple, Union
+from typing import IO, Any, NamedTuple
 
 from dateutil.parser import parse as dateutil_parser
 
@@ -97,9 +97,9 @@ class Credentials:
     #: The secret key for authentication.
     secret_key: str
     #: An optional security token for temporary credentials.
-    token: Optional[str]
+    token: str | None
     #: The expiration time of the credentials in ISO 8601 format.
-    expiration: Optional[str]
+    expiration: str | None
     #: A dictionary for storing custom key-value pairs.
     custom_fields: dict[str, Any] = field(default_factory=dict)
 
@@ -140,21 +140,21 @@ class ObjectMetadata:
     last_modified: datetime
     type: str = "file"
     #: The MIME type of the object.
-    content_type: Optional[str] = field(default=None)
+    content_type: str | None = field(default=None)
     #: The entity tag (ETag) of the object.
-    etag: Optional[str] = field(default=None)
+    etag: str | None = field(default=None)
     #: The storage class of the object.
-    storage_class: Optional[str] = field(default=None)
+    storage_class: str | None = field(default=None)
 
-    metadata: Optional[dict[str, Any]] = field(default=None)
+    metadata: dict[str, Any] | None = field(default=None)
 
     #: Symlink target relative to the symlink's own parent directory
     #: (e.g. ``"../target.txt"``), or ``None`` for non-symlink entries.
     #: See :meth:`encode_symlink_target` / :meth:`resolve_symlink_target`.
-    symlink_target: Optional[str] = field(default=None)
+    symlink_target: str | None = field(default=None)
 
     @staticmethod
-    def from_dict(data: dict) -> "ObjectMetadata":
+    def from_dict(data: dict) -> ObjectMetadata:
         """
         Creates an ObjectMetadata instance from a dictionary (parsed from JSON).
         """
@@ -238,14 +238,12 @@ class CredentialsProvider(ABC):
 
         :return: The current credentials used for authentication.
         """
-        pass
 
     @abstractmethod
     def refresh_credentials(self) -> None:
         """
         Refreshes the credentials if they are expired or about to expire.
         """
-        pass
 
 
 @dataclass
@@ -270,9 +268,9 @@ class StorageProvider(ABC):
         self,
         path: str,
         body: bytes,
-        if_match: Optional[str] = None,
-        if_none_match: Optional[str] = None,
-        attributes: Optional[dict[str, Any]] = None,
+        if_match: str | None = None,
+        if_none_match: str | None = None,
+        attributes: dict[str, Any] | None = None,
     ) -> None:
         """
         Uploads an object to the storage provider.
@@ -283,10 +281,9 @@ class StorageProvider(ABC):
         :param if_none_match: Optional If-None-Match value for conditional upload.
         :param attributes: The attributes to add to the file.
         """
-        pass
 
     @abstractmethod
-    def get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
+    def get_object(self, path: str, byte_range: Range | None = None) -> bytes:
         """
         Retrieves an object from the storage provider.
 
@@ -294,7 +291,6 @@ class StorageProvider(ABC):
         :param byte_range: Optional byte range (offset, length) to read.
         :return: The content of the retrieved object.
         """
-        pass
 
     @abstractmethod
     def copy_object(self, src_path: str, dest_path: str) -> None:
@@ -304,17 +300,15 @@ class StorageProvider(ABC):
         :param src_path: The path of the source object to copy.
         :param dest_path: The path of the destination.
         """
-        pass
 
     @abstractmethod
-    def delete_object(self, path: str, if_match: Optional[str] = None) -> None:
+    def delete_object(self, path: str, if_match: str | None = None) -> None:
         """
         Deletes an object from the storage provider.
 
         :param path: The path of the object to delete.
         :param if_match: Optional if-match value to use for conditional deletion.
         """
-        pass
 
     @abstractmethod
     def delete_objects(self, paths: list[str]) -> None:
@@ -323,7 +317,6 @@ class StorageProvider(ABC):
 
         :param paths: A list of paths of objects to delete.
         """
-        pass
 
     @abstractmethod
     def make_symlink(self, path: str, target: str) -> None:
@@ -337,7 +330,6 @@ class StorageProvider(ABC):
         :param path: The path where the symlink will be created.
         :param target: The logical key that the symlink points to.
         """
-        pass
 
     @abstractmethod
     def get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
@@ -349,16 +341,15 @@ class StorageProvider(ABC):
 
         :return: A metadata object containing the information about the object.
         """
-        pass
 
     @abstractmethod
     def list_objects(
         self,
         path: str,
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         include_directories: bool = False,
-        attribute_filter_expression: Optional[str] = None,
+        attribute_filter_expression: str | None = None,
         show_attributes: bool = False,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
@@ -375,14 +366,13 @@ class StorageProvider(ABC):
 
         :return: An iterator over objects metadata under the specified path.
         """
-        pass
 
     @abstractmethod
     def list_objects_recursive(
         self,
         path: str = "",
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         max_workers: int = 32,
         look_ahead: int = 2,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
@@ -398,10 +388,9 @@ class StorageProvider(ABC):
         :param symlink_handling: How to handle symbolic links during listing.
         :return: An iterator over object metadata under the specified path.
         """
-        pass
 
     @abstractmethod
-    def upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, Any]] = None) -> None:
+    def upload_file(self, remote_path: str, f: str | IO, attributes: dict[str, Any] | None = None) -> None:
         """
         Uploads a file from the local file system to the storage provider.
 
@@ -410,10 +399,9 @@ class StorageProvider(ABC):
             file path, or a file-like object (e.g., an open file handle).
         :param attributes: The attributes to add to the file if a new file is created.
         """
-        pass
 
     @abstractmethod
-    def download_file(self, remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> None:
+    def download_file(self, remote_path: str, f: str | IO, metadata: ObjectMetadata | None = None) -> None:
         """
         Downloads a file from the storage provider to the local file system.
 
@@ -423,14 +411,13 @@ class StorageProvider(ABC):
             downloaded content into.
         :param metadata: Metadata about the object to download.
         """
-        pass
 
     @abstractmethod
     def download_files(
         self,
         remote_paths: list[str],
         local_paths: list[str],
-        metadata: Optional[Sequence[Optional[ObjectMetadata]]] = None,
+        metadata: Sequence[ObjectMetadata | None] | None = None,
         max_workers: int = 16,
     ) -> None:
         """
@@ -442,14 +429,13 @@ class StorageProvider(ABC):
         :param max_workers: Maximum number of concurrent download workers (default: 16).
         :raises ValueError: If remote_paths and local_paths have different lengths.
         """
-        pass
 
     @abstractmethod
     def upload_files(
         self,
         local_paths: list[str],
         remote_paths: list[str],
-        attributes: Optional[Sequence[Optional[dict[str, Any]]]] = None,
+        attributes: Sequence[dict[str, Any] | None] | None = None,
         max_workers: int = 16,
     ) -> None:
         """
@@ -463,10 +449,9 @@ class StorageProvider(ABC):
         :raises ValueError: If local_paths and remote_paths have different lengths.
         :raises ValueError: If attributes is provided and has a different length than local_paths.
         """
-        pass
 
     @abstractmethod
-    def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
+    def glob(self, pattern: str, attribute_filter_expression: str | None = None) -> list[str]:
         """
         Matches and retrieves a list of object keys in the storage provider that match the specified pattern.
 
@@ -475,7 +460,6 @@ class StorageProvider(ABC):
 
         :return: A list of object keys that match the specified pattern.
         """
-        pass
 
     @abstractmethod
     def is_file(self, path: str) -> bool:
@@ -486,15 +470,14 @@ class StorageProvider(ABC):
 
         :return: ``True`` if the key points to a file, ``False`` if it points to a directory or folder.
         """
-        pass
 
     def generate_presigned_url(
         self,
         path: str,
         *,
         method: str = "GET",
-        signer_type: Optional[SignerType] = None,
-        signer_options: Optional[dict[str, Any]] = None,
+        signer_type: SignerType | None = None,
+        signer_options: dict[str, Any] | None = None,
     ) -> str:
         """
         Generate a pre-signed URL granting temporary access to the object at *path*.
@@ -537,7 +520,7 @@ class ResolvedPath(NamedTuple):
 
     physical_path: str
     state: ResolvedPathState
-    profile: Optional[str] = None
+    profile: str | None = None
 
     @property
     def exists(self) -> bool:
@@ -554,10 +537,10 @@ class MetadataProvider(ABC):
     def list_objects(
         self,
         path: str,
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         include_directories: bool = False,
-        attribute_filter_expression: Optional[str] = None,
+        attribute_filter_expression: str | None = None,
         show_attributes: bool = False,
     ) -> Iterator[ObjectMetadata]:
         """
@@ -572,7 +555,6 @@ class MetadataProvider(ABC):
 
         :return: An iterator over object metadata under the specified path.
         """
-        pass
 
     @abstractmethod
     def get_object_metadata(self, path: str, include_pending: bool = False) -> ObjectMetadata:
@@ -589,10 +571,9 @@ class MetadataProvider(ABC):
         :return: A metadata object containing the information about the object or directory.
         :raises FileNotFoundError: If no object or directory exists at the specified path.
         """
-        pass
 
     @abstractmethod
-    def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
+    def glob(self, pattern: str, attribute_filter_expression: str | None = None) -> list[str]:
         """
         Matches and retrieves a list of object keys in the storage provider that match the specified pattern.
 
@@ -601,7 +582,6 @@ class MetadataProvider(ABC):
 
         :return: A list of object keys that match the specified pattern.
         """
-        pass
 
     @abstractmethod
     def realpath(self, logical_path: str) -> ResolvedPath:
@@ -620,7 +600,6 @@ class MetadataProvider(ABC):
             If state is EXISTS, physical_path is the committed storage path.
             Otherwise, physical_path is typically the logical_path as fallback.
         """
-        pass
 
     @abstractmethod
     def generate_physical_path(self, logical_path: str, for_overwrite: bool = False) -> ResolvedPath:
@@ -640,7 +619,6 @@ class MetadataProvider(ABC):
         :return: ResolvedPath with physical_path for writing. The exists flag indicates
             whether the logical path currently exists in committed state (for overwrite scenarios).
         """
-        pass
 
     @abstractmethod
     def add_file(self, path: str, metadata: ObjectMetadata) -> None:
@@ -652,7 +630,6 @@ class MetadataProvider(ABC):
         :param path: User-supplied virtual path
         :param metadata: physical file metadata from StorageProvider
         """
-        pass
 
     @abstractmethod
     def remove_file(self, path: str) -> None:
@@ -663,7 +640,6 @@ class MetadataProvider(ABC):
 
         :param path: User-supplied virtual path
         """
-        pass
 
     @abstractmethod
     def commit_updates(self) -> None:
@@ -671,14 +647,12 @@ class MetadataProvider(ABC):
         Commit any newly adding files, used in conjunction with :py:meth:`MetadataProvider.add_file`.
         :py:class:`MetadataProvider` will persistently record any metadata changes.
         """
-        pass
 
     @abstractmethod
     def is_writable(self) -> bool:
         """
         Returns ``True`` if the :py:class:`MetadataProvider` supports writes else ``False``.
         """
-        pass
 
     @abstractmethod
     def allow_overwrites(self) -> bool:
@@ -686,7 +660,6 @@ class MetadataProvider(ABC):
         Returns ``True`` if the :py:class:`MetadataProvider` allows overwriting existing files else ``False``.
         When ``True``, :py:meth:`add_file` will not raise an error if the file already exists.
         """
-        pass
 
     @abstractmethod
     def should_use_soft_delete(self) -> bool:
@@ -700,7 +673,6 @@ class MetadataProvider(ABC):
         When ``False``, delete operations will remove both the metadata and the physical file from storage
         (hard delete).
         """
-        pass
 
 
 @dataclass
@@ -712,7 +684,7 @@ class StorageProviderConfig:
     #: The name or type of the storage provider (e.g., ``s3``, ``gcs``, ``oci``, ``azure``).
     type: str
     #: Additional options required to configure the storage provider (e.g., endpoint URLs, region, etc.).
-    options: Optional[dict[str, Any]] = None
+    options: dict[str, Any] | None = None
 
 
 @dataclass
@@ -722,8 +694,8 @@ class StorageBackend:
     """
 
     storage_provider_config: StorageProviderConfig
-    credentials_provider: Optional[CredentialsProvider] = None
-    replicas: list["Replica"] = field(default_factory=list)
+    credentials_provider: CredentialsProvider | None = None
+    replicas: list[Replica] = field(default_factory=list)
 
 
 class ProviderBundle(ABC):
@@ -740,32 +712,28 @@ class ProviderBundle(ABC):
         :return: The configuration for the storage provider, which includes the provider
                     name/type and additional options.
         """
-        pass
 
     @property
     @abstractmethod
-    def credentials_provider(self) -> Optional[CredentialsProvider]:
+    def credentials_provider(self) -> CredentialsProvider | None:
         """
         :return: The credentials provider responsible for managing authentication credentials
                     required to access the storage service.
         """
-        pass
 
     @property
     @abstractmethod
-    def metadata_provider(self) -> Optional[MetadataProvider]:
+    def metadata_provider(self) -> MetadataProvider | None:
         """
         :return: The metadata provider responsible for retrieving metadata about objects in the storage service.
         """
-        pass
 
     @property
     @abstractmethod
-    def replicas(self) -> list["Replica"]:
+    def replicas(self) -> list[Replica]:
         """
         :return: The replicas configuration for this provider bundle, if any.
         """
-        pass
 
 
 class ProviderBundleV2(ABC):
@@ -782,15 +750,13 @@ class ProviderBundleV2(ABC):
         """
         :return: Mapping of storage backend name -> StorageBackend. Must have at least one backend.
         """
-        pass
 
     @property
     @abstractmethod
-    def metadata_provider(self) -> Optional[MetadataProvider]:
+    def metadata_provider(self) -> MetadataProvider | None:
         """
         :return: The metadata provider responsible for retrieving metadata about objects in the storage service. If there are multiple backends, this is required.
         """
-        pass
 
 
 @dataclass
@@ -819,8 +785,6 @@ class RetryableError(Exception):
     """
     Exception raised for errors that should trigger a retry.
     """
-
-    pass
 
 
 @dataclass(frozen=True)
@@ -864,8 +828,6 @@ class PreconditionFailedError(Exception):
     Exception raised when a precondition fails. e.g. if-match, if-none-match, etc.
     """
 
-    pass
-
 
 class NotModifiedError(Exception):
     """
@@ -874,8 +836,6 @@ class NotModifiedError(Exception):
     This typically occurs when using if-none-match with a specific generation/etag
     and the resource's current generation/etag matches the specified one.
     """
-
-    pass
 
 
 class SourceVersionCheckMode(Enum):
@@ -903,10 +863,10 @@ class AutoCommitConfig:
     A data class that represents the configuration for auto commit.
     """
 
-    interval_minutes: Optional[float]  # The interval in minutes for auto commit.
+    interval_minutes: float | None  # The interval in minutes for auto commit.
     at_exit: bool = False  # if True, commit on program exit
 
-    def __init__(self, interval_minutes: Optional[float] = None, at_exit: bool = False) -> None:
+    def __init__(self, interval_minutes: float | None = None, at_exit: bool = False) -> None:
         self.interval_minutes = interval_minutes
         self.at_exit = at_exit
 
@@ -930,7 +890,7 @@ class PatternType(Enum):
 
 
 # Type alias for pattern matching
-PatternList = list[Tuple[PatternType, str]]
+PatternList = list[tuple[PatternType, str]]
 
 
 @dataclass
@@ -969,7 +929,7 @@ class SyncResult:
     #: The total time taken to process the sync operation.
     total_time_seconds: float = 0.0
     #: Dryrun details with paths to JSONL files. ``None`` for normal (non-dryrun) sync operations.
-    dryrun: Optional[DryrunResult] = None
+    dryrun: DryrunResult | None = None
 
     def __str__(self) -> str:
         header = "Sync dryrun statistics:" if self.dryrun else "Sync statistics:"

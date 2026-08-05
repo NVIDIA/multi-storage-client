@@ -15,14 +15,13 @@
 
 import logging
 import os
-from typing import Union
 
 from ...pathlib import MultiStoragePath as Path
 
 logger = logging.getLogger(__name__)
 
 
-def exists(path: Union[str, os.PathLike]) -> bool:
+def exists(path: str | os.PathLike) -> bool:
     """
     Check if a given path exists.
 
@@ -32,7 +31,7 @@ def exists(path: Union[str, os.PathLike]) -> bool:
     return Path(path).exists()
 
 
-def isdir(path: Union[str, os.PathLike], strict: bool = True) -> bool:
+def isdir(path: str | os.PathLike, strict: bool = True) -> bool:
     """
     Check if a given path is a directory.
 
@@ -45,7 +44,7 @@ def isdir(path: Union[str, os.PathLike], strict: bool = True) -> bool:
     return Path(path).is_dir(strict=strict)
 
 
-def isfile(path: Union[str, os.PathLike]) -> bool:
+def isfile(path: str | os.PathLike) -> bool:
     """
     Check if a given path is a file.
 

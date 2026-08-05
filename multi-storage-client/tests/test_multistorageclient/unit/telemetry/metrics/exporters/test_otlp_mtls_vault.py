@@ -66,133 +66,141 @@ class TestOTLPmTLSVaultMetricExporter:
 
     def test_exporter_initialization(self, mock_vault_provider, temp_cert_files):
         """Test that exporter initializes correctly with Vault certificates."""
-        with patch(
-            "multistorageclient.telemetry.metrics.exporters.otlp_mtls_vault.VaultCertificateProvider",
-            return_value=mock_vault_provider,
-        ):
-            with patch(
+        with (
+            patch(
+                "multistorageclient.telemetry.metrics.exporters.otlp_mtls_vault.VaultCertificateProvider",
+                return_value=mock_vault_provider,
+            ),
+            patch(
                 "opentelemetry.exporter.otlp.proto.http.metric_exporter.OTLPMetricExporter.__init__",
                 return_value=None,
-            ) as mock_init:
-                from multistorageclient.telemetry.metrics.exporters.otlp_mtls_vault import (
-                    _OTLPmTLSVaultMetricExporter,
-                )
+            ) as mock_init,
+        ):
+            from multistorageclient.telemetry.metrics.exporters.otlp_mtls_vault import (
+                _OTLPmTLSVaultMetricExporter,
+            )
 
-                auth_config = {
-                    "vault_endpoint": "https://vault.example.com",
-                    "vault_namespace": "test-namespace",
-                    "approle_id": "test-role-id",
-                    "approle_secret": "test-secret-id",
-                    "mount_point": "secret",
-                    "secret_path": "path/to/certs",
-                }
+            auth_config = {
+                "vault_endpoint": "https://vault.example.com",
+                "vault_namespace": "test-namespace",
+                "approle_id": "test-role-id",
+                "approle_secret": "test-secret-id",
+                "mount_point": "secret",
+                "secret_path": "path/to/certs",
+            }
 
-                exporter_config = {
-                    "endpoint": "https://otlp.example.com/v1/metrics",
-                }
+            exporter_config = {
+                "endpoint": "https://otlp.example.com/v1/metrics",
+            }
 
-                _OTLPmTLSVaultMetricExporter(auth=auth_config, exporter=exporter_config)
+            _OTLPmTLSVaultMetricExporter(auth=auth_config, exporter=exporter_config)
 
-                mock_init.assert_called_once()
-                call_kwargs = mock_init.call_args[1]
+            mock_init.assert_called_once()
+            call_kwargs = mock_init.call_args[1]
 
-                assert call_kwargs["endpoint"] == "https://otlp.example.com/v1/metrics"
-                assert call_kwargs["client_certificate_file"] == temp_cert_files["cert_path"]
-                assert call_kwargs["client_key_file"] == temp_cert_files["key_path"]
-                assert call_kwargs["certificate_file"] == temp_cert_files["ca_path"]
+            assert call_kwargs["endpoint"] == "https://otlp.example.com/v1/metrics"
+            assert call_kwargs["client_certificate_file"] == temp_cert_files["cert_path"]
+            assert call_kwargs["client_key_file"] == temp_cert_files["key_path"]
+            assert call_kwargs["certificate_file"] == temp_cert_files["ca_path"]
 
     def test_exporter_preserves_additional_options(self, mock_vault_provider, temp_cert_files):
         """Test that additional exporter options are preserved."""
-        with patch(
-            "multistorageclient.telemetry.metrics.exporters.otlp_mtls_vault.VaultCertificateProvider",
-            return_value=mock_vault_provider,
-        ):
-            with patch(
+        with (
+            patch(
+                "multistorageclient.telemetry.metrics.exporters.otlp_mtls_vault.VaultCertificateProvider",
+                return_value=mock_vault_provider,
+            ),
+            patch(
                 "opentelemetry.exporter.otlp.proto.http.metric_exporter.OTLPMetricExporter.__init__",
                 return_value=None,
-            ) as mock_init:
-                from multistorageclient.telemetry.metrics.exporters.otlp_mtls_vault import (
-                    _OTLPmTLSVaultMetricExporter,
-                )
+            ) as mock_init,
+        ):
+            from multistorageclient.telemetry.metrics.exporters.otlp_mtls_vault import (
+                _OTLPmTLSVaultMetricExporter,
+            )
 
-                auth_config = {
-                    "vault_endpoint": "https://vault.example.com",
-                    "vault_namespace": "test-namespace",
-                    "approle_id": "test-role-id",
-                    "approle_secret": "test-secret-id",
-                }
+            auth_config = {
+                "vault_endpoint": "https://vault.example.com",
+                "vault_namespace": "test-namespace",
+                "approle_id": "test-role-id",
+                "approle_secret": "test-secret-id",
+            }
 
-                exporter_config = {
-                    "endpoint": "https://otlp.example.com/v1/metrics",
-                    "timeout": 30,
-                    "compression": "gzip",
-                }
+            exporter_config = {
+                "endpoint": "https://otlp.example.com/v1/metrics",
+                "timeout": 30,
+                "compression": "gzip",
+            }
 
-                _OTLPmTLSVaultMetricExporter(auth=auth_config, exporter=exporter_config)
+            _OTLPmTLSVaultMetricExporter(auth=auth_config, exporter=exporter_config)
 
-                call_kwargs = mock_init.call_args[1]
+            call_kwargs = mock_init.call_args[1]
 
-                assert call_kwargs["timeout"] == 30
-                assert call_kwargs["compression"] == "gzip"
+            assert call_kwargs["timeout"] == 30
+            assert call_kwargs["compression"] == "gzip"
 
     def test_exporter_does_not_modify_original_config(self, mock_vault_provider):
         """Test that original exporter config dict is not modified."""
-        with patch(
-            "multistorageclient.telemetry.metrics.exporters.otlp_mtls_vault.VaultCertificateProvider",
-            return_value=mock_vault_provider,
-        ):
-            with patch(
+        with (
+            patch(
+                "multistorageclient.telemetry.metrics.exporters.otlp_mtls_vault.VaultCertificateProvider",
+                return_value=mock_vault_provider,
+            ),
+            patch(
                 "opentelemetry.exporter.otlp.proto.http.metric_exporter.OTLPMetricExporter.__init__",
                 return_value=None,
-            ):
-                from multistorageclient.telemetry.metrics.exporters.otlp_mtls_vault import (
-                    _OTLPmTLSVaultMetricExporter,
-                )
+            ),
+        ):
+            from multistorageclient.telemetry.metrics.exporters.otlp_mtls_vault import (
+                _OTLPmTLSVaultMetricExporter,
+            )
 
-                auth_config = {
-                    "vault_endpoint": "https://vault.example.com",
-                    "vault_namespace": "test-namespace",
-                    "approle_id": "test-role-id",
-                    "approle_secret": "test-secret-id",
-                }
+            auth_config = {
+                "vault_endpoint": "https://vault.example.com",
+                "vault_namespace": "test-namespace",
+                "approle_id": "test-role-id",
+                "approle_secret": "test-secret-id",
+            }
 
-                exporter_config = {
-                    "endpoint": "https://otlp.example.com/v1/metrics",
-                }
+            exporter_config = {
+                "endpoint": "https://otlp.example.com/v1/metrics",
+            }
 
-                _OTLPmTLSVaultMetricExporter(auth=auth_config, exporter=exporter_config)
+            _OTLPmTLSVaultMetricExporter(auth=auth_config, exporter=exporter_config)
 
-                assert "client_certificate_file" not in exporter_config
-                assert "client_key_file" not in exporter_config
-                assert "certificate_file" not in exporter_config
+            assert "client_certificate_file" not in exporter_config
+            assert "client_key_file" not in exporter_config
+            assert "certificate_file" not in exporter_config
 
     def test_vault_provider_receives_auth_config(self, mock_vault_provider):
         """Test that VaultCertificateProvider is initialized with auth config."""
-        with patch(
-            "multistorageclient.telemetry.metrics.exporters.otlp_mtls_vault.VaultCertificateProvider",
-            return_value=mock_vault_provider,
-        ) as mock_provider_class:
-            with patch(
+        with (
+            patch(
+                "multistorageclient.telemetry.metrics.exporters.otlp_mtls_vault.VaultCertificateProvider",
+                return_value=mock_vault_provider,
+            ) as mock_provider_class,
+            patch(
                 "opentelemetry.exporter.otlp.proto.http.metric_exporter.OTLPMetricExporter.__init__",
                 return_value=None,
-            ):
-                from multistorageclient.telemetry.metrics.exporters.otlp_mtls_vault import (
-                    _OTLPmTLSVaultMetricExporter,
-                )
+            ),
+        ):
+            from multistorageclient.telemetry.metrics.exporters.otlp_mtls_vault import (
+                _OTLPmTLSVaultMetricExporter,
+            )
 
-                auth_config = {
-                    "vault_endpoint": "https://vault.example.com",
-                    "vault_namespace": "test-namespace",
-                    "approle_id": "test-role-id",
-                    "approle_secret": "test-secret-id",
-                    "mount_point": "custom/mount",
-                    "secret_path": "custom/path",
-                }
+            auth_config = {
+                "vault_endpoint": "https://vault.example.com",
+                "vault_namespace": "test-namespace",
+                "approle_id": "test-role-id",
+                "approle_secret": "test-secret-id",
+                "mount_point": "custom/mount",
+                "secret_path": "custom/path",
+            }
 
-                exporter_config = {
-                    "endpoint": "https://otlp.example.com/v1/metrics",
-                }
+            exporter_config = {
+                "endpoint": "https://otlp.example.com/v1/metrics",
+            }
 
-                _OTLPmTLSVaultMetricExporter(auth=auth_config, exporter=exporter_config)
+            _OTLPmTLSVaultMetricExporter(auth=auth_config, exporter=exporter_config)
 
-                mock_provider_class.assert_called_once_with(**auth_config)
+            mock_provider_class.assert_called_once_with(**auth_config)

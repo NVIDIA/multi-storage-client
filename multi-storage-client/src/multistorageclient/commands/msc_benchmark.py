@@ -22,7 +22,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import Manager, Pool
 from multiprocessing.managers import ListProxy
-from typing import Any, Optional, Union
+from typing import Any
 
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.schema import BENCHMARK_SCHEMA, validate
@@ -40,7 +40,7 @@ DEFAULT_CONFIG = {
 DEFAULT_TEST_DIR = "/tmp/msc_benchmark"
 
 
-def load_config(config_path: Optional[str]) -> dict[str, Any]:
+def load_config(config_path: str | None) -> dict[str, Any]:
     """
     Load configuration from a JSON file.
 
@@ -74,10 +74,10 @@ def size_to_bytes(size: str) -> int:
 class PerformanceMetrics:
     def __init__(
         self,
-        start_times: Union[list[Any], ListProxy],
-        end_times: Union[list[Any], ListProxy],
-        response_times: Union[list[Any], ListProxy],
-        object_sizes: Union[list[Any], ListProxy],
+        start_times: list[Any] | ListProxy,
+        end_times: list[Any] | ListProxy,
+        response_times: list[Any] | ListProxy,
+        object_sizes: list[Any] | ListProxy,
     ) -> None:
         self.start_times = start_times
         self.end_times = end_times
@@ -126,9 +126,9 @@ class BenchmarkRunner:
     def __init__(
         self,
         storage_client: StorageClient,
-        test_sizes: Optional[dict[str, int]] = None,
-        processes: Optional[list[int]] = None,
-        threads: Optional[list[int]] = None,
+        test_sizes: dict[str, int] | None = None,
+        processes: list[int] | None = None,
+        threads: list[int] | None = None,
         prefix: str = "",
         include_file_tests: bool = False,
         file_tests_dir: str = DEFAULT_TEST_DIR,
@@ -152,7 +152,7 @@ class BenchmarkRunner:
         self.include_file_tests = include_file_tests
         self.file_tests_dir = file_tests_dir
         # Pre-generate random data
-        self.random_data = {k: os.urandom(size_to_bytes(k)) for k in self.test_sizes.keys()}
+        self.random_data = {k: os.urandom(size_to_bytes(k)) for k in self.test_sizes}
 
     def upload_object(self, size: str, path: str, metrics: PerformanceMetrics) -> None:
         """Upload a single object of the specified size."""

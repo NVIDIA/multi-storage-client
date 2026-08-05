@@ -19,7 +19,7 @@ import os
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
-from typing import Any, Union
+from typing import Any
 
 from fsspec.asyn import AsyncFileSystem, _run_coros_in_chunks
 
@@ -50,7 +50,7 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
         """
         super().__init__(**kwargs)
 
-    def resolve_path_and_storage_client(self, path: Union[str, os.PathLike]) -> tuple[StorageClient, str]:
+    def resolve_path_and_storage_client(self, path: str | os.PathLike) -> tuple[StorageClient, str]:
         """
         Resolves the path and retrieves the associated :py:class:`multistorageclient.StorageClient`.
 
@@ -75,7 +75,7 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
         loop = asyncio.get_event_loop()
         return loop.run_in_executor(_GLOBAL_THREAD_POOL, partial(func, *args, **kwargs))
 
-    def ls(self, path: str, detail: bool = True, **kwargs: Any) -> Union[list[dict[str, Any]], list[str]]:
+    def ls(self, path: str, detail: bool = True, **kwargs: Any) -> list[dict[str, Any]] | list[str]:
         """
         Lists the contents of a directory.
 
@@ -107,7 +107,7 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
         else:
             return [os.path.join(storage_client.profile, obj.key) for obj in objects]
 
-    async def _ls(self, path: str, detail: bool = True, **kwargs: Any) -> Union[list[dict[str, Any]], list[str]]:
+    async def _ls(self, path: str, detail: bool = True, **kwargs: Any) -> list[dict[str, Any]] | list[str]:
         """
         Asynchronously lists the contents of a directory.
 
@@ -266,7 +266,7 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
         """
         await self.asynchronize_sync(self.put_file, lpath, rpath, **kwargs)
 
-    def open(self, path: str, mode: str = "rb", **kwargs: Any) -> Union[PosixFile, ObjectFile]:
+    def open(self, path: str, mode: str = "rb", **kwargs: Any) -> PosixFile | ObjectFile:
         """
         Opens a file at the given path.
 
@@ -279,7 +279,7 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
         storage_client, path = self.resolve_path_and_storage_client(path)
         return storage_client.open(path, mode, **kwargs)
 
-    async def _open(self, path: str, mode: str = "rb", **kwargs: Any) -> Union[PosixFile, ObjectFile]:
+    async def _open(self, path: str, mode: str = "rb", **kwargs: Any) -> PosixFile | ObjectFile:
         """
         Asynchronously opens a file at the given path.
 

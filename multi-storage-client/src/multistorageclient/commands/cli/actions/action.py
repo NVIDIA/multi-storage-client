@@ -16,7 +16,6 @@
 import argparse
 import sys
 from abc import ABC, abstractmethod
-from typing import Optional
 
 
 class MSCHelpFormatter(argparse.RawDescriptionHelpFormatter):
@@ -53,22 +52,18 @@ class Action(ABC):
     @abstractmethod
     def name(self) -> str:
         """Return the name of the action."""
-        pass
 
     @abstractmethod
     def help(self) -> str:
         """Return the help text for the action."""
-        pass
 
     @abstractmethod
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         """Set up the argument parser for this action."""
-        pass
 
     @abstractmethod
     def run(self, args: argparse.Namespace) -> int:
         """Run the action with the parsed arguments."""
-        pass
 
 
 class ActionRegistry:
@@ -83,7 +78,7 @@ class ActionRegistry:
         """Register an action."""
         self.actions[action.name()] = action
 
-    def get_action(self, name: str) -> Optional[Action]:
+    def get_action(self, name: str) -> Action | None:
         """Get an action by name."""
         return self.actions.get(name)
 

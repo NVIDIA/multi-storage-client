@@ -71,15 +71,13 @@ class Arguments:
     Command arguments.
     """
 
-    pass
-
 
 # Intentionally omit the return type to make `functools.partial` type inference work.
 def add_argument_partial(
     parser: argparse.ArgumentParser,
     arguments_type: type[Arguments],
     argument_key: str,
-    argument_value_reader: Optional[Callable[[str], Any]] = None,
+    argument_value_reader: Callable[[str], Any] | None = None,
 ):
     """
     Partially apply :py:meth:`argparse.ArgumentParser.add_argument`.
@@ -186,7 +184,7 @@ def add_argument_partial(
             argument_type_universe = argument_type_universe_expansion
 
     # Argument choices should only be non-type terms.
-    argument_choices: Optional[tuple] = None
+    argument_choices: tuple | None = None
     argument_type_universe_non_type_terms: set = {_ for _ in argument_type_universe if not isinstance(_, type)}
     if (
         len(argument_type_universe_non_type_terms) > 0
@@ -212,7 +210,7 @@ def add_argument_partial(
 
             if argument_type is bool:
                 # :py:func:`bool` returns `True` for any non-empty string.
-                def argument_bool_reader(argument: str) -> Union[bool, str]:
+                def argument_bool_reader(argument: str) -> bool | str:
                     # Boolean choices are rendered as `str(False)` and `str(True)` so case-insensitive match may cause confusion.
                     #
                     # Do a case-sensitive match instead.
@@ -229,7 +227,7 @@ def add_argument_partial(
                 argument_value_reader = argument_type
             elif issubclass(argument_type, Enum):
                 # :py:meth:`enum.Enum.__getitem__` takes the enum name string.
-                def argument_enum_reader(argument: str) -> Union[str, Enum]:
+                def argument_enum_reader(argument: str) -> str | Enum:
                     # :py:type:`ArgumentEnum` is rendered as the enum name with `_` replaced with `-`.
                     #
                     # Invert this to turn the argument into the enum name.
@@ -252,7 +250,7 @@ def add_argument_partial(
     )
 
 
-T = TypeVar("T", bound=Arguments, contravariant=True)
+T = TypeVar("T", bound=Arguments, contravariant=True)  # noqa: PLC0105
 
 
 class CommandFunction(Protocol[T]):
@@ -260,7 +258,7 @@ class CommandFunction(Protocol[T]):
     Command function.
     """
 
-    ExitCode = Union[str | int | None]
+    ExitCode = str | int | None
 
     def __call__(self, arguments: T) -> ExitCode: ...
 

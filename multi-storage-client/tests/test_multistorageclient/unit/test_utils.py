@@ -15,7 +15,7 @@
 
 import multiprocessing
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
@@ -509,7 +509,7 @@ def test_matches_attribute_filter_expression():
     metadata = ObjectMetadata(
         key="test.txt",
         content_length=100,
-        last_modified=datetime.now(),
+        last_modified=datetime.now(tz=timezone.utc),
         metadata={"model_name": "gpt", "version": "1.5", "type": "text"},
     )
 
@@ -530,7 +530,9 @@ def test_matches_attribute_filter_expression():
     assert not matches_attribute_filter_expression(metadata, evaluator)
 
     # Test empty metadata
-    empty_metadata = ObjectMetadata(key="test.txt", content_length=100, last_modified=datetime.now(), metadata={})
+    empty_metadata = ObjectMetadata(
+        key="test.txt", content_length=100, last_modified=datetime.now(tz=timezone.utc), metadata={}
+    )
     evaluator = create_attribute_filter_evaluator('model_name = "gpt"')
     assert not matches_attribute_filter_expression(empty_metadata, evaluator)
 

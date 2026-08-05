@@ -24,12 +24,12 @@ from .sync import SyncAction
 
 __all__ = [
     "ActionRegistry",
-    "MSCArgumentParser",
     "ConfigAction",
     "ExplorerAction",
     "HelpAction",
-    "SyncAction",
     "LsAction",
     "MCPServerAction",
+    "MSCArgumentParser",
     "RmAction",
+    "SyncAction",
 ]

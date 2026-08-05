@@ -24,9 +24,9 @@ import httpx
 import httpx_retries
 import packaging.utils
 
-import multistorageclient_scripts.cli as cli
-import multistorageclient_scripts.utils.argparse_extensions as argparse_extensions
 import multistorageclient_scripts.utils.httpx.auth
+from multistorageclient_scripts import cli
+from multistorageclient_scripts.utils import argparse_extensions
 from multistorageclient_scripts.utils.wait import wait
 
 logger = logging.getLogger(__name__)

@@ -84,9 +84,8 @@ def test_storage_client_basic_usage(temp_data_store_type: type[tempdatastore.Tem
 
         # Delete the file.
         storage_client.delete(path=file_path)
-        with pytest.raises(FileNotFoundError):
-            with storage_client.open(path=file_path, mode="rb") as file:
-                pass
+        with pytest.raises(FileNotFoundError), storage_client.open(path=file_path, mode="rb") as file:
+            pass
 
         # Open a file for writes (string).
         with storage_client.open(path=file_path, mode="w") as file:
@@ -116,9 +115,8 @@ def test_storage_client_basic_usage(temp_data_store_type: type[tempdatastore.Tem
 
         # Delete the file.
         storage_client.delete(path=file_path)
-        with pytest.raises(FileNotFoundError):
-            with storage_client.open(path=file_path, mode="r") as file:
-                pass
+        with pytest.raises(FileNotFoundError), storage_client.open(path=file_path, mode="r") as file:
+            pass
 
         # Verify the file creation is atomic.
         fp1 = storage_client.open(path=file_path, mode="w")

@@ -17,9 +17,8 @@ import pickle
 
 import pytest
 
-import multistorageclient.telemetry as telemetry
-import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
-from multistorageclient import StorageClient, StorageClientConfig
+from multistorageclient import StorageClient, StorageClientConfig, telemetry
+from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
 
 

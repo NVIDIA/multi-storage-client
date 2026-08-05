@@ -14,7 +14,6 @@
 # limitations under the License.
 
 from collections.abc import Iterator
-from typing import Optional
 
 from ..types import MetadataProvider, ObjectMetadata, ResolvedPath
 from .types import OperationType, QueueLike
@@ -55,9 +54,9 @@ class QueueBackedMetadataProvider(MetadataProvider):
             content_length=metadata.content_length,
             last_modified=metadata.last_modified,
             type=getattr(metadata, "type", "file"),
-            content_type=getattr(metadata, "content_type"),
-            etag=getattr(metadata, "etag"),
-            storage_class=getattr(metadata, "storage_class"),
+            content_type=metadata.content_type,
+            etag=metadata.etag,
+            storage_class=metadata.storage_class,
             metadata=dict(meta_dict) if meta_dict else None,
             symlink_target=getattr(metadata, "symlink_target", None),
         )
@@ -75,10 +74,10 @@ class QueueBackedMetadataProvider(MetadataProvider):
     def list_objects(
         self,
         path: str,
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         include_directories: bool = False,
-        attribute_filter_expression: Optional[str] = None,
+        attribute_filter_expression: str | None = None,
         show_attributes: bool = False,
     ) -> Iterator[ObjectMetadata]:
         return self._delegate.list_objects(
@@ -88,7 +87,7 @@ class QueueBackedMetadataProvider(MetadataProvider):
     def get_object_metadata(self, path: str, include_pending: bool = False) -> ObjectMetadata:
         return self._delegate.get_object_metadata(path, include_pending)
 
-    def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
+    def glob(self, pattern: str, attribute_filter_expression: str | None = None) -> list[str]:
         return self._delegate.glob(pattern, attribute_filter_expression)
 
     def realpath(self, logical_path: str) -> ResolvedPath:

@@ -18,7 +18,7 @@ import os
 import re
 import threading
 from collections.abc import Callable, Iterator
-from typing import Any, Optional, Union
+from typing import Any
 from urllib.parse import ParseResult, urlparse
 
 from .client import StorageClient
@@ -27,11 +27,11 @@ from .file import ObjectFile, PosixFile
 from .telemetry import Telemetry
 from .types import MSC_PROTOCOL, ExecutionMode, ObjectMetadata, PatternList, SignerType, SymlinkHandling, SyncResult
 
-_TELEMETRY_PROVIDER: Optional[Callable[[], Telemetry]] = None
+_TELEMETRY_PROVIDER: Callable[[], Telemetry] | None = None
 _TELEMETRY_PROVIDER_LOCK = threading.Lock()
 _STORAGE_CLIENT_CACHE: dict[str, StorageClient] = {}
 _STORAGE_CLIENT_CACHE_LOCK = threading.Lock()
-_PATH_MAPPING_CACHE: dict[Optional[str], PathMapping] = {}
+_PATH_MAPPING_CACHE: dict[str | None, PathMapping] = {}
 _PATH_MAPPING_CACHE_LOCK = threading.Lock()
 _PROCESS_ID = os.getpid()
 
@@ -50,8 +50,8 @@ def _reinitialize_after_fork() -> None:
     Note: The telemetry provider is intentionally inherited by child processes,
     only its lock is reinitialized.
     """
-    global _STORAGE_CLIENT_CACHE, _STORAGE_CLIENT_CACHE_LOCK
-    global _PATH_MAPPING_CACHE, _PATH_MAPPING_CACHE_LOCK
+    global _STORAGE_CLIENT_CACHE, _STORAGE_CLIENT_CACHE_LOCK  # noqa: PLW0602
+    global _PATH_MAPPING_CACHE, _PATH_MAPPING_CACHE_LOCK  # noqa: PLW0602
     global _TELEMETRY_PROVIDER_LOCK
     global _PROCESS_ID
 
@@ -71,7 +71,7 @@ def _check_and_reinitialize_if_forked() -> None:
     This provides fork-safety for systems where os.register_at_fork is not available
     or as a fallback mechanism.
     """
-    global _PROCESS_ID
+    global _PROCESS_ID  # noqa: PLW0602
 
     current_pid = os.getpid()
     if current_pid != _PROCESS_ID:
@@ -82,25 +82,25 @@ if hasattr(os, "register_at_fork"):
     os.register_at_fork(after_in_child=_reinitialize_after_fork)
 
 
-def get_telemetry_provider() -> Optional[Callable[[], Telemetry]]:
+def get_telemetry_provider() -> Callable[[], Telemetry] | None:
     """
     Get the function used to create :py:class:`Telemetry` instances for storage clients created by shortcuts.
 
     :return: A function that provides a telemetry instance.
     """
-    global _TELEMETRY_PROVIDER
+    global _TELEMETRY_PROVIDER  # noqa: PLW0602
 
     return _TELEMETRY_PROVIDER
 
 
-def set_telemetry_provider(telemetry_provider: Optional[Callable[[], Telemetry]]) -> None:
+def set_telemetry_provider(telemetry_provider: Callable[[], Telemetry] | None) -> None:
     """
     Set the function used to create :py:class:`Telemetry` instances for storage clients created by shortcuts.
 
     :param telemetry_provider: A function that provides a telemetry instance. The function must be defined at the top level of a module to work with pickling.
     """
     global _TELEMETRY_PROVIDER
-    global _TELEMETRY_PROVIDER_LOCK
+    global _TELEMETRY_PROVIDER_LOCK  # noqa: PLW0602
 
     with _TELEMETRY_PROVIDER_LOCK:
         _TELEMETRY_PROVIDER = telemetry_provider
@@ -136,8 +136,7 @@ def _resolve_msc_url(url: str) -> tuple[str, str]:
     # Normalize only the object path so the msc:// scheme separator and profile stay intact.
     pr = pr._replace(path=re.sub(r"/+", "/", pr.path))
     path = _build_full_path(url, pr)
-    if path.startswith("/"):
-        path = path[1:]
+    path = path.removeprefix("/")
     return profile, path
 
 
@@ -214,8 +213,7 @@ def _resolve_non_msc_url(url: str) -> tuple[str, str]:
 
     # Return normalized path with leading slash removed
     path = pr.path
-    if path.startswith("/"):
-        path = path[1:]
+    path = path.removeprefix("/")
 
     return profile_name, path
 
@@ -249,8 +247,8 @@ def resolve_storage_client(url: str) -> tuple[StorageClient, str]:
     :raises ValueError: If the URL's protocol is neither ``msc`` nor a valid local file system path
                         or a supported non-MSC protocol.
     """
-    global _STORAGE_CLIENT_CACHE
-    global _STORAGE_CLIENT_CACHE_LOCK
+    global _STORAGE_CLIENT_CACHE  # noqa: PLW0602
+    global _STORAGE_CLIENT_CACHE_LOCK  # noqa: PLW0602
 
     _check_and_reinitialize_if_forked()
 
@@ -278,7 +276,7 @@ def resolve_storage_client(url: str) -> tuple[StorageClient, str]:
     return client, path
 
 
-def open(url: str, mode: str = "rb", **kwargs: Any) -> Union[PosixFile, ObjectFile]:
+def open(url: str, mode: str = "rb", **kwargs: Any) -> PosixFile | ObjectFile:
     """
     Open a file at the given URL using the specified mode.
 
@@ -296,7 +294,7 @@ def open(url: str, mode: str = "rb", **kwargs: Any) -> Union[PosixFile, ObjectFi
     return client.open(path, mode, **kwargs)
 
 
-def glob(pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
+def glob(pattern: str, attribute_filter_expression: str | None = None) -> list[str]:
     """
     Return a list of files matching a pattern.
 
@@ -318,7 +316,7 @@ def glob(pattern: str, attribute_filter_expression: Optional[str] = None) -> lis
         return client.glob(path, include_url_prefix=True, attribute_filter_expression=attribute_filter_expression)
 
 
-def upload_file(url: str, local_path: str, attributes: Optional[dict[str, Any]] = None) -> None:
+def upload_file(url: str, local_path: str, attributes: dict[str, Any] | None = None) -> None:
     """
     Upload a file to the given URL from a local path.
 
@@ -384,11 +382,11 @@ def sync(
     target_url: str,
     delete_unmatched_files: bool = False,
     execution_mode: ExecutionMode = ExecutionMode.LOCAL,
-    patterns: Optional[PatternList] = None,
+    patterns: PatternList | None = None,
     preserve_source_attributes: bool = False,
     ignore_hidden: bool = True,
     dryrun: bool = False,
-    dryrun_output_path: Optional[str] = None,
+    dryrun_output_path: str | None = None,
     symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
 ) -> SyncResult:
     """
@@ -437,10 +435,10 @@ def sync(
 
 def sync_replicas(
     source_url: str,
-    replica_indices: Optional[list[int]] = None,
+    replica_indices: list[int] | None = None,
     delete_unmatched_files: bool = False,
     execution_mode: ExecutionMode = ExecutionMode.LOCAL,
-    patterns: Optional[PatternList] = None,
+    patterns: PatternList | None = None,
     ignore_hidden: bool = True,
     symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
 ) -> None:
@@ -473,12 +471,12 @@ def sync_replicas(
 
 def list(
     url: str,
-    start_after: Optional[str] = None,
-    end_at: Optional[str] = None,
+    start_after: str | None = None,
+    end_at: str | None = None,
     include_directories: bool = False,
-    attribute_filter_expression: Optional[str] = None,
+    attribute_filter_expression: str | None = None,
     show_attributes: bool = False,
-    patterns: Optional[PatternList] = None,
+    patterns: PatternList | None = None,
     symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
 ) -> Iterator[ObjectMetadata]:
     """
@@ -514,11 +512,11 @@ def list(
 
 def list_recursive(
     url: str,
-    start_after: Optional[str] = None,
-    end_at: Optional[str] = None,
+    start_after: str | None = None,
+    end_at: str | None = None,
     max_workers: int = 32,
     look_ahead: int = 2,
-    patterns: Optional[PatternList] = None,
+    patterns: PatternList | None = None,
     symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
 ) -> Iterator[ObjectMetadata]:
     """
@@ -550,7 +548,7 @@ def list_recursive(
     )
 
 
-def write(url: str, body: bytes, attributes: Optional[dict[str, Any]] = None) -> None:
+def write(url: str, body: bytes, attributes: dict[str, Any] | None = None) -> None:
     """
     Writes an object to the storage provider at the specified path.
 
@@ -618,8 +616,8 @@ def generate_presigned_url(
     url: str,
     *,
     method: str = "GET",
-    signer_type: Optional[SignerType] = None,
-    signer_options: Optional[dict[str, Any]] = None,
+    signer_type: SignerType | None = None,
+    signer_options: dict[str, Any] | None = None,
 ) -> str:
     """
     Generate a pre-signed URL granting temporary access to the object at *url*.

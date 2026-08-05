@@ -14,7 +14,6 @@
 # limitations under the License.
 
 import threading
-from typing import Optional
 
 import opentelemetry.sdk.metrics.export as sdk_metrics_export
 import opentelemetry.sdk.metrics.view as sdk_metrics_view
@@ -25,13 +24,13 @@ class InMemoryMetricExporter(sdk_metrics_export.MetricExporter):
     Implementation of :py:class:``sdk_metrics_export.MetricExporter`` that saves the last metrics data export in memory.
     """
 
-    _metrics_data: Optional[sdk_metrics_export.MetricsData]
+    _metrics_data: sdk_metrics_export.MetricsData | None
     _metrics_data_lock: threading.Lock
 
     def __init__(
         self,
-        preferred_temporality: dict[type, sdk_metrics_export.AggregationTemporality] = {},
-        preferred_aggregation: dict[type, sdk_metrics_view.Aggregation] = {},
+        preferred_temporality: dict[type, sdk_metrics_export.AggregationTemporality] = {},  # noqa: B006
+        preferred_aggregation: dict[type, sdk_metrics_view.Aggregation] = {},  # noqa: B006
     ):
         super().__init__(preferred_aggregation=preferred_aggregation, preferred_temporality=preferred_temporality)
         self._metrics_data = None
@@ -53,5 +52,5 @@ class InMemoryMetricExporter(sdk_metrics_export.MetricExporter):
     def shutdown(self, timeout_millis: float = 0, **kwargs) -> None:
         pass
 
-    def metrics_data(self) -> Optional[sdk_metrics_export.MetricsData]:
+    def metrics_data(self) -> sdk_metrics_export.MetricsData | None:
         return self._metrics_data

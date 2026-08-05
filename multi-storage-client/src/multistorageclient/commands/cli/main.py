@@ -101,7 +101,7 @@ def main() -> int:
         return action.run(cmd_args)
     except Exception as e:
         print()
-        print(f"msc: error: {str(e)}", file=sys.stderr)
+        print(f"msc: error: {e!s}", file=sys.stderr)
         print()
         return 1
 

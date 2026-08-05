@@ -145,8 +145,8 @@ class RmAction(Action):
             return 0
 
         except ValueError as e:
-            print(f"Error in command arguments: {str(e)}", file=sys.stderr)
+            print(f"Error in command arguments: {e!s}", file=sys.stderr)
             return 1
         except Exception as e:
-            print(f"Error during deletion: {str(e)}", file=sys.stderr)
+            print(f"Error during deletion: {e!s}", file=sys.stderr)
             return 1

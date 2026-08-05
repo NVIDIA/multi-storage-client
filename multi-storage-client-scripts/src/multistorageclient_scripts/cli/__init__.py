@@ -16,7 +16,7 @@
 import argparse
 from dataclasses import dataclass
 
-import multistorageclient_scripts.utils.argparse_extensions as argparse_extensions
+from multistorageclient_scripts.utils import argparse_extensions
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -24,8 +24,6 @@ class Arguments(argparse_extensions.Arguments):
     """
     Command arguments.
     """
-
-    pass
 
 
 # TODO: Add `color` and `suggest_on_error` once we're on Python 3.14+.

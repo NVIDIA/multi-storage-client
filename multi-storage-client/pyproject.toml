@@ -207,3 +207,10 @@ timeout = 600
 
 [tool.ruff]
 extend = "../pyproject.toml"
+
+[tool.ruff.lint]
+ignore = [
+    "B017",
+    "BLE001",
+    "TRY002"
+]

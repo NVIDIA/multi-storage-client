@@ -17,7 +17,6 @@ import json
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
 
 import pytest
 
@@ -29,8 +28,8 @@ def create_credential_file(
     version: int = 1,
     access_key: str = "test-access-key",
     secret_key: str = "test-secret-key",
-    session_token: Optional[str] = None,
-    expiration: Optional[str] = None,
+    session_token: str | None = None,
+    expiration: str | None = None,
 ) -> None:
     """Helper function to create a credential file with the given parameters."""
     data = {
@@ -110,9 +109,8 @@ def test_file_based_credentials_provider_file_not_found():
 
 
 def test_file_based_credentials_provider_path_is_directory():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with pytest.raises(ValueError, match="Credential path is not a file"):
-            FileBasedCredentialsProvider(tmpdir)
+    with tempfile.TemporaryDirectory() as tmpdir, pytest.raises(ValueError, match="Credential path is not a file"):
+        FileBasedCredentialsProvider(tmpdir)
 
 
 def test_file_based_credentials_provider_invalid_json():
@@ -131,7 +129,7 @@ def test_file_based_credentials_provider_json_not_object():
         with open(cred_file, "w") as f:
             json.dump(["not", "an", "object"], f)
 
-        with pytest.raises(ValueError, match="Credential file must contain a JSON object"):
+        with pytest.raises(TypeError, match="Credential file must contain a JSON object"):
             FileBasedCredentialsProvider(str(cred_file))
 
 
@@ -205,7 +203,7 @@ def test_file_based_credentials_provider_access_key_not_string():
                 f,
             )
 
-        with pytest.raises(ValueError, match="'AccessKeyId' must be a string"):
+        with pytest.raises(TypeError, match="'AccessKeyId' must be a string"):
             FileBasedCredentialsProvider(str(cred_file))
 
 
@@ -222,7 +220,7 @@ def test_file_based_credentials_provider_secret_key_not_string():
                 f,
             )
 
-        with pytest.raises(ValueError, match="'SecretAccessKey' must be a string"):
+        with pytest.raises(TypeError, match="'SecretAccessKey' must be a string"):
             FileBasedCredentialsProvider(str(cred_file))
 
 
@@ -240,7 +238,7 @@ def test_file_based_credentials_provider_session_token_not_string():
                 f,
             )
 
-        with pytest.raises(ValueError, match="'SessionToken' must be a string or null"):
+        with pytest.raises(TypeError, match="'SessionToken' must be a string or null"):
             FileBasedCredentialsProvider(str(cred_file))
 
 
@@ -258,7 +256,7 @@ def test_file_based_credentials_provider_expiration_not_string():
                 f,
             )
 
-        with pytest.raises(ValueError, match="'Expiration' must be a string or null"):
+        with pytest.raises(TypeError, match="'Expiration' must be a string or null"):
             FileBasedCredentialsProvider(str(cred_file))
 
 

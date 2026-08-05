@@ -19,9 +19,9 @@ import uuid
 
 import pytest
 
-import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.types import SymlinkHandling
+from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.utils.wait import wait_for_is_file
 
 

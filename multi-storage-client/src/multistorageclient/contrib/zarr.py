@@ -16,7 +16,7 @@
 import os
 from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import zarr as _zarr
@@ -53,9 +53,7 @@ def open_consolidated(*args: Any, **kwargs: Any) -> _zarr.Group:
 
 # pyright: reportIncompatibleMethodOverride=false
 class LazyZarrStore(BaseStore):
-    def __init__(
-        self, storage_client: "StorageClient", prefix: str = "", msc_max_workers: Optional[int] = None
-    ) -> None:
+    def __init__(self, storage_client: "StorageClient", prefix: str = "", msc_max_workers: int | None = None) -> None:
         self.storage_client = storage_client
         self.prefix = prefix
         self.max_workers = msc_max_workers or int(os.getenv("MSC_MAX_WORKERS", "8"))

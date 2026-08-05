@@ -17,7 +17,7 @@ import contextlib
 import logging
 import queue
 import threading
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from ..types import MetadataProvider
 from .progress_bar import ProgressBar
@@ -43,7 +43,7 @@ class ResultMonitorThread(threading.Thread):
         target_path: str,
         progress: ProgressBar,
         result_queue: QueueLike,
-        metadata_provider: Optional[MetadataProvider] = None,
+        metadata_provider: MetadataProvider | None = None,
     ):
         super().__init__(daemon=True)
         self.target_client = target_client

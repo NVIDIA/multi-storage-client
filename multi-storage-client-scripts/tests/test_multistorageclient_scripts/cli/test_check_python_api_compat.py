@@ -1,14 +1,14 @@
 import textwrap
 from pathlib import Path
 
-import multistorageclient_scripts.cli as cli
-import multistorageclient_scripts.cli.check_python_api_compat as check_python_api_compat
-import multistorageclient_scripts.utils.argparse_extensions as argparse_extensions
+from multistorageclient_scripts import cli
+from multistorageclient_scripts.cli import check_python_api_compat
 from multistorageclient_scripts.cli.check_python_api_compat import (
     CompatibilityIssue,
     compare_manifests,
     extract_manifest,
 )
+from multistorageclient_scripts.utils import argparse_extensions
 
 
 def write_contract(

@@ -18,7 +18,7 @@ import os
 import tempfile
 from collections.abc import Callable, Iterator
 from datetime import datetime, timedelta, timezone
-from typing import IO, Any, Optional, TypeVar, Union
+from typing import IO, Any, TypeVar
 from urllib.parse import urlparse
 
 from azure.core import MatchConditions
@@ -116,8 +116,8 @@ class AzureURLSigner(URLSigner):
         account_name: str,
         account_url: str,
         *,
-        account_key: Optional[str] = None,
-        user_delegation_key: Optional[Any] = None,
+        account_key: str | None = None,
+        user_delegation_key: Any | None = None,
         expires_in: int = DEFAULT_PRESIGN_EXPIRES_IN,
     ) -> None:
         if account_key is None and user_delegation_key is None:
@@ -217,9 +217,9 @@ class AzureBlobStorageProvider(BaseStorageProvider):
         self,
         endpoint_url: str,
         base_path: str = "",
-        credentials_provider: Optional[CredentialsProvider] = None,
-        config_dict: Optional[dict[str, Any]] = None,
-        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
+        credentials_provider: CredentialsProvider | None = None,
+        config_dict: dict[str, Any] | None = None,
+        telemetry_provider: Callable[[], Telemetry] | None = None,
         **kwargs: Any,
     ):
         """
@@ -247,17 +247,17 @@ class AzureBlobStorageProvider(BaseStorageProvider):
         self._account_url = endpoint_url
         self._credentials_provider = credentials_provider
         # Cache static connection-string signing material used for per-request signers.
-        self._account_key_signing_material: Optional[tuple[str, str]] = None
+        self._account_key_signing_material: tuple[str, str] | None = None
         # Cached delegation key and its expiry for DefaultAzureCredentialsProvider.
-        self._delegation_user_key: Optional[Any] = None
-        self._delegation_signer_expiry: Optional[datetime] = None
+        self._delegation_user_key: Any | None = None
+        self._delegation_signer_expiry: datetime | None = None
         self._multipart_threshold = int(kwargs.get("multipart_threshold", MULTIPART_THRESHOLD))
         self._multipart_chunksize = int(kwargs.get("multipart_chunksize", MULTIPART_CHUNKSIZE))
         self._io_chunksize = int(kwargs.get("io_chunksize", IO_CHUNKSIZE))
         self._max_concurrency = int(kwargs.get("max_concurrency", PYTHON_MAX_CONCURRENCY))
         self._validate_content = kwargs.get("validate_content", False)
         if not isinstance(self._validate_content, bool):
-            raise ValueError("Option 'validate_content' must be a boolean.")
+            raise TypeError("Option 'validate_content' must be a boolean.")
         if self._validate_content and self._io_chunksize > AZURE_CONTENT_MD5_RANGE_LIMIT_BYTES:
             raise ValueError(
                 "Option 'validate_content=True' requires 'io_chunksize' to be "
@@ -373,9 +373,9 @@ class AzureBlobStorageProvider(BaseStorageProvider):
         self,
         path: str,
         body: bytes,
-        if_match: Optional[str] = None,
-        if_none_match: Optional[str] = None,
-        attributes: Optional[dict[str, str]] = None,
+        if_match: str | None = None,
+        if_none_match: str | None = None,
+        attributes: dict[str, str] | None = None,
     ) -> int:
         """
         Uploads an object to Azure Blob Storage.
@@ -419,7 +419,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="PUT", container=container_name, blob=blob_name)
 
-    def _get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
+    def _get_object(self, path: str, byte_range: Range | None = None) -> bytes:
         container_name, blob_name = split_path(path)
         self._refresh_blob_service_client_if_needed()
 
@@ -456,7 +456,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="COPY", container=src_container, blob=src_blob)
 
-    def _delete_object(self, path: str, if_match: Optional[str] = None) -> None:
+    def _delete_object(self, path: str, if_match: str | None = None) -> None:
         container_name, blob_name = split_path(path)
         self._refresh_blob_service_client_if_needed()
 
@@ -573,7 +573,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
 
             try:
                 return self._translate_errors(_invoke_api, operation="HEAD", container=container_name, blob=blob_name)
-            except FileNotFoundError as error:
+            except FileNotFoundError:
                 if strict:
                     # If the object does not exist on the given path, we will append a trailing slash and
                     # check if the path is a directory.
@@ -585,13 +585,13 @@ class AzureBlobStorageProvider(BaseStorageProvider):
                             content_length=0,
                             last_modified=AWARE_DATETIME_MIN,
                         )
-                raise error
+                raise
 
     def _list_objects(
         self,
         path: str,
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         include_directories: bool = False,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
@@ -658,8 +658,8 @@ class AzureBlobStorageProvider(BaseStorageProvider):
         path: str,
         *,
         method: str = "GET",
-        signer_type: Optional[SignerType] = None,
-        signer_options: Optional[dict[str, Any]] = None,
+        signer_type: SignerType | None = None,
+        signer_options: dict[str, Any] | None = None,
     ) -> str:
         """
         Generate a SAS URL for a blob in Azure Blob Storage.
@@ -717,7 +717,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
             )
 
         else:
-            raise ValueError(
+            raise TypeError(
                 "Azure presigned URLs require StaticAzureCredentialsProvider (connection string) or "
                 "DefaultAzureCredentialsProvider (Azure Identity). "
                 f"Got: {type(self._credentials_provider).__name__!r}"
@@ -729,7 +729,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
     def supports_parallel_listing(self) -> bool:
         return True
 
-    def _upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, str]] = None) -> int:
+    def _upload_file(self, remote_path: str, f: str | IO, attributes: dict[str, str] | None = None) -> int:
         container_name, blob_name = split_path(remote_path)
         file_size: int = 0
         self._refresh_blob_service_client_if_needed()
@@ -803,7 +803,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
 
             return self._translate_errors(_invoke_api, operation="PUT", container=container_name, blob=blob_name)
 
-    def _download_file(self, remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> int:
+    def _download_file(self, remote_path: str, f: str | IO, metadata: ObjectMetadata | None = None) -> int:
         if metadata is None:
             metadata = self._get_object_metadata(remote_path)
 
