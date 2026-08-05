@@ -55,40 +55,37 @@ from .types import (
 __version__ = version("multi-storage-client")
 
 __all__ = [
-    # Classes
-    "StorageClient",
-    "StorageClientConfig",
     "CacheConfig",
+    "DryrunResult",
     "Path",
-    # Types
+    "ProviderBundleV2",
     "ResolvedPath",
     "ResolvedPathState",
-    "ProviderBundleV2",
     "SignerType",
     "StorageBackend",
+    "StorageClient",
+    "StorageClientConfig",
     "SymlinkHandling",
     "SyncResult",
-    "DryrunResult",
-    # Shortcuts
     "commit_metadata",
+    "delete",
     "download_file",
+    "generate_presigned_url",
     "get_telemetry_provider",
     "glob",
+    "info",
     "is_empty",
     "is_file",
+    "list",
+    "list_recursive",
+    "make_symlink",
     "open",
-    "generate_presigned_url",
     "resolve_storage_client",
     "set_telemetry_provider",
     "sync",
     "sync_replicas",
     "upload_file",
-    "list",
-    "list_recursive",
-    "make_symlink",
     "write",
-    "delete",
-    "info",
 ]
 
 

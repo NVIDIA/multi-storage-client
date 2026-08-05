@@ -89,7 +89,7 @@ async def test_multi_async_filesystem(file_storage_config_with_cache):
         local_file_path = os.path.join(dirname, "local_test_file.txt")
         remote_file_path = f"__filesystem__{os.path.join(dirname, 'remote_test_file.txt')}"
         expected_file_content = b"File for _put_file test"
-        with open(local_file_path, "wb") as local_file:
+        with open(local_file_path, "wb") as local_file:  # noqa: ASYNC230
             local_file.write(expected_file_content)
 
         await filesystem._put_file(local_file_path, remote_file_path, somekwarg1="someval1", somekwarg2="someval2")
@@ -100,7 +100,7 @@ async def test_multi_async_filesystem(file_storage_config_with_cache):
         downloaded_file_path = os.path.join(dirname, "downloaded_test_file.txt")
         await filesystem._get_file(remote_file_path, downloaded_file_path)
 
-        with open(downloaded_file_path, "rb") as downloaded_file:
+        with open(downloaded_file_path, "rb") as downloaded_file:  # noqa: ASYNC230
             downloaded_content = downloaded_file.read()
         assert downloaded_content == expected_file_content, (
             f"Expected downloaded content to be {expected_file_content}, got {downloaded_content}"
@@ -171,7 +171,7 @@ async def test_async_fs_pipe_file_with_attributes(temp_data_store_type: type[tem
         finally:
             try:
                 await filesystem._rm(file_path)
-            except Exception:
+            except Exception:  # noqa: S110
                 pass
 
 
@@ -234,7 +234,7 @@ async def test_async_fs_put_file_with_attributes(temp_data_store_type: type[temp
             try:
                 os.unlink(local_file_path)
                 await filesystem._rm(file_path)
-            except Exception:
+            except Exception:  # noqa: S110
                 pass
 
 
@@ -294,5 +294,5 @@ async def test_async_fs_open_with_attributes(temp_data_store_type: type[tempdata
         finally:
             try:
                 await filesystem._rm(file_path)
-            except Exception:
+            except Exception:  # noqa: S110
                 pass

@@ -20,7 +20,7 @@
 import asyncio
 import queue
 import time
-from typing import Any, Optional
+from typing import Any
 
 import ray
 
@@ -50,7 +50,7 @@ class _QueueActor:
         """
         self._queue = asyncio.Queue(maxsize=maxsize)
 
-    async def put(self, item: Any, block: bool = True, timeout: Optional[float] = None):
+    async def put(self, item: Any, block: bool = True, timeout: float | None = None):
         if not block:
             try:
                 self._queue.put_nowait(item)
@@ -65,7 +65,7 @@ class _QueueActor:
             except asyncio.TimeoutError:
                 raise queue.Full("Queue is full")
 
-    async def get(self, block: bool = True, timeout: Optional[float] = None) -> Any:
+    async def get(self, block: bool = True, timeout: float | None = None) -> Any:
         if not block:
             try:
                 return self._queue.get_nowait()
@@ -105,10 +105,10 @@ class SharedQueue:
     def __init__(self, maxsize: int = 0):
         self._actor = _QueueActor.remote(maxsize=maxsize)
 
-    def put(self, item: Any, block: bool = True, timeout: Optional[float] = None) -> None:
+    def put(self, item: Any, block: bool = True, timeout: float | None = None) -> None:
         ray.get(self._actor.put.remote(item, block=block, timeout=timeout))
 
-    def get(self, block: bool = True, timeout: Optional[float] = None) -> Any:
+    def get(self, block: bool = True, timeout: float | None = None) -> Any:
         return ray.get(self._actor.get.remote(block=block, timeout=timeout))
 
     def qsize(self) -> int:

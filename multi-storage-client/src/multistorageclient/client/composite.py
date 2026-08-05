@@ -15,7 +15,7 @@
 
 import logging
 from collections.abc import Iterator, Sequence
-from typing import IO, Any, Optional, Union
+from typing import IO, Any
 
 from ..config import StorageClientConfig
 from ..constants import MEMORY_LOAD_LIMIT
@@ -133,7 +133,7 @@ class CompositeStorageClient(AbstractStorageClient):
         """
         return False
 
-    def get_posix_path(self, path: str) -> Optional[str]:
+    def get_posix_path(self, path: str) -> str | None:
         """
         Get the POSIX filesystem path for a given logical path.
 
@@ -142,7 +142,7 @@ class CompositeStorageClient(AbstractStorageClient):
         """
         return None
 
-    def _get_child_client(self, profile: Optional[str]) -> SingleStorageClient:
+    def _get_child_client(self, profile: str | None) -> SingleStorageClient:
         """
         Get the child client for the specified profile.
 
@@ -167,7 +167,7 @@ class CompositeStorageClient(AbstractStorageClient):
     def read(
         self,
         path: str,
-        byte_range: Optional[Range] = None,
+        byte_range: Range | None = None,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
     ) -> bytes:
         resolved = self._metadata_provider.realpath(path)
@@ -182,14 +182,14 @@ class CompositeStorageClient(AbstractStorageClient):
         path: str,
         mode: str = "rb",
         buffering: int = -1,
-        encoding: Optional[str] = None,
+        encoding: str | None = None,
         disable_read_cache: bool = False,
         memory_load_limit: int = MEMORY_LOAD_LIMIT,
         atomic: bool = True,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
-        attributes: Optional[dict[str, Any]] = None,
-        prefetch_file: Optional[bool] = None,
-    ) -> Union[PosixFile, ObjectFile]:
+        attributes: dict[str, Any] | None = None,
+        prefetch_file: bool | None = None,
+    ) -> PosixFile | ObjectFile:
         """
         Open a file for reading or writing.
 
@@ -237,7 +237,7 @@ class CompositeStorageClient(AbstractStorageClient):
             prefetch_file,
         )
 
-    def download_file(self, remote_path: str, local_path: Union[str, IO]) -> None:
+    def download_file(self, remote_path: str, local_path: str | IO) -> None:
         resolved = self._metadata_provider.realpath(remote_path)
         if not resolved.exists:
             raise FileNotFoundError(f"Path '{remote_path}' not found")
@@ -249,13 +249,13 @@ class CompositeStorageClient(AbstractStorageClient):
         self,
         remote_paths: list[str],
         local_paths: list[str],
-        metadata: Optional[Sequence[Optional[ObjectMetadata]]] = None,
+        metadata: Sequence[ObjectMetadata | None] | None = None,
         max_workers: int = 16,
     ) -> None:
         if len(remote_paths) != len(local_paths):
             raise ValueError("remote_paths and local_paths must have the same length")
 
-        groups: dict[str, tuple[list[str], list[str], list[Optional[ObjectMetadata]]]] = {}
+        groups: dict[str, tuple[list[str], list[str], list[ObjectMetadata | None]]] = {}
         for i, (remote_path, local_path) in enumerate(zip(remote_paths, local_paths)):
             resolved = self._metadata_provider.realpath(remote_path)
             if not resolved.exists:
@@ -284,7 +284,7 @@ class CompositeStorageClient(AbstractStorageClient):
         self,
         pattern: str,
         include_url_prefix: bool = False,
-        attribute_filter_expression: Optional[str] = None,
+        attribute_filter_expression: str | None = None,
     ) -> list[str]:
         results = self._metadata_provider.glob(
             pattern,
@@ -299,12 +299,12 @@ class CompositeStorageClient(AbstractStorageClient):
     def list_recursive(
         self,
         path: str = "",
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         max_workers: int = 32,
         look_ahead: int = 2,
         include_url_prefix: bool = False,
-        patterns: Optional[PatternList] = None,
+        patterns: PatternList | None = None,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         yield from self.list(
@@ -338,7 +338,7 @@ class CompositeStorageClient(AbstractStorageClient):
         self,
         path: str,
         body: bytes,
-        attributes: Optional[dict[str, Any]] = None,
+        attributes: dict[str, Any] | None = None,
     ) -> None:
         """Write operations not supported in read-only mode."""
         raise NotImplementedError(
@@ -374,8 +374,8 @@ class CompositeStorageClient(AbstractStorageClient):
     def upload_file(
         self,
         remote_path: str,
-        local_path: Union[str, IO],
-        attributes: Optional[dict[str, Any]] = None,
+        local_path: str | IO,
+        attributes: dict[str, Any] | None = None,
     ) -> None:
         """Upload operations not supported in read-only mode."""
         raise NotImplementedError(
@@ -386,7 +386,7 @@ class CompositeStorageClient(AbstractStorageClient):
         self,
         remote_paths: list[str],
         local_paths: list[str],
-        attributes: Optional[Sequence[Optional[dict[str, Any]]]] = None,
+        attributes: Sequence[dict[str, Any] | None] | None = None,
         max_workers: int = 16,
     ) -> None:
         """Upload operations not supported in read-only mode."""
@@ -394,9 +394,8 @@ class CompositeStorageClient(AbstractStorageClient):
             "CompositeStorageClient is read-only. Upload operations are not implemented for multi-location datasets."
         )
 
-    def commit_metadata(self, prefix: Optional[str] = None) -> None:
+    def commit_metadata(self, prefix: str | None = None) -> None:
         """No-op for read-only client."""
-        pass
 
     def sync_from(
         self,
@@ -405,15 +404,15 @@ class CompositeStorageClient(AbstractStorageClient):
         target_path: str = "",
         delete_unmatched_files: bool = False,
         description: str = "Syncing",
-        num_worker_processes: Optional[int] = None,
+        num_worker_processes: int | None = None,
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
-        patterns: Optional[PatternList] = None,
+        patterns: PatternList | None = None,
         preserve_source_attributes: bool = False,
-        source_files: Optional[list[str]] = None,
+        source_files: list[str] | None = None,
         ignore_hidden: bool = True,
         commit_metadata: bool = True,
         dryrun: bool = False,
-        dryrun_output_path: Optional[str] = None,
+        dryrun_output_path: str | None = None,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> SyncResult:
         raise NotImplementedError(
@@ -424,28 +423,27 @@ class CompositeStorageClient(AbstractStorageClient):
     def sync_replicas(
         self,
         source_path: str,
-        replica_indices: Optional[list[int]] = None,
+        replica_indices: list[int] | None = None,
         delete_unmatched_files: bool = False,
         description: str = "Syncing replica",
-        num_worker_processes: Optional[int] = None,
+        num_worker_processes: int | None = None,
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
-        patterns: Optional[PatternList] = None,
+        patterns: PatternList | None = None,
         ignore_hidden: bool = True,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> None:
         """No-op for read-only client."""
-        pass
 
     def list(
         self,
         path: str = "",
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         include_directories: bool = False,
         include_url_prefix: bool = False,
-        attribute_filter_expression: Optional[str] = None,
+        attribute_filter_expression: str | None = None,
         show_attributes: bool = False,
-        patterns: Optional[PatternList] = None,
+        patterns: PatternList | None = None,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         # Apply patterns to the objects
@@ -474,8 +472,8 @@ class CompositeStorageClient(AbstractStorageClient):
         path: str,
         *,
         method: str = "GET",
-        signer_type: Optional[SignerType] = None,
-        signer_options: Optional[dict[str, Any]] = None,
+        signer_type: SignerType | None = None,
+        signer_options: dict[str, Any] | None = None,
     ) -> str:
         resolved = self._metadata_provider.realpath(path)
         if not resolved.exists:

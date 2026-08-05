@@ -18,7 +18,7 @@ import io
 import os
 import tempfile
 from collections.abc import Callable, Iterator
-from typing import IO, Any, Optional, TypeVar, Union
+from typing import IO, Any, TypeVar
 
 from huggingface_hub import CommitOperationCopy, HfApi
 from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError, RepositoryNotFoundError, RevisionNotFoundError
@@ -81,7 +81,6 @@ class HuggingFaceCredentialsProvider(CredentialsProvider):
 
         Note: HuggingFace tokens typically don't expire, so this is a no-op.
         """
-        pass
 
 
 class HuggingFaceStorageProvider(BaseStorageProvider):
@@ -95,9 +94,9 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         repo_type: str = "model",
         base_path: str = "",
         repo_revision: str = "main",
-        credentials_provider: Optional[CredentialsProvider] = None,
-        config_dict: Optional[dict[str, Any]] = None,
-        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
+        credentials_provider: CredentialsProvider | None = None,
+        config_dict: dict[str, Any] | None = None,
+        telemetry_provider: Callable[[], Telemetry] | None = None,
     ):
         """
         Initializes the :py:class:`HuggingFaceStorageProvider` with repository information and optional credentials provider.
@@ -332,9 +331,9 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         self,
         path: str,
         body: bytes,
-        if_match: Optional[str] = None,
-        if_none_match: Optional[str] = None,
-        attributes: Optional[dict[str, str]] = None,
+        if_match: str | None = None,
+        if_none_match: str | None = None,
+        attributes: dict[str, str] | None = None,
     ) -> int:
         """
         Uploads an object to the HuggingFace repository.
@@ -396,7 +395,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, "PUT", self._repository_id, path)
 
-    def _get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
+    def _get_object(self, path: str, byte_range: Range | None = None) -> bytes:
         """
         Retrieves an object from the HuggingFace repository.
 
@@ -479,7 +478,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, "COPY", self._repository_id, f"{src_path} to {dest_path}")
 
-    def _delete_object(self, path: str, if_match: Optional[str] = None) -> None:
+    def _delete_object(self, path: str, if_match: str | None = None) -> None:
         """
         Deletes an object from the HuggingFace repository.
 
@@ -510,7 +509,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
 
         self._translate_errors(_invoke_api, "DELETE", self._repository_id, path)
 
-    def _item_to_metadata(self, item: Union[RepoFile, RepoFolder]) -> ObjectMetadata:
+    def _item_to_metadata(self, item: RepoFile | RepoFolder) -> ObjectMetadata:
         """
         Convert a RepoFile or RepoFolder into ObjectMetadata.
 
@@ -584,7 +583,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
 
         try:
             return self._translate_errors(_invoke_api, "HEAD", self._repository_id, path)
-        except FileNotFoundError as error:
+        except FileNotFoundError:
             if strict:
                 dir_path = path.rstrip("/") + "/"
                 if self._is_dir(dir_path):
@@ -598,13 +597,13 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
                         storage_class=None,
                         metadata=None,
                     )
-            raise error
+            raise
 
     def _list_objects(
         self,
         path: str,
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         include_directories: bool = False,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
@@ -672,9 +671,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
                     continue
 
                 should_yield = False
-                if include_directories and isinstance(item, RepoFolder):
-                    should_yield = True
-                elif isinstance(item, RepoFile):
+                if include_directories and isinstance(item, RepoFolder) or isinstance(item, RepoFile):
                     should_yield = True
 
                 if should_yield:
@@ -687,7 +684,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
             # Directory doesn't exist - return empty (matches POSIX behavior)
             pass
 
-    def _upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, str]] = None) -> int:
+    def _upload_file(self, remote_path: str, f: str | IO, attributes: dict[str, str] | None = None) -> int:
         """
         Uploads a file to the HuggingFace repository.
 
@@ -764,7 +761,7 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, "PUT", self._repository_id, remote_path)
 
-    def _download_file(self, remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> int:
+    def _download_file(self, remote_path: str, f: str | IO, metadata: ObjectMetadata | None = None) -> int:
         """
         Downloads a file from the HuggingFace repository.
 

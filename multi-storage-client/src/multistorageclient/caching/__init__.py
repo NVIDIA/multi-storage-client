@@ -30,18 +30,18 @@ from .eviction_policy import (
 )
 
 __all__ = [
-    "CacheItem",
+    "FIFO",
     "LRU",
     "MRU",
-    "FIFO",
     "RANDOM",
     "VALID_EVICTION_POLICIES",
+    "CacheConfig",
+    "CacheItem",
     "EvictionPolicy",
+    "EvictionPolicyConfig",
+    "EvictionPolicyFactory",
+    "FIFOEvictionPolicy",
     "LRUEvictionPolicy",
     "MRUEvictionPolicy",
-    "FIFOEvictionPolicy",
     "RandomEvictionPolicy",
-    "EvictionPolicyFactory",
-    "CacheConfig",
-    "EvictionPolicyConfig",
 ]

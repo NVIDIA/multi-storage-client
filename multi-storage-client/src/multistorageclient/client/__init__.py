@@ -20,7 +20,7 @@ from .composite import CompositeStorageClient
 from .single import SingleStorageClient
 
 __all__ = [
-    "StorageClient",
-    "SingleStorageClient",
     "CompositeStorageClient",
+    "SingleStorageClient",
+    "StorageClient",
 ]

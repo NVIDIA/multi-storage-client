@@ -22,7 +22,7 @@ import multiprocessing
 import multiprocessing.managers
 import os
 import threading
-from typing import Any, Literal, Optional, Union
+from typing import Any, ClassVar, Literal
 
 import opentelemetry.metrics as api_metrics
 import opentelemetry.trace as api_trace
@@ -88,7 +88,7 @@ class Telemetry:
         DATA_RATE = "multistorageclient.data_rate"
 
     # https://opentelemetry.io/docs/specs/semconv/general/metrics#units
-    _GAUGE_UNIT_MAPPING: dict[GaugeName, str] = {
+    _GAUGE_UNIT_MAPPING: ClassVar[dict[GaugeName, str]] = {
         # Seconds.
         GaugeName.LATENCY: "s",
         # Bytes.
@@ -104,7 +104,7 @@ class Telemetry:
         DATA_SIZE_SUM = "multistorageclient.data_size.sum"
 
     # https://opentelemetry.io/docs/specs/semconv/general/metrics#units
-    _COUNTER_UNIT_MAPPING: dict[CounterName, str] = {
+    _COUNTER_UNIT_MAPPING: ClassVar[dict[CounterName, str]] = {
         # Unitless.
         CounterName.REQUEST_SUM: "{request}",
         # Unitless.
@@ -160,7 +160,7 @@ class Telemetry:
         self._tracer_provider_cache_lock = threading.Lock()
         self._tracer_cache_lock = threading.Lock()
 
-    def meter_provider(self, config: dict[str, Any]) -> Optional[api_metrics.MeterProvider]:
+    def meter_provider(self, config: dict[str, Any]) -> api_metrics.MeterProvider | None:
         """
         Create or return an existing :py:class:`api_metrics.MeterProvider` for a config.
 
@@ -195,16 +195,14 @@ class Telemetry:
                             config_json, sdk_metrics.MeterProvider(metric_readers=[reader])
                         )
                     except (AttributeError, ImportError):
-                        logger.error(
-                            "Failed to import OpenTelemetry Python SDK or exporter! Disabling metrics.", exc_info=True
-                        )
+                        logger.exception("Failed to import OpenTelemetry Python SDK or exporter! Disabling metrics.")
                         return None
                 else:
                     # Don't return a no-op meter provider to avoid unnecessary overhead.
                     logger.error("No exporter configured! Disabling metrics.")
                     return None
 
-    def meter(self, config: dict[str, Any]) -> Optional[api_metrics.Meter]:
+    def meter(self, config: dict[str, Any]) -> api_metrics.Meter | None:
         """
         Create or return an existing :py:class:`api_metrics.Meter` for a config.
 
@@ -224,7 +222,7 @@ class Telemetry:
                         config_json, meter_provider.get_meter(name="multistorageclient")
                     )
 
-    def gauge(self, config: dict[str, Any], name: GaugeName) -> Optional[api_metrics._Gauge]:
+    def gauge(self, config: dict[str, Any], name: GaugeName) -> api_metrics._Gauge | None:
         """
         Create or return an existing :py:class:`api_metrics.Gauge` for a config and gauge name.
 
@@ -245,7 +243,7 @@ class Telemetry:
                         meter.create_gauge(name=name.value, unit=Telemetry._GAUGE_UNIT_MAPPING.get(name, "")),
                     )
 
-    def counter(self, config: dict[str, Any], name: CounterName) -> Optional[api_metrics.Counter]:
+    def counter(self, config: dict[str, Any], name: CounterName) -> api_metrics.Counter | None:
         """
         Create or return an existing :py:class:`api_metrics.Counter` for a config and counter name.
 
@@ -266,7 +264,7 @@ class Telemetry:
                         meter.create_counter(name=name.value, unit=Telemetry._COUNTER_UNIT_MAPPING.get(name, "")),
                     )
 
-    def tracer_provider(self, config: dict[str, Any]) -> Optional[api_trace.TracerProvider]:
+    def tracer_provider(self, config: dict[str, Any]) -> api_trace.TracerProvider | None:
         """
         Create or return an existing :py:class:`api_trace.TracerProvider` for a config.
 
@@ -302,15 +300,13 @@ class Telemetry:
                             sdk_trace.TracerProvider(active_span_processor=processor, sampler=sampler),
                         )
                     except (AttributeError, ImportError):
-                        logger.error(
-                            "Failed to import OpenTelemetry Python SDK or exporter! Disabling traces.", exc_info=True
-                        )
+                        logger.exception("Failed to import OpenTelemetry Python SDK or exporter! Disabling traces.")
                         return None
                 else:
                     logger.error("No exporter configured! Disabling traces.")
                     return None
 
-    def tracer(self, config: dict[str, Any]) -> Optional[api_trace.Tracer]:
+    def tracer(self, config: dict[str, Any]) -> api_trace.Tracer | None:
         """
         Create or return an existing :py:class:`api_trace.Tracer` for a config.
 
@@ -334,7 +330,7 @@ class Telemetry:
 # To share a single :py:class:`Telemetry` within a process (e.g. local, manager).
 #
 # A manager's server processes shouldn't be forked, so this should be safe.
-_TELEMETRY: Optional[Telemetry] = None
+_TELEMETRY: Telemetry | None = None
 _TELEMETRY_LOCK = threading.Lock()
 
 
@@ -345,7 +341,7 @@ def _init() -> Telemetry:
     :return: A telemetry instance.
     """
     global _TELEMETRY
-    global _TELEMETRY_LOCK
+    global _TELEMETRY_LOCK  # noqa: PLW0602
 
     with _TELEMETRY_LOCK:
         if _TELEMETRY is None:
@@ -416,8 +412,6 @@ class TelemetryManager(multiprocessing.managers.BaseManager):
       * ⚠️ We expect a finite number of providers (i.e. no dynamic configs) so we don't leak them.
     """
 
-    pass
-
 
 def _fully_qualified_name(c: type[Any]) -> str:
     """
@@ -425,7 +419,7 @@ def _fully_qualified_name(c: type[Any]) -> str:
 
     For :py:class:`multiprocessing.Manager` type IDs.
     """
-    return ".".join([c.__module__, c.__qualname__])
+    return f"{c.__module__}.{c.__qualname__}"
 
 
 # Metrics proxy object setup.
@@ -525,7 +519,7 @@ def _reinitialize_locks_after_fork() -> None:
     Caches and instances are kept as they may still be valid, but locks must be
     fresh to avoid deadlocks.
     """
-    global _TELEMETRY, _TELEMETRY_LOCK, _TELEMETRY_PROXIES_LOCK
+    global _TELEMETRY, _TELEMETRY_LOCK, _TELEMETRY_PROXIES_LOCK  # noqa: PLW0602
 
     _TELEMETRY_LOCK = threading.Lock()
     _TELEMETRY_PROXIES_LOCK = threading.Lock()
@@ -553,7 +547,7 @@ class TelemetryMode(enum.Enum):
 
 
 def _telemetry_proxies_key(
-    mode: Literal[TelemetryMode.SERVER, TelemetryMode.CLIENT], address: Union[str, tuple[str, int]]
+    mode: Literal[TelemetryMode.SERVER, TelemetryMode.CLIENT], address: str | tuple[str, int]
 ) -> str:
     """
     Get the key for the _TELEMETRY_PROXIES dictionary.
@@ -583,12 +577,12 @@ def _telemetry_manager_server_port(process_id: int) -> int:
     return (2**15 + 2**14) + (process_id % ((2**16) - (2**15 + 2**14)))
 
 
-def _init_server(address: Optional[Union[str, tuple[str, int]]] = None) -> Telemetry:
+def _init_server(address: str | tuple[str, int] | None = None) -> Telemetry:
     """
     Start + connect to a telemetry IPC server.
     """
-    global _TELEMETRY_PROXIES
-    global _TELEMETRY_PROXIES_LOCK
+    global _TELEMETRY_PROXIES  # noqa: PLW0602
+    global _TELEMETRY_PROXIES_LOCK  # noqa: PLW0602
 
     address = address or ("127.0.0.1", _telemetry_manager_server_port(process_id=psutil.Process().pid))
     telemetry_proxies_key = _telemetry_proxies_key(mode=TelemetryMode.SERVER, address=address)
@@ -608,32 +602,32 @@ def _init_server(address: Optional[Union[str, tuple[str, int]]] = None) -> Telem
                 telemetry_manager.start()
                 atexit.register(telemetry_manager.shutdown)
                 logger.debug(f"Started telemetry manager server at {telemetry_manager.address}.")
-            except Exception as e:
+            except Exception:
                 logger.debug(
                     f"Failed to create telemetry manager server at {telemetry_manager.address}!", exc_info=True
                 )
-                raise e
+                raise
 
             logger.debug(f"Connecting to telemetry manager server at {telemetry_manager.address}.")
             try:
                 telemetry_manager.connect()
                 logger.debug(f"Connected to telemetry manager server at {telemetry_manager.address}.")
                 return _TELEMETRY_PROXIES.setdefault(telemetry_proxies_key, telemetry_manager.Telemetry())  # pyright: ignore [reportAttributeAccessIssue]
-            except Exception as e:
+            except Exception:
                 logger.debug(
                     f"Failed to connect to telemetry manager server at {telemetry_manager.address}!", exc_info=True
                 )
-                raise e
+                raise
 
 
-def _init_client(address: Optional[Union[str, tuple[str, int]]] = None) -> Telemetry:
+def _init_client(address: str | tuple[str, int] | None = None) -> Telemetry:
     """
     Connect to a telemetry IPC server.
     """
-    global _TELEMETRY_PROXIES
-    global _TELEMETRY_PROXIES_LOCK
+    global _TELEMETRY_PROXIES  # noqa: PLW0602
+    global _TELEMETRY_PROXIES_LOCK  # noqa: PLW0602
 
-    candidate_addresses: list[Union[str, tuple[str, int]]] = []
+    candidate_addresses: list[str | tuple[str, int]] = []
 
     if address is not None:
         candidate_addresses = [address]
@@ -680,8 +674,8 @@ def _init_client(address: Optional[Union[str, tuple[str, int]]] = None) -> Telem
 
 
 def init(
-    mode: Optional[TelemetryMode] = None,
-    address: Optional[Union[str, tuple[str, int]]] = None,
+    mode: TelemetryMode | None = None,
+    address: str | tuple[str, int] | None = None,
 ) -> Telemetry:
     """
     Create or return an existing :py:class:`Telemetry` instance or :py:class:`Telemetry` proxy object.

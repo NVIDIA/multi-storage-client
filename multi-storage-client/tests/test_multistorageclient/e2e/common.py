@@ -17,7 +17,6 @@ import logging
 import os
 import tempfile
 import uuid
-from typing import Optional
 
 import pytest
 
@@ -97,7 +96,7 @@ def verify_storage_provider(storage_client: msc.StorageClient, prefix: str) -> N
     assert listed_info.last_modified.replace(microsecond=0) == info.last_modified.replace(microsecond=0)
 
     # upload
-    temp_file = tempfile.NamedTemporaryFile(delete=False)
+    temp_file = tempfile.NamedTemporaryFile(delete=False)  # noqa: SIM115
     temp_file.write(body)
     temp_file.seek(0)
     temp_file.flush()
@@ -155,7 +154,7 @@ def verify_storage_provider(storage_client: msc.StorageClient, prefix: str) -> N
 
     # test multipart upload large file
     body_large = b"*" * (64 * MB + 1)
-    temp_file = tempfile.NamedTemporaryFile(delete=False)
+    temp_file = tempfile.NamedTemporaryFile(delete=False)  # noqa: SIM115
     temp_file.write(body_large)
     temp_file.seek(0)
     temp_file.flush()
@@ -690,7 +689,7 @@ def test_conditional_put(
     storage_client: msc.StorageClient,
     if_none_match_error_type: type[Exception],
     if_match_error_type: type[Exception],
-    if_none_match_specific_error_type: Optional[type[Exception]] = None,
+    if_none_match_specific_error_type: type[Exception] | None = None,
     supports_if_none_match_star: bool = True,
 ) -> None:
     """Test conditional PUT operations using if-match and if-none-match conditions.
@@ -752,7 +751,7 @@ def test_conditional_put(
         # Clean up
         try:
             storage_provider.delete_object(key)
-        except Exception:
+        except Exception:  # noqa: S110
             pass
 
 
@@ -765,7 +764,7 @@ def test_open_with_source_version_check(profile: str):
     content1 = b"test content for cache"
     content2 = b"modified content for cache"
 
-    def get_etag(key: str) -> Optional[str]:
+    def get_etag(key: str) -> str | None:
         try:
             return storage_provider.get_object_metadata(key).etag
         except FileNotFoundError:
@@ -807,7 +806,7 @@ def test_open_with_source_version_check(profile: str):
         # Clean up
         try:
             storage_provider.delete_object(key)
-        except Exception:
+        except Exception:  # noqa: S110
             pass
 
 
@@ -1070,7 +1069,7 @@ def test_presigned_url(profile: str) -> None:
         delete_files(client, prefix)
 
 
-def get_cloudfront_env() -> Optional[dict[str, str]]:
+def get_cloudfront_env() -> dict[str, str] | None:
     """Return CloudFront signer options from environment variables, or ``None`` if not configured.
 
     Accepted variables:

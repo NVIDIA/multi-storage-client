@@ -21,9 +21,10 @@ import logging
 import os
 import tempfile
 import threading
+import types
 from collections.abc import Iterator
 from io import BytesIO, IOBase, StringIO
-from typing import IO, TYPE_CHECKING, Any, Optional, cast
+from typing import IO, TYPE_CHECKING, Any, cast
 
 import xattr
 
@@ -142,7 +143,7 @@ class RemoteFileReader(IO[bytes]):
         # expect fileno() to work for operations like os.posix_fadvise().
         # Return a temporary file descriptor to avoid UnsupportedOperation errors.
         if not hasattr(self, "_temp_fd_holder"):
-            self._temp_fd_holder = tempfile.TemporaryFile()
+            self._temp_fd_holder = tempfile.TemporaryFile()  # noqa: SIM115
         return self._temp_fd_holder.fileno()
 
     def write(self, b: Any) -> int:
@@ -151,7 +152,7 @@ class RemoteFileReader(IO[bytes]):
     def writelines(self, lines: Any) -> None:
         raise io.UnsupportedOperation("writelines operation is not supported on this file")
 
-    def truncate(self, size: Optional[int] = None) -> int:
+    def truncate(self, size: int | None = None) -> int:
         raise io.UnsupportedOperation("truncate operation is not supported on this file")
 
     def flush(self) -> None:
@@ -163,10 +164,12 @@ class RemoteFileReader(IO[bytes]):
             self._temp_fd_holder.close()
             delattr(self, "_temp_fd_holder")
 
-    def __enter__(self) -> RemoteFileReader:
+    def __enter__(self) -> RemoteFileReader:  # noqa: PYI034
         return self
 
-    def __exit__(self, exc_type: Optional[Any], exc_val: Optional[Any], exc_tb: Optional[Any]) -> None:
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: types.TracebackType | None
+    ) -> None:
         self.close()
 
     def __iter__(self) -> Iterator[bytes]:
@@ -198,22 +201,22 @@ class ObjectFile(IOBase, IO):
     _mode: str
     _remote_path: str
     _storage_client: AbstractStorageClient
-    _cache_manager: Optional[CacheManager] = None
+    _cache_manager: CacheManager | None = None
 
-    _local_path: Optional[str] = None
-    _attributes: Optional[dict[str, Any]] = None
+    _local_path: str | None = None
+    _attributes: dict[str, Any] | None = None
 
     def __init__(
         self,
         storage_client: AbstractStorageClient,
         remote_path: str,
         mode: str = "rb",
-        encoding: Optional[str] = None,
+        encoding: str | None = None,
         disable_read_cache: bool = False,
         memory_load_limit: int = MEMORY_LOAD_LIMIT,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
-        attributes: Optional[dict[str, Any]] = None,
-        prefetch_file: Optional[bool] = None,
+        attributes: dict[str, Any] | None = None,
+        prefetch_file: bool | None = None,
     ):
         """
         Initialize the ObjectFile instance.
@@ -334,7 +337,7 @@ class ObjectFile(IOBase, IO):
 
         # Check if the file can be put into the cache
         if self._object_metadata.content_length >= self._cache_manager.get_max_cache_size():
-            logging.warning(
+            logger.warning(
                 f'The object "{self._remote_path}" is not cached because the file size ({self._object_metadata.content_length}) '
                 f"exceeds the cache size ({self._cache_manager.get_max_cache_size()}). Please increase the cache size "
                 f"in the config file to cache the file."
@@ -383,7 +386,7 @@ class ObjectFile(IOBase, IO):
             self._file = file_object
             self._open_files.append(self._file)
         except Exception as e:
-            raise IOError(f"Failed to download file {self._remote_path}") from e
+            raise OSError(f"Failed to download file {self._remote_path}") from e
         finally:
             self._download_complete.set()
 
@@ -411,7 +414,7 @@ class ObjectFile(IOBase, IO):
             self._storage_client.download_file(self._remote_path, self._file)
             self._file.seek(0)
         except Exception as e:
-            raise IOError(f"Failed to download file {self._remote_path}") from e
+            raise OSError(f"Failed to download file {self._remote_path}") from e
         finally:
             self._download_complete.set()
 
@@ -489,10 +492,15 @@ class ObjectFile(IOBase, IO):
             self._download_complete.wait()
         return next(self._file)
 
-    def __enter__(self) -> "ObjectFile":
+    def __enter__(self) -> ObjectFile:  # noqa: PYI034
         return self
 
-    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: types.TracebackType | None,
+    ) -> None:
         self.close()
 
     @property
@@ -508,10 +516,10 @@ class ObjectFile(IOBase, IO):
         if self.readable():
             self._download_complete.wait()
 
-        if isinstance(self._file, StringIO) or isinstance(self._file, BytesIO):
+        if isinstance(self._file, (StringIO, BytesIO)):
             # In-memory file objects (StringIO/BytesIO) don't have real file descriptors.
             # Create a temporary file and return its file descriptor when needed for operations that require one.
-            fd_holder = tempfile.TemporaryFile()
+            fd_holder = tempfile.TemporaryFile()  # noqa: SIM115
             self._open_files.append(fd_holder)
             return fd_holder.fileno()
 
@@ -523,7 +531,7 @@ class ObjectFile(IOBase, IO):
     def writelines(self, lines: Any) -> None:
         self._file.writelines(lines)
 
-    def truncate(self, size: Optional[int] = None) -> int:
+    def truncate(self, size: int | None = None) -> int:
         return self._file.truncate(size)
 
     def flush(self) -> None:
@@ -606,7 +614,7 @@ class ObjectFile(IOBase, IO):
                 )
                 # Create a temporary file and write the content to it
                 mode = "w" if self._mode == "r" else "wb"
-                temp_file = tempfile.NamedTemporaryFile(mode=mode, prefix=".msc_", delete=False)
+                temp_file = tempfile.NamedTemporaryFile(mode=mode, prefix=".msc_", delete=False)  # noqa: SIM115
                 self._file.seek(0)
                 temp_file.write(self._file.read())
                 self._open_files.append(temp_file)
@@ -635,7 +643,7 @@ class PosixFile(IOBase, IO):
 
     _storage_client: AbstractStorageClient
     _file: IO
-    _attributes: Optional[dict[str, Any]] = None
+    _attributes: dict[str, Any] | None = None
 
     def __init__(
         self,
@@ -643,9 +651,9 @@ class PosixFile(IOBase, IO):
         path: str,
         mode: str = "rb",
         buffering: int = -1,
-        encoding: Optional[str] = None,
+        encoding: str | None = None,
         atomic: bool = True,
-        attributes: Optional[dict[str, Any]] = None,
+        attributes: dict[str, Any] | None = None,
     ):
         # Store storage_client for emitting metrics
         self._storage_client = storage_client
@@ -675,9 +683,9 @@ class PosixFile(IOBase, IO):
             self._temp_path = os.path.join(
                 os.path.dirname(self._real_path), f".{os.path.basename(self._real_path)}.tmp"
             )
-            self._file = open(self._temp_path, mode=mode, buffering=buffering, encoding=encoding)
+            self._file = open(self._temp_path, mode=mode, buffering=buffering, encoding=encoding)  # noqa: SIM115
         else:
-            self._file = open(self._real_path, mode=mode, buffering=buffering, encoding=encoding)
+            self._file = open(self._real_path, mode=mode, buffering=buffering, encoding=encoding)  # noqa: SIM115
 
         self._attributes = attributes
 
@@ -722,10 +730,15 @@ class PosixFile(IOBase, IO):
     def __next__(self) -> Any:
         return next(self._file)
 
-    def __enter__(self) -> "PosixFile":
+    def __enter__(self) -> PosixFile:  # noqa: PYI034
         return self
 
-    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: types.TracebackType | None,
+    ) -> None:
         self.close()
 
     @property
@@ -747,7 +760,7 @@ class PosixFile(IOBase, IO):
         self._file.writelines(lines)
 
     @file_metrics(operation=BaseStorageProvider._Operation.WRITE)
-    def truncate(self, size: Optional[int] = None) -> int:
+    def truncate(self, size: int | None = None) -> int:
         return self._file.truncate(size)
 
     def flush(self) -> None:

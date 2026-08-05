@@ -17,7 +17,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from multistorageclient.types import Credentials, CredentialsProvider
 
@@ -53,7 +53,7 @@ class FileBasedCredentialsProvider(CredentialsProvider):
     """
 
     _credential_file_path: Path
-    _cached_credentials: Optional[Credentials]
+    _cached_credentials: Credentials | None
     _last_mtime: float
 
     def __init__(self, credential_file_path: str):
@@ -101,7 +101,7 @@ class FileBasedCredentialsProvider(CredentialsProvider):
         :raises ValueError: If the schema is invalid.
         """
         if not isinstance(data, dict):
-            raise ValueError("Credential file must contain a JSON object")
+            raise TypeError("Credential file must contain a JSON object")
 
         if "Version" not in data:
             raise ValueError("Credential file missing required field: 'Version'")
@@ -116,16 +116,16 @@ class FileBasedCredentialsProvider(CredentialsProvider):
             raise ValueError("Credential file missing required field: 'SecretAccessKey'")
 
         if not isinstance(data["AccessKeyId"], str):
-            raise ValueError("'AccessKeyId' must be a string")
+            raise TypeError("'AccessKeyId' must be a string")
 
         if not isinstance(data["SecretAccessKey"], str):
-            raise ValueError("'SecretAccessKey' must be a string")
+            raise TypeError("'SecretAccessKey' must be a string")
 
         if "SessionToken" in data and data["SessionToken"] is not None and not isinstance(data["SessionToken"], str):
-            raise ValueError("'SessionToken' must be a string or null")
+            raise TypeError("'SessionToken' must be a string or null")
 
         if "Expiration" in data and data["Expiration"] is not None and not isinstance(data["Expiration"], str):
-            raise ValueError("'Expiration' must be a string or null")
+            raise TypeError("'Expiration' must be a string or null")
 
     def _load_credentials(self) -> Credentials:
         """

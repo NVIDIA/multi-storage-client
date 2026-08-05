@@ -17,13 +17,12 @@ import fnmatch
 import tempfile
 import uuid
 from collections.abc import Iterator
-from typing import Optional
 
 import pytest
 
-import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.types import MetadataProvider, ObjectMetadata, ResolvedPath, ResolvedPathState
+from test_multistorageclient.unit.utils import tempdatastore
 
 
 class UuidMetadataProvider(MetadataProvider):
@@ -40,10 +39,10 @@ class UuidMetadataProvider(MetadataProvider):
     def list_objects(
         self,
         path: str,
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         include_directories: bool = False,
-        attribute_filter_expression: Optional[str] = None,
+        attribute_filter_expression: str | None = None,
         show_attributes: bool = False,
     ) -> Iterator[ObjectMetadata]:
         assert not include_directories
@@ -69,11 +68,9 @@ class UuidMetadataProvider(MetadataProvider):
             raise FileNotFoundError(f"Object {path} does not exist.")
         return self._uuid_to_info[u]
 
-    def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
+    def glob(self, pattern: str, attribute_filter_expression: str | None = None) -> list[str]:
         return [
-            path
-            for path in self._path_to_uuid.keys()
-            if fnmatch.fnmatch(path, pattern) and path not in self._deleted_files
+            path for path in self._path_to_uuid if fnmatch.fnmatch(path, pattern) and path not in self._deleted_files
         ]
 
     def realpath(self, logical_path: str) -> ResolvedPath:
@@ -179,7 +176,7 @@ def test_uuid_metadata_provider(temp_data_store_type: type[tempdatastore.Tempora
 
         storage_client.commit_metadata()
 
-        assert set([f.key for f in storage_client.list(path="")]) == set(content_dict.keys())
+        assert {f.key for f in storage_client.list(path="")} == set(content_dict.keys())
 
         # Verify content via info, read, download_file, is_file
         for path, content in content_dict.items():
@@ -205,9 +202,7 @@ def test_uuid_metadata_provider(temp_data_store_type: type[tempdatastore.Tempora
         assert not storage_client.is_empty("dir1/")
 
         # Test glob with *.txt returns all files with .txt extension
-        assert sorted(storage_client.glob("*.txt")) == sorted(
-            [path for path in content_dict.keys() if path.endswith(".txt")]
-        )
+        assert sorted(storage_client.glob("*.txt")) == sorted([path for path in content_dict if path.endswith(".txt")])
 
         # Test copy and upload_file APIs.
         storage_client.copy("file1.txt", "file1_copy.txt")
@@ -254,7 +249,7 @@ def test_uuid_metadata_provider(temp_data_store_type: type[tempdatastore.Tempora
 
         # call commit_metadata again, should be a no-op
         storage_client.commit_metadata()
-        assert set([f.key for f in storage_client.list(path="")]) == set(content_dict.keys())
+        assert {f.key for f in storage_client.list(path="")} == set(content_dict.keys())
 
         # Test delete API with recursive=True, which auto-commits.
         storage_client.delete(path="", recursive=True)

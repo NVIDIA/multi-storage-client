@@ -37,7 +37,7 @@ class ErrorInfo:
     exception_type: str
     exception_message: str
     traceback_str: str
-    file_key: Optional[str]
+    file_key: str | None
     operation: str
 
 

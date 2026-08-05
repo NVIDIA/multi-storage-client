@@ -38,7 +38,6 @@ class ExplorerAction(Action):
         Args:
             parser: The argument parser to configure
         """
-        pass
 
     def run(self, args: argparse.Namespace) -> int:
         """Execute the explorer action.

@@ -62,9 +62,8 @@ def test_numpy_memmap(file_storage_config_with_cache, sample_data):
             _ = msc.numpy.memmap(filename=temp.name, dtype=np.int32, mode="r", shape=(5,))
 
         # mismatch mode should fail: default mode of memmap function is r+
-        with pytest.raises(PermissionError):
-            with open(temp.name, mode="r") as fp:
-                result = msc.numpy.memmap(fp, dtype=np.int32, shape=(5,))
+        with pytest.raises(PermissionError), open(temp.name, mode="r") as fp:
+            result = msc.numpy.memmap(fp, dtype=np.int32, shape=(5,))
 
 
 def test_numpy_load(file_storage_config_with_cache, sample_data):
@@ -195,5 +194,5 @@ def test_numpy_save_with_attributes(
                 msc.delete(f"{MSC_PROTOCOL}test/{file_path}")
                 msc.delete(f"{MSC_PROTOCOL}test/{file_path2}")
                 msc.delete(f"{MSC_PROTOCOL}test/{file_path3}")
-            except Exception:
+            except Exception:  # noqa: S110
                 pass

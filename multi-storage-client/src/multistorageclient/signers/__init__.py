@@ -17,6 +17,6 @@ from .base import URLSigner
 from .cloudfront import CloudFrontURLSigner
 
 __all__ = [
-    "URLSigner",
     "CloudFrontURLSigner",
+    "URLSigner",
 ]

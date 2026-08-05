@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Union
+from typing import Any
 
 import numpy as _np
 
@@ -44,20 +44,20 @@ def memmap(*args: Any, **kwargs: Any) -> _np.memmap:
     return _np.memmap(*args, **kwargs)  # pyright: ignore [reportArgumentType, reportCallIssue]
 
 
-def load(*args: Any, **kwargs: Any) -> Union[_np.ndarray, dict[str, _np.ndarray], _np.lib.npyio.NpzFile]:
+def load(*args: Any, **kwargs: Any) -> _np.ndarray | dict[str, _np.ndarray] | _np.lib.npyio.NpzFile:
     """
     Adapt ``numpy.load``.
     """
 
     file = args[0] if args else kwargs.get("file")
 
-    def resolve_filesystem_path(file: Union[str, MultiStoragePath]) -> Union[str, None]:
+    def resolve_filesystem_path(file: str | MultiStoragePath) -> str | None:
         """Helper function to get the local path from a filepath or MultiStoragePath."""
         if isinstance(file, str):
             file = MultiStoragePath(file)
         return file.as_posix()
 
-    if isinstance(file, str) or isinstance(file, MultiStoragePath):
+    if isinstance(file, (str, MultiStoragePath)):
         # For .npy with memmap mode != none, _np.load() will call format.open_memmap() underneath,
         # Which require a file path string
         # Refs:

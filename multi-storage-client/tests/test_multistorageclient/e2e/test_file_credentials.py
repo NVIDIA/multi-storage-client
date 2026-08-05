@@ -104,7 +104,7 @@ def test_file_credentials_with_json_config():
                     "credentials_provider": {{
                         "type": "FileBasedCredentials",
                         "options": {{
-                            "credential_file_path": "{str(cred_file)}"
+                            "credential_file_path": "{cred_file!s}"
                         }}
                     }}
                 }}
@@ -140,7 +140,7 @@ def test_file_credentials_with_yaml_config():
             credentials_provider:
               type: FileBasedCredentials
               options:
-                credential_file_path: {str(cred_file)}
+                credential_file_path: {cred_file!s}
         """,
             profile="test-profile",
         )

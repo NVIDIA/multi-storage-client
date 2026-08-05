@@ -18,7 +18,6 @@ import os
 import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Type
 
 import numpy as np
 import pytest
@@ -337,7 +336,7 @@ def test_make_symlink(temp_data_store_type: type[tempdatastore.TemporaryDataStor
         finally:
             try:
                 msc.delete(f"{MSC_PROTOCOL}test/data-{test_uuid}", recursive=True)
-            except Exception:
+            except Exception:  # noqa: S110
                 pass
 
 
@@ -358,9 +357,8 @@ def test_delete(file_storage_config):
         msc.delete(f"{MSC_PROTOCOL}__filesystem__{filepath}")
 
         # Verify file is deleted
-        with pytest.raises(FileNotFoundError):
-            with msc.open(f"{MSC_PROTOCOL}__filesystem__{filepath}", "rb") as fp:
-                fp.read()
+        with pytest.raises(FileNotFoundError), msc.open(f"{MSC_PROTOCOL}__filesystem__{filepath}", "rb") as fp:
+            fp.read()
 
 
 def test_is_empty(file_storage_config):
@@ -389,7 +387,7 @@ def verify_shortcuts(profile: str, prefix: str):
     assert len(msc.glob(f"msc://{profile}/{prefix}/**/*.bin")) == 10
 
     # upload
-    fp = tempfile.NamedTemporaryFile(mode="wb", delete=False)
+    fp = tempfile.NamedTemporaryFile(mode="wb", delete=False)  # noqa: SIM115
     fp.write(body)
     fp.close()
     msc.upload_file(f"msc://{profile}/{prefix}/folder/data-11.bin", fp.name)
@@ -424,10 +422,12 @@ def verify_shortcuts(profile: str, prefix: str):
     )
 
     # mmap
-    with msc.open(f"msc://{profile}/{prefix}/folder/data-2.bin", prefetch_file=True) as fp:
-        with mmap.mmap(fp.fileno(), length=0, access=mmap.ACCESS_READ) as mm:
-            content = mm[:]
-            assert content == body
+    with (
+        msc.open(f"msc://{profile}/{prefix}/folder/data-2.bin", prefetch_file=True) as fp,
+        mmap.mmap(fp.fileno(), length=0, access=mmap.ACCESS_READ) as mm,
+    ):
+        content = mm[:]
+        assert content == body
 
     # open file without cache
     with msc.open(f"msc://{profile}/{prefix}/folder/data-2.bin", disable_read_cache=True, prefetch_file=True) as fp:
@@ -755,7 +755,7 @@ def test_path_mapping_is_cached_for_repeated_non_msc_resolution(file_storage_con
     argnames=["temp_data_store_type"],
     argvalues=[[tempdatastore.TemporaryAWSS3Bucket]],
 )
-def test_open_with_source_version_check(temp_data_store_type: Type[tempdatastore.TemporaryDataStore]) -> None:
+def test_open_with_source_version_check(temp_data_store_type: type[tempdatastore.TemporaryDataStore]) -> None:
     """Test the open method with different source version check modes."""
     # Clear the instance cache to ensure that the config is not reused from the previous test
     msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
@@ -823,7 +823,7 @@ def test_open_with_source_version_check(temp_data_store_type: Type[tempdatastore
             finally:
                 try:
                     msc.delete(f"{MSC_PROTOCOL}test/{key}")
-                except Exception:
+                except Exception:  # noqa: S110
                     pass
 
 
@@ -831,7 +831,7 @@ def test_open_with_source_version_check(temp_data_store_type: Type[tempdatastore
     argnames=["temp_data_store_type"],
     argvalues=[[tempdatastore.TemporaryAWSS3Bucket]],
 )
-def test_open_with_cache_config(temp_data_store_type: Type[tempdatastore.TemporaryDataStore]) -> None:
+def test_open_with_cache_config(temp_data_store_type: type[tempdatastore.TemporaryDataStore]) -> None:
     """Test the open method with different cache configurations."""
     # Clear the instance cache to ensure that the config is not reused from the previous test
     msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
@@ -897,7 +897,7 @@ def test_open_with_cache_config(temp_data_store_type: Type[tempdatastore.Tempora
             finally:
                 try:
                     msc.delete(f"{MSC_PROTOCOL}test/{filepath}")
-                except Exception:
+                except Exception:  # noqa: S110
                     pass
 
 
@@ -959,7 +959,7 @@ def test_msc_write_with_attributes(temp_data_store_type: type[tempdatastore.Temp
             # Clean up
             try:
                 msc.delete(f"{MSC_PROTOCOL}test/{file_path}")
-            except Exception:
+            except Exception:  # noqa: S110
                 pass
 
 
@@ -996,7 +996,7 @@ def test_msc_upload_file_with_attributes(temp_data_store_type: type[tempdatastor
         }
 
         # Create a temporary local file
-        temp_file = tempfile.NamedTemporaryFile(delete=False)
+        temp_file = tempfile.NamedTemporaryFile(delete=False)  # noqa: SIM115
         try:
             temp_file.write(test_content)
             temp_file.flush()
@@ -1027,7 +1027,7 @@ def test_msc_upload_file_with_attributes(temp_data_store_type: type[tempdatastor
             os.unlink(temp_file.name)
             try:
                 msc.delete(f"{MSC_PROTOCOL}test/{file_path}")
-            except Exception:
+            except Exception:  # noqa: S110
                 pass
 
 
@@ -1090,7 +1090,7 @@ def test_msc_open_with_attributes(temp_data_store_type: type[tempdatastore.Tempo
             # Clean up
             try:
                 msc.delete(f"{MSC_PROTOCOL}test/{file_path}")
-            except Exception:
+            except Exception:  # noqa: S110
                 pass
 
 
@@ -1252,7 +1252,7 @@ def test_msc_list_with_attribute_filter_expression(
             # Clean up
             try:
                 msc.delete(f"{MSC_PROTOCOL}test/{base_path}", recursive=True)
-            except Exception:
+            except Exception:  # noqa: S110
                 pass
 
 
@@ -1321,7 +1321,7 @@ def test_msc_list_show_attributes(
             # Clean up
             try:
                 msc.delete(f"{MSC_PROTOCOL}test/{base_path}", recursive=True)
-            except Exception:
+            except Exception:  # noqa: S110
                 pass
 
 
@@ -1451,7 +1451,7 @@ def test_msc_glob_with_attribute_filter_expression(
             # Clean up
             try:
                 msc.delete(f"{MSC_PROTOCOL}test/{base_path}", recursive=True)
-            except Exception:
+            except Exception:  # noqa: S110
                 pass
 
 

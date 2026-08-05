@@ -38,8 +38,8 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, cast
 
-import multistorageclient_scripts.cli as cli
-import multistorageclient_scripts.utils.argparse_extensions as argparse_extensions
+from multistorageclient_scripts import cli
+from multistorageclient_scripts.utils import argparse_extensions
 
 logger = logging.getLogger(__name__)
 
@@ -288,9 +288,13 @@ def _extract_class_manifest(class_def: ast.ClassDef) -> ClassManifest:
             for name in _assignment_names(statement):
                 if _is_public_name(name):
                     enum_members[name] = _literal_source(statement.value)
-        elif is_dataclass and isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
-            if _is_public_name(statement.target.id):
-                fields[statement.target.id] = FieldManifest(required=_field_is_required(statement))
+        elif (
+            is_dataclass
+            and isinstance(statement, ast.AnnAssign)
+            and isinstance(statement.target, ast.Name)
+            and _is_public_name(statement.target.id)
+        ):
+            fields[statement.target.id] = FieldManifest(required=_field_is_required(statement))
 
     return ClassManifest(kind=kind, methods=methods, fields=fields, enum_members=enum_members)
 

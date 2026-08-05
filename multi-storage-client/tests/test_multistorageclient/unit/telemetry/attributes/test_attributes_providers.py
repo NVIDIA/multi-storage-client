@@ -20,8 +20,7 @@ import os
 import pytest
 
 import multistorageclient
-import multistorageclient.telemetry as telemetry
-import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
+from multistorageclient import telemetry
 from multistorageclient.telemetry.attributes.base import collect_attributes
 from multistorageclient.telemetry.attributes.environment_variables import EnvironmentVariablesAttributesProvider
 from multistorageclient.telemetry.attributes.host import HostAttributesProvider
@@ -29,11 +28,12 @@ from multistorageclient.telemetry.attributes.msc_config import MSCConfigAttribut
 from multistorageclient.telemetry.attributes.process import ProcessAttributesProvider
 from multistorageclient.telemetry.attributes.static import StaticAttributesProvider
 from multistorageclient.telemetry.attributes.thread import ThreadAttributesProvider
+from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
 
 
 def test_environment_variables_attributes_provider():
-    environment_variable_key, environment_variable_value = list(os.environ.items())[0]
+    environment_variable_key, environment_variable_value = next(iter(os.environ.items()))
     attribute_key = "attribute"
     attributes = EnvironmentVariablesAttributesProvider(
         attributes={attribute_key: environment_variable_key}
@@ -146,7 +146,7 @@ def test_storage_client_with_attributes_providers():
                             "attributes": [
                                 {
                                     "type": "environment_variables",
-                                    "options": {"attributes": {"environment_variable": list(os.environ.keys())[0]}},
+                                    "options": {"attributes": {"environment_variable": next(iter(os.environ.keys()))}},
                                 },
                                 {"type": "host", "options": {"attributes": {"host": "name"}}},
                                 {

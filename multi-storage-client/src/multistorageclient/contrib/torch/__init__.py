@@ -16,4 +16,4 @@
 from .core import load, save
 from .filesystem import MultiStorageFileSystem, MultiStorageFileSystemReader, MultiStorageFileSystemWriter
 
-__all__ = ["load", "save", "MultiStorageFileSystem", "MultiStorageFileSystemReader", "MultiStorageFileSystemWriter"]
+__all__ = ["MultiStorageFileSystem", "MultiStorageFileSystemReader", "MultiStorageFileSystemWriter", "load", "save"]

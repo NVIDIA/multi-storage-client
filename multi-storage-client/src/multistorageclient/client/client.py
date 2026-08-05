@@ -15,7 +15,7 @@
 
 import logging
 from collections.abc import Iterator, Sequence
-from typing import IO, Any, Optional, Union
+from typing import IO, Any
 
 from ..config import StorageClientConfig
 from ..constants import MEMORY_LOAD_LIMIT
@@ -48,7 +48,7 @@ class StorageClient(AbstractStorageClient):
     - CompositeStorageClient: For multi-backend configurations (read-only)
     """
 
-    _delegate: Union[SingleStorageClient, CompositeStorageClient]
+    _delegate: SingleStorageClient | CompositeStorageClient
 
     def __init__(self, config: StorageClientConfig):
         if config.storage_provider_profiles:
@@ -59,7 +59,7 @@ class StorageClient(AbstractStorageClient):
             logger.debug(f"StorageClient '{config.profile}' using SingleStorageClient")
 
     @property
-    def delegate(self) -> Union[SingleStorageClient, CompositeStorageClient]:
+    def delegate(self) -> SingleStorageClient | CompositeStorageClient:
         """
         Access to underlying delegate storage client.
 
@@ -75,7 +75,7 @@ class StorageClient(AbstractStorageClient):
         return self._delegate._config
 
     @property
-    def _storage_provider(self) -> Optional[StorageProvider]:
+    def _storage_provider(self) -> StorageProvider | None:
         """
         :return: The storage provider for the underlying storage client. None for CompositeStorageClient.
         """
@@ -88,14 +88,14 @@ class StorageClient(AbstractStorageClient):
             self._delegate._storage_provider = value
 
     @property
-    def _metadata_provider(self) -> Optional[MetadataProvider]:
+    def _metadata_provider(self) -> MetadataProvider | None:
         """
         :return: The metadata provider for the underlying storage client.
         """
         return self._delegate._metadata_provider
 
     @_metadata_provider.setter
-    def _metadata_provider(self, value: Optional[MetadataProvider]) -> None:
+    def _metadata_provider(self, value: MetadataProvider | None) -> None:
         """Allow mutation of metadata provider for DSS compatibility."""
         if isinstance(self._delegate, CompositeStorageClient) and value is None:
             raise ValueError("CompositeStorageClient requires a metadata_provider for routing decisions.")
@@ -185,7 +185,7 @@ class StorageClient(AbstractStorageClient):
         """
         return self._delegate._is_posix_file_storage_provider()
 
-    def get_posix_path(self, path: str) -> Optional[str]:
+    def get_posix_path(self, path: str) -> str | None:
         """
         Returns the physical POSIX filesystem path for POSIX storage providers.
 
@@ -197,7 +197,7 @@ class StorageClient(AbstractStorageClient):
     def read(
         self,
         path: str,
-        byte_range: Optional[Range] = None,
+        byte_range: Range | None = None,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
     ) -> bytes:
         """
@@ -216,14 +216,14 @@ class StorageClient(AbstractStorageClient):
         path: str,
         mode: str = "rb",
         buffering: int = -1,
-        encoding: Optional[str] = None,
+        encoding: str | None = None,
         disable_read_cache: bool = False,
         memory_load_limit: int = MEMORY_LOAD_LIMIT,
         atomic: bool = True,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
-        attributes: Optional[dict[str, Any]] = None,
-        prefetch_file: Optional[bool] = None,
-    ) -> Union[PosixFile, ObjectFile]:
+        attributes: dict[str, Any] | None = None,
+        prefetch_file: bool | None = None,
+    ) -> PosixFile | ObjectFile:
         """
         Open a file for reading or writing.
 
@@ -260,7 +260,7 @@ class StorageClient(AbstractStorageClient):
             prefetch_file,
         )
 
-    def download_file(self, remote_path: str, local_path: Union[str, IO]) -> None:
+    def download_file(self, remote_path: str, local_path: str | IO) -> None:
         """
         Download a remote file to a local path or file-like object.
 
@@ -274,7 +274,7 @@ class StorageClient(AbstractStorageClient):
         self,
         remote_paths: list[str],
         local_paths: list[str],
-        metadata: Optional[Sequence[Optional[ObjectMetadata]]] = None,
+        metadata: Sequence[ObjectMetadata | None] | None = None,
         max_workers: int = 16,
     ) -> None:
         """
@@ -293,7 +293,7 @@ class StorageClient(AbstractStorageClient):
         self,
         pattern: str,
         include_url_prefix: bool = False,
-        attribute_filter_expression: Optional[str] = None,
+        attribute_filter_expression: str | None = None,
     ) -> list[str]:
         """
         Matches and retrieves a list of object keys in the storage provider that match the specified pattern.
@@ -308,12 +308,12 @@ class StorageClient(AbstractStorageClient):
     def list_recursive(
         self,
         path: str = "",
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         max_workers: int = 32,
         look_ahead: int = 2,
         include_url_prefix: bool = False,
-        patterns: Optional[PatternList] = None,
+        patterns: PatternList | None = None,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         """
@@ -375,7 +375,7 @@ class StorageClient(AbstractStorageClient):
         self,
         path: str,
         body: bytes,
-        attributes: Optional[dict[str, Any]] = None,
+        attributes: dict[str, Any] | None = None,
     ) -> None:
         """
         Write bytes to a file at the specified path.
@@ -436,8 +436,8 @@ class StorageClient(AbstractStorageClient):
     def upload_file(
         self,
         remote_path: str,
-        local_path: Union[str, IO],
-        attributes: Optional[dict[str, Any]] = None,
+        local_path: str | IO,
+        attributes: dict[str, Any] | None = None,
     ) -> None:
         """
         Upload a local file to remote storage.
@@ -454,7 +454,7 @@ class StorageClient(AbstractStorageClient):
         self,
         remote_paths: list[str],
         local_paths: list[str],
-        attributes: Optional[Sequence[Optional[dict[str, Any]]]] = None,
+        attributes: Sequence[dict[str, Any] | None] | None = None,
         max_workers: int = 16,
     ) -> None:
         """
@@ -471,7 +471,7 @@ class StorageClient(AbstractStorageClient):
         """
         return self._delegate.upload_files(remote_paths, local_paths, attributes, max_workers)
 
-    def commit_metadata(self, prefix: Optional[str] = None) -> None:
+    def commit_metadata(self, prefix: str | None = None) -> None:
         """
         Commits any pending updates to the metadata provider. No-op if not using a metadata provider.
 
@@ -486,15 +486,15 @@ class StorageClient(AbstractStorageClient):
         target_path: str = "",
         delete_unmatched_files: bool = False,
         description: str = "Syncing",
-        num_worker_processes: Optional[int] = None,
+        num_worker_processes: int | None = None,
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
-        patterns: Optional[PatternList] = None,
+        patterns: PatternList | None = None,
         preserve_source_attributes: bool = False,
-        source_files: Optional[list[str]] = None,
+        source_files: list[str] | None = None,
         ignore_hidden: bool = True,
         commit_metadata: bool = True,
         dryrun: bool = False,
-        dryrun_output_path: Optional[str] = None,
+        dryrun_output_path: str | None = None,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> SyncResult:
         """
@@ -555,12 +555,12 @@ class StorageClient(AbstractStorageClient):
     def sync_replicas(
         self,
         source_path: str,
-        replica_indices: Optional[list[int]] = None,
+        replica_indices: list[int] | None = None,
         delete_unmatched_files: bool = False,
         description: str = "Syncing replica",
-        num_worker_processes: Optional[int] = None,
+        num_worker_processes: int | None = None,
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
-        patterns: Optional[PatternList] = None,
+        patterns: PatternList | None = None,
         ignore_hidden: bool = True,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> None:
@@ -596,13 +596,13 @@ class StorageClient(AbstractStorageClient):
     def list(
         self,
         path: str = "",
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         include_directories: bool = False,
         include_url_prefix: bool = False,
-        attribute_filter_expression: Optional[str] = None,
+        attribute_filter_expression: str | None = None,
         show_attributes: bool = False,
-        patterns: Optional[PatternList] = None,
+        patterns: PatternList | None = None,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         """
@@ -637,8 +637,8 @@ class StorageClient(AbstractStorageClient):
         path: str,
         *,
         method: str = "GET",
-        signer_type: Optional[SignerType] = None,
-        signer_options: Optional[dict[str, Any]] = None,
+        signer_type: SignerType | None = None,
+        signer_options: dict[str, Any] | None = None,
     ) -> str:
         """
         Generate a pre-signed URL granting temporary access to the object at *path*.

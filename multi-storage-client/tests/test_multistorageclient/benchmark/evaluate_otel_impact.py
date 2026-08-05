@@ -1,3 +1,5 @@
+# noqa: EXE002
+
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -28,7 +30,6 @@ import sys
 import tempfile
 import time
 from contextlib import contextmanager
-from typing import Dict
 
 
 @contextmanager
@@ -60,7 +61,7 @@ def create_config(
     use_env_attrs: bool = True,
     use_msc_config_attrs: bool = True,
     async_recording: bool = False,
-) -> Dict:
+) -> dict:
     """Create MSC configuration with specified telemetry settings."""
     config = {"profiles": {"test": {"storage_provider": {"type": "file", "options": {"base_path": base_path}}}}}
 
@@ -129,7 +130,7 @@ def benchmark_workload(
     num_files: int = 100,
     file_size_kb: int = 64,
     num_reads: int = 10,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """
     Simulate a training workload with many small I/O operations.
 
@@ -212,12 +213,12 @@ def benchmark_workload(
 
 def run_benchmark_scenario(
     scenario_name: str,
-    config: Dict,
+    config: dict,
     test_dir: str,
     num_files: int = 100,
     file_size_kb: int = 64,
     num_reads: int = 10,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Run a single benchmark scenario with given configuration."""
     print(f"\n{'=' * 70}")
     print(f"Running: {scenario_name}")
@@ -234,26 +235,25 @@ def run_benchmark_scenario(
     # Redirect telemetry console output to a file
     metrics_file_path = os.path.join(test_dir, "metrics.json")
 
-    with open(metrics_file_path, "w") as metrics_file:
-        with redirect_stdout_fd(metrics_file):
-            # Initialize MSC directly from dict
-            from multistorageclient import StorageClient, StorageClientConfig
+    with open(metrics_file_path, "w") as metrics_file, redirect_stdout_fd(metrics_file):
+        # Initialize MSC directly from dict
+        from multistorageclient import StorageClient, StorageClientConfig
 
-            config_obj = StorageClientConfig.from_dict(config_dict=config, profile="test")
-            client = StorageClient(config_obj)
-            provider = client._storage_provider
+        config_obj = StorageClientConfig.from_dict(config_dict=config, profile="test")
+        client = StorageClient(config_obj)
+        provider = client._storage_provider
 
-            # Run benchmark (console exporter output goes to metrics_file)
-            results = benchmark_workload(
-                provider, test_dir, num_files=num_files, file_size_kb=file_size_kb, num_reads=num_reads
-            )
+        # Run benchmark (console exporter output goes to metrics_file)
+        results = benchmark_workload(
+            provider, test_dir, num_files=num_files, file_size_kb=file_size_kb, num_reads=num_reads
+        )
 
-            # Shutdown async telemetry if enabled
-            if hasattr(provider, "_shutdown_async_telemetry"):
-                provider._shutdown_async_telemetry()  # type: ignore
+        # Shutdown async telemetry if enabled
+        if hasattr(provider, "_shutdown_async_telemetry"):
+            provider._shutdown_async_telemetry()  # type: ignore
 
-            # Give telemetry a moment to flush final exports
-            time.sleep(0.2)
+        # Give telemetry a moment to flush final exports
+        time.sleep(0.2)
 
     print(f"\nResults for {scenario_name}:")
     print(f"  Write: {results['write_throughput_ops']:.1f} ops/s, {results['write_mean_latency']:.3f}ms mean latency")
@@ -264,18 +264,18 @@ def run_benchmark_scenario(
     return results
 
 
-def calculate_overhead(baseline: Dict, test: Dict) -> Dict[str, float]:
+def calculate_overhead(baseline: dict, test: dict) -> dict[str, float]:
     """Calculate percentage overhead compared to baseline."""
     overhead = {}
-    for key in baseline:
+    for key, value in baseline.items():
         if "latency" in key or "time" in key:
-            overhead[key] = ((test[key] / baseline[key]) - 1.0) * 100
+            overhead[key] = ((test[key] / value) - 1.0) * 100
         elif "throughput" in key:
-            overhead[key] = ((baseline[key] / test[key]) - 1.0) * 100
+            overhead[key] = ((value / test[key]) - 1.0) * 100
     return overhead
 
 
-def print_comparison_table(scenarios: Dict[str, Dict[str, float]], baseline_name: str):
+def print_comparison_table(scenarios: dict[str, dict[str, float]], baseline_name: str):
     """Print a comparison table of all scenarios."""
     print(f"\n{'=' * 100}")
     print("PERFORMANCE COMPARISON TABLE")

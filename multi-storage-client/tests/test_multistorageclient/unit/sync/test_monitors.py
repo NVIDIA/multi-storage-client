@@ -16,8 +16,8 @@
 import queue
 import threading
 import time
-from datetime import datetime
-from typing import Optional, cast
+from datetime import datetime, timezone
+from typing import cast
 
 from multistorageclient.client import StorageClient
 from multistorageclient.sync.monitors import ErrorMonitorThread, ResultMonitorThread
@@ -34,7 +34,7 @@ class MockStorageClient:
     def list_recursive(self, **kwargs):
         return self.list(**kwargs)
 
-    def commit_metadata(self, prefix: Optional[str] = None) -> None:
+    def commit_metadata(self, prefix: str | None = None) -> None:
         pass
 
     def _is_rust_client_enabled(self) -> bool:
@@ -130,8 +130,10 @@ def test_result_monitor_refreshes_progress_while_producer_listing_blocks():
     sleep_started = threading.Event()
     refresh_times = []
 
-    first = ObjectMetadata(key="file0.txt", content_length=100, last_modified=datetime(2025, 1, 1))
-    second = ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1))
+    first = ObjectMetadata(key="file0.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc))
+    second = ObjectMetadata(
+        key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)
+    )
 
     def slow_source_iter():
         yield first

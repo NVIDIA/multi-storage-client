@@ -598,7 +598,7 @@ class TestAzureStorageProviderPresign:
         # Patch refresh so it doesn't try to rebuild the blob service client.
         with (
             patch.object(provider, "_refresh_blob_service_client_if_needed"),
-            pytest.raises(ValueError, match="StaticAzureCredentialsProvider"),
+            pytest.raises(TypeError, match="StaticAzureCredentialsProvider"),
         ):
             provider._generate_presigned_url("c/b")
 

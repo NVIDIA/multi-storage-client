@@ -14,7 +14,7 @@
 # limitations under the License.
 
 import io
-from typing import Any, Optional
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -30,8 +30,8 @@ from multistorageclient.providers.s8k import S8KStorageProvider
 
 def _make_provider(
     *,
-    checksum_algorithm: Optional[str] = None,
-    rust_client: Optional[dict[str, Any]] = None,
+    checksum_algorithm: str | None = None,
+    rust_client: dict[str, Any] | None = None,
     base_path: str = "test-bucket",
 ) -> S3StorageProvider:
     """Construct an S3StorageProvider for unit tests; callers patch the boto3 / Rust clients as needed."""

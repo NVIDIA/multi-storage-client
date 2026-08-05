@@ -16,8 +16,9 @@
 import logging
 import os
 import threading
+from collections.abc import Iterator
 from enum import Enum
-from typing import TYPE_CHECKING, Iterator, Optional
+from typing import TYPE_CHECKING
 
 from ..constants import DEFAULT_SYNC_BATCH_SIZE
 from ..types import ObjectMetadata, SymlinkHandling
@@ -80,10 +81,10 @@ class ProducerThread(threading.Thread):
         num_workers: int,
         shutdown_event: EventLike,
         delete_unmatched_files: bool = False,
-        pattern_matcher: Optional[PatternMatcher] = None,
+        pattern_matcher: PatternMatcher | None = None,
         preserve_source_attributes: bool = False,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
-        source_files: Optional[list[str]] = None,
+        source_files: list[str] | None = None,
         ignore_hidden: bool = True,
         batch_size: int = DEFAULT_SYNC_BATCH_SIZE,
     ):
@@ -107,9 +108,9 @@ class ProducerThread(threading.Thread):
         self.batch_size = batch_size
         self.error = None
         self.total_work_units = 0
-        self._current_batch: list[tuple[ObjectMetadata, Optional[ObjectMetadata]]] = []
-        self._current_batch_type: Optional[OperationType] = None
-        self._current_batch_size_bucket: Optional[SizeBucket] = None
+        self._current_batch: list[tuple[ObjectMetadata, ObjectMetadata | None]] = []
+        self._current_batch_type: OperationType | None = None
+        self._current_batch_size_bucket: SizeBucket | None = None
 
     def _get_size_bucket(self, content_length: int) -> SizeBucket:
         """Determine the size bucket for a file based on its content length."""
@@ -135,7 +136,7 @@ class ProducerThread(threading.Thread):
         self,
         operation: OperationType,
         source_metadata: ObjectMetadata,
-        target_metadata: Optional[ObjectMetadata] = None,
+        target_metadata: ObjectMetadata | None = None,
     ) -> None:
         """
         Add an operation to the current batch, flushing if necessary.

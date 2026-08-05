@@ -97,5 +97,5 @@ class ConfigAction(Action):
             return 0
 
         except Exception as e:
-            print(f"Error: {str(e)}", file=sys.stderr)
+            print(f"Error: {e!s}", file=sys.stderr)
             return 1

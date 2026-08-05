@@ -14,7 +14,7 @@
 # limitations under the License.
 
 import mimetypes
-from typing import IO, Optional, Union
+from typing import IO
 
 from .s3 import S3StorageProvider
 
@@ -66,7 +66,7 @@ class S8KStorageProvider(S3StorageProvider):
         # override the provider name from "s3"
         self._provider_name = PROVIDER
 
-    def _guess_content_type(self, file_path: str) -> Optional[str]:
+    def _guess_content_type(self, file_path: str) -> str | None:
         """
         Guess the content type based on the file extension using Python's mimetypes module.
 
@@ -87,10 +87,10 @@ class S8KStorageProvider(S3StorageProvider):
         self,
         path: str,
         body: bytes,
-        if_match: Optional[str] = None,
-        if_none_match: Optional[str] = None,
-        attributes: Optional[dict[str, str]] = None,
-        content_type: Optional[str] = None,
+        if_match: str | None = None,
+        if_none_match: str | None = None,
+        attributes: dict[str, str] | None = None,
+        content_type: str | None = None,
     ) -> int:
         """
         Uploads an object with optional content type inference.
@@ -114,9 +114,9 @@ class S8KStorageProvider(S3StorageProvider):
     def _upload_file(
         self,
         remote_path: str,
-        f: Union[str, IO],
-        attributes: Optional[dict[str, str]] = None,
-        content_type: Optional[str] = None,
+        f: str | IO,
+        attributes: dict[str, str] | None = None,
+        content_type: str | None = None,
     ) -> int:
         """
         Uploads a file with optional content type inference.

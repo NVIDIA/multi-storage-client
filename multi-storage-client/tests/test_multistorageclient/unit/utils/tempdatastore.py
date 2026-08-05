@@ -20,7 +20,7 @@ import uuid
 from abc import abstractmethod
 from contextlib import AbstractContextManager
 from types import TracebackType
-from typing import Any, Optional
+from typing import Any
 
 # Python's `tempfile` but for data stores.
 #
@@ -51,9 +51,9 @@ class TemporaryDataStore(AbstractContextManager):
 
     def __exit__(
         self,
-        exc_type: Optional[type[BaseException]],
-        exc_value: Optional[BaseException],
-        exc_traceback: Optional[TracebackType],
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        exc_traceback: TracebackType | None,
     ) -> bool:
         self.cleanup()
         return False
@@ -63,7 +63,6 @@ class TemporaryDataStore(AbstractContextManager):
         """
         The temporary data store can be explicitly cleaned up by calling the ``cleanup()`` method.
         """
-        pass
 
 
 class TemporaryPOSIXDirectory(TemporaryDataStore):
@@ -324,7 +323,7 @@ class TemporaryAIStoreBucket(TemporaryDataStore):
                 bucket.object(obj_name=obj.name).delete()
             # Delete the bucket
             bucket.delete()
-        except Exception:
+        except Exception:  # noqa: S110
             pass
 
 
@@ -382,5 +381,5 @@ class TemporaryAIStoreS3Bucket(TemporaryDataStore):
             # Delete the bucket using AIStore SDK
             bucket = self._ais_client.bucket(bck_name=self._bucket_name, provider="ais")
             bucket.delete()
-        except Exception:
+        except Exception:  # noqa: S110
             pass

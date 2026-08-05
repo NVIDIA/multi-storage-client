@@ -15,7 +15,6 @@
 
 import threading
 from collections.abc import Sequence
-from typing import Optional
 
 import opentelemetry.sdk.trace as sdk_trace
 import opentelemetry.sdk.trace.export as sdk_trace_export
@@ -26,7 +25,7 @@ class InMemorySpanExporter(sdk_trace_export.SpanExporter):
     Implementation of :py:class:``sdk_trace_export.SpanExporter`` that saves the last spans export in memory.
     """
 
-    _spans: Optional[Sequence[sdk_trace.ReadableSpan]]
+    _spans: Sequence[sdk_trace.ReadableSpan] | None
     _spans_lock: threading.Lock
 
     def __init__(self):
@@ -44,5 +43,5 @@ class InMemorySpanExporter(sdk_trace_export.SpanExporter):
     def shutdown(self) -> None:
         pass
 
-    def spans(self) -> Optional[Sequence[sdk_trace.ReadableSpan]]:
+    def spans(self) -> Sequence[sdk_trace.ReadableSpan] | None:
         return self._spans

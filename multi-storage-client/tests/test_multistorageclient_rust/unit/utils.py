@@ -14,7 +14,6 @@
 # limitations under the License.
 
 from datetime import datetime, timezone
-from typing import Union
 
 from multistorageclient.types import Credentials, CredentialsProvider
 
@@ -26,7 +25,7 @@ class RefreshableTestCredentialsProvider(CredentialsProvider):
     When the refresh_credentials method is called, it sets the credentials to invalid.
     """
 
-    def __init__(self, access_key: str, secret_key: str, expiration: Union[str, None] = None, refresh_error=False):
+    def __init__(self, access_key: str, secret_key: str, expiration: str | None = None, refresh_error=False):
         self._access_key = access_key
         self._secret_key = secret_key
         self._expiration = expiration

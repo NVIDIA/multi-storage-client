@@ -26,7 +26,7 @@ from abc import abstractmethod
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from enum import Enum
-from typing import IO, Any, NamedTuple, Optional, TypeVar, Union, cast
+from typing import IO, Any, ClassVar, NamedTuple, TypeVar, cast
 
 import opentelemetry.metrics as api_metrics
 import opentelemetry.util.types as api_types
@@ -74,9 +74,9 @@ _ShallowListResult = tuple[list[str], list[ObjectMetadata]]
 class _ListingHeapItem:
     """Heap item for parallel listing: either a prefix to expand or an object to yield."""
 
-    __slots__ = ("key", "is_prefix", "data")
+    __slots__ = ("data", "is_prefix", "key")
 
-    def __init__(self, key: str, is_prefix: bool, data: Union[str, ObjectMetadata]):
+    def __init__(self, key: str, is_prefix: bool, data: str | ObjectMetadata):
         self.key = key
         self.is_prefix = is_prefix
         self.data = data
@@ -96,7 +96,7 @@ class _PrefixExpander:
         get()      — retrieve a result, blocking if still in-flight
     """
 
-    __slots__ = ("_fn", "_max_inflight", "_executor", "_pending", "_inflight", "_ready")
+    __slots__ = ("_executor", "_fn", "_inflight", "_max_inflight", "_pending", "_ready")
 
     def __init__(
         self,
@@ -145,7 +145,7 @@ class _PrefixExpander:
                 self._ready[p] = self._inflight.pop(p).result()
         self._fill()
 
-    def __enter__(self) -> "_PrefixExpander":
+    def __enter__(self) -> "_PrefixExpander":  # noqa: PYI034
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -201,17 +201,17 @@ class BaseStorageProvider(StorageProvider):
     _VERSION = importlib_metadata.version("multi-storage-client")
 
     # Operations to emit data size metrics for on success.
-    _DATA_IO_OPERATIONS = {_Operation.READ, _Operation.WRITE, _Operation.COPY}
+    _DATA_IO_OPERATIONS: ClassVar[set[_Operation]] = {_Operation.READ, _Operation.WRITE, _Operation.COPY}
 
     _base_path: str
     _provider_name: str
 
-    _config_dict: Optional[dict[str, Any]]
-    _telemetry_provider: Optional[Callable[[], Telemetry]]
+    _config_dict: dict[str, Any] | None
+    _telemetry_provider: Callable[[], Telemetry] | None
 
     _metric_init_event: threading.Event
-    _metric_gauges: dict[Telemetry.GaugeName, Optional[api_metrics._Gauge]]
-    _metric_counters: dict[Telemetry.CounterName, Optional[api_metrics.Counter]]
+    _metric_gauges: dict[Telemetry.GaugeName, api_metrics._Gauge | None]
+    _metric_counters: dict[Telemetry.CounterName, api_metrics.Counter | None]
     _metric_attributes_providers: Sequence[AttributesProvider]
     _metric_init_lock: threading.Lock
 
@@ -219,8 +219,8 @@ class BaseStorageProvider(StorageProvider):
         self,
         base_path: str,
         provider_name: str,
-        config_dict: Optional[dict[str, Any]] = None,
-        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
+        config_dict: dict[str, Any] | None = None,
+        telemetry_provider: Callable[[], Telemetry] | None = None,
     ):
         self._base_path = base_path
         self._provider_name = provider_name
@@ -237,8 +237,8 @@ class BaseStorageProvider(StorageProvider):
 
         # Async telemetry support
         self._async_metrics_enabled = False
-        self._metrics_queue: Optional["queue.Queue[Optional[dict]]"] = None
-        self._metrics_worker: Optional[threading.Thread] = None
+        self._metrics_queue: queue.Queue[dict | None] | None = None
+        self._metrics_worker: threading.Thread | None = None
         self._metrics_worker_shutdown = threading.Event()
         self._metrics_dropped_count = 0
         self._metrics_dropped_count_lock = threading.Lock()
@@ -267,12 +267,12 @@ class BaseStorageProvider(StorageProvider):
         with self._metric_init_lock:
             if not self._metric_init_event.is_set():
                 if self._config_dict is not None and self._telemetry_provider is not None:
-                    opentelemetry_config: Optional[dict[str, Any]] = self._config_dict.get("opentelemetry")
+                    opentelemetry_config: dict[str, Any] | None = self._config_dict.get("opentelemetry")
                     if opentelemetry_config is not None:
                         try:
                             telemetry = self._telemetry_provider()
 
-                            metrics_config: Optional[dict[str, Any]] = opentelemetry_config.get("metrics")
+                            metrics_config: dict[str, Any] | None = opentelemetry_config.get("metrics")
 
                             if metrics_config is not None:
                                 for name in Telemetry.GaugeName:
@@ -280,7 +280,7 @@ class BaseStorageProvider(StorageProvider):
                                 for name in Telemetry.CounterName:
                                     self._metric_counters[name] = telemetry.counter(config=metrics_config, name=name)
 
-                                attributes_provider_configs: Optional[list[dict[str, Any]]] = metrics_config.get(
+                                attributes_provider_configs: list[dict[str, Any]] | None = metrics_config.get(
                                     "attributes"
                                 )
                                 if attributes_provider_configs is not None:
@@ -309,7 +309,7 @@ class BaseStorageProvider(StorageProvider):
                                     self._metric_attributes_providers = tuple(attributes_providers)
 
                                 # Initialize async telemetry if enabled
-                                reader_config: Optional[dict[str, Any]] = metrics_config.get("reader")
+                                reader_config: dict[str, Any] | None = metrics_config.get("reader")
 
                                 if reader_config is not None:
                                     self._async_metrics_enabled = reader_config.get("async", False)
@@ -361,7 +361,7 @@ class BaseStorageProvider(StorageProvider):
             if self._metrics_dropped_count > 0:
                 logger.warning(f"Dropped {self._metrics_dropped_count} metrics due to queue full")
 
-    def _calculate_data_size(self, result: Any, operation: _Operation, error_type: Optional[str]) -> Optional[int]:
+    def _calculate_data_size(self, result: Any, operation: _Operation, error_type: str | None) -> int | None:
         """Calculate data size from operation result.
 
         :param result: The result from the operation
@@ -372,7 +372,7 @@ class BaseStorageProvider(StorageProvider):
         if operation not in BaseStorageProvider._DATA_IO_OPERATIONS or error_type is not None:
             return None
 
-        data_size: Optional[int] = None
+        data_size: int | None = None
 
         if isinstance(result, bytes):
             data_size = len(result)
@@ -408,7 +408,7 @@ class BaseStorageProvider(StorageProvider):
         }
 
     def _build_status_attributes(
-        self, base_attributes: api_types.Attributes, error_type: Optional[str]
+        self, base_attributes: api_types.Attributes, error_type: str | None
     ) -> api_types.Attributes:
         """Build attributes with status information.
 
@@ -445,15 +445,15 @@ class BaseStorageProvider(StorageProvider):
                 # Telemetry manager connection closed - stop processing
                 logger.warning("Telemetry connection closed, stopping metrics worker")
                 break
-            except Exception as e:
-                logger.error(f"Error in metrics worker thread: {e}", exc_info=True)
+            except Exception:
+                logger.exception("Error in metrics worker thread")
 
     def _record_metrics(
         self,
         operation: _Operation,
         latency: float,
-        data_size: Optional[int],
-        error_type: Optional[str],
+        data_size: int | None,
+        error_type: str | None,
     ) -> None:
         """Record metrics for an operation.
 
@@ -525,7 +525,7 @@ class BaseStorageProvider(StorageProvider):
 
     def _emit_metrics_async(self, operation: _Operation, f: Callable[[], _T]) -> _T:
         """Async metric emission - queue for background processing."""
-        error: Optional[Exception] = None
+        error: Exception | None = None
         result: _T = cast(_T, None)
 
         start_time = time.perf_counter()
@@ -534,7 +534,7 @@ class BaseStorageProvider(StorageProvider):
             return result
         except Exception as e:
             error = e
-            raise e
+            raise
         finally:
             error_type = type(error).__name__ if error else None
             latency = time.perf_counter() - start_time
@@ -543,7 +543,7 @@ class BaseStorageProvider(StorageProvider):
 
     def _emit_metrics_sync(self, operation: _Operation, f: Callable[[], _T]) -> _T:
         """Synchronous metric emission - original implementation."""
-        error: Optional[Exception] = None
+        error: Exception | None = None
         result: _T = cast(_T, None)
         start_time = time.perf_counter()
         try:
@@ -551,7 +551,7 @@ class BaseStorageProvider(StorageProvider):
             return result
         except Exception as e:
             error = e
-            raise e
+            raise
         finally:
             error_type = type(error).__name__ if error else None
             latency = time.perf_counter() - start_time
@@ -562,8 +562,8 @@ class BaseStorageProvider(StorageProvider):
         self,
         operation: _Operation,
         latency: float,
-        data_size: Optional[int],
-        error_type: Optional[str],
+        data_size: int | None,
+        error_type: str | None,
     ) -> None:
         """
         Dispatch pre-computed metrics via the appropriate path (sync or async queue).
@@ -596,7 +596,7 @@ class BaseStorageProvider(StorageProvider):
         return os.path.join(self._base_path, path.lstrip("/"))
 
     @staticmethod
-    def _prepare_provider_attributes(attributes: Optional[dict[str, Any]]) -> Optional[dict[str, str]]:
+    def _prepare_provider_attributes(attributes: dict[str, Any] | None) -> dict[str, str] | None:
         if not attributes:
             return None
 
@@ -617,9 +617,9 @@ class BaseStorageProvider(StorageProvider):
         self,
         path: str,
         body: bytes,
-        if_match: Optional[str] = None,
-        if_none_match: Optional[str] = None,
-        attributes: Optional[dict[str, Any]] = None,
+        if_match: str | None = None,
+        if_none_match: str | None = None,
+        attributes: dict[str, Any] | None = None,
     ) -> None:
         path = self._prepend_base_path(path)
         provider_attributes = self._prepare_provider_attributes(attributes)
@@ -628,7 +628,7 @@ class BaseStorageProvider(StorageProvider):
             f=lambda: self._put_object(path, body, if_match, if_none_match, provider_attributes),
         )
 
-    def get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
+    def get_object(self, path: str, byte_range: Range | None = None) -> bytes:
         path = self._prepend_base_path(path)
         return self._emit_metrics(
             operation=BaseStorageProvider._Operation.READ,
@@ -638,9 +638,9 @@ class BaseStorageProvider(StorageProvider):
     def _get_object_following_symlinks(
         self,
         path: str,
-        byte_range: Optional[Range] = None,
+        byte_range: Range | None = None,
         _depth: int = 0,
-        _visited: Optional[set[str]] = None,
+        _visited: set[str] | None = None,
     ) -> bytes:
         data = self._get_object(path, byte_range)
         if data:
@@ -665,7 +665,7 @@ class BaseStorageProvider(StorageProvider):
         self,
         path: str,
         _depth: int = 0,
-        _visited: Optional[set[str]] = None,
+        _visited: set[str] | None = None,
     ) -> str:
         """Resolve a path through any symlink chain, returning the final physical path."""
         metadata = self._get_object_metadata(path)
@@ -691,7 +691,7 @@ class BaseStorageProvider(StorageProvider):
             f=lambda: self._copy_object(src_path, dest_path),
         )
 
-    def delete_object(self, path: str, if_match: Optional[str] = None) -> None:
+    def delete_object(self, path: str, if_match: str | None = None) -> None:
         """
         Deletes an object from the storage provider.
 
@@ -745,8 +745,8 @@ class BaseStorageProvider(StorageProvider):
         path: str,
         *,
         method: str = "GET",
-        signer_type: Optional[SignerType] = None,
-        signer_options: Optional[dict[str, Any]] = None,
+        signer_type: SignerType | None = None,
+        signer_options: dict[str, Any] | None = None,
     ) -> str:
         path = self._prepend_base_path(path)
         return self._generate_presigned_url(path, method=method, signer_type=signer_type, signer_options=signer_options)
@@ -756,8 +756,8 @@ class BaseStorageProvider(StorageProvider):
         path: str,
         *,
         method: str = "GET",
-        signer_type: Optional[SignerType] = None,
-        signer_options: Optional[dict[str, Any]] = None,
+        signer_type: SignerType | None = None,
+        signer_options: dict[str, Any] | None = None,
     ) -> str:
         raise NotImplementedError(f"{type(self).__name__} does not support presigned URL generation.")
 
@@ -787,10 +787,10 @@ class BaseStorageProvider(StorageProvider):
     def list_objects(
         self,
         path: str,
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         include_directories: bool = False,
-        attribute_filter_expression: Optional[str] = None,
+        attribute_filter_expression: str | None = None,
         show_attributes: bool = False,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
@@ -869,8 +869,8 @@ class BaseStorageProvider(StorageProvider):
     def list_objects_recursive(
         self,
         path: str = "",
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         max_workers: int = 32,
         look_ahead: int = 2,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
@@ -956,8 +956,8 @@ class BaseStorageProvider(StorageProvider):
         path: str,
         max_workers: int,
         look_ahead: int,
-        start_after: Optional[str],
-        end_at: Optional[str],
+        start_after: str | None,
+        end_at: str | None,
         symlink_handling: SymlinkHandling,
     ) -> Iterator[ObjectMetadata]:
         """
@@ -1033,7 +1033,7 @@ class BaseStorageProvider(StorageProvider):
                                 break
                             yield obj
 
-    def upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, Any]] = None) -> None:
+    def upload_file(self, remote_path: str, f: str | IO, attributes: dict[str, Any] | None = None) -> None:
         remote_path = self._prepend_base_path(remote_path)
         provider_attributes = self._prepare_provider_attributes(attributes)
         self._emit_metrics(
@@ -1041,7 +1041,7 @@ class BaseStorageProvider(StorageProvider):
             f=lambda: self._upload_file(remote_path, f, provider_attributes),
         )
 
-    def download_file(self, remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> None:
+    def download_file(self, remote_path: str, f: str | IO, metadata: ObjectMetadata | None = None) -> None:
         remote_path = self._prepend_base_path(remote_path)
         if metadata is None or metadata.symlink_target is not None:
             remote_path = self._resolve_symlink_path(remote_path)
@@ -1054,7 +1054,7 @@ class BaseStorageProvider(StorageProvider):
         self,
         remote_paths: list[str],
         local_paths: list[str],
-        metadata: Optional[Sequence[Optional[ObjectMetadata]]] = None,
+        metadata: Sequence[ObjectMetadata | None] | None = None,
         max_workers: int = 16,
     ) -> None:
         """
@@ -1094,7 +1094,7 @@ class BaseStorageProvider(StorageProvider):
     def _resolve_download_metadata(
         self,
         remote_paths: list[str],
-        metadata: Optional[Sequence[Optional[ObjectMetadata]]],
+        metadata: Sequence[ObjectMetadata | None] | None,
         max_workers: int,
     ) -> list[ObjectMetadata]:
         """Ensure every entry has metadata, fetching missing ones concurrently."""
@@ -1193,8 +1193,8 @@ class BaseStorageProvider(StorageProvider):
         semaphore = asyncio.Semaphore(max_workers)
 
         async def _download_one(key: str, local_path: str, use_multipart: bool) -> None:
-            error_type: Optional[str] = None
-            data_size: Optional[int] = None
+            error_type: str | None = None
+            data_size: int | None = None
             async with semaphore:
                 start_time = time.perf_counter()
                 try:
@@ -1239,7 +1239,7 @@ class BaseStorageProvider(StorageProvider):
         self,
         local_paths: list[str],
         remote_paths: list[str],
-        attributes: Optional[Sequence[Optional[dict[str, Any]]]] = None,
+        attributes: Sequence[dict[str, Any] | None] | None = None,
         max_workers: int = 16,
     ) -> None:
         """
@@ -1280,7 +1280,7 @@ class BaseStorageProvider(StorageProvider):
         self,
         local_paths: list[str],
         remote_paths: list[str],
-        attributes: Optional[Sequence[Optional[dict[str, Any]]]] = None,
+        attributes: Sequence[dict[str, Any] | None] | None = None,
         max_workers: int = 16,
     ) -> None:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -1342,8 +1342,8 @@ class BaseStorageProvider(StorageProvider):
         semaphore = asyncio.Semaphore(max_workers)
 
         async def _upload_one(local_path: str, key: str, use_multipart: bool) -> None:
-            error_type: Optional[str] = None
-            data_size: Optional[int] = None
+            error_type: str | None = None
+            data_size: int | None = None
             async with semaphore:
                 start_time = time.perf_counter()
                 try:
@@ -1384,7 +1384,7 @@ class BaseStorageProvider(StorageProvider):
 
         run_coroutine_sync(_upload_all)
 
-    def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
+    def glob(self, pattern: str, attribute_filter_expression: str | None = None) -> list[str]:
         parent_dir = extract_prefix_from_glob(pattern)
         keys = [object.key for object in self.list_objects(path=parent_dir)]
         keys = insert_directories(keys)
@@ -1413,17 +1413,16 @@ class BaseStorageProvider(StorageProvider):
         self,
         path: str,
         body: bytes,
-        if_match: Optional[str] = None,
-        if_none_match: Optional[str] = None,
-        attributes: Optional[dict[str, str]] = None,
+        if_match: str | None = None,
+        if_none_match: str | None = None,
+        attributes: dict[str, str] | None = None,
     ) -> int:
         """
         :return: Data size in bytes.
         """
-        pass
 
     @abstractmethod
-    def _get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
+    def _get_object(self, path: str, byte_range: Range | None = None) -> bytes:
         pass
 
     @abstractmethod
@@ -1431,10 +1430,9 @@ class BaseStorageProvider(StorageProvider):
         """
         :return: Data size in bytes.
         """
-        pass
 
     @abstractmethod
-    def _delete_object(self, path: str, if_match: Optional[str] = None) -> None:
+    def _delete_object(self, path: str, if_match: str | None = None) -> None:
         """
         Deletes an object from the storage provider.
 
@@ -1444,7 +1442,6 @@ class BaseStorageProvider(StorageProvider):
         :raises RuntimeError: If deletion fails.
         :raises PreconditionFailedError: If the if_match condition is not met.
         """
-        pass
 
     @abstractmethod
     def _make_symlink(self, path: str, target: str) -> None:
@@ -1454,7 +1451,6 @@ class BaseStorageProvider(StorageProvider):
         :param path: Full physical path for the symlink.
         :param target: Full physical path that the symlink points to.
         """
-        pass
 
     @abstractmethod
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
@@ -1464,8 +1460,8 @@ class BaseStorageProvider(StorageProvider):
     def _list_objects(
         self,
         path: str,
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         include_directories: bool = False,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
@@ -1478,18 +1474,15 @@ class BaseStorageProvider(StorageProvider):
         :param include_directories: Whether to include directories in the result.
         :param symlink_handling: How to handle symbolic links during listing.
         """
-        pass
 
     @abstractmethod
-    def _upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, str]] = None) -> int:
+    def _upload_file(self, remote_path: str, f: str | IO, attributes: dict[str, str] | None = None) -> int:
         """
         :return: Data size in bytes.
         """
-        pass
 
     @abstractmethod
-    def _download_file(self, remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> int:
+    def _download_file(self, remote_path: str, f: str | IO, metadata: ObjectMetadata | None = None) -> int:
         """
         :return: Data size in bytes.
         """
-        pass

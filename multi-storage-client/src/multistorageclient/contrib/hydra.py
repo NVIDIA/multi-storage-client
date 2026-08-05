@@ -21,7 +21,6 @@ configuration files from remote storage systems using Multi-Storage Client.
 """
 
 import logging
-from typing import List, Optional
 
 from hydra.core.config_search_path import ConfigSearchPath, SearchPathElement
 from hydra.core.object_type import ObjectType
@@ -124,7 +123,7 @@ class MSCConfigSource(ConfigSource):
             resolve_storage_client(self.base_url)
             return True
         except Exception:
-            logger.error("MSC config source not available", exc_info=True)
+            logger.exception("MSC config source not available")
             return False
 
     def is_group(self, config_path: str) -> bool:
@@ -167,7 +166,7 @@ class MSCConfigSource(ConfigSource):
         except Exception:
             return False
 
-    def list(self, config_path: str, results_filter: Optional[ObjectType]) -> List[str]:
+    def list(self, config_path: str, results_filter: ObjectType | None) -> list[str]:
         """
         List items under the specified config path.
 
@@ -176,7 +175,7 @@ class MSCConfigSource(ConfigSource):
         :return: List of config names and group names under the specified path.
         """
         full_url = self._resolve_full_url(config_path)
-        files: List[str] = []
+        files: list[str] = []
 
         try:
             # Use MSC to resolve client and list items directly
@@ -218,10 +217,10 @@ class MSCConfigSource(ConfigSource):
                 )
 
         except Exception:
-            logger.error(f"Failed to list MSC path '{full_url}'", exc_info=True)
+            logger.exception(f"Failed to list MSC path '{full_url}'")
             # Return empty list if we can't list the directory
 
-        return sorted(list(set(files)))
+        return sorted(set(files))
 
     def __repr__(self) -> str:
         return f"MSCConfigSource(provider={self.provider}, path={self.scheme()}://{self.path})"

@@ -17,7 +17,6 @@ import io
 import json
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Union
 
 from ..types import ObjectMetadata
 
@@ -134,7 +133,7 @@ class ParquetManifestFormatHandler(ManifestFormatHandler):
         return object_metadata
 
 
-def get_format_handler(manifest_format: Union[ManifestFormat, str]) -> ManifestFormatHandler:
+def get_format_handler(manifest_format: ManifestFormat | str) -> ManifestFormatHandler:
     if isinstance(manifest_format, str):
         try:
             manifest_format = ManifestFormat(manifest_format)

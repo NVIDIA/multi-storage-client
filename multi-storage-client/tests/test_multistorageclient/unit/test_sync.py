@@ -236,7 +236,7 @@ def test_sync_function(
         verify_sync_and_contents(target_url=second_msc_url, expected_files=expected_files)
 
         print("Deleting all the files at the target and going again.")
-        for key in expected_files.keys():
+        for key in expected_files:
             msc.delete(os.path.join(target_msc_url, key))
 
         print("Syncing using prefixes to just copy one subfolder.")
@@ -268,7 +268,7 @@ def test_sync_function(
         assert result.total_time_seconds > 0
 
         print("Deleting files at the source and syncing again, verify deletes at target.")
-        keys_to_delete = [k for k in expected_files.keys() if k.startswith("dir2")]
+        keys_to_delete = [k for k in expected_files if k.startswith("dir2")]
         # Save the bytes before deleting
         deleted_files_data = {k: expected_files[k] for k in keys_to_delete}
         # Delete keys at the source.
@@ -296,7 +296,7 @@ def test_sync_function(
         # Delete all remaining keys at source and verify the deletes propagate to target.
         remaining_files_count = len(expected_files)
         remaining_bytes = sum(len(v.encode("utf-8")) for v in expected_files.values())
-        for key in expected_files.keys():
+        for key in expected_files:
             msc.delete(os.path.join(source_msc_url, key))
         result = msc.sync(source_url=source_msc_url, target_url=target_msc_url, delete_unmatched_files=True)
 
@@ -375,8 +375,8 @@ def test_sync_from(temp_data_store_type: type[tempdatastore.TemporaryDataStore])
         create_local_test_dataset(source_msc_url, source_files)
 
         print(f"First sync from {source_msc_url} to {target_msc_url}")
-        source_client, source_path = msc.resolve_storage_client(source_msc_url)
-        target_client, target_path = msc.resolve_storage_client(target_msc_url)
+        source_client, _ = msc.resolve_storage_client(source_msc_url)
+        target_client, _ = msc.resolve_storage_client(target_msc_url)
 
         # The leading "/" is implied, but a rendundant one should be handled okay.
         target_client.sync_from(source_client, "/folder/", "/synced-files/")
@@ -954,9 +954,9 @@ def test_sync_with_manifest_overwrite_behavior():
         with_overwrite_url = f"msc://{with_overwrite_profile}"
 
         # Create source files
-        msc.write(f"{source_url}/file1.txt", "content1".encode())
-        msc.write(f"{source_url}/file2.txt", "content2".encode())
-        msc.write(f"{source_url}/dir/file3.txt", "content3".encode())
+        msc.write(f"{source_url}/file1.txt", b"content1")
+        msc.write(f"{source_url}/file2.txt", b"content2")
+        msc.write(f"{source_url}/dir/file3.txt", b"content3")
 
         # Test sync with allow_overwrites=False
         print("Testing sync with allow_overwrites=False")
@@ -973,8 +973,8 @@ def test_sync_with_manifest_overwrite_behavior():
             assert f.read() == b"content3"
 
         # Modify source files (with different content length to trigger overwrite check)
-        msc.write(f"{source_url}/file1.txt", "modified1".encode())
-        msc.write(f"{source_url}/file2.txt", "modified2".encode())
+        msc.write(f"{source_url}/file1.txt", b"modified1")
+        msc.write(f"{source_url}/file2.txt", b"modified2")
 
         # Second sync with allow_overwrites=False should now fail with SyncError
         # This validates that NGCDP-5748 is fixed - errors from worker threads are now
@@ -1003,8 +1003,8 @@ def test_sync_with_manifest_overwrite_behavior():
             assert f.read() == b"content3"
 
         # Modify source files again
-        msc.write(f"{source_url}/file1.txt", "modified_again1".encode())
-        msc.write(f"{source_url}/file2.txt", "modified_again2".encode())
+        msc.write(f"{source_url}/file1.txt", b"modified_again1")
+        msc.write(f"{source_url}/file2.txt", b"modified_again2")
 
         # Second sync should succeed with allow_overwrites=True
         msc.sync(f"{source_url}/", f"{with_overwrite_url}/synced/")
@@ -1072,8 +1072,8 @@ def test_sync_resume_with_metadata_provider():
         print("Manually copying some files to simulate partial sync...")
         manually_copied_files = ["file1.txt", "dir/file3.txt", "dir/subdir/file5.txt"]
 
-        target_client, target_path = msc.resolve_storage_client(target_url)
-        source_client, source_path = msc.resolve_storage_client(source_url)
+        target_client, _ = msc.resolve_storage_client(target_url)
+        source_client, _ = msc.resolve_storage_client(source_url)
 
         assert source_client._storage_provider
         assert target_client._storage_provider
@@ -1121,7 +1121,7 @@ def test_sync_resume_with_metadata_provider():
 
         # Verify that files NOT manually copied were created during sync
         print("Verifying new files were created during sync...")
-        not_manually_copied = [f for f in source_files.keys() if f not in manually_copied_files]
+        not_manually_copied = [f for f in source_files if f not in manually_copied_files]
 
         for file_path in not_manually_copied:
             info = target_client._storage_provider.get_object_metadata(file_path)

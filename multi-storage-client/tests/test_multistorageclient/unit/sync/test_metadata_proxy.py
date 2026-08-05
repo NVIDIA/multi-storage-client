@@ -16,7 +16,7 @@
 import queue
 from collections.abc import Iterator
 from datetime import datetime, timezone
-from typing import Optional, cast
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -137,10 +137,10 @@ class _NoOpMutatingDelegate(MetadataProvider):
     def list_objects(
         self,
         path: str,
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         include_directories: bool = False,
-        attribute_filter_expression: Optional[str] = None,
+        attribute_filter_expression: str | None = None,
         show_attributes: bool = False,
     ) -> Iterator[ObjectMetadata]:
         return iter([])
@@ -148,7 +148,7 @@ class _NoOpMutatingDelegate(MetadataProvider):
     def get_object_metadata(self, path: str, include_pending: bool = False) -> ObjectMetadata:
         raise FileNotFoundError(path)
 
-    def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
+    def glob(self, pattern: str, attribute_filter_expression: str | None = None) -> list[str]:
         return []
 
     def realpath(self, logical_path: str) -> ResolvedPath:
@@ -346,7 +346,7 @@ class _OverwriteMetadataProvider:
 
     def get_object_metadata(self, path, include_pending=False):
         if include_pending and path in self._pending_adds:
-            phys, meta = self._pending_adds[path]
+            _, meta = self._pending_adds[path]
             return ObjectMetadata(
                 key=path,
                 content_length=meta.content_length,

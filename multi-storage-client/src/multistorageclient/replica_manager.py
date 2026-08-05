@@ -20,7 +20,7 @@ import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO, StringIO
-from typing import IO, Union
+from typing import IO
 
 from .types import StorageProvider
 
@@ -50,7 +50,7 @@ class ReplicaManager:
         self._upload_lock = threading.Lock()
 
     def download_from_replica_or_primary(
-        self, remote_path: str, file: Union[str, IO], storage_provider: StorageProvider
+        self, remote_path: str, file: str | IO, storage_provider: StorageProvider
     ) -> None:
         """Download the file from replicas, falling back to the primary provider.
 
@@ -102,7 +102,7 @@ class ReplicaManager:
                 f"Submitted background replica upload for {remote_path} to {len(replicas_that_need_updates)} replicas"
             )
 
-    def _prepare_file_for_upload(self, file: Union[str, IO]) -> tuple[str, bool]:
+    def _prepare_file_for_upload(self, file: str | IO) -> tuple[str, bool]:
         """Convert file object to path and determine if cleanup is needed.
 
         :param file: file-like object or string path
@@ -122,7 +122,7 @@ class ReplicaManager:
 
     def _upload_to_replicas(
         self,
-        file: Union[str, IO],
+        file: str | IO,
         remote_path: str,
         replica_clients: list,
     ) -> None:
@@ -150,8 +150,8 @@ class ReplicaManager:
 
             logger.debug(f"Completed replica upload for {remote_path}")
 
-        except Exception as e:
-            logger.error(f"Replica upload process failed for {remote_path}: {e}", exc_info=True)
+        except Exception:
+            logger.exception(f"Replica upload process failed for {remote_path}")
         finally:
             # Remove file from uploading set
             with self._upload_lock:

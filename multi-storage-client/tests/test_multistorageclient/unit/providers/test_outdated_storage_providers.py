@@ -14,8 +14,8 @@
 # limitations under the License.
 
 from collections.abc import Iterator
-from datetime import datetime
-from typing import IO, Optional, Union
+from datetime import datetime, timezone
+from typing import IO
 
 import pytest
 
@@ -34,19 +34,19 @@ class OutdatedStorageProvider(BaseStorageProvider):
         self,
         path: str,
         body: bytes,
-        if_match: Optional[str] = None,
-        if_none_match: Optional[str] = None,
-        attributes: Optional[dict[str, str]] = None,
+        if_match: str | None = None,
+        if_none_match: str | None = None,
+        attributes: dict[str, str] | None = None,
     ) -> int:
         return len(body)
 
-    def _get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
+    def _get_object(self, path: str, byte_range: Range | None = None) -> bytes:
         return b""
 
     def _copy_object(self, src_path: str, dest_path: str) -> int:
         return 0
 
-    def _delete_object(self, path: str, if_match: Optional[str] = None) -> None:
+    def _delete_object(self, path: str, if_match: str | None = None) -> None:
         pass
 
     def _make_symlink(self, path: str, target: str) -> None:
@@ -54,15 +54,17 @@ class OutdatedStorageProvider(BaseStorageProvider):
 
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         if not path.endswith("txt"):
-            return ObjectMetadata(key=path, content_length=0, type="directory", last_modified=datetime.now())
+            return ObjectMetadata(
+                key=path, content_length=0, type="directory", last_modified=datetime.now(tz=timezone.utc)
+            )
         else:
-            return ObjectMetadata(key=path, content_length=0, type="file", last_modified=datetime.now())
+            return ObjectMetadata(key=path, content_length=0, type="file", last_modified=datetime.now(tz=timezone.utc))
 
     def _list_objects(
         self,
         prefix: str,  # Note: using 'prefix' instead of 'path' (old interface)
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         include_directories: bool = False,
     ) -> Iterator[ObjectMetadata]:
         """
@@ -72,8 +74,12 @@ class OutdatedStorageProvider(BaseStorageProvider):
         """
         # Mock implementation that returns some test objects
         mock_objects = [
-            ObjectMetadata(key=f"{prefix}/file1.txt", content_length=100, type="file", last_modified=datetime.now()),
-            ObjectMetadata(key=f"{prefix}/file2.txt", content_length=200, type="file", last_modified=datetime.now()),
+            ObjectMetadata(
+                key=f"{prefix}/file1.txt", content_length=100, type="file", last_modified=datetime.now(tz=timezone.utc)
+            ),
+            ObjectMetadata(
+                key=f"{prefix}/file2.txt", content_length=200, type="file", last_modified=datetime.now(tz=timezone.utc)
+            ),
         ]
 
         for obj in mock_objects:
@@ -84,10 +90,10 @@ class OutdatedStorageProvider(BaseStorageProvider):
                 continue
             yield obj
 
-    def _upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, str]] = None) -> int:
+    def _upload_file(self, remote_path: str, f: str | IO, attributes: dict[str, str] | None = None) -> int:
         return 0
 
-    def _download_file(self, remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> int:
+    def _download_file(self, remote_path: str, f: str | IO, metadata: ObjectMetadata | None = None) -> int:
         return 0
 
 

@@ -24,7 +24,7 @@ import traceback
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import xattr
 
@@ -325,7 +325,7 @@ class BatchSyncHandler(ABC):
         self,
         worker_id: str,
         exception: Exception,
-        file_key: Optional[str],
+        file_key: str | None,
         operation: OperationType,
     ) -> None:
         """Report an error to the error queue."""
@@ -340,10 +340,8 @@ class BatchSyncHandler(ABC):
             )
             self.error_queue.put(error_info)
         else:
-            logger.error(
-                f"Worker {worker_id}: Exception during {operation} on {file_key}: {exception}\n{traceback.format_exc()}"
-            )
-            raise
+            logger.exception(f"Worker {worker_id}: Exception during {operation} on {file_key}: {exception}")
+            raise exception
 
     @abstractmethod
     def _execute_batch_transfer(
@@ -352,7 +350,6 @@ class BatchSyncHandler(ABC):
         transfer_items: list[tuple[ObjectMetadata, str]],
     ) -> None:
         """Execute the batch transfer for items that passed filtering."""
-        pass
 
 
 class PosixToPosixHandler(BatchSyncHandler):
@@ -393,7 +390,7 @@ class PosixToRemoteHandler(BatchSyncHandler):
     ) -> None:
         source_local_paths: list[str] = []
         target_remote_paths: list[str] = []
-        attributes: list[Optional[dict[str, Any]]] = []
+        attributes: list[dict[str, Any] | None] = []
 
         for file_metadata, target_file_path in transfer_items:
             source_physical_path = self.source_client.get_posix_path(file_metadata.key)
@@ -449,7 +446,7 @@ class RemoteToRemoteHandler(BatchSyncHandler):
             target_remote_paths: list[str] = []
             temp_local_paths: list[str] = []
             source_metadata: list[ObjectMetadata] = []
-            attributes: list[Optional[dict[str, Any]]] = []
+            attributes: list[dict[str, Any] | None] = []
 
             for i, (file_metadata, target_file_path) in enumerate(transfer_items):
                 source_remote_paths.append(file_metadata.key)

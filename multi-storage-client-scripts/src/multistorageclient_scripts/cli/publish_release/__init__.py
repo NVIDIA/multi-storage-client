@@ -29,8 +29,8 @@ import githubkit.exception
 import packaging.utils
 import packaging.version
 
-import multistorageclient_scripts.cli as cli
-import multistorageclient_scripts.utils.argparse_extensions as argparse_extensions
+from multistorageclient_scripts import cli
+from multistorageclient_scripts.utils import argparse_extensions
 
 logger = logging.getLogger(__name__)
 
@@ -88,11 +88,11 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
 
         multi_storage_client_version = packaging.version.Version(importlib.metadata.version("multi-storage-client"))
 
-        release_notes = pathlib.Path(f"../.release_notes/{str(multi_storage_client_version)}.md").resolve()
+        release_notes = pathlib.Path(f"../.release_notes/{multi_storage_client_version!s}.md").resolve()
 
         multi_storage_client_artifacts = pathlib.Path("../multi-storage-client/dist").resolve()
         multi_storage_client_wheels = [
-            *multi_storage_client_artifacts.glob(f"*-{str(multi_storage_client_version)}-*.whl")
+            *multi_storage_client_artifacts.glob(f"*-{multi_storage_client_version!s}-*.whl")
         ]
 
         multi_storage_client_docs_artifacts = pathlib.Path("../multi-storage-client-docs/dist").resolve()
@@ -122,12 +122,12 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
 
         logger.info(f"Git commit revision: {git_commit_revision}")
 
-        logger.info(f"multi-storage-client version: {str(multi_storage_client_version)}")
+        logger.info(f"multi-storage-client version: {multi_storage_client_version!s}")
 
         if not release_notes.exists():
-            raise FileNotFoundError(f"Missing release notes at {str(release_notes)}!")
+            raise FileNotFoundError(f"Missing release notes at {release_notes!s}!")
         if len(release_notes.read_text().strip()) == 0:
-            raise ValueError(f"Empty release notes at {str(release_notes)}!")
+            raise ValueError(f"Empty release notes at {release_notes!s}!")
 
         logger.info(
             "\n".join(
@@ -145,19 +145,17 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
 
         multi_storage_client_docs_index = multi_storage_client_docs_artifacts / "index.html"
         if not (multi_storage_client_docs_index.exists() and multi_storage_client_docs_index.is_file()):
-            raise ValueError(
-                f"Missing multi-storage-client-docs website in {str(multi_storage_client_docs_artifacts)}!"
-            )
+            raise ValueError(f"Missing multi-storage-client-docs website in {multi_storage_client_docs_artifacts!s}!")
 
         if len(multi_storage_client_wheels) == 0:
-            raise FileNotFoundError(f"Missing multi-storage-client wheels in {str(multi_storage_client_artifacts)}!")
+            raise FileNotFoundError(f"Missing multi-storage-client wheels in {multi_storage_client_artifacts!s}!")
 
         for multi_storage_client_wheel in multi_storage_client_wheels:
             name, version, _, _ = packaging.utils.parse_wheel_filename(str(multi_storage_client_wheel.name))
             if name != "multi-storage-client":
-                raise ValueError(f"Mismatched multi-storage-client wheel name at {str(multi_storage_client_wheel)}.")
+                raise ValueError(f"Mismatched multi-storage-client wheel name at {multi_storage_client_wheel!s}.")
             if version != multi_storage_client_version:
-                raise ValueError(f"Mismatched multi-storage-client wheel version at {str(multi_storage_client_wheel)}.")
+                raise ValueError(f"Mismatched multi-storage-client wheel version at {multi_storage_client_wheel!s}.")
 
         logger.info(
             "\n".join(
@@ -209,13 +207,13 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
             logger.info(
                 "\n".join(
                     [
-                        f"Found existing GitHub release for {str(multi_storage_client_version)}:",
+                        f"Found existing GitHub release for {multi_storage_client_version!s}:",
                         pprint.pformat(get_release_by_tag_response.parsed_data.model_dump()),
                     ]
                 )
             )
 
-            logger.info(f"Existing GitHub release for {str(multi_storage_client_version)}. Nothing to do.")
+            logger.info(f"Existing GitHub release for {multi_storage_client_version!s}. Nothing to do.")
             return 0
         except githubkit.exception.RequestFailed as e:
             if e.response.status_code != 404:
@@ -225,18 +223,18 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
                     get_ref_response = github_client.rest.git.get_ref(
                         owner="NVIDIA",
                         repo="multi-storage-client",
-                        ref=f"tags/{str(multi_storage_client_version)}",
+                        ref=f"tags/{multi_storage_client_version!s}",
                     )
                     logger.info(
                         "\n".join(
                             [
-                                f"Found existing Git tag for {str(multi_storage_client_version)}:",
+                                f"Found existing Git tag for {multi_storage_client_version!s}:",
                                 pprint.pformat(get_ref_response.parsed_data.model_dump()),
                             ]
                         )
                     )
 
-                    logger.info(f"Existing Git tag for {str(multi_storage_client_version)}. Nothing to do.")
+                    logger.info(f"Existing Git tag for {multi_storage_client_version!s}. Nothing to do.")
                     return 0
                 except githubkit.exception.RequestFailed as e:
                     if e.response.status_code != 404:
@@ -260,7 +258,7 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
         logger.info(
             "\n".join(
                 [
-                    f"Created draft GitHub release for {str(multi_storage_client_version)}:",
+                    f"Created draft GitHub release for {multi_storage_client_version!s}:",
                     pprint.pformat(create_release_response.parsed_data.model_dump()),
                 ]
             )
@@ -289,7 +287,7 @@ def func(arguments: Arguments) -> argparse_extensions.CommandFunction.ExitCode:
         #
         # Flaky tests can cause CI/CD pipelines to fail the intended release commit.
         # Since most CI/CD platforms don't block subsequent runs on failure, a subsequent commit may be released instead.
-        logger.info(f"Draft GitHub release for {str(multi_storage_client_version)} is ready for manual undrafting.")
+        logger.info(f"Draft GitHub release for {multi_storage_client_version!s} is ready for manual undrafting.")
 
         if arguments.phase == Phase.publish:
             return 0
