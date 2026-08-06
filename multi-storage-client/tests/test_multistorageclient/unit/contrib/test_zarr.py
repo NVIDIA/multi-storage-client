@@ -17,10 +17,12 @@ import os
 import tempfile
 
 import pytest
-import zarr
 
 import multistorageclient as msc
 from multistorageclient.types import MSC_PROTOCOL
+
+# The zarr extra is empty on Python 3.14 until we migrate to Zarr 3.x.
+zarr = pytest.importorskip("zarr")
 
 
 @pytest.fixture

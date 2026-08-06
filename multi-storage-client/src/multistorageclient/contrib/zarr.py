@@ -19,8 +19,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-import zarr as _zarr
-from zarr.storage import BaseStore
+
+# The zarr extra resolves to nothing on Python 3.14 (Zarr 2.x can't run there and MSC doesn't
+# support Zarr 3.x yet), so these imports are unresolvable in a Python 3.14 environment. The
+# suppressions keep `just analyze` working there; where Zarr is installed they are inert and
+# both modules are type checked as usual. ``multistorageclient.__getattr__`` turns the resulting
+# runtime ImportError into an actionable message.
+import zarr as _zarr  # pyright: ignore[reportMissingImports]
+from zarr.storage import BaseStore  # pyright: ignore[reportMissingImports]
 
 from ..shortcuts import resolve_storage_client
 from ..types import MSC_PROTOCOL

@@ -27,6 +27,7 @@ from typing import IO, Any, TypeVar
 
 import xattr
 
+from .. import _xattr
 from ..telemetry import Telemetry
 from ..types import AWARE_DATETIME_MIN, ObjectMetadata, Range, SymlinkHandling
 from ..utils import (
@@ -206,7 +207,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
         def _invoke_api() -> ObjectMetadata:
             metadata_dict = {}
             try:
-                json_bytes = xattr.getxattr(path, "user.json")
+                json_bytes = _xattr.getxattr(path, "user.json")
                 metadata_dict = json.loads(json_bytes.decode("utf-8"))
             except (OSError, KeyError, json.JSONDecodeError, AttributeError) as e:
                 logger.debug(f"Failed to read extended attributes from {path}: {e}")
