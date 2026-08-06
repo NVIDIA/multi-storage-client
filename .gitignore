@@ -57,3 +57,6 @@ multi-storage-client/src/multistorageclient/explorer/static/
 .windsurf/
 CLAUDE.md
 .mcp.json
+
+# Local cuObject SDK copy for the optional MSC `rdma` feature (never committed)
+multi-storage-client/rust/vendor/
