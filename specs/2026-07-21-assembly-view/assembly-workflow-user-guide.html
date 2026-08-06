@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Assembly Module — Build Your Own Assembly Workflow</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg:#f5f8fb; --surface:#fff; --soft:#edf3f6; --text:#172033; --muted:#5f6b7c;
+      --border:#d6e0e8; --accent:#116b5a; --accent-soft:#e1f3ee; --warning:#8a5b00;
+      --warning-soft:#fff4d6; --danger:#9d3038; --danger-soft:#fdebed; --info:#426891;
+      --info-soft:#e8f0f8; --code:#101827; --code-text:#eef4ff; --shadow:0 8px 28px rgba(25,38,57,.08);
+      --max:1480px;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg:#0d131d; --surface:#141c29; --soft:#1c2635; --text:#e9eef6; --muted:#aab4c4;
+        --border:#2b384a; --accent:#6bd9bd; --accent-soft:#173a34; --warning:#ffd174;
+        --warning-soft:#3d321c; --danger:#ff9fa8; --danger-soft:#442328; --info:#9bc6f1;
+        --info-soft:#1b3047; --code:#080d14; --code-text:#eef4ff; --shadow:0 8px 28px rgba(0,0,0,.28);
+      }
+    }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body { margin:0; background:var(--bg); color:var(--text); font-family:Inter,ui-sans-serif,system-ui,sans-serif; line-height:1.62; }
+    a { color:var(--accent); text-underline-offset:.18em; }
+    code,pre { font-family:"SFMono-Regular",Consolas,monospace; }
+    code { padding:.1em .28em; border-radius:.3rem; background:var(--soft); font-size:.92em; overflow-wrap:anywhere; }
+    pre { margin:1rem 0; padding:1rem 1.1rem; overflow-x:auto; border-radius:.7rem; background:var(--code); color:var(--code-text); line-height:1.5; font-size:.85rem; }
+    pre code { padding:0; background:transparent; color:inherit; overflow-wrap:normal; }
+    h1,h2,h3 { line-height:1.24; letter-spacing:-.015em; }
+    h1 { margin:.35rem 0 .8rem; font-size:clamp(2rem,4.8vw,3.5rem); }
+    h2 { margin:0 0 1rem; font-size:clamp(1.4rem,2.5vw,2rem); }
+    h3 { margin:1.55rem 0 .65rem; font-size:1.16rem; }
+    p { margin:.6rem 0 1rem; }
+    ul,ol { padding-left:1.35rem; }
+    li+li { margin-top:.38rem; }
+    .hero { border-bottom:1px solid var(--border); background:radial-gradient(circle at 82% 10%,color-mix(in srgb,var(--accent) 16%,transparent),transparent 30rem),var(--surface); }
+    .hero-inner { max-width:var(--max); margin:0 auto; padding:4rem 2.2rem 3.3rem; }
+    .eyebrow { color:var(--accent); font-weight:700; letter-spacing:.08em; text-transform:uppercase; font-size:.8rem; }
+    .subtitle { max-width:1050px; margin:0; color:var(--muted); font-size:1.08rem; }
+    .meta,.doc-links { display:flex; flex-wrap:wrap; gap:.6rem 1.1rem; align-items:center; }
+    .meta { margin-top:1.4rem; color:var(--muted); font-size:.9rem; }
+    .doc-links { margin-top:1.25rem; }
+    .button { display:inline-block; padding:.55rem .8rem; border:1px solid var(--border); border-radius:.55rem; background:var(--surface); color:var(--text); text-decoration:none; font-weight:650; }
+    .button.primary { border-color:var(--accent); background:var(--accent); color:var(--bg); }
+    .layout { display:grid; grid-template-columns:minmax(220px,280px) minmax(0,1fr); gap:2rem; max-width:var(--max); margin:0 auto; padding:2rem 2.2rem 6rem; }
+    .toc { align-self:start; position:sticky; top:1.2rem; max-height:calc(100vh - 2.4rem); overflow:auto; padding:.8rem 0; font-size:.88rem; }
+    .toc strong { display:block; margin-bottom:.55rem; }
+    .toc a { display:block; padding:.32rem .6rem; border-left:2px solid transparent; color:var(--muted); text-decoration:none; }
+    .toc a:hover { border-left-color:var(--accent); color:var(--text); background:var(--accent-soft); }
+    main { min-width:0; }
+    section { margin-bottom:1.6rem; padding:1.8rem; border:1px solid var(--border); border-radius:.9rem; background:var(--surface); box-shadow:var(--shadow); scroll-margin-top:1.2rem; }
+    .decision,.callout { padding:1rem 1.1rem; border-radius:.7rem; }
+    .decision { border:1px solid color-mix(in srgb,var(--accent) 45%,var(--border)); background:var(--accent-soft); }
+    .callout { margin:1rem 0; border-left:4px solid var(--warning); background:var(--warning-soft); }
+    .callout.info { border-left-color:var(--info); background:var(--info-soft); }
+    .callout.danger { border-left-color:var(--danger); background:var(--danger-soft); }
+    .grid-2,.grid-3 { display:grid; gap:.9rem; margin:1rem 0; }
+    .grid-2 { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .grid-3 { grid-template-columns:repeat(3,minmax(0,1fr)); }
+    .card { padding:1rem; border:1px solid var(--border); border-radius:.7rem; background:var(--soft); }
+    .card h3 { margin-top:0; }
+    .label { display:block; margin-bottom:.25rem; color:var(--muted); font-size:.78rem; font-weight:700; letter-spacing:.05em; text-transform:uppercase; }
+    .value { display:block; font-size:1.12rem; font-weight:750; }
+    .small { color:var(--muted); font-size:.88rem; }
+    .table-wrap { max-width:100%; overflow-x:auto; margin:1rem 0; }
+    table { width:100%; border-collapse:collapse; font-size:.9rem; }
+    th,td { padding:.72rem; border-bottom:1px solid var(--border); text-align:left; vertical-align:top; }
+    th { background:var(--soft); }
+    .architecture { display:grid; gap:.7rem; margin:1.1rem 0; padding:1rem; border:1px dashed var(--border); border-radius:.8rem; background:color-mix(in srgb,var(--soft) 72%,transparent); }
+    .arch-row { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.75rem; }
+    .arch-node { padding:.8rem; border:1px solid var(--border); border-radius:.6rem; background:var(--surface); text-align:center; }
+    .arch-node.user { background:var(--warning-soft); }
+    .arch-node.new { background:var(--accent-soft); }
+    .arch-node.existing { background:var(--info-soft); }
+    .arch-arrow { text-align:center; color:var(--muted); font-weight:700; }
+    .formula { padding:.85rem 1rem; border-radius:.65rem; background:var(--code); color:var(--code-text); font-family:monospace; overflow:auto; white-space:nowrap; }
+    .checklist { list-style:none; padding-left:0; }
+    .checklist li { position:relative; padding-left:1.5rem; }
+    .checklist li::before { content:"□"; position:absolute; left:0; color:var(--accent); font-weight:800; }
+    @media (max-width:1000px) { .layout { grid-template-columns:1fr; } .toc { position:static; max-height:none; } }
+    @media (max-width:760px) { .hero-inner,.layout { padding-left:1rem; padding-right:1rem; } section { padding:1.15rem; } .grid-2,.grid-3,.arch-row { grid-template-columns:1fr; } }
+    @media print { body { background:#fff; color:#111; } .toc,.doc-links { display:none; } .layout { display:block; padding:1rem; } section { box-shadow:none; } }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-inner">
+      <div class="eyebrow">User Guide · Extension and Composition</div>
+      <h1>Build Your Own Assembly Workflow</h1>
+      <p class="subtitle">
+        Implement the application-owned planning and service-extension points, bind existing StorageClients, construct an
+        AssemblyClient, and operate on one validated AssemblyView. This guide covers only public contracts and caller-visible
+        behavior.
+      </p>
+      <div class="meta">
+        <span>Spec date: 2026-07-21</span><span>Last revised: 2026-07-22</span><span>Status: Proposed API</span>
+        <span>Audience: application and platform integrators</span><span>Initial surface: synchronous, read-only</span>
+      </div>
+      <div class="doc-links">
+        <a class="button" href="high-level-design.html">High-Level Design</a>
+        <a class="button primary" href="assembly-workflow-user-guide.html">Workflow User Guide</a>
+        <a class="button" href="implementation-and-test-plan.html">Implementation &amp; Test Plan</a>
+      </div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="toc" aria-label="Table of contents">
+      <strong>Contents</strong>
+      <a href="#ownership">1. What MSC and applications provide</a>
+      <a href="#provider">2. Provide descriptors and plans</a>
+      <a href="#plan">3. Build a complete plan</a>
+      <a href="#objects">4. Bind stored-object sources</a>
+      <a href="#services">5. Implement service execution</a>
+      <a href="#compose">6. Compose AssemblyClient</a>
+      <a href="#view">7. Use AssemblyView</a>
+      <a href="#freshness">8. Expiration and consistency</a>
+      <a href="#adoption">9. Troubleshooting and adoption</a>
+    </nav>
+
+    <main>
+      <section id="ownership">
+        <h2>1. What MSC provides—and what your application provides</h2>
+        <div class="callout info">
+          This guide describes a proposed <code>multistorageclient.assembly</code> API. It is an adoption contract, not a
+          description of a feature already available in a released package.
+        </div>
+
+        <div class="decision">
+          <strong>MSC provides the assembly types, orchestration, and validation. Your application provides the plan and every
+          application-specific implementation.</strong> Assembly remains a separate layer above existing StorageClients; it
+          is not a StorageClient subclass or a StorageProvider.
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Concern</th><th>MSC provides</th><th>Your application provides</th></tr></thead>
+            <tbody>
+              <tr><td>Planning</td><td><code>AssemblyPlanProvider</code> SPI and <code>StaticAssemblyListProvider</code>.</td><td>A provider implementation and instance, unless the static provider is sufficient.</td></tr>
+              <tr><td>Stored bytes</td><td><code>ObjectSourceBinding</code> and execution through the public StorageClient API.</td><td>A configured StorageClient and the binding instance created from it.</td></tr>
+              <tr><td>Synthesized bytes</td><td><code>ServiceSegmentExecutor</code> SPI and result validation.</td><td>The complete executor implementation and instance whenever a plan contains a <code>ServiceSegment</code>.</td></tr>
+              <tr><td>Literal bytes</td><td>Built-in handling for bounded <code>InlineSegment</code> values.</td><td>No binding.</td></tr>
+              <tr><td>User operations</td><td><code>AssemblyClient</code>, <code>AssemblyView</code>, and the read-only reader.</td><td>Dependency composition, lifecycle ownership, and calls to the public API.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="architecture" role="img" aria-label="The application supplies a plan provider, configured object bindings, and service executor implementations. AssemblyClient validates and freezes them before returning AssemblyView.">
+          <div class="arch-row">
+            <div class="arch-node user"><strong>AssemblyPlanProvider</strong><br><span class="small">application implementation or MSC static adapter</span></div>
+            <div class="arch-node new"><strong>AssemblyClient.resolve()</strong><br><span class="small">resolve · validate · freeze · capabilities</span></div>
+            <div class="arch-node new"><strong>AssemblyView</strong><br><span class="small">one fixed executable generation</span></div>
+          </div>
+          <div class="arch-arrow">descriptor metadata → complete plan → validated frozen bindings + capabilities → view</div>
+          <div class="arch-row">
+            <div class="arch-node existing"><strong>ObjectSourceBinding</strong><br><span class="small">configured StorageClient</span></div>
+            <div class="arch-node user"><strong>ServiceSegmentExecutor</strong><br><span class="small">application implementation</span></div>
+            <div class="arch-node new"><strong>InlineSegment</strong><br><span class="small">MSC handling; no binding</span></div>
+          </div>
+        </div>
+
+        <div class="callout danger">
+          Plans contain aliases and declarative segment data only. Do not place clients, credentials, profiles, endpoints, or
+          executable objects in a plan, and do not access <code>StorageClient</code> private providers.
+        </div>
+
+        <p class="small">
+          Architectural rationale is in the <a href="high-level-design.html">High-Level Design</a>. Internal algorithms,
+          limits, error normalization, and the full verification matrix are in the
+          <a href="implementation-and-test-plan.html">Implementation &amp; Test Plan</a>.
+        </p>
+      </section>
+
+      <section id="provider">
+        <h2>2. Provide metadata first, then one complete plan</h2>
+        <p>
+          Implement <code>AssemblyPlanProvider</code> when plans come from an application-owned catalog. If your application
+          already has validated <code>assembly-list/v1</code> batches, use <code>StaticAssemblyListProvider</code> instead.
+        </p>
+
+        <pre><code>class AssemblyPlanProvider(ABC):
+    @abstractmethod
+    def resolve_descriptor(
+        self,
+        request: ResolveAssemblyRequest,
+    ) -> AssemblyDescriptor:
+        """Return metadata for one fixed, unexpired generation."""
+
+    @abstractmethod
+    def get_plan(
+        self,
+        descriptor: AssemblyDescriptor,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> AssemblyPlan:
+        """Return the complete ordered plan for that descriptor."""
+
+    @property
+    def supports_refresh(self) -> bool:
+        return False
+
+    def refresh(self, request: RefreshAssemblyRequest) -> AssemblyDescriptor:
+        raise AssemblyCapabilityError()
+
+    def close(self) -> None:
+        pass</code></pre>
+
+        <div class="grid-2">
+          <div class="card">
+            <h3>Application provider</h3>
+            <pre><code># MyAssemblyPlanProvider is application code.
+provider = MyAssemblyPlanProvider(...)</code></pre>
+            <p class="small">Your implementation maps application metadata into MSC descriptors and complete plans.</p>
+          </div>
+          <div class="card">
+            <h3>Portable static provider</h3>
+            <pre><code># StaticAssemblyListProvider is supplied by MSC.
+provider = StaticAssemblyListProvider.from_batches(batches)</code></pre>
+            <p class="small">Use this when the application already produces the portable list artifact.</p>
+          </div>
+        </div>
+
+        <ul>
+          <li><code>resolve_descriptor()</code> returns control-plane metadata only: reference, generation, size, expiration, and optional descriptive fields.</li>
+          <li>An <code>AssemblyDescriptor</code> has no <code>read</code>, <code>open</code>, or <code>materialize</code> operation.</li>
+          <li><code>get_plan()</code> receives that descriptor directly and returns every ordered segment for the complete logical object—never a range-specific fragment.</li>
+          <li>The plan must describe the same reference, generation, size, and expiration as the descriptor.</li>
+          <li>When refresh is supported, it returns metadata for a replacement generation; it never mutates the previous descriptor or view.</li>
+        </ul>
+      </section>
+
+      <section id="plan">
+        <h2>3. Build one complete, ordered AssemblyPlan</h2>
+        <p>
+          A plan is the ordered concatenation of three public segment kinds. MSC treats their contents as bytes and does not
+          interpret application formats.
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Segment</th><th>Use it for</th><th>Selected by</th></tr></thead>
+            <tbody>
+              <tr><td><code>ObjectSegment</code></td><td>A byte range from an existing stored object.</td><td><code>source_id</code> → local <code>ObjectSourceBinding</code>.</td></tr>
+              <tr><td><code>ServiceSegment</code></td><td>Bytes produced by an application-defined operation.</td><td><code>executor_id</code> → application-supplied <code>ServiceSegmentExecutor</code>.</td></tr>
+              <tr><td><code>InlineSegment</code></td><td>A small literal carried in the plan.</td><td>No alias or binding.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <pre><code>plan = AssemblyPlan.create(
+    schema_version="assembly-plan/v1",
+    descriptor=descriptor,
+    segments=(
+        InlineSegment(kind="inline", data=b"HDR", length=3),
+        ObjectSegment(
+            kind="object",
+            source_id="raw",
+            resource="records/part-0001.bin",
+            byte_range=ByteRange(offset=0, size=4_194_304),
+            length=4_194_304,
+        ),
+        ServiceSegment(
+            kind="service",
+            executor_id="rewrite",
+            operation="build-metadata",
+            parameters=FrozenJsonObject.from_mapping({"layout": "v3"}),
+            length=16_384,
+            range_mode=ServiceRangeMode.WHOLE_RESULT,
+        ),
+    ),
+)</code></pre>
+
+        <ul>
+          <li>Tuple order is the logical byte order. Do not add a second ordering field.</li>
+          <li>The checked sum of segment lengths must equal <code>descriptor.size</code>.</li>
+          <li>Every <code>source_id</code> and <code>executor_id</code> must match a local binding supplied to <code>AssemblyClient</code>.</li>
+          <li>In v1, the client-only object binding rejects source selectors and <code>ENFORCE_DURING_READ</code> validators; <code>IDENTITY_ONLY</code> metadata does not pin bytes. MSC can instead verify a checksum over the complete object segment.</li>
+          <li>A service revision supports stronger consistency only when the selected executor advertises and enforces that revision kind; MSC can also verify a checksum over the complete service result.</li>
+          <li>MSC validates the complete plan before returning a view or performing byte I/O.</li>
+        </ul>
+
+        <div class="callout info">
+          <code>assembly-list/v1</code> is the portable representation of the same descriptor-and-plan model. Applications may
+          exchange or persist it, then construct <code>StaticAssemblyListProvider</code>. The exact artifact schema and limits
+          are documented in the <a href="implementation-and-test-plan.html#contracts">Implementation &amp; Test Plan</a>.
+        </div>
+      </section>
+
+      <section id="objects">
+        <h2>4. Bind stored-object aliases to existing StorageClients</h2>
+        <pre><code>raw_storage = StorageClient(
+    StorageClientConfig.from_file(profile="raw-data")
+)
+
+# ObjectSourceBinding is provided by MSC.
+raw_source = ObjectSourceBinding(
+    client=raw_storage,
+)
+
+object_sources = {
+    "raw": raw_source,  # matches ObjectSegment.source_id
+}</code></pre>
+
+        <ul>
+          <li>Configure credentials, account, endpoint, root, and provider through the normal StorageClient APIs.</li>
+          <li>The plan selects only the alias <code>raw</code>; it cannot select or reconfigure the underlying authority.</li>
+          <li>The binding must be able to interpret every <code>resource</code> assigned to its alias.</li>
+          <li>StorageClients remain application-owned and are always borrowed by AssemblyClient; manage them through their existing public APIs.</li>
+          <li>Request stronger consistency only when every non-inline segment has enforceable evidence; in v1, an object segment needs a verified complete checksum.</li>
+        </ul>
+      </section>
+
+      <section id="services">
+        <h2>5. Implement ServiceSegmentExecutor for application-produced bytes</h2>
+        <div class="decision">
+          <strong>MSC provides only the <code>ServiceSegmentExecutor</code> SPI. It provides no concrete executor.</strong>
+          Your application owns the complete implementation, constructor, dependencies, and fulfillment behavior.
+        </div>
+
+        <p>The required implementation surface is intentionally small:</p>
+
+        <pre><code>class ServiceSegmentExecutor(ABC):
+    @property
+    @abstractmethod
+    def range_modes(self) -> frozenset[ServiceRangeMode]: ...
+
+    @abstractmethod
+    def execute(
+        self,
+        request: ServiceExecutionRequest,
+        *,
+        context: SourceReadContext,
+    ) -> ServiceResultStream:
+        """Return bytes for exactly one ServiceSegment request."""</code></pre>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Input or result</th><th>User-facing meaning</th></tr></thead>
+            <tbody>
+              <tr><td><code>ServiceExecutionRequest.segment</code></td><td>The single <code>ServiceSegment</code> selected by MSC.</td></tr>
+              <tr><td><code>requested_range</code></td><td>A subrange only when the executor advertises <code>STABLE_SUBRANGES</code>; otherwise absent.</td></tr>
+              <tr><td><code>SourceReadContext</code></td><td>The operation deadline, cancellation signal, and maximum output-chunk size.</td></tr>
+              <tr><td><code>ServiceResultStream</code></td><td>A closeable stream of byte chunks for this one request.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Executor obligations</h3>
+        <ul>
+          <li>Process one <code>ServiceExecutionRequest</code>; never require the complete <code>AssemblyPlan</code>.</li>
+          <li>Do not choose segment ordering or read another plan alias.</li>
+          <li>Return exactly the declared complete length or requested subrange, according to the advertised range mode.</li>
+          <li>Honor the supplied deadline and cancellation signal, emit bounded byte chunks, and make the result stream closeable.</li>
+          <li>Keep advertised capability values stable for the executor's injected lifetime, and preserve stable-subrange behavior throughout each operation.</li>
+        </ul>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Range mode</th><th>What your executor promises</th></tr></thead>
+            <tbody>
+              <tr><td><code>WHOLE_RESULT</code></td><td>Return the complete declared result for the segment. MSC validates it before exposing a requested slice.</td></tr>
+              <tr><td><code>STABLE_SUBRANGES</code></td><td>Return exactly the requested subrange, and ensure all subranges refer to one stable logical result during the operation.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          <code>RetrySafety.NEVER</code> is the safe default. Declare <code>RetrySafety.SAFE</code> only when your implementation
+          can repeat the operation without changing its meaning. Internal scheduling and retry mechanics are specified in the
+          <a href="implementation-and-test-plan.html#sources">Implementation &amp; Test Plan</a>.
+        </p>
+
+        <div class="callout info">
+          This guide deliberately does not show a concrete executor class or prescribe how an executor produces bytes. The
+          application supplies an already constructed object that satisfies this SPI.
+        </div>
+      </section>
+
+      <section id="compose">
+        <h2>6. Compose AssemblyClient at the application boundary</h2>
+        <p>
+          Treat dependencies as inputs to your composition function. This keeps it explicit that the executor implementation
+          comes from the application rather than MSC.
+        </p>
+
+        <pre><code>def create_assembly_client(
+    *,
+    plan_provider: AssemblyPlanProvider,
+    raw_storage: StorageClient,
+    service_executors: Mapping[str, ServiceSegmentExecutor],
+) -> AssemblyClient:
+    return AssemblyClient(
+        plan_provider=plan_provider,
+        object_sources={
+            "raw": ObjectSourceBinding(client=raw_storage),
+        },
+        service_executors=service_executors,
+    )
+
+
+# Every dependency instance comes from the application composition root.
+assembly = create_assembly_client(
+    plan_provider=plan_provider,
+    raw_storage=raw_storage,
+    service_executors={
+        "rewrite": service_executor,
+    },
+)</code></pre>
+
+        <ul>
+          <li><code>raw</code> must match every intended <code>ObjectSegment.source_id</code>.</li>
+          <li><code>rewrite</code> must match every intended <code>ServiceSegment.executor_id</code>.</li>
+          <li>If no plan contains service segments, pass an empty <code>service_executors</code> mapping and implement no executor.</li>
+          <li>Injected dependencies are borrowed by default; the application remains responsible for their lifecycle.</li>
+          <li>Unknown aliases, incomplete plans, and unsupported capabilities fail before <code>resolve()</code> returns a view.</li>
+        </ul>
+      </section>
+
+      <section id="view">
+        <h2>7. Resolve once, then operate on AssemblyView</h2>
+        <div class="formula">resolve_descriptor(request) → descriptor → get_plan(descriptor) → validate + freeze + capabilities → AssemblyView</div>
+
+        <pre><code>reference = AssemblyReference.from_mapping(
+    namespace="exports",
+    key="run-42.bin",
+    parameters={"variant": "training"},
+)
+
+with assembly.resolve(reference) as view:
+    descriptor = view.metadata
+    assert descriptor.generation == "g-193"
+
+    tail = view.read(
+        ByteRange(offset=descriptor.size - 8192, size=8192)
+    )
+
+    with view.open() as reader:
+        if reader.seekable():
+            reader.seek(descriptor.size - 4)
+            trailer = reader.read(4)
+
+    view.materialize("/tmp/run-42.bin", overwrite=False)</code></pre>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Operation</th><th>Caller-visible behavior</th></tr></thead>
+            <tbody>
+              <tr><td><code>resolve</code></td><td>Returns only after descriptor lookup, complete-plan validation, binding freeze, and capability computation all succeed.</td></tr>
+              <tr><td><code>metadata</code></td><td>Returns the view's immutable <code>AssemblyDescriptor</code>; the descriptor itself is not executable.</td></tr>
+              <tr><td><code>read</code></td><td>Returns one logical byte range from the fixed view generation.</td></tr>
+              <tr><td><code>open</code></td><td>Returns a read-only stream over the same validated generation and plan; call <code>seekable()</code> before seeking.</td></tr>
+              <tr><td><code>materialize</code></td><td>Publishes the complete logical object to a local path without exposing a partial successful result.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <ul>
+          <li>A view contains its descriptor, complete validated plan, frozen bindings, computed consistency/capabilities, and lifecycle state.</li>
+          <li>The view never resolves a different generation implicitly.</li>
+          <li>Closing a view prevents new operations through that view; it does not mutate another view.</li>
+          <li>Manage the parent <code>AssemblyClient</code> and application-owned dependencies at the composition boundary.</li>
+        </ul>
+      </section>
+
+      <section id="freshness">
+        <h2>8. Handle expiration, refresh, and consistency explicitly</h2>
+        <div class="grid-2">
+          <div class="card">
+            <h3>Expiration</h3>
+            <ul>
+              <li>Every descriptor has a mandatory future <code>expires_at</code>.</li>
+              <li>A new operation on an expired view raises <code>AssemblyExpiredError</code>.</li>
+              <li>An operation admitted while valid may finish after expiration.</li>
+              <li>There is no implicit refresh or generation fall-forward.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>Consistency</h3>
+            <ul>
+              <li><code>EXPIRATION_ONLY</code> is the default and does not promise immutable source bytes.</li>
+              <li><code>SNAPSHOT_PINNED</code> is opt-in. In v1, every object segment needs a verified complete checksum; each service segment needs an executor-enforced revision or a verified complete checksum.</li>
+              <li>Unsupported stronger consistency fails before byte I/O.</li>
+            </ul>
+          </div>
+        </div>
+
+        <pre><code>old_view = assembly.resolve(reference)
+
+try:
+    data = old_view.read()
+except AssemblyExpiredError:
+    new_view = assembly.refresh(old_view)
+    assert new_view is not old_view
+    data = new_view.read()</code></pre>
+
+        <p>
+          Refresh returns a newly resolved and validated view. It never mutates the old one. If refresh fails, the old view
+          remains unchanged; whether it is usable still depends on its original expiration and lifecycle state.
+        </p>
+      </section>
+
+      <section id="adoption">
+        <h2>9. Troubleshooting and adoption checklist</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>What you observe</th><th>What to check</th></tr></thead>
+            <tbody>
+              <tr><td><code>AssemblyExpiredError</code></td><td>Resolve or refresh explicitly; do not extend or mutate the old view.</td></tr>
+              <tr><td>Resolve returns no view</td><td>Check descriptor echo, expiration, complete-plan length, aliases, and requested consistency.</td></tr>
+              <tr><td>Unknown object alias</td><td>Ensure <code>ObjectSegment.source_id</code> matches a configured <code>object_sources</code> key.</td></tr>
+              <tr><td>Unknown service alias</td><td>Ensure <code>ServiceSegment.executor_id</code> matches an application-supplied executor.</td></tr>
+              <tr><td>Service length or protocol failure</td><td>Check the executor's advertised range mode, returned length, chunk contract, deadline, and cancellation behavior.</td></tr>
+              <tr><td>Stronger consistency is rejected</td><td>Confirm every object segment has a complete checksum and every service segment has either an executor-enforced revision or a complete checksum.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Before adopting the feature</h3>
+        <ul class="checklist">
+          <li>Choose a custom provider or <code>StaticAssemblyListProvider</code>.</li>
+          <li>Return metadata-only descriptors and complete ordered plans.</li>
+          <li>Configure every StorageClient outside the plan and bind it by a local alias.</li>
+          <li>Implement and inject <code>ServiceSegmentExecutor</code> only when service segments are present.</li>
+          <li>Keep credentials, dependency objects, and executable behavior out of portable plans.</li>
+          <li>Exercise full-object, partial-range, open-reader, materialization, expiration, and refresh flows.</li>
+          <li>Request only consistency guarantees that the plan evidence, Assembly core, and selected executors can enforce together.</li>
+          <li>Close AssemblyClient, views, and readers predictably, and manage application-owned providers, executors, StorageClients, and related resources through their own public APIs.</li>
+        </ul>
+
+        <div class="callout info">
+          The reusable provider/executor conformance suites and the complete failure, performance, and security test matrix
+          belong to the <a href="implementation-and-test-plan.html#test-architecture">Implementation &amp; Test Plan</a>.
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

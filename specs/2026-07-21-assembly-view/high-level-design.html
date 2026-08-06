@@ -1,0 +1,1187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Assembly Module — High-Level Design</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f6f8fb;
+      --surface: #ffffff;
+      --surface-soft: #eef3f7;
+      --text: #172033;
+      --muted: #5f6b7c;
+      --border: #d8e0e8;
+      --accent: #116b5a;
+      --accent-soft: #e1f3ee;
+      --accent-text: #0b5043;
+      --warning: #8a5b00;
+      --warning-soft: #fff4d6;
+      --danger: #9d3038;
+      --danger-soft: #fdebed;
+      --object: #5d7fa8;
+      --code-bg: #101827;
+      --code-text: #eef4ff;
+      --shadow: 0 8px 28px rgba(25, 38, 57, 0.08);
+      --max: 1480px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d131d;
+        --surface: #141c29;
+        --surface-soft: #1c2635;
+        --text: #e9eef6;
+        --muted: #aab4c4;
+        --border: #2b384a;
+        --accent: #6bd9bd;
+        --accent-soft: #173a34;
+        --accent-text: #acf0df;
+        --warning: #ffd174;
+        --warning-soft: #3d321c;
+        --danger: #ff9fa8;
+        --danger-soft: #442328;
+        --object: #91b7df;
+        --code-bg: #080d14;
+        --code-text: #eef4ff;
+        --shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.62;
+    }
+    a { color: var(--accent); text-underline-offset: 0.18em; }
+    code, pre { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+    code {
+      padding: 0.1em 0.28em;
+      border-radius: 0.3rem;
+      background: var(--surface-soft);
+      font-size: 0.92em;
+      overflow-wrap: anywhere;
+    }
+    pre {
+      margin: 1rem 0;
+      padding: 1rem 1.1rem;
+      overflow-x: auto;
+      border-radius: 0.7rem;
+      background: var(--code-bg);
+      color: var(--code-text);
+      line-height: 1.5;
+      font-size: 0.88rem;
+    }
+    pre code { padding: 0; background: transparent; color: inherit; overflow-wrap: normal; }
+    h1, h2, h3, h4 { line-height: 1.24; letter-spacing: -0.015em; }
+    h1 { margin: 0.35rem 0 0.8rem; font-size: clamp(2rem, 4.8vw, 3.5rem); }
+    h2 { margin: 0 0 1rem; font-size: clamp(1.4rem, 2.5vw, 2rem); }
+    h3 { margin: 1.55rem 0 0.65rem; font-size: 1.16rem; }
+    h4 { margin: 1.15rem 0 0.45rem; font-size: 1rem; }
+    p { margin: 0.6rem 0 1rem; }
+    ul, ol { padding-left: 1.35rem; }
+    li + li { margin-top: 0.38rem; }
+
+    .hero {
+      border-bottom: 1px solid var(--border);
+      background:
+        radial-gradient(circle at 82% 10%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 30rem),
+        var(--surface);
+    }
+    .hero-inner { max-width: var(--max); margin: 0 auto; padding: 4rem 2.2rem 3.3rem; }
+    .eyebrow {
+      color: var(--accent);
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-size: 0.8rem;
+    }
+    .subtitle { max-width: 980px; margin: 0; color: var(--muted); font-size: 1.08rem; }
+    .meta, .doc-links { display: flex; flex-wrap: wrap; gap: 0.6rem 1.1rem; align-items: center; }
+    .meta { margin-top: 1.4rem; color: var(--muted); font-size: 0.9rem; }
+    .doc-links { margin-top: 1.25rem; }
+    .button {
+      display: inline-block;
+      padding: 0.55rem 0.8rem;
+      border: 1px solid var(--border);
+      border-radius: 0.55rem;
+      background: var(--surface);
+      color: var(--text);
+      text-decoration: none;
+      font-weight: 650;
+    }
+    .button.primary { border-color: var(--accent); background: var(--accent); color: var(--bg); }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+      gap: 2rem;
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 2rem 2.2rem 6rem;
+    }
+    .toc {
+      align-self: start;
+      position: sticky;
+      top: 1.2rem;
+      max-height: calc(100vh - 2.4rem);
+      overflow-y: auto;
+      padding: 0.8rem 0;
+      font-size: 0.88rem;
+    }
+    .toc strong { display: block; margin-bottom: 0.55rem; }
+    .toc a {
+      display: block;
+      padding: 0.32rem 0.6rem;
+      border-left: 2px solid transparent;
+      color: var(--muted);
+      text-decoration: none;
+    }
+    .toc a:hover { border-left-color: var(--accent); color: var(--text); background: var(--accent-soft); }
+    main { min-width: 0; }
+    section {
+      margin-bottom: 1.6rem;
+      padding: 1.8rem;
+      border: 1px solid var(--border);
+      border-radius: 0.9rem;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      scroll-margin-top: 1.2rem;
+    }
+    .decision {
+      padding: 1.1rem 1.2rem;
+      border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+      border-radius: 0.7rem;
+      background: var(--accent-soft);
+    }
+    .decision strong { color: var(--accent-text); }
+    .callout {
+      margin: 1rem 0;
+      padding: 0.9rem 1rem;
+      border-left: 4px solid var(--warning);
+      background: var(--warning-soft);
+    }
+    .callout.danger { border-left-color: var(--danger); background: var(--danger-soft); }
+    .callout.info { border-left-color: var(--accent); background: var(--accent-soft); }
+    .grid-2, .grid-3, .summary-grid {
+      display: grid;
+      gap: 0.9rem;
+      margin: 1rem 0;
+    }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3, .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .card {
+      padding: 1rem;
+      border: 1px solid var(--border);
+      border-radius: 0.7rem;
+      background: var(--surface-soft);
+    }
+    .card h3, .card h4 { margin-top: 0; }
+    .label {
+      display: block;
+      margin-bottom: 0.25rem;
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .value { display: block; font-size: 1.12rem; font-weight: 750; }
+    .small { color: var(--muted); font-size: 0.88rem; }
+    .tag {
+      display: inline-block;
+      margin: 0.15rem 0.25rem 0.15rem 0;
+      padding: 0.2rem 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface-soft);
+      font-size: 0.8rem;
+    }
+    .yes { color: var(--accent-text); font-weight: 700; }
+    .no { color: var(--danger); font-weight: 700; }
+    .maybe { color: var(--warning); font-weight: 700; }
+    .table-wrap { max-width: 100%; overflow-x: auto; margin: 1rem 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.91rem; }
+    th, td { padding: 0.72rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+    th { background: var(--surface-soft); font-size: 0.82rem; letter-spacing: 0.02em; }
+    tr:last-child td { border-bottom: 0; }
+
+    .architecture {
+      display: grid;
+      gap: 0.75rem;
+      margin: 1.1rem 0;
+      padding: 1rem;
+      border: 1px dashed var(--border);
+      border-radius: 0.8rem;
+      background: color-mix(in srgb, var(--surface-soft) 72%, transparent);
+    }
+    .arch-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; align-items: stretch; }
+    .arch-node {
+      padding: 0.8rem;
+      border: 1px solid var(--border);
+      border-radius: 0.6rem;
+      background: var(--surface);
+      text-align: center;
+    }
+    .arch-node.new { border-color: color-mix(in srgb, var(--accent) 65%, var(--border)); background: var(--accent-soft); }
+    .arch-node.user { border-color: color-mix(in srgb, var(--warning) 60%, var(--border)); background: var(--warning-soft); }
+    .arch-node.existing { border-color: color-mix(in srgb, var(--object) 58%, var(--border)); }
+    .arch-arrow { text-align: center; color: var(--muted); font-weight: 700; }
+    .arch-legend { display: flex; flex-wrap: wrap; gap: 0.7rem; color: var(--muted); font-size: 0.84rem; }
+
+    .boundary-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.8rem; }
+    .boundary { padding-top: 0.75rem; border-top: 3px solid var(--border); }
+    .boundary:nth-child(1) { border-top-color: var(--accent); }
+    .boundary:nth-child(2) { border-top-color: var(--warning); }
+    .boundary:nth-child(3) { border-top-color: var(--object); }
+    .boundary h3 { margin-top: 0; }
+
+    .sample-flow {
+      display: grid;
+      gap: 0.9rem;
+      margin: 1.1rem 0 0;
+      padding: 1rem;
+      border: 1px dashed var(--border);
+      border-radius: 0.8rem;
+      background: color-mix(in srgb, var(--surface-soft) 72%, transparent);
+    }
+    .sample-caption { color: var(--muted); font-size: 0.88rem; font-weight: 700; }
+    .sample-stage {
+      padding: 1rem;
+      border: 1px solid var(--border);
+      border-radius: 0.7rem;
+      background: var(--surface);
+    }
+    .sample-plan { border-color: color-mix(in srgb, var(--warning) 55%, var(--border)); }
+    .sample-view {
+      border-color: color-mix(in srgb, var(--accent) 65%, var(--border));
+      background: var(--accent-soft);
+    }
+    .view-state-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.65rem;
+      margin-top: 0.85rem;
+    }
+    .view-state {
+      padding: 0.75rem;
+      border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+      border-radius: 0.55rem;
+      background: var(--surface);
+    }
+    .view-state strong { display: block; margin-bottom: 0.25rem; }
+    .view-state .small { display: block; }
+    .sample-stage-heading, .sample-object-heading, .sample-output {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: center;
+    }
+    .sample-object-heading { margin: 0.9rem 0 0.65rem; padding-top: 0.8rem; border-top: 1px solid var(--border); }
+    .byte-map {
+      display: grid;
+      grid-template-columns: minmax(82px, 0.55fr) minmax(145px, 1.3fr) minmax(145px, 1.3fr) minmax(120px, 0.95fr) minmax(150px, 1.2fr) minmax(82px, 0.55fr);
+      gap: 0.35rem;
+    }
+    .byte-segment {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 0.22rem;
+      min-height: 8.8rem;
+      padding: 0.75rem;
+      border: 1px solid var(--border);
+      border-top-width: 4px;
+      border-radius: 0.55rem;
+      background: var(--surface-soft);
+    }
+    .byte-segment.inline { border-top-color: var(--accent); }
+    .byte-segment.object { border-top-color: var(--object); }
+    .byte-segment.service { border-top-color: var(--warning); }
+    .segment-number {
+      display: grid;
+      place-items: center;
+      width: 1.45rem;
+      height: 1.45rem;
+      border-radius: 50%;
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 0.75rem;
+      font-weight: 750;
+    }
+    .byte-scale { display: flex; justify-content: space-between; margin-top: 0.35rem; color: var(--muted); font-size: 0.78rem; }
+    .sample-arrow { padding: 0.25rem 1rem; color: var(--muted); text-align: center; font-weight: 650; }
+    .sample-owner-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; }
+    .sample-owner {
+      padding: 0.9rem;
+      border: 1px solid var(--border);
+      border-top: 4px solid var(--border);
+      border-radius: 0.65rem;
+      background: var(--surface);
+    }
+    .sample-owner p { margin-bottom: 0; color: var(--muted); font-size: 0.88rem; }
+    .sample-owner.inline { border-top-color: var(--accent); }
+    .sample-owner.object { border-top-color: var(--object); }
+    .sample-owner.service { border-top-color: var(--warning); }
+    .sample-output {
+      padding: 1rem;
+      border: 1px solid color-mix(in srgb, var(--accent) 65%, var(--border));
+      border-radius: 0.7rem;
+      background: var(--accent-soft);
+    }
+    .sample-output p { margin-bottom: 0; }
+    .sample-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.45rem; }
+
+    .sequence { margin: 1rem 0; counter-reset: seq; }
+    .sequence-item { position: relative; margin-left: 1.1rem; padding: 0 0 1rem 1.5rem; border-left: 2px solid var(--border); }
+    .sequence-item::before {
+      counter-increment: seq;
+      content: counter(seq);
+      position: absolute;
+      left: -0.85rem;
+      top: -0.05rem;
+      width: 1.55rem;
+      height: 1.55rem;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--accent);
+      color: var(--bg);
+      font-weight: 700;
+      font-size: 0.78rem;
+    }
+    .sequence-item:last-child { padding-bottom: 0; border-left-color: transparent; }
+    .sequence-item strong { display: block; }
+    .formula {
+      padding: 0.85rem 1rem;
+      border-radius: 0.65rem;
+      background: var(--code-bg);
+      color: var(--code-text);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      overflow-x: auto;
+      white-space: nowrap;
+    }
+
+    @media (max-width: 1120px) {
+      .byte-map { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
+    @media (max-width: 1000px) {
+      .layout { grid-template-columns: 1fr; padding-top: 1rem; }
+      .toc { position: static; max-height: none; display: flex; flex-wrap: wrap; gap: 0.25rem; border-bottom: 1px solid var(--border); }
+      .toc strong { width: 100%; }
+      .toc a { border-left: 0; border-bottom: 2px solid transparent; }
+      .toc a:hover { border-bottom-color: var(--accent); }
+    }
+    @media (max-width: 760px) {
+      .hero-inner, .layout { padding-left: 1rem; padding-right: 1rem; }
+      section { padding: 1.15rem; }
+      .grid-2, .grid-3, .summary-grid, .arch-row, .boundary-list, .byte-map, .sample-owner-grid, .view-state-grid { grid-template-columns: 1fr; }
+      .button { width: 100%; text-align: center; }
+      .byte-segment { min-height: auto; }
+      .byte-scale { display: none; }
+      .sample-stage-heading, .sample-object-heading, .sample-output { align-items: flex-start; flex-direction: column; }
+      .sample-actions { justify-content: flex-start; }
+    }
+    @media print {
+      body { background: #fff; color: #111; }
+      .hero { background: #fff; }
+      .toc, .doc-links { display: none; }
+      .layout { display: block; padding: 1rem; }
+      section { box-shadow: none; break-inside: avoid; }
+      a { color: inherit; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-inner">
+      <div class="eyebrow">High-Level Design · Draft for Review</div>
+      <h1>Assembly Module</h1>
+      <p class="subtitle">
+        Decision and public API overview for a generic, read-only object assembly layer under
+        <code>multistorageclient.assembly</code>. This document explains what we are building, why it is parallel to
+        StorageClient, and where application-owned planning ends and MSC-owned byte execution begins.
+      </p>
+      <div class="meta">
+        <span>Spec date: 2026-07-21</span>
+        <span>Last revised: 2026-07-22</span>
+        <span>Status: Proposed</span>
+        <span>Compatibility: Additive</span>
+        <span>Reading time: approximately 10 minutes</span>
+      </div>
+      <div class="doc-links">
+        <a class="button primary" href="high-level-design.html">High-Level Design</a>
+        <a class="button" href="assembly-workflow-user-guide.html">Workflow User Guide</a>
+        <a class="button" href="implementation-and-test-plan.html">Implementation &amp; Test Plan</a>
+      </div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="toc" aria-label="Table of contents">
+      <strong>Contents</strong>
+      <a href="#decision">1. Executive decision</a>
+      <a href="#scope">2. Goals and scope</a>
+      <a href="#placement">3. Why a separate module</a>
+      <a href="#architecture">4. Architecture</a>
+      <a href="#public-api">5. Public API</a>
+      <a href="#sample-composition">6. Parquet example</a>
+      <a href="#extension-model">7. Extension model</a>
+      <a href="#guarantees">8. Behavioral guarantees</a>
+      <a href="#compatibility">9. Compatibility</a>
+      <a href="#open-decisions">10. Open decisions</a>
+      <a href="#appendix">11. Traceability and references</a>
+    </nav>
+
+    <main>
+      <section id="decision">
+        <h2>1. Executive decision</h2>
+        <div class="decision">
+          <strong>Build a separate <code>multistorageclient.assembly</code> module.</strong> Applications construct an
+          <code>AssemblyClient</code> with a user-supplied <code>AssemblyPlanProvider</code>, local object-source bindings, and
+          service executors. Resolving a logical name returns a fixed, expiring <code>AssemblyView</code>. The module neither
+          subclasses <code>StorageClient</code> nor registers an assembled backend as a <code>StorageProvider</code>.
+        </div>
+
+        <div class="summary-grid">
+          <div class="card">
+            <span class="label">What users receive</span>
+            <span class="value">One logical byte object</span>
+            <p class="small">Range reads, a read-only stream, metadata, and atomic local materialization.</p>
+          </div>
+          <div class="card">
+            <span class="label">What users provide</span>
+            <span class="value">Planning and bindings</span>
+            <p class="small">A plan provider plus locally trusted storage and service implementations.</p>
+          </div>
+          <div class="card">
+            <span class="label">What remains unchanged</span>
+            <span class="value">MSC storage core</span>
+            <p class="small">Existing clients, providers, profiles, paths, and mutation APIs retain their behavior.</p>
+          </div>
+        </div>
+
+        <p>
+          This preserves MSC's original purpose—unified access to physical storage—while adding an application-layer view
+          that composes bytes already available through that access. The assembly service is an application capability, not
+          a new storage backend and not necessarily an HTTP service.
+        </p>
+        <div class="formula">descriptor metadata → complete plan → validation + frozen bindings → executable AssemblyView</div>
+      </section>
+
+      <section id="scope">
+        <h2>2. Goals, scope, and non-goals</h2>
+        <p>
+          A logical object is the ordered concatenation of three explicit segment kinds. Keeping the kinds visible makes the
+          contract understandable and prevents application semantics from leaking into MSC.
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Segment</th><th>Meaning</th><th>Executed by</th></tr></thead>
+            <tbody>
+              <tr><td><code>ObjectSegment</code></td><td>An exact byte range from an existing physical object.</td><td>A locally configured <code>StorageClient</code> binding.</td></tr>
+              <tr><td><code>ServiceSegment</code></td><td>Opaque bytes generated or transformed by an application service.</td><td>A user-defined, locally configured <code>ServiceSegmentExecutor</code>.</td></tr>
+              <tr><td><code>InlineSegment</code></td><td>A small, strictly bounded literal carried in the plan.</td><td>The assembly module without external I/O.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <h3>Goals</h3>
+            <ul>
+              <li>Expose one read-only logical byte stream over ordered multi-source segments.</li>
+              <li>Resolve a complete plan with mandatory expiration and caller-controlled refresh.</li>
+              <li>Support exact ranges, streaming, metadata, and bounded local materialization.</li>
+              <li>Allow any planning backend through an in-process provider interface.</li>
+              <li>Keep credentials, endpoints, and executable bindings under local application control.</li>
+              <li>Preserve truthful consistency: expiration by default, stronger pinning only when enforceable.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>Non-goals</h3>
+            <ul>
+              <li>Define a universal HTTP or gRPC API for the planning service.</li>
+              <li>Teach MSC about specific file formats, media containers, schemas, rows, or samples.</li>
+              <li>Add write, delete, copy, sync, or presign semantics to assembled views.</li>
+              <li>Make the feature automatically appear in every existing MSC, FUSE, CLI, or fsspec path.</li>
+              <li>Let a remote plan choose credentials, profiles, arbitrary endpoints, or Python objects.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="callout info">
+          <strong>Requirements versus defensive design.</strong> The requirements explicitly call for configured sources and
+          services, direct storage reads for object segments, transport-neutral service segments, optional source
+          versions/validators, bounded execution, and no breaking changes to existing providers. They do not require public
+          binding-revision or resource-policy hooks, a built-in network executor, an MSC-defined external service API, or
+          format-specific executors. If implementation work proposes those additional safeguards or conveniences, they remain
+          separately reviewable defensive design—not requirements.
+        </div>
+      </section>
+
+      <section id="placement">
+        <h2>3. Why a separate Assembly module</h2>
+        <p>
+          The decisive question is substitutability: can assembly honestly satisfy the existing abstraction without special
+          cases? It cannot. Assembly is a derived view over several authorities, while the existing types model unified
+          access to physical storage authorities.
+        </p>
+
+        <div class="grid-2">
+          <div class="card">
+            <h3>Why not StorageProvider</h3>
+            <ul>
+              <li>A provider is a leaf authority for one physical namespace; assembly orchestrates several authorities.</li>
+              <li>The provider interface includes mutations that have no coherent meaning for a derived view.</li>
+              <li>Only StorageClient currently owns providers. A provider that owns other providers would reverse MSC's dependency and lifecycle model.</li>
+              <li>Logical identity and expiration come from the plan provider, not from any physical backend.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>Why not StorageClient</h3>
+            <ul>
+              <li>StorageClient unifies storage access; it should not acquire application-specific content orchestration.</li>
+              <li>A special case in <code>read</code> would spread into info, open, list, cache, download, sync, and error behavior.</li>
+              <li>Assembly needs fixed generations, expiration, service execution, and multi-source atomicity—concepts absent from the storage façade.</li>
+              <li>A parallel module can expose honest read-only capabilities without pretending to support the entire mutable client surface.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="callout info">
+          <strong>Provider pattern is not StorageProvider inheritance.</strong> <code>AssemblyPlanProvider</code> is a narrow
+          application extension point that returns logical descriptors and plans. Existing <code>StorageProvider</code>
+          implementations continue to perform physical I/O behind StorageClient.
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Decision driver</th><th>StorageProvider</th><th>StorageClient</th><th>Assembly module</th></tr></thead>
+            <tbody>
+              <tr><td>Abstraction fit</td><td><span class="no">Weak</span>: derived content is not a backend</td><td><span class="maybe">Mixed</span>: access fits; content planning does not</td><td><span class="yes">Strong</span>: explicit derived view</td></tr>
+              <tr><td>Ownership direction</td><td><span class="no">Reversed</span> if it owns sources</td><td>Requires pervasive special routing</td><td><span class="yes">Application composes peers</span></td></tr>
+              <tr><td>Read-only truthfulness</td><td>Conflicts with mutable contract</td><td>Conflicts with broad façade</td><td><span class="yes">Native</span></td></tr>
+              <tr><td>Compatibility risk</td><td>High</td><td>High</td><td><span class="yes">Low and additive</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="architecture">
+        <h2>4. Architecture and ownership boundaries</h2>
+        <div class="architecture" role="img" aria-label="AssemblyClient resolves descriptor metadata, obtains and validates a complete plan, freezes local bindings, and only then returns an executable AssemblyView.">
+          <div class="arch-row">
+            <div></div>
+            <div class="arch-node"><strong>Application</strong><br><span class="small">constructs dependencies and asks for a logical object</span></div>
+            <div></div>
+          </div>
+          <div class="arch-arrow">↓</div>
+          <div class="arch-row">
+            <div class="arch-node user"><strong>AssemblyPlanProvider</strong><br><span class="small"><code>resolve_descriptor()</code> → metadata<br><code>get_plan()</code> → complete plan</span></div>
+            <div class="arch-node new"><strong>AssemblyClient.resolve()</strong><br><span class="small">coordinate · validate · freeze · compute capabilities</span></div>
+            <div class="arch-node"><strong>Local binding registry</strong><br><span class="small">StorageClient sources · user-owned service executors</span></div>
+          </div>
+          <div class="arch-arrow">↓ descriptor metadata → complete plan → validation + frozen alias snapshot</div>
+          <div class="arch-row">
+            <div></div>
+            <div class="arch-node new"><strong>AssemblyView</strong><br><span class="small"><code>metadata</code> = descriptor · validated plan · frozen bindings · lifecycle</span></div>
+            <div></div>
+          </div>
+          <div class="arch-arrow">↓ dispatch by explicit segment kind</div>
+          <div class="arch-row">
+            <div class="arch-node existing"><strong>ObjectSegment</strong><br><span class="small">existing StorageClient → StorageProvider</span></div>
+            <div class="arch-node user"><strong>ServiceSegment</strong><br><span class="small">user-owned ServiceSegmentExecutor</span></div>
+            <div class="arch-node new"><strong>InlineSegment</strong><br><span class="small">bounded plan bytes</span></div>
+          </div>
+          <div class="arch-legend">
+            <span><span class="tag">Green</span> assembly module</span>
+            <span><span class="tag">Gold</span> application extension</span>
+            <span><span class="tag">Blue outline</span> existing MSC core</span>
+          </div>
+        </div>
+
+        <div class="boundary-list">
+          <div class="boundary">
+            <h3>Assembly module owns</h3>
+            <ul>
+              <li>Descriptor-to-plan resolution and executable-view construction.</li>
+              <li>Plan validation and logical range calculation.</li>
+              <li>Expiration, consistency, and view lifecycle.</li>
+              <li>Bounded execution, ordering, and atomic publication.</li>
+              <li>Stable public behavior independent of backend transport.</li>
+            </ul>
+          </div>
+          <div class="boundary">
+            <h3>Application owns</h3>
+            <ul>
+              <li>Logical namespace and file-format meaning.</li>
+              <li>Plan-provider implementation and backend protocol.</li>
+              <li>Source bindings and service-executor implementations wired at construction.</li>
+              <li>Credential, endpoint, and dependency lifecycle choices.</li>
+            </ul>
+          </div>
+          <div class="boundary">
+            <h3>Bindings own</h3>
+            <ul>
+              <li>Physical object or service-operation interpretation.</li>
+              <li>Authentication and connection management.</li>
+              <li>Transport-specific validation and bounded retries.</li>
+              <li>Resource safety and any stable identity enforcement they advertise.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section id="public-api">
+        <h2>5. Public API at a glance</h2>
+        <p>
+          The common workflow is intentionally small: inject dependencies once, resolve one generation, then operate on its
+          view. Detailed signatures, configuration fields, limits, and typed-error construction live in the
+          <a href="implementation-and-test-plan.html#contracts">Implementation &amp; Test Plan</a>.
+        </p>
+
+        <p>
+          An object source wraps an already configured <code>StorageClient</code>. A service executor is a concrete
+          user-owned implementation of <code>ServiceSegmentExecutor</code>. MSC defines the in-process behavior of that SPI,
+          not the application's external protocol.
+        </p>
+
+        <pre><code># Imports are omitted. Configure physical storage through ordinary MSC APIs.
+raw_storage = StorageClient(
+    StorageClientConfig.from_file(profile="raw-data")
+)
+
+# Existing physical storage is exposed through a normal MSC client.
+raw_source = ObjectSourceBinding(
+    client=raw_storage,
+)
+
+# User code implements MSC's ServiceSegmentExecutor SPI.
+rewrite_service = MyServiceExecutor(
+    client=my_service_client,
+)
+
+# User code also implements the control-plane provider SPI.
+catalog = MyAssemblyPlanProvider(client=my_catalog_client)
+
+assembly = AssemblyClient(
+    plan_provider=catalog,
+    object_sources={
+        "raw": raw_source,          # selected by ObjectSegment.source_id
+    },
+    service_executors={
+        "rewrite": rewrite_service, # selected by ServiceSegment.executor_id
+    },
+)
+
+# resolve() obtains descriptor metadata and a complete plan. It returns only
+# after plan validation, binding freeze, and capability computation succeed.
+view = assembly.resolve(
+    AssemblyReference(namespace="exports", key="run-42.bin")
+)
+
+# metadata is the AssemblyDescriptor for this fixed generation.
+descriptor = view.metadata
+
+# Execute one logical range or publish the whole object locally.
+footer = view.read(ByteRange(offset=footer_offset, size=8192))
+view.materialize("/tmp/run-42.bin")
+
+# Refresh creates a replacement view; the original never changes.
+new_view = assembly.refresh(view)</code></pre>
+
+        <div class="callout info">
+          <strong><code>MyServiceExecutor</code> is application code, not an MSC built-in type.</strong> It translates one
+          <code>ServiceExecutionRequest</code> into the application's HTTP, gRPC, SDK, or local-service call. It never receives
+          the complete <code>AssemblyPlan</code>, never chooses segment order, and returns only the byte stream for one
+          <code>ServiceSegment</code> under the declared length, range mode, deadline, and cancellation contract.
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Operation</th><th>What the caller gets</th><th>Important behavior</th></tr></thead>
+            <tbody>
+              <tr><td><code>resolve</code></td><td>A fixed, expiring <code>AssemblyView</code>.</td><td>Resolve metadata, acquire and validate the complete plan, freeze bindings, compute capabilities, then return; no executable view is exposed earlier.</td></tr>
+              <tr><td><code>read</code></td><td>Exactly one logical byte window.</td><td>Map the requested offsets through the view's validated plan and dispatch only intersecting segments.</td></tr>
+              <tr><td><code>open</code></td><td>A read-only stream.</td><td>The reader stays on the same generation and plan; seek is advertised only when that plan supports it safely.</td></tr>
+              <tr><td><code>metadata</code></td><td>The view's <code>AssemblyDescriptor</code>.</td><td>Control-plane metadata includes its reference, generation, size, and expiration; the descriptor itself cannot read, open, or materialize bytes.</td></tr>
+              <tr><td><code>materialize</code></td><td>A complete local file.</td><td>Walk the same plan in bounded windows and atomically publish; no-replace by default.</td></tr>
+              <tr><td><code>refresh</code></td><td>A new view.</td><td>Optional provider capability; the old view remains unchanged.</td></tr>
+              <tr><td><code>list</code> / <code>glob</code></td><td>Logical descriptors.</td><td>Optional browsing capability, separate from executable plan batches.</td></tr>
+              <tr><td>write / delete / copy / sync</td><td>Not supported.</td><td>Assembled views are deliberately read-only.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>What AssemblyView encapsulates</h3>
+        <p>
+          <code>AssemblyView</code> is more than metadata: it is the immutable execution context for one resolved generation.
+          It keeps the identity and plan stable while delegating heavy scheduling and I/O to client-owned machinery.
+        </p>
+        <div class="grid-3">
+          <div class="card">
+            <span class="label">Frozen identity</span>
+            <strong>Descriptor metadata</strong>
+            <p class="small"><code>view.metadata</code> returns the control-plane descriptor: logical reference, generation, size, expiration, and optional application metadata.</p>
+          </div>
+          <div class="card">
+            <span class="label">Executable snapshot</span>
+            <strong>Validated plan and bindings</strong>
+            <p class="small">The complete ordered AssemblyPlan and a frozen alias-to-binding snapshot validated before the view is returned.</p>
+          </div>
+          <div class="card">
+            <span class="label">Operation façade</span>
+            <strong>Logical ranges to bytes</strong>
+            <p class="small">Maps reads and materialization windows to plan segments, then delegates admission, dispatch, staging, cancellation, and assembly.</p>
+          </div>
+        </div>
+        <p class="small">
+          An <code>AssemblyDescriptor</code> is metadata only and has no byte operations. The executable view never owns a
+          StorageProvider, replans the object, or refreshes itself. <code>open()</code> creates a reader pinned to the same
+          descriptor and plan; <code>refresh()</code> creates another view. Client-wide scheduling, reader state, staging,
+          and atomic publication are detailed in
+          <a href="implementation-and-test-plan.html#executor">Executor, AssemblyView, reader, and materialization</a>.
+        </p>
+
+        <div class="callout">
+          Plans contain only the aliases <code>raw</code> and <code>rewrite</code>; credentials, service URLs, authentication,
+          and lifecycle stay in the local bindings. Dependencies are borrowed by default. The exact façade is documented in
+          <a href="implementation-and-test-plan.html#public-facade-reference">the API reference subsection</a>, and error
+          construction in <a href="implementation-and-test-plan.html#exceptions">the implementation error contract</a>.
+          Custom executor details are in <a href="implementation-and-test-plan.html#sources">the executor SPI</a>.
+        </div>
+      </section>
+
+      <section id="sample-composition">
+        <h2>6. Worked example: assembling a Parquet object</h2>
+        <p>
+          Parquet makes the byte flow concrete, but it is only an example. The planning application understands page and
+          footer semantics; the assembly module sees an ordered list of opaque byte segments, declared lengths, and local
+          bindings.
+        </p>
+
+        <figure class="sample-flow" aria-labelledby="parquet-example-caption">
+          <figcaption id="parquet-example-caption" class="sample-caption">
+            Descriptor metadata → complete plan → validated executable view → one logical byte stream
+          </figcaption>
+
+          <div class="sample-stage sample-plan">
+            <div class="sample-stage-heading">
+              <div>
+                <span class="label">1 · Resolve control-plane metadata</span>
+                <strong><code>AssemblyPlanProvider.resolve_descriptor(request)</code></strong>
+              </div>
+              <span class="tag">returns metadata only</span>
+            </div>
+
+            <div class="sample-object-heading">
+              <div>
+                <span class="label">AssemblyDescriptor g-193</span>
+                <code>AssemblyDescriptor("exports/run-42.parquet")</code>
+              </div>
+              <span class="small">generation <code>g-193</code> · logical size · mandatory expiration</span>
+            </div>
+            <p class="small">The descriptor cannot read, open, or materialize bytes.</p>
+          </div>
+
+          <div class="sample-arrow">
+            ↓ <code>AssemblyPlanProvider.get_plan(descriptor)</code> returns the complete <code>AssemblyPlan</code> for exactly
+            <code>g-193</code>—never a range-specific fragment
+          </div>
+
+          <div class="sample-stage sample-plan">
+            <div class="sample-stage-heading">
+              <div>
+                <span class="label">2 · Complete AssemblyPlan</span>
+                <strong>Six ordered logical byte segments</strong>
+              </div>
+              <span class="tag">logical size = checked segment-length sum</span>
+            </div>
+
+            <div class="sample-object-heading">
+              <div>
+                <span class="label">Plan identity</span>
+                <code>exports/run-42.parquet · g-193</code>
+              </div>
+              <span class="small">aliases only: <code>raw</code> and <code>rewrite</code></span>
+            </div>
+
+            <div class="byte-map" aria-label="Ordered logical Parquet byte layout">
+              <div class="byte-segment inline">
+                <span class="segment-number">1</span>
+                <strong>File header</strong>
+                <code>PAR1</code>
+                <span class="small">InlineSegment</span>
+              </div>
+              <div class="byte-segment object">
+                <span class="segment-number">2</span>
+                <strong>Row-group pages A</strong>
+                <code>part-001 · exact range</code>
+                <span class="small">ObjectSegment · <code>source_id="raw"</code></span>
+              </div>
+              <div class="byte-segment object">
+                <span class="segment-number">3</span>
+                <strong>Row-group pages B</strong>
+                <code>part-002 · exact range</code>
+                <span class="small">ObjectSegment · <code>source_id="raw"</code></span>
+              </div>
+              <div class="byte-segment service">
+                <span class="segment-number">4</span>
+                <strong>Page indexes</strong>
+                <code>build-indexes</code>
+                <span class="small">ServiceSegment · <code>executor_id="rewrite"</code></span>
+              </div>
+              <div class="byte-segment service">
+                <span class="segment-number">5</span>
+                <strong>Metadata + length</strong>
+                <code>FileMetaData</code>
+                <span class="small">ServiceSegment · <code>executor_id="rewrite"</code></span>
+              </div>
+              <div class="byte-segment inline">
+                <span class="segment-number">6</span>
+                <strong>Trailing magic</strong>
+                <code>PAR1</code>
+                <span class="small">InlineSegment</span>
+              </div>
+            </div>
+            <div class="byte-scale">
+              <span>logical offset 0</span>
+              <span>concatenation order →</span>
+              <span>EOF</span>
+            </div>
+          </div>
+
+          <div class="sample-arrow">
+            ↓ <code>AssemblyClient</code> validates the complete union, lengths, expiration, aliases, and requested
+            consistency; then freezes the local bindings and computes capabilities
+          </div>
+
+          <div class="sample-stage sample-view">
+            <div class="sample-stage-heading">
+              <div>
+                <span class="label">3 · Returned execution façade</span>
+                <strong><code>AssemblyClient.resolve()</code> returns <code>AssemblyView[g-193]</code></strong>
+              </div>
+              <span class="tag">fixed until caller-controlled refresh</span>
+            </div>
+            <div class="view-state-grid">
+              <div class="view-state">
+                <strong>Descriptor state</strong>
+                <span class="small"><code>view.metadata</code> is the resolved <code>AssemblyDescriptor</code></span>
+              </div>
+              <div class="view-state">
+                <strong>Validated plan</strong>
+                <span class="small">the same six ordered segments and their logical offset boundaries</span>
+              </div>
+              <div class="view-state">
+                <strong>Frozen bindings</strong>
+                <span class="small"><code>raw</code> → ObjectSourceBinding · <code>rewrite</code> → user-owned MyServiceExecutor</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="sample-arrow">
+            ↓ <code>AssemblyView</code> maps the requested logical offsets through its plan; the client's shared executor
+            dispatches only the intersecting slices
+          </div>
+
+          <div class="sample-owner-grid">
+            <div class="sample-owner inline">
+              <span class="label">Inline bytes</span>
+              <strong>Assembly module</strong>
+              <p>Emits the two bounded <code>PAR1</code> literals carried by the plan. No external I/O is needed.</p>
+            </div>
+            <div class="sample-owner object">
+              <span class="label">Stored page ranges</span>
+              <strong><code>ObjectSourceBinding</code> → existing <code>StorageClient</code></strong>
+              <p>Reads exact ranges from <code>part-001</code> and <code>part-002</code> with locally configured storage credentials.</p>
+            </div>
+            <div class="sample-owner service">
+              <span class="label">Generated bytes</span>
+              <strong>User-owned <code>MyServiceExecutor</code></strong>
+              <p>Fulfills one service segment through the application's own protocol; it does not receive or order the complete plan.</p>
+            </div>
+          </div>
+
+          <div>
+            <span class="label">How the same view reuses the plan</span>
+            <div class="grid-3">
+              <div class="card">
+                <strong><code>view.read(footer_range)</code></strong>
+                <p class="small">Maps the logical offsets through the plan, touches only segments 5–6, invokes <code>rewrite</code>, then appends the inline trailing magic.</p>
+              </div>
+              <div class="card">
+                <strong><code>view.open()</code></strong>
+                <p class="small">Maps every cursor read against the same generation and six-segment plan without resolving again.</p>
+              </div>
+              <div class="card">
+                <strong><code>view.materialize(...)</code></strong>
+                <p class="small">Walks the complete plan in bounded windows and atomically publishes the local file.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="sample-arrow">
+            ↓ The view preserves plan order while the client engine validates and concatenates results; neither interprets
+            their Parquet meaning
+          </div>
+
+          <div class="sample-output">
+            <div>
+              <span class="label">Result</span>
+              <strong>One valid logical Parquet object</strong>
+              <p class="small">The caller sees one continuous byte sequence assembled from stored, generated, and inline bytes.</p>
+            </div>
+            <div class="sample-actions" aria-label="Available public operations">
+              <code>view.read(range)</code>
+              <code>view.open()</code>
+              <code>view.materialize(...)</code>
+            </div>
+          </div>
+        </figure>
+
+        <div class="callout">
+          <strong>The format boundary is intentional.</strong> If a different application assembles JSONL, a media file, or
+          an unknown future format, the AssemblyClient algorithm is unchanged. Only the plan provider and service executors
+          know why each byte range belongs in that position.
+        </div>
+      </section>
+
+      <section id="extension-model">
+        <h2>7. Extension model</h2>
+        <p>
+          Application-owned planning enters MSC through a provider-style in-process interface. Users may back this interface
+          with HTTP, gRPC, a database, a local manifest, or an existing SDK without changing AssemblyClient.
+        </p>
+
+        <pre><code>class AssemblyPlanProvider(ABC):
+    def resolve_descriptor(
+        self, request: ResolveAssemblyRequest
+    ) -> AssemblyDescriptor: ...
+
+    def get_plan(
+        self,
+        descriptor: AssemblyDescriptor,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> AssemblyPlan: ...
+
+    # Optional: advertise support and return a replacement generation.
+    def refresh(self, request: RefreshAssemblyRequest) -> AssemblyDescriptor: ...
+
+    def close(self) -> None: ...</code></pre>
+
+        <div class="grid-2">
+          <div class="card">
+            <h3>The provider promises</h3>
+            <ul>
+              <li><code>resolve_descriptor()</code> returns metadata only: one exact reference, generation, size, and future expiration.</li>
+              <li><code>get_plan()</code> returns that descriptor's complete ordered object plan, never a range-specific fragment.</li>
+              <li>Canonical bounded models and stable public failure classifications.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>AssemblyClient promises</h3>
+            <ul>
+              <li>Expose no <code>AssemblyView</code> before complete-plan validation and binding freeze succeed.</li>
+              <li>Perform no source or service byte I/O while resolving or validating the plan.</li>
+              <li>Never silently substitute a generation or downgrade consistency.</li>
+              <li>Resolve aliases only through the frozen local registries.</li>
+              <li>Supply a reusable conformance suite for custom implementations.</li>
+            </ul>
+          </div>
+        </div>
+
+        <h3>No universal control-plane network API</h3>
+        <div class="callout info">
+          MSC does not define endpoints such as <code>POST /assemblies:resolve</code>. Network shape, authentication, and retry
+          policy belong to the provider implementation. The same rule applies to service fulfillment: MSC defines the
+          in-process SPI, not server endpoints, payloads, or authentication. MSC also standardizes the optional
+          language-neutral <code>assembly-list/v1</code> artifact.
+        </div>
+
+        <h3>Planning and byte fulfillment are separate roles</h3>
+        <p>
+          <code>AssemblyPlanProvider</code> says <em>which bytes form the object</em>.
+          A user-owned <code>ServiceSegmentExecutor</code> produces bytes for exactly one service segment under its declared
+          length, range, deadline, and cancellation contract. It receives neither the complete plan nor authority to order
+          segments. One backend may support both concerns, but the application injects separate adapters so the paths can
+          have different authorization, scaling, retry, and lifecycle policies.
+        </p>
+
+        <h3>Core adoption has no network-adapter dependency</h3>
+        <p>
+          Custom providers and service executors are sufficient for the core feature. A reusable network convenience adapter
+          would be a separately approved follow-up with its own generic transport contract; it is not a prerequisite for the
+          Assembly engine or its end-to-end tests.
+        </p>
+      </section>
+
+      <section id="guarantees">
+        <h2>8. Key behavioral guarantees</h2>
+        <p>
+          These are the guarantees an API reviewer needs to evaluate. Their exact algorithms, limits, exception hierarchy,
+          and test cases are specified in the <a href="implementation-and-test-plan.html">Implementation &amp; Test Plan</a>.
+        </p>
+
+        <div class="grid-2">
+          <div class="card">
+            <h3>Fixed and expiring views</h3>
+            <p>A view holds its descriptor, one complete plan, frozen bindings, computed capabilities, and lifecycle state. Expiration is checked before each new operation. Refresh creates another view and never mutates the old one.</p>
+          </div>
+          <div class="card">
+            <h3>Truthful consistency</h3>
+            <p><code>EXPIRATION_ONLY</code> is the default and does not promise immutable source bytes. <code>SNAPSHOT_PINNED</code> is available only when every non-inline segment has enforceable stable identity.</p>
+          </div>
+          <div class="card">
+            <h3>Complete-plan validation</h3>
+            <p>MSC validates the segment union, aliases, expiration, per-segment lengths, and checked global sum before any byte I/O or view exposure. Invalid or unknown input fails closed.</p>
+          </div>
+          <div class="card">
+            <h3>Bounded execution</h3>
+            <p>Concurrency, memory, staging, inline data, result sizes, and deadlines are client-wide bounded. Whole-result services stage once per operation and are sliced locally.</p>
+          </div>
+          <div class="card">
+            <h3>Atomic public operations</h3>
+            <p>A one-shot read and each reader call publish no partial result on failure. Materialization publishes atomically; earlier successful streaming calls remain an already-observed prefix.</p>
+          </div>
+          <div class="card">
+            <h3>Local trust boundary</h3>
+            <p>Plans carry aliases, never credentials or arbitrary endpoints. Public errors are typed and redacted so backend messages, resources, and secrets do not cross the boundary.</p>
+          </div>
+        </div>
+
+        <div class="sequence" aria-label="Runtime sequence">
+          <div class="sequence-item"><strong>Resolve descriptor</strong><code>resolve_descriptor()</code> selects metadata for one fixed generation; it exposes no byte operations.</div>
+          <div class="sequence-item"><strong>Acquire complete plan</strong><code>get_plan(descriptor)</code> returns all ordered segments for that generation.</div>
+          <div class="sequence-item"><strong>Validate and freeze</strong>MSC checks freshness, limits, aliases, segment kinds, and total length, then freezes bindings and computes capabilities.</div>
+          <div class="sequence-item"><strong>Return the view</strong>Only now does <code>AssemblyClient.resolve()</code> expose an executable <code>AssemblyView</code>.</div>
+          <div class="sequence-item"><strong>Map and dispatch</strong>Only logical slices intersecting the request become work, under one deadline and cancellation scope.</div>
+          <div class="sequence-item"><strong>Publish</strong>Validated bytes are concatenated in plan order and returned or atomically materialized.</div>
+        </div>
+
+        <div class="callout danger">
+          <strong>No implied snapshot from expiration alone.</strong> A fixed plan does not make an unversioned mutable source
+          immutable. Callers requiring stable bytes must request <code>SNAPSHOT_PINNED</code>; resolution fails before I/O if
+          the complete plan and bindings cannot enforce it.
+        </div>
+      </section>
+
+      <section id="compatibility">
+        <h2>9. Compatibility and implementation direction</h2>
+        <div class="grid-2">
+          <div class="card">
+            <h3>Unchanged</h3>
+            <ul>
+              <li><code>StorageClient</code> constructor and public methods.</li>
+              <li><code>StorageProvider</code> ABC, factories, and third-party providers.</li>
+              <li>Existing storage profile schema and <code>msc://</code> behavior.</li>
+              <li>Current pathlib, fsspec, CLI, sync, and FUSE behavior.</li>
+              <li>Go components in the initial release.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>Additive</h3>
+            <ul>
+              <li><code>multistorageclient.assembly</code> package and explicit construction.</li>
+              <li>Provider and service-executor SPIs plus an adopter conformance suite.</li>
+              <li>Versioned <code>assembly-list/v1</code> artifact and golden vectors.</li>
+              <li>Python client, view, reader, models, and stable error contract.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="callout">
+          <strong>Explicit trade-off:</strong> a clean parallel module is not automatically transparent to every existing
+          StorageClient consumer. Consumers accepting binary streams can use <code>AssemblyReader</code>; consumers requiring
+          a local path can use <code>materialize</code>. Storage-shaped or filesystem adapters are follow-up decisions driven
+          by concrete demand.
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Layer</th><th>Initial responsibility</th></tr></thead>
+            <tbody>
+              <tr><td>Language-neutral</td><td><code>assembly-list/v1</code>, canonical JSON behavior, and cross-runtime golden vectors.</td></tr>
+              <tr><td>Python</td><td>Public SPIs, orchestration, validation, view/reader behavior, static-list adapter, and custom extensibility.</td></tr>
+              <tr><td>Rust</td><td>No changes. This design proposes no Rust implementation or FFI path for Assembly or <code>ServiceSegmentExecutor</code>.</td></tr>
+              <tr><td>Go / FUSE</td><td>No initial change; future support can consume the portable artifact or completed materialization.</td></tr>
+              <tr><td>Configuration</td><td>No new storage profile type; explicit constructor injection in v1.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="open-decisions">
+        <h2>10. Open decisions and approval gates</h2>
+        <p>
+          The architecture is implementable, but these product choices affect public scope or the performance envelope and
+          should be agreed before implementation is committed.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Decision</th><th>Proposed v1 position</th><th>Why it matters</th></tr></thead>
+            <tbody>
+              <tr><td>Product scale envelope</td><td><strong>Blocking input:</strong> define object count, segments/bytes, lookup-versus-traversal mix, latency, and memory/disk ceilings.</td><td>Determines batch and index representations and conformance fixtures.</td></tr>
+              <tr><td>Provider concurrency model</td><td>Synchronous and thread-safe, matching current MSC public style.</td><td>A simultaneous async surface would double the initial API and test matrix.</td></tr>
+              <tr><td>Phase-one browsing</td><td>Optional capability; not required for resolve/read/open.</td><td>Some applications already know exact names and have no directory model.</td></tr>
+              <tr><td>Mutable sources</td><td>Allowed under <code>EXPIRATION_ONLY</code>; enforceable identity required for <code>SNAPSHOT_PINNED</code>.</td><td>Supports baseline requirements without making false stability claims.</td></tr>
+              <tr><td>Defensive binding extensions</td><td>Keep the common binding client-only; any cache identity is optional or derived, and a public <code>resource_policy</code> requires separate approval.</td><td>Preserves cache and authority safety without presenting non-requirement fields as mandatory API.</td></tr>
+              <tr><td>Convenience transport adapter</td><td>Separate follow-up only after approval of a generic transport contract and user-provided protocol translation.</td><td>Keeps the core SPI independent of any server API, authentication scheme, or transport implementation.</td></tr>
+              <tr><td>Portable-list hard ceilings</td><td>Conservative inline and decode limits; applications may lower them.</td><td>Prevents the control artifact from becoming an unbounded bulk-data path.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="appendix">
+        <h2>11. Appendix: requirements traceability and references</h2>
+        <h3>Requirement-to-design traceability</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Requirement theme</th><th>Design response</th></tr></thead>
+            <tbody>
+              <tr><td>Direct storage bytes where possible</td><td><code>ObjectSegment</code> delegates exact ranges through existing StorageClient bindings.</td></tr>
+              <tr><td>Synthesized structure or fully generated results</td><td><code>ServiceSegment</code> supports service-produced bytes without teaching MSC the file format.</td></tr>
+              <tr><td>Small literal structure</td><td><code>InlineSegment</code> supports strictly bounded bytes with no external I/O.</td></tr>
+              <tr><td>Unambiguous complete ordering and length</td><td>The provider returns a complete ordered plan; MSC checks the global segment-length sum before I/O.</td></tr>
+              <tr><td>Versioned language-neutral assembly list</td><td><code>assembly-list/v1</code> provides canonical batches and cross-language golden vectors.</td></tr>
+              <tr><td>Expiration and refresh</td><td>Expiration is mandatory; started work may finish; refresh returns a distinct generation and view.</td></tr>
+              <tr><td>Optional revisions and checksums</td><td>Baseline expiration-only semantics remain valid; callers may require computed snapshot-pinned consistency.</td></tr>
+              <tr><td>No universal service transport</td><td>Planning and fulfillment use separate in-process SPIs; service fulfillment is supplied by user code and MSC defines no server contract.</td></tr>
+              <tr><td>Existing MSC behavior unchanged</td><td>The feature is a parallel package using existing StorageClient instances as dependencies.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Current MSC evidence</h3>
+        <ul>
+          <li><code>StorageClient</code> owns and delegates to storage clients/providers; providers are leaf physical backends.</li>
+          <li>The current <code>StorageProvider</code> contract includes broad read and mutation operations, so it is not a truthful assembled-view interface.</li>
+          <li>Existing range readers issue physical range requests but do not provide the fixed multi-source generation semantics required here.</li>
+        </ul>
+
+        <h3>Public standards</h3>
+        <ul>
+          <li><a href="https://www.rfc-editor.org/rfc/rfc9110.html">RFC 9110 — HTTP Semantics</a></li>
+          <li><a href="https://www.rfc-editor.org/rfc/rfc8785.html">RFC 8785 — JSON Canonicalization Scheme</a></li>
+        </ul>
+
+        <p class="small">
+          This document defines the architecture and reader-facing public API shape. See the
+          <a href="assembly-workflow-user-guide.html">Workflow User Guide</a> for adopter wiring and the
+          <a href="implementation-and-test-plan.html">Implementation &amp; Test Plan</a> for exact models, signatures,
+          configuration, exceptions, algorithms, tests, and delivery sequencing.
+        </p>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
