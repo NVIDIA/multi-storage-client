@@ -20,9 +20,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import xattr
-
-from multistorageclient import StorageClient, StorageClientConfig
+from multistorageclient import StorageClient, StorageClientConfig, _xattr
 from multistorageclient.types import Range, SourceVersionCheckMode
 from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.unit.utils.tempdatastore import create_test_data
@@ -398,7 +396,7 @@ def test_partial_file_caching_chunk_invalidation() -> None:
         assert os.path.exists(chunk0_path), "Chunk 0 should exist after first read"
 
         # Verify chunk0 has version1 etag
-        chunk_etag = xattr.getxattr(chunk0_path, "user.etag").decode("utf-8")
+        chunk_etag = _xattr.getxattr(chunk0_path, "user.etag").decode("utf-8")
         assert chunk_etag == etag_v1, f"Chunk should have version1 etag, got {chunk_etag}"
 
         # Update the file content (this changes the ETag)
@@ -420,13 +418,13 @@ def test_partial_file_caching_chunk_invalidation() -> None:
 
         # Verify chunk0 was invalidated and replaced with version2
         assert os.path.exists(chunk0_path), "Chunk 0 should still exist"
-        chunk_etag_after = xattr.getxattr(chunk0_path, "user.etag").decode("utf-8")
+        chunk_etag_after = _xattr.getxattr(chunk0_path, "user.etag").decode("utf-8")
         assert chunk_etag_after == etag_v2, f"Chunk should have version2 etag, got {chunk_etag_after}"
 
         # Verify chunk1 exists with version2
         chunk1_path = os.path.join(file_dir, f".{base_name}#chunk1")
         assert os.path.exists(chunk1_path), "Chunk 1 should exist after second read"
-        chunk1_etag = xattr.getxattr(chunk1_path, "user.etag").decode("utf-8")
+        chunk1_etag = _xattr.getxattr(chunk1_path, "user.etag").decode("utf-8")
         assert chunk1_etag == etag_v2, f"Chunk 1 should have version2 etag, got {chunk1_etag}"
 
         # Verify that reading the first chunk again returns version2 data
@@ -574,7 +572,7 @@ def test_partial_file_caching_full_file_optimization() -> None:
 
         # Check that the full cached file has the correct etag
         try:
-            cached_etag = xattr.getxattr(full_cache_path, "user.etag").decode("utf-8")
+            cached_etag = _xattr.getxattr(full_cache_path, "user.etag").decode("utf-8")
             # The etag should match the source version (we can't easily get the exact etag,
             # but we can verify it exists and is not empty)
             assert cached_etag, "Cached file should have an etag"
@@ -807,11 +805,9 @@ def test_partial_file_caching_3mb_file_1mb_read():
 
         # Verify xattrs are set correctly
         try:
-            import xattr
-
-            etag_attr = xattr.getxattr(chunk0_path, "user.etag")
-            cache_line_size_attr = xattr.getxattr(chunk0_path, "user.cache_line_size")
-            size_attr = xattr.getxattr(chunk0_path, "user.size")
+            etag_attr = _xattr.getxattr(chunk0_path, "user.etag")
+            cache_line_size_attr = _xattr.getxattr(chunk0_path, "user.cache_line_size")
+            size_attr = _xattr.getxattr(chunk0_path, "user.size")
 
             assert etag_attr is not None, "ETag xattr should be set"
             assert cache_line_size_attr.decode("utf-8") == "1048576", "Cache line size xattr should be 1MB"

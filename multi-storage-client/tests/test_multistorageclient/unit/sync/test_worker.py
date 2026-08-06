@@ -21,9 +21,9 @@ from datetime import datetime, timezone
 from unittest import mock
 
 import pytest
-import xattr
 
 import multistorageclient as msc
+from multistorageclient import _xattr
 from multistorageclient.sync import worker as sync_worker_module
 from multistorageclient.sync.types import OperationBatch, OperationType
 from multistorageclient.sync.worker import (
@@ -539,7 +539,7 @@ def test_update_posix_metadata(use_metadata_provider: bool):
         else:
             # Verify xattr is set with custom metadata
             try:
-                xattr_value = xattr.getxattr(target_physical_path, "user.json")
+                xattr_value = _xattr.getxattr(target_physical_path, "user.json")
                 stored_metadata = json.loads(xattr_value.decode("utf-8"))
                 assert stored_metadata == custom_metadata
             except OSError:

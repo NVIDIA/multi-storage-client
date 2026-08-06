@@ -64,6 +64,18 @@ Likewise, there are extras for each higher level library.
    # Ray
    pip install "multi-storage-client[ray]"
 
+.. note::
+
+   The ``zarr`` extra is unavailable on Python 3.14, so ``msc.zarr`` and ``msc.xarray`` don't work
+   there. Zarr 2.x can't run on Python 3.14 — it requires ``numcodecs<0.16``, and ``numcodecs``
+   only ships Python 3.14 wheels from 0.16.4 on. Zarr 3.x does support Python 3.14 but is a
+   breaking API change, and it requires Python 3.11 or higher, so it can't cover MSC's Python 3.10
+   support. MSC will migrate to Zarr 3.x once Python 3.10 reaches end of life in October 2026.
+
+   On Python 3.14, ``pip install "multi-storage-client[zarr]"`` succeeds but installs nothing.
+   Use Python 3.13 or older for Zarr workloads, or install Zarr 3.x yourself and reach MSC through
+   the fsspec integration with ``msc://`` URLs.
+
 MSC also provides an optional Model Context Protocol (MCP) server that enables conversational interaction with storage through AI assistants.
 
 .. code-block:: shell
