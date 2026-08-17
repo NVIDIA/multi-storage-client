@@ -414,11 +414,15 @@ def verify_shortcuts(profile: str, prefix: str):
     # numpy
     arr = np.array([1, 2, 3, 4, 5], dtype=np.int32)
     msc.numpy.save(f"msc://{profile}/{prefix}/folder/arr-01.npy", arr)
+    # save raw bytes (no .npy header) for memmap — np.memmap maps raw bytes from offset 0
+    with msc.open(f"msc://{profile}/{prefix}/folder/arr-01.bin", "wb") as fp:
+        fp.write(arr.tobytes())
     msc.commit_metadata(f"msc://{profile}")
 
-    assert msc.numpy.load(f"msc://{profile}/{prefix}/folder/arr-01.npy").all() == arr.all()
-    assert (
-        msc.numpy.memmap(f"msc://{profile}/{prefix}/folder/arr-01.npy", dtype=np.int32, shape=(5,)).all() == arr.all()
+    assert np.array_equal(msc.numpy.load(f"msc://{profile}/{prefix}/folder/arr-01.npy"), arr)
+    assert np.array_equal(
+        msc.numpy.memmap(f"msc://{profile}/{prefix}/folder/arr-01.bin", dtype=np.int32, shape=(5,)),
+        arr,
     )
 
     # mmap
