@@ -120,6 +120,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
             config_dict=config_dict,
             telemetry_provider=telemetry_provider,
         )
+        self._real_base_path = os.path.realpath(base_path)
 
     def _translate_errors(
         self,
@@ -314,12 +315,11 @@ class PosixFileStorageProvider(BaseStorageProvider):
         """
         Return True when ``real_target`` resolves outside ``base_path``.
 
-        Resolve ``base_path`` before comparing so intermediate directory
+        Uses the pre-computed ``_real_base_path`` so intermediate directory
         symlinks do not make an in-tree target look external.
         """
-        real_base_path = os.path.realpath(self._base_path)
         try:
-            return os.path.commonpath((real_base_path, real_target)) != real_base_path
+            return os.path.commonpath((self._real_base_path, real_target)) != self._real_base_path
         except ValueError:
             return True
 
