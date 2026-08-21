@@ -101,3 +101,44 @@ No privileged pods, no SYS_ADMIN, no mount propagation needed in the app pod.
 | `flatDirConfirmationPages` | No | - | Flat directory confirmation pages |
 
 > Multiple backends in one volume (multi-bucket / multi-backend via `backendsJson`) and the full per-backend tuning field set are documented in the [CSI driver README](../README.md#multiple-backends-in-one-volume). Note: under CSI a `manifestPath` manifest is regenerated on every (re)mount — the driver does not persist it (follow-up: NGCDP-9116).
+
+## Caching and cache lifetime under CSI
+
+The node plugin starts one MSFS process per published volume, so **the cache is
+scoped to that volume on that node** — it is not shared with other pods, other
+nodes, or other volumes. MSFS caching, capacity sizing, and pre-warming behavior
+are documented in the [MSFS README](../../README.md#caching-and-pre-warming);
+two consequences matter specifically for CSI:
+
+- **The cache does not outlive the pod.** `NodeUnpublishVolume` stops the MSFS
+  process, which removes its cache directory. A pod that reads a dataset warms
+  only its own mount, so a pre-warm pod followed by a separate training pod
+  starts cold. Warming across pods requires a long-lived mount outside the pod
+  lifecycle, which this driver does not provide.
+- **The default cache is small.** `cache_lines` defaults to 128 lines of 10 MiB,
+  about 1.25 GiB. Read-heavy workloads normally need this raised through the
+  volume's tuning fields; the benchmark configuration used roughly 100 GiB.
+
+The kernel FUSE tunables that gate read concurrency (`max_background`,
+`congestion_threshold`) are per-connection and reset on every mount, so under CSI
+they must be applied per node rather than once per cluster. See
+[Reproducing these numbers](../../README.md#reproducing-these-numbers).
+
+## Measured scale and what is not yet qualified
+
+Published MSFS measurements — a 100M-object namespace browsable in about 105
+seconds, and a 24-cell read matrix over an ~88 GiB working set — are documented
+in [Measured Scale and Performance](../../README.md#measured-scale-and-performance).
+
+Those runs used a **single MSFS client with 1-8 application threads on one host**.
+They do not characterize many concurrent clients against one backend, namespaces
+substantially larger than 100M objects, datasets far larger than cache, or
+tail-latency targets. A multi-node CSI deployment is exactly the case that has
+not been qualified, so treat aggregate backend request fan-out and cache-hit
+behavior across a DaemonSet as unmeasured. See
+[Qualified scale boundary](../../README.md#qualified-scale-boundary).
+
+The three credential modes above are implemented, but credential rotation and
+multi-tenant isolation have not been qualified end-to-end. Because MSFS grants
+access per mount rather than per UID/GID, every process that can read a pod's
+mount can read everything the volume's credentials can reach.

@@ -30,6 +30,46 @@ Key Features
 - **Standard Unix tools:** Use with ``mount``, ``umount``, and ``/etc/fstab``
 - **Observability:** Integrated telemetry with OpenTelemetry metrics
 
+Deployment Model
+================
+
+MSFS is not a centralized storage or caching service. It is a FUSE process that runs on each compute node, started either directly through ``mount -t msfs`` or by the Kubernetes CSI node plugin on behalf of a pod. Nothing is provisioned outside the compute node, so MSFS can be deployed without dedicated storage appliances. The consequence is that **every MSFS process owns an independent cache**: two mounts on one node, or the same mount on two nodes, share nothing.
+
+Access is granted per mount rather than per user. Anyone who can read the mount point can read everything the backend credentials can reach, so deployments that need tenant isolation must separate tenants by mount.
+
+.. list-table:: Capability Summary
+   :widths: 70 30
+   :header-rows: 1
+
+   * - Capability
+     - Status
+   * - POSIX read access to S3, AIStore, and GCS backends
+     - Supported
+   * - Multiple buckets or bucket+prefixes as sibling subdirectories of one mount
+     - Supported
+   * - Adding and removing backends without unmounting (SIGHUP)
+     - Supported
+   * - Manifest-based bootstrap for large namespaces
+     - Supported
+   * - Node-local read cache with read-ahead, capacity bound, and LRU eviction
+     - Supported
+   * - Cache backed by RAM, a shared mapped file, or per-inode files
+     - Supported
+   * - OpenTelemetry metrics and a Prometheus endpoint
+     - Supported
+   * - Kubernetes deployment via the CSI node plugin
+     - Supported
+   * - Cache shared or coordinated across mounts or nodes
+     - Not implemented
+   * - Cache surviving unmount
+     - Not implemented
+   * - Explicit data pre-warm API
+     - Not implemented
+   * - Per-user (UID/GID) authorization within a mount
+     - Not implemented
+   * - Modifying an existing backend in place via SIGHUP
+     - Not implemented
+
 Installation
 ============
 
@@ -364,6 +404,210 @@ Best practices:
 - Use larger ``cache_line_size`` for large files
 - Use smaller ``cache_line_size`` for many small files
 
+Cache Capacity and Lifetime
+===========================
+
+``cache_line_size`` (default 10 MiB) is the fetch and residency granularity and ``cache_lines`` (default 128) is how many lines are provisioned, so **the default capacity is about 1.25 GiB**. The benchmarks in :ref:`msfs-measured-scale` used ``cache_lines: 10000``, or roughly 100 GiB. Capacity is a hard bound and eviction is LRU, so a dataset larger than the cache holds only its active working set. For very large datasets, size the cache to the working set rather than to the dataset.
+
+``cache_storage`` selects where lines live: ``ram`` (anonymous mmap), ``mapped-file`` (one shared memory-mapped file, the default), or ``per-inode-file`` (per-inode contiguous files served with ``pread``). All three are node-local.
+
+Each mount creates its own private cache directory under ``cache_dir_path`` and removes that directory on unmount. The cache does not survive the mount, and a remount starts cold. Files left behind by a crash are not discovered or reused.
+
+.. note::
+
+   Pointing ``cache_dir_path`` at a shared filesystem such as Lustre places each mount's private directory on shared storage, but does not produce a shared cache. The catalog that makes cached bytes findable — the object-to-line index, cache-line state and ETags, in-flight fetch tracking, LRU order, and capacity accounting — lives in the memory of a single MSFS process. Two MSFS processes over the same shared path still use different directories, fetch the same object twice, cannot see each other's entries, and cannot coordinate fills, invalidation, or eviction. A shared filesystem guarantees consistency for shared files; it does not supply object-cache semantics such as key/version lookup, single-flight fetches, or ETag invalidation.
+
+Pre-warming
+===========
+
+There is no pre-warm API. Reading files warms the cache of the MSFS process that served those reads, so one job can warm a mount that a later job reuses — but only if that MSFS process is still running and the working set still fits in cache. A pre-warm job that unmounts when it finishes, or a later job that creates its own mount, starts cold.
+
+Manifest generation is a separate mechanism and warms only namespace metadata. It makes directory traversal and attribute lookups fast without per-object backend calls; it does not fetch file contents.
+
+.. _msfs-measured-scale:
+
+Measured Scale and Performance
+==============================
+
+These are single-node measurements against same-region storage. They record what has been measured, not a supported configuration limit; see :ref:`msfs-scale-boundary`.
+
+Namespace Scale: 100M Objects
+-----------------------------
+
+Measured on an EC2 ``c5a.12xlarge`` (48 vCPU, 96 GiB) in ``us-west-2`` against an S3 bucket in the same region, over a dataset of 100,237,498 objects across 101,339 directories.
+
+.. list-table:: 100M-object bootstrap
+   :widths: 46 18 22 14
+   :header-rows: 1
+
+   * - Phase
+     - Elapsed
+     - Throughput
+     - Peak RSS
+   * - Manifest generation (parallel BFS listing, 200 workers)
+     - 1m 45s
+     - 954,680 obj/s
+     -
+   * - Manifest ingest (per-directory TSV into sharded B+Tree/PebbleDB)
+     - 16m 41s
+     - 100,129 obj/s
+     - ~7.4 GiB
+   * - Total bootstrap
+     - ~18m 26s
+     -
+     -
+
+The mount is **browsable when generation finishes**, at about 105 seconds, not when ingest finishes. During ingest, metadata is served from the manifest while the optimized index is built in the background, so traversal and enumeration — enough to compute dataset splits and begin streaming — work well before the 18m 26s mark. Generation held at about 1m 43s and ingest at about 16m 50s across repeated runs.
+
+.. note::
+
+   Set ``process_memory_limit`` generously for an ingest of this size. The 4 GiB default sits below the working set of a 100M-object ingest, which drives continuous garbage collection and collapses throughput.
+
+These figures assume a hierarchical layout. Both phases degrade sharply when one directory holds the entire namespace, because generation finds a single key prefix to split across roughly 20 range workers instead of 200 directory workers, and every directory entry lands in one B+Tree shard.
+
+.. list-table:: Directory-width sensitivity (100M objects)
+   :widths: 34 24 24 18
+   :header-rows: 1
+
+   * - Layout
+     - Generation
+     - Ingest
+     - Peak RSS
+   * - 101,339 directories
+     - 1m 43s (977K obj/s)
+     - 16m 29s (101K obj/s)
+     - ~6.5 GiB
+   * - 1 directory
+     - 30m 35s (~55K obj/s)
+     - 44m 19s (37.8K obj/s)
+     - ~21 GiB
+
+The penalty is super-linear in directory width: 10M objects in a single directory generate in 1m 41s and ingest in 2m 5s, so the same flat shape is far cheaper an order of magnitude smaller.
+
+Read Throughput: 24-Cell Matrix
+-------------------------------
+
+Measured on an EC2 ``c5n.18xlarge`` (72 vCPU, 184 GiB) in ``us-west-2`` against same-region S3 with a ~100 GiB cache, over a ~88 GiB dataset of 8,192 x 1 MiB plus 80 x 1 GiB files. Six workload families — 4 KiB and 64 KiB request sizes, small-file and large-file, sequential and random — at 1, 2, 4, and 8 application threads, each with a cold and a cache-resident pass, driven by ``elbencho -r --direct`` and compared against s3fs-fuse 1.93 with a local disk cache.
+
+The result was **18 wins, 3 ties, and 3 losses** across the 24 cells.
+
+.. list-table:: Cache-resident throughput relative to s3fs
+   :widths: 60 40
+   :header-rows: 1
+
+   * - Workload family
+     - MSFS vs s3fs
+   * - Small files, 4 KiB sequential
+     - 20x - 52x
+   * - Small files, 64 KiB sequential
+     - 6.5x - 27x
+   * - Large files, 4 KiB sequential
+     - 0.69x - 1.04x
+   * - Large files, 64 KiB sequential
+     - 0.45x - 1.05x
+   * - Large files, 4 KiB random
+     - 3.9x - 6.9x
+   * - Large files, 64 KiB random
+     - 5.4x - 14x
+
+Cold reads scale with thread count because each reader issues concurrent ranged GETs: large-file 64 KiB sequential moves 92 MiB/s at one thread and 192 MiB/s at eight, while s3fs cold stays flat near 125 MiB/s on the same families. Cache-resident reads reach 4,536 MiB/s on that family at eight threads. At eight threads MSFS wins or ties every family.
+
+Two caveats keep the losses honest. The large-file 64 KiB losses at one and two threads are largely a page-cache artifact: on a 184 GiB host, s3fs serves its warm reads from the Linux page cache over its own cache files, and after dropping caches it falls to about 148 MiB/s on the same data. The large-file 4 KiB results reflect a real per-operation FUSE ceiling — at one or two threads only one or two FUSE operations are in flight, so neither additional readers nor cache geometry help. ``--direct`` forces strict 4 KiB operations with no kernel read-ahead, a deliberately pessimistic operating point; workloads that do not use ``O_DIRECT`` benefit from page-cache assistance and reach roughly 2.6 GiB/s on the same data.
+
+Reproducing These Numbers
+-------------------------
+
+Defaults are not benchmark settings. The values below are what the results above were measured with; a run that differs on any of them is not comparable.
+
+.. list-table:: Benchmark configuration
+   :widths: 26 24 50
+   :header-rows: 1
+
+   * - Setting
+     - Value
+     - Why
+   * - ``fuse_fd_per_worker``
+     - ``false``
+     - Shared ``/dev/fuse`` descriptor. Cloned per-worker descriptors measured 18-25% slower.
+   * - ``fuse_workers``
+     - ``50``
+     - On a 72-vCPU host. The default of ``0`` uses ``runtime.NumCPU()``, which is too many readers on large hosts.
+   * - ``cache_line_size``
+     - ``10485760``
+     - 10 MiB fetch and residency granularity.
+   * - ``cache_lines``
+     - sized to the working set
+     - ``10000`` held the whole 88 GiB dataset.
+   * - ``cache_lines_to_prefetch``
+     - ``4``
+     - Read-ahead depth. Higher values can help backends with a different latency knee.
+   * - ``process_memory_limit``
+     - ``68719476736``
+     - The 4 GiB default causes sustained garbage collection on large ingests.
+   * - ``GOMAXPROCS``
+     - unset on a 72-vCPU host
+     - Left unset so Go uses every vCPU. On a 256-vCPU host, pinning it to 72 matched the 72-vCPU result; leaving it at 32 throttled the read and GC path.
+
+Two settings live outside the configuration file and must be re-applied after every mount, because the FUSE connection id changes each time:
+
+.. code-block:: bash
+   :caption: Post-mount tuning, required after every mount
+
+   ulimit -n 131072
+
+   sudo sh -c 'for d in /sys/fs/fuse/connections/*/; do
+       echo 144 > "${d}max_background"
+       echo 108 > "${d}congestion_threshold"
+   done'
+
+The kernel defaults, ``max_background=12`` and ``congestion_threshold=9``, throttle in-flight background and read-ahead requests and cap read concurrency well below what the thread count suggests. Leaving them at their defaults is the most common reason a run appears to stop scaling after a few threads.
+
+.. _msfs-scale-boundary:
+
+Qualified Scale Boundary
+========================
+
+What the measurements above establish, and what they do not:
+
+.. list-table:: Scale boundary
+   :widths: 22 34 44
+   :header-rows: 1
+
+   * - Dimension
+     - Measured
+     - Not established
+   * - Clients
+     - 1 MSFS process per test
+     - Many concurrent clients against one backend, including request fan-out and cache-hit behavior under aggregate load
+   * - Application threads
+     - 1 - 8
+     - Higher concurrency per mount
+   * - Objects
+     - ~100M in one namespace
+     - Substantially larger namespaces
+   * - Working set
+     - ~88 GiB, cache-resident
+     - Datasets far larger than cache, where only a small fraction is resident
+   * - Latency
+     - Mean throughput per cell
+     - Tail-latency targets
+   * - Failure handling
+     - Clean runs
+     - Backend failure and recovery under load
+
+The companion run in which the dataset deliberately exceeded cache capacity, so that reads had to keep returning to the backend, stopped after 18 of 24 cases and was never completed. Sustained-eviction behavior is therefore not characterized.
+
+Authentication
+==============
+
+Direct mounts take credentials from the configuration file, or from the standard AWS configuration and credentials files through ``use_config_env`` and ``use_credentials_env``. Environment variable references such as ``${AWS_ACCESS_KEY_ID}`` keep literal secrets out of the configuration file.
+
+Under Kubernetes, the CSI node plugin additionally supports a static Secret referenced by ``nodePublishSecretRef``, a driver-level workload identity (IRSA on EKS), and a per-workload role assumed from ``volumeAttributes.roleArn``.
+
+.. note::
+
+   Credential rotation and multi-tenant isolation have not been qualified end-to-end. Because authorization is per mount rather than per user, a mount exposes everything its credentials can reach to every reader of the mount point.
+
 Observability
 =============
 
@@ -641,6 +885,27 @@ Current limitations of MSFS:
 
 - **Read-only:** Currently only read operations are supported. Write support is planned for a future release
 - **Backend modifications:** Existing backends cannot be modified via SIGHUP; only additions and removals are supported
+- **Node-local cache:** Each MSFS process owns an independent cache. It is not shared or coordinated across mounts or nodes, even when ``cache_dir_path`` points at a shared filesystem
+- **Cache lifetime:** The cache is discarded on unmount; a remount starts cold
+- **No pre-warm API:** Data can only be warmed by reading it through a mount that stays running
+- **Mount-level authorization:** Access is granted per mount, not per UID/GID
+- **Qualified scale:** Measurements cover a single client at 1-8 threads; see :ref:`msfs-scale-boundary`
+
+Use-Case Suggestions
+====================
+
+Fronting a Remote Bucket with a Fast Tier (AIStore)
+------------------------------------------------------------
+
+MSFS caching is node-local and bounded, so the cost of a first touch is paid per node and again after any remount. Where that cost dominates — many nodes reading the same dataset once, or working sets too large to stay cache-resident — a shared cache tier in front of the remote bucket can absorb it. MSFS does not implement such a tier, but it can read one as a backend.
+
+We measured this with AIStore. The 24-cell read matrix was re-run with MSFS pointed at an AIStore cluster (3 proxies, 3 targets) fronting the same S3 bucket, with the 88 GiB dataset prefetched into the cluster, from a 256 vCPU / 1.5 TiB client:
+
+- **First-touch reads were 2.2x to 37x faster** than MSFS reading S3 directly, peaking near 1.7 GiB/s. The gain was largest on small files (23x - 37x at 64 KiB, 8.7x - 19x at 4 KiB) and smallest on large files (2.2x - 6.9x), because a first touch lands on in-datacenter targets instead of crossing the network to the remote bucket.
+- **Cache-resident reads were unchanged**, which is the expected result: ``backend_read_file_successes_total`` stayed flat across the cache-resident pass on all 24 cells, so those reads never reached any backend. Cache-resident throughput is a property of the MSFS cache and the host, not of what sits behind it. A fast tier improves the first touch, not the cached steady state.
+- The 100M-object namespace on the same cluster generated in 1m 27.7s and ingested in about 3m 19s, but only with listing delegated to the underlying store through ``manifest_gen_backend``. Listing the fronted bucket through AIStore timed out at this scale, while listing the store directly did not. Object reads still went through AIStore.
+
+The practical reading: a fast tier is worth evaluating when first-touch cost dominates, and ``manifest_gen_backend`` should point at whichever backend lists the namespace fastest, which is not necessarily the one serving reads. This was one client at 1-8 threads and does not establish behavior for many concurrent clients; see :ref:`msfs-scale-boundary`.
 
 See Also
 ========
