@@ -123,7 +123,7 @@ var globalsLockMaxHoldBySite = map[string]globalsLockSiteStats{
 	"http.go:336:3:(*globalsStruct).ServeHTTP":                                                 {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"manifest_ingest.go:246:2:ingestWriteBatch":                                                {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"manifest_ingest_delta_test.go:346:2:TestManifestDeltaDerivesParentWhenParentInodeMissing": {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
-	"write.go:454:3:funcLit@453":                                                               {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
+	"write.go:455:3:funcLit@454":                                                               {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"write_cache.go:150:2:(*writeCachePromotionJob).run":                                       {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"write_cache_test.go:121:2:TestWriteCachePromotionDisabledLeavesCacheEmpty":                {HoldCnt: 0, HoldSum: 0, HoldMax: 0},
 	"write_cache_test.go:136:2:TestWriteCachePromotionStopsAtCapacity":                         {HoldCnt: 0, HoldSum: 0, HoldMax: 0},

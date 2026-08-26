@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"fmt"
 	"slices"
+	"sort"
 	"syscall"
 	"time"
 )
@@ -451,7 +452,7 @@ func (inode *inodeStruct) closeWriteFileLocked() {
 
 func flushWriteFileAsync(inodeNumber, backendNonce uint64) {
 	go func() {
-		globalsLock("write.go:454:3:funcLit@453")
+		globalsLock("write.go:455:3:funcLit@454")
 		inode, ok := globals.inodeMap.get(inodeNumber)
 		if !ok {
 			globalsUnlock()
@@ -628,36 +629,50 @@ func (state *writeState) dropSegmentsForRange(offset, length uint64) {
 	state.segments = kept
 }
 
+// addRange records that [start, end) of this part now holds data.
+//
+// ranges is kept sorted, disjoint and merged, and addRange is its only writer,
+// so the insertion point can be found by binary search and only the neighbors
+// it touches need merging. filled is maintained incrementally.
+//
+// The previous implementation re-sorted the whole list on every call, re-merged
+// it, then recomputed filled from scratch -- three O(n) passes per write.
+// Sequential writes hid that: consecutive ranges merge, so the list stays one
+// element and n never grows. Random writes do not merge, so the fragment count
+// climbed with every write, and a 5 MiB part filled by 4 KiB random writes
+// reached roughly 1,280 fragments. That made random small writes quadratic in
+// the fragments per part, all of it under globals.Lock.
 func (part *writePart) addRange(start, end uint64) {
 	if end <= start {
 		return
 	}
-	part.ranges = append(part.ranges, writeRange{start: start, end: end})
-	ranges := part.ranges
-	for i := 1; i < len(ranges); i++ {
-		current := ranges[i]
-		j := i - 1
-		for ; j >= 0 && ranges[j].start > current.start; j-- {
-			ranges[j+1] = ranges[j]
-		}
-		ranges[j+1] = current
+
+	// Ranges ending before start cannot touch or abut this one.
+	index := sort.Search(len(part.ranges), func(i int) bool {
+		return part.ranges[i].end >= start
+	})
+
+	// Absorb every range the new one overlaps or abuts. An existing range
+	// starting exactly at merged.end is adjacent, so it merges too.
+	merged := writeRange{start: start, end: end}
+	last := index
+	for last < len(part.ranges) && part.ranges[last].start <= merged.end {
+		merged.start = min(merged.start, part.ranges[last].start)
+		merged.end = max(merged.end, part.ranges[last].end)
+		part.filled -= part.ranges[last].end - part.ranges[last].start
+		last++
 	}
 
-	merged := ranges[:0]
-	for _, r := range ranges {
-		if len(merged) == 0 || r.start > merged[len(merged)-1].end {
-			merged = append(merged, r)
-			continue
+	switch {
+	case last > index:
+		part.ranges[index] = merged
+		if last > index+1 {
+			part.ranges = append(part.ranges[:index+1], part.ranges[last:]...)
 		}
-		if r.end > merged[len(merged)-1].end {
-			merged[len(merged)-1].end = r.end
-		}
+	default:
+		part.ranges = append(part.ranges, writeRange{})
+		copy(part.ranges[index+1:], part.ranges[index:])
+		part.ranges[index] = merged
 	}
-	part.ranges = merged
-
-	var filled uint64
-	for _, r := range merged {
-		filled += r.end - r.start
-	}
-	part.filled = filled
+	part.filled += merged.end - merged.start
 }
