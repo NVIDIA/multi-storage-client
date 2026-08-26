@@ -434,8 +434,7 @@
       <a href="#extension-model">7. Extension model</a>
       <a href="#guarantees">8. Behavioral guarantees</a>
       <a href="#compatibility">9. Compatibility</a>
-      <a href="#open-decisions">10. Open decisions</a>
-      <a href="#appendix">11. Traceability and references</a>
+      <a href="#appendix">10. Traceability and references</a>
     </nav>
 
     <main>
@@ -502,7 +501,7 @@
               <li>Support exact ranges, streaming, metadata, and bounded local materialization.</li>
               <li>Allow any planning backend through an in-process provider interface.</li>
               <li>Keep credentials, endpoints, and executable bindings under local application control.</li>
-              <li>Preserve truthful consistency: expiration by default, stronger pinning only when enforceable.</li>
+              <li>Enforce mandatory expiration, exact declared lengths, and bounded execution.</li>
             </ul>
           </div>
           <div class="card">
@@ -514,17 +513,17 @@
               <li>Add write, delete, copy, sync, or presign semantics to assembled views.</li>
               <li>Make the feature automatically appear in every existing MSC, FUSE, CLI, or fsspec path.</li>
               <li>Let a remote plan choose credentials, profiles, arbitrary endpoints, or Python objects.</li>
+              <li>Browse or glob logical assemblies, seek within an open reader, or enforce source revisions and checksums in v1.</li>
             </ul>
           </div>
         </div>
 
         <div class="callout info">
           <strong>Requirements versus defensive design.</strong> The requirements explicitly call for configured sources and
-          services, direct storage reads for object segments, transport-neutral service segments, optional source
-          versions/validators, bounded execution, and no breaking changes to existing providers. They do not require public
-          binding-revision or resource-policy hooks, a built-in network fetcher, an MSC-defined external service API, or
-          format-specific projection handlers. If implementation work proposes those additional safeguards or conveniences, they remain
-          separately reviewable defensive design—not requirements.
+          services, direct storage reads for object segments, transport-neutral service segments, a versioned assembly-list
+          representation, bounded execution, and no breaking changes to existing providers. Optional revisions and
+          validators are deliberately deferred from the MVP. A built-in network fetcher, an MSC-defined external service
+          API, and format-specific projection handlers are also outside this release.
         </div>
       </section>
 
@@ -552,7 +551,7 @@
               <li>StorageClient unifies storage access; it should not acquire application-specific content orchestration.</li>
               <li>A special case in <code>read</code> would spread into info, open, list, cache, download, sync, and error behavior.</li>
               <li>Assembly needs fixed generations, expiration, service execution, and multi-source atomicity—concepts absent from the storage façade.</li>
-              <li>A parallel module can expose honest read-only capabilities without pretending to support the entire mutable client surface.</li>
+              <li>A parallel module can expose an honest, deliberately small read-only API without pretending to support the mutable client surface.</li>
             </ul>
           </div>
         </div>
@@ -587,10 +586,10 @@
           <div class="arch-arrow">↓</div>
           <div class="arch-row">
             <div class="arch-node user"><strong>AssemblyPlanProvider</strong><br><span class="small"><code>get_plan(request)</code> → descriptor metadata + complete plan</span></div>
-            <div class="arch-node new"><strong>AssemblyClient.resolve()</strong><br><span class="small">coordinate · validate · freeze · compute capabilities</span></div>
+            <div class="arch-node new"><strong>AssemblyClient.resolve()</strong><br><span class="small">coordinate · validate · freeze</span></div>
             <div class="arch-node"><strong>Local binding registry</strong><br><span class="small">StorageClient sources · user-owned service fetchers</span></div>
           </div>
-          <div class="arch-arrow">↓ metadata-bearing complete plan → validation + frozen alias snapshot</div>
+          <div class="arch-arrow">↓ metadata-bearing complete plan → validation + frozen alias mapping</div>
           <div class="arch-row">
             <div></div>
             <div class="arch-node new"><strong>AssemblyView</strong><br><span class="small"><code>metadata</code> = descriptor · validated plan · frozen bindings · lifecycle</span></div>
@@ -615,7 +614,7 @@
             <ul>
               <li>Descriptor-to-plan resolution and executable-view construction.</li>
               <li>Plan validation and logical range calculation.</li>
-              <li>Expiration, consistency, and view lifecycle.</li>
+              <li>Expiration, exact-length validation, and view lifecycle.</li>
               <li>Bounded execution, ordering, and atomic publication.</li>
               <li>Stable public behavior independent of backend transport.</li>
             </ul>
@@ -634,8 +633,8 @@
             <ul>
               <li>Physical object or service-operation interpretation.</li>
               <li>Authentication and connection management.</li>
-              <li>Transport-specific validation and bounded retries.</li>
-              <li>Resource safety and any stable identity enforcement they advertise.</li>
+              <li>Transport-specific request construction and error translation.</li>
+              <li>Resource safety and any retry policy hidden inside the application adapter.</li>
             </ul>
           </div>
         </div>
@@ -645,7 +644,7 @@
         <h2>5. Public API at a glance</h2>
         <p>
           The common workflow is intentionally small: inject dependencies once, resolve one generation, then operate on its
-          view. Detailed signatures, configuration fields, limits, and typed-error construction live in the
+          view. Exact signatures, internal safety limits, and typed-error construction live in the
           <a href="implementation-and-test-plan.html#contracts">Implementation &amp; Test Plan</a>.
         </p>
 
@@ -681,10 +680,12 @@ assembly = AssemblyClient(
     service_fetchers={
         "rewrite": rewrite_service, # selected by ServiceSegment.fetcher_id
     },
+    max_concurrency=16,
+    timeout_seconds=300,
 )
 
 # resolve() obtains descriptor metadata and a complete plan. It returns only
-# after plan validation, binding freeze, and capability computation succeed.
+# after plan validation and binding freeze succeed.
 view = assembly.resolve(
     AssemblyReference(namespace="exports", key="run-42.bin")
 )
@@ -711,13 +712,12 @@ replacement = assembly.resolve(descriptor.reference)</code></pre>
           <table>
             <thead><tr><th>Operation</th><th>What the caller gets</th><th>Important behavior</th></tr></thead>
             <tbody>
-              <tr><td><code>resolve</code></td><td>An exact, expiring <code>AssemblyView</code>.</td><td>Acquire descriptor metadata and the complete plan in one provider call, validate it, freeze bindings, compute capabilities, then return; no executable view is exposed earlier.</td></tr>
+              <tr><td><code>resolve</code></td><td>An exact, expiring <code>AssemblyView</code>.</td><td>Acquire descriptor metadata and the complete plan in one provider call, validate it, freeze bindings, then return; no executable view is exposed earlier.</td></tr>
               <tr><td><code>read</code></td><td>Exactly one logical byte window.</td><td>Map the requested offsets through the view's validated plan and dispatch only intersecting segments.</td></tr>
-              <tr><td><code>open</code></td><td>A read-only stream.</td><td>The reader stays on the same generation and plan; seek is advertised only when that plan supports it safely.</td></tr>
+              <tr><td><code>open</code></td><td>A forward-only read stream.</td><td>The reader stays on the same generation and plan. Seeking is not part of the v1 contract.</td></tr>
               <tr><td><code>metadata</code></td><td>The view's <code>AssemblyDescriptor</code>.</td><td>Control-plane metadata includes its reference, generation, size, and expiration; the descriptor itself cannot read, open, or materialize bytes.</td></tr>
               <tr><td><code>materialize</code></td><td>A complete local file.</td><td>Walk the same plan in bounded windows and atomically publish; no-replace by default.</td></tr>
-              <tr><td>replacement resolution</td><td>A new view from another <code>resolve</code> call.</td><td>The public API has no separate refresh operation; expiration and any automatic re-resolution policy are described below.</td></tr>
-              <tr><td><code>list</code> / <code>glob</code></td><td>Logical descriptors.</td><td>Optional browsing capability, separate from executable plan batches.</td></tr>
+              <tr><td>replacement resolution</td><td>A new view from another <code>resolve</code> call.</td><td>The public API has no separate refresh operation, and v1 never re-resolves automatically.</td></tr>
               <tr><td>write / delete / copy / sync</td><td>Not supported.</td><td>Assembled views are deliberately read-only.</td></tr>
             </tbody>
           </table>
@@ -735,9 +735,9 @@ replacement = assembly.resolve(descriptor.reference)</code></pre>
             <p class="small"><code>view.metadata</code> returns the control-plane descriptor: logical reference, generation, size, expiration, and optional application metadata.</p>
           </div>
           <div class="card">
-            <span class="label">Executable snapshot</span>
+            <span class="label">Frozen execution state</span>
             <strong>Validated plan and bindings</strong>
-            <p class="small">The complete ordered AssemblyPlan and a frozen alias-to-binding snapshot validated before the view is returned.</p>
+            <p class="small">The complete ordered AssemblyPlan and frozen alias-to-binding mapping validated before the view is returned.</p>
           </div>
           <div class="card">
             <span class="label">Operation façade</span>
@@ -747,7 +747,7 @@ replacement = assembly.resolve(descriptor.reference)</code></pre>
         </div>
         <p class="small">
           An <code>AssemblyDescriptor</code> is metadata only and has no byte operations. The executable view never owns a
-          StorageProvider, replans the object, or refreshes itself. <code>open()</code> creates a reader pinned to the same
+          StorageProvider, replans the object, or refreshes itself. <code>open()</code> creates a reader bound to the same
           descriptor and plan; resolving the reference again creates another view. Client-wide scheduling, reader state, staging,
           and atomic publication are detailed in
           <a href="implementation-and-test-plan.html#executor">Execution, AssemblyView, reader, and materialization</a>.
@@ -755,7 +755,7 @@ replacement = assembly.resolve(descriptor.reference)</code></pre>
 
         <div class="callout">
           Plans contain only the aliases <code>raw</code> and <code>rewrite</code>; credentials, service URLs, authentication,
-          and lifecycle stay in the local bindings. Dependencies are borrowed by default. The exact façade is documented in
+          and lifecycle stay in the local bindings. Dependencies are borrowed; the application owns their lifecycle. The exact façade is documented in
           <a href="implementation-and-test-plan.html#public-facade-reference">the API reference subsection</a>, and error
           construction in <a href="implementation-and-test-plan.html#exceptions">the implementation error contract</a>.
           Custom fetcher details are in <a href="implementation-and-test-plan.html#sources">the fetcher SPI</a>.
@@ -857,8 +857,8 @@ replacement = assembly.resolve(descriptor.reference)</code></pre>
           </div>
 
           <div class="sample-arrow">
-            ↓ <code>AssemblyClient</code> validates the complete union, lengths, expiration, aliases, and requested
-            consistency; then freezes the local bindings and computes capabilities
+            ↓ <code>AssemblyClient</code> validates the complete union, lengths, expiration, aliases, and optional
+            source and fetcher aliases; then freezes the local bindings
           </div>
 
           <div class="sample-stage sample-view">
@@ -867,7 +867,7 @@ replacement = assembly.resolve(descriptor.reference)</code></pre>
                 <span class="label">2 · Returned execution façade</span>
                 <strong><code>AssemblyClient.resolve()</code> returns <code>AssemblyView[g-193]</code></strong>
               </div>
-              <span class="tag">exact and fixed until expiration</span>
+              <span class="tag">exact plan · fixed generation until expiration</span>
             </div>
             <div class="view-state-grid">
               <div class="view-state">
@@ -963,9 +963,7 @@ replacement = assembly.resolve(descriptor.reference)</code></pre>
     def get_plan(
         self,
         request: ResolveAssemblyRequest,
-    ) -> AssemblyPlan: ...
-
-    def close(self) -> None: ...</code></pre>
+    ) -> AssemblyPlan: ...</code></pre>
 
         <div class="grid-2">
           <div class="card">
@@ -973,7 +971,7 @@ replacement = assembly.resolve(descriptor.reference)</code></pre>
             <ul>
               <li><code>get_plan()</code> returns one metadata-bearing, complete ordered object plan, never a range-specific fragment.</li>
               <li>The embedded descriptor identifies the exact reference, generation, size, and future expiration represented by the plan.</li>
-              <li>Canonical bounded models and stable public failure classifications.</li>
+              <li>Bounded, versioned models and stable public failure classifications.</li>
             </ul>
           </div>
           <div class="card">
@@ -981,7 +979,7 @@ replacement = assembly.resolve(descriptor.reference)</code></pre>
             <ul>
               <li>Expose no <code>AssemblyView</code> before complete-plan validation and binding freeze succeed.</li>
               <li>Perform no source or service byte I/O while resolving or validating the plan.</li>
-              <li>Never silently substitute a generation or downgrade consistency.</li>
+              <li>Never silently substitute a generation or accept a malformed or expired plan.</li>
               <li>Resolve aliases only through the frozen local registries.</li>
               <li>Supply a reusable conformance suite for custom implementations.</li>
             </ul>
@@ -1004,11 +1002,16 @@ replacement = assembly.resolve(descriptor.reference)</code></pre>
           segments. One backend may support both concerns, but the application injects separate adapters so the paths can
           have different authorization, scaling, retry, and lifecycle policies.
         </p>
+        <p>
+          The public façade and <code>ServiceSegmentFetcher.fetch()</code> are synchronous. Assembly may overlap independent
+          calls through bounded internal concurrency. Calls to the same fetcher instance are always serialized in v1, so
+          fetcher authors do not need to implement a thread-safety declaration.
+        </p>
 
         <h3>Core adoption has no network-adapter dependency</h3>
         <p>
           Custom providers and service fetchers are sufficient for the core feature. A reusable network convenience adapter
-          would be a separately approved follow-up with its own generic transport contract; it is not a prerequisite for the
+          would be a separately designed and reviewed follow-up with its own generic transport contract; it is not a prerequisite for the
           Assembly engine or its end-to-end tests.
         </p>
       </section>
@@ -1023,11 +1026,11 @@ replacement = assembly.resolve(descriptor.reference)</code></pre>
         <div class="grid-2">
           <div class="card">
             <h3>Exact and expiring views</h3>
-            <p>A v1 view holds descriptor metadata, one complete exact-result plan, frozen bindings, computed capabilities, and lifecycle state. Expiration is checked before each new operation. The public API has no separate refresh method; another <code>resolve</code> call creates another view.</p>
+            <p>A v1 view holds descriptor metadata, one complete exact-result plan, frozen bindings, and lifecycle state. Expiration is checked before each new operation. The public API has no separate refresh method; another <code>resolve</code> call creates another view.</p>
           </div>
           <div class="card">
-            <h3>Truthful consistency</h3>
-            <p><code>EXPIRATION_ONLY</code> is the default and does not promise immutable source bytes. <code>SNAPSHOT_PINNED</code> is available only when every non-inline segment has enforceable stable identity.</p>
+            <h3>Deliberate MVP consistency boundary</h3>
+            <p>V1 validates plan expiration and returned lengths but does not model source selectors, revisions, validators, or checksums. Applications that require snapshot-grade identity must enforce it inside their provider and bindings until a later additive contract is designed.</p>
           </div>
           <div class="card">
             <h3>Complete-plan validation</h3>
@@ -1039,26 +1042,26 @@ replacement = assembly.resolve(descriptor.reference)</code></pre>
           </div>
           <div class="card">
             <h3>Atomic public operations</h3>
-            <p>A one-shot read and each reader call publish no partial result on failure. Materialization publishes atomically; earlier successful streaming calls remain an already-observed prefix.</p>
+            <p>Each view read and reader call publishes no partial result on failure. Materialization publishes atomically; earlier successful streaming calls remain an already-observed prefix.</p>
           </div>
           <div class="card">
             <h3>Local trust boundary</h3>
-            <p>Plans select locally registered aliases and carry only bounded declarative service operations and parameters. If a future locator is approved, the selected fetcher validates its target under local policy; credentials remain local. Public errors are typed and redacted.</p>
+            <p>Plans select locally registered aliases and carry only bounded declarative service operations and parameters. If a future locator is introduced through a versioned design, the selected fetcher validates its target under local policy; credentials remain local. Public errors are typed and redacted.</p>
           </div>
         </div>
 
         <div class="sequence" aria-label="Runtime sequence">
           <div class="sequence-item"><strong>Acquire complete plan</strong><code>get_plan(request)</code> returns descriptor metadata and all ordered segments for one generation.</div>
-          <div class="sequence-item"><strong>Validate and freeze</strong>MSC checks freshness, limits, aliases, segment kinds, and total length, then freezes bindings and computes capabilities.</div>
+          <div class="sequence-item"><strong>Validate and freeze</strong>MSC checks freshness, limits, aliases, segment kinds, and total length, then freezes bindings.</div>
           <div class="sequence-item"><strong>Return the view</strong>Only now does <code>AssemblyClient.resolve()</code> expose an executable <code>AssemblyView</code>.</div>
           <div class="sequence-item"><strong>Map and dispatch</strong>Only logical slices intersecting the request become work, under one deadline and cancellation scope.</div>
           <div class="sequence-item"><strong>Publish</strong>Validated bytes are concatenated in plan order and returned or atomically materialized.</div>
         </div>
 
         <div class="callout danger">
-          <strong>No implied snapshot from expiration alone.</strong> A fixed plan does not make an unversioned mutable source
-          immutable. Callers requiring stable bytes must request <code>SNAPSHOT_PINNED</code>; resolution fails before I/O if
-          the complete plan and bindings cannot enforce it.
+          <strong>Dataset snapshot semantics remain above MSC.</strong> A fixed plan and its expiration do not turn
+          <code>AssemblyView</code> into a dataset- or sample-snapshot contract. The plan provider and application own that
+          meaning; MVP Assembly validates structure, expiration, and byte counts only.
         </div>
       </section>
 
@@ -1080,17 +1083,17 @@ replacement = assembly.resolve(descriptor.reference)</code></pre>
             <ul>
               <li><code>multistorageclient.assembly</code> package and explicit construction.</li>
               <li>Provider and service-fetcher SPIs plus an adopter conformance suite.</li>
-              <li>Versioned <code>assembly-list/v1</code> artifact and golden vectors.</li>
+              <li>Versioned <code>assembly-list/v1</code> batches and golden decode/encode vectors.</li>
               <li>Python client, view, reader, models, and stable error contract.</li>
-              <li>Explicit <code>exact</code> v1 result semantics; future semantic-projection plans require a new version and capability.</li>
+              <li>Explicit <code>exact</code> v1 result semantics; future semantic-projection plans require a new schema version.</li>
             </ul>
           </div>
         </div>
 
         <h3>Evolution rules</h3>
         <ul>
-          <li><code>assembly-plan/v1</code> permanently means exact final logical bytes. A future carrier-plus-projection contract uses a new schema version and required capability; v1 clients reject it instead of returning different bytes.</li>
-          <li>Unknown schema versions, required capabilities, segment kinds, and fields fail closed before binding or byte I/O.</li>
+          <li><code>assembly-plan/v1</code> permanently means exact final logical bytes. A future carrier-plus-projection contract uses a new schema version; v1 clients reject it instead of returning different bytes.</li>
+          <li>Unknown schema versions, segment kinds, and fields fail closed before binding or byte I/O.</li>
           <li>Published provider and fetcher SPIs do not gain new required abstract methods. Optional behavior is added through methods with defaults or a new versioned SPI.</li>
           <li>Public façade growth is additive: new parameters are keyword-only and have backward-compatible defaults.</li>
         </ul>
@@ -1106,7 +1109,7 @@ replacement = assembly.resolve(descriptor.reference)</code></pre>
           <table>
             <thead><tr><th>Layer</th><th>Initial responsibility</th></tr></thead>
             <tbody>
-              <tr><td>Language-neutral</td><td><code>assembly-list/v1</code>, canonical JSON behavior, and cross-runtime golden vectors.</td></tr>
+              <tr><td>Language-neutral</td><td><code>assembly-list/v1</code> JSON batches and cross-runtime golden vectors.</td></tr>
               <tr><td>Python</td><td>Public SPIs, orchestration, validation, view/reader behavior, static-list adapter, and custom extensibility.</td></tr>
               <tr><td>Rust</td><td>No changes. This design proposes no Rust implementation or FFI path for Assembly or <code>ServiceSegmentFetcher</code>.</td></tr>
               <tr><td>Go / FUSE</td><td>No initial change; future support can consume the portable artifact or completed materialization.</td></tr>
@@ -1116,34 +1119,8 @@ replacement = assembly.resolve(descriptor.reference)</code></pre>
         </div>
       </section>
 
-      <section id="open-decisions">
-        <h2>10. Open decisions and approval gates</h2>
-        <p>
-          The architecture is implementable, but these product choices affect public scope or the performance envelope and
-          should be agreed before implementation is committed.
-        </p>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Decision</th><th>Proposed v1 position</th><th>Why it matters</th></tr></thead>
-            <tbody>
-              <tr><td>Product scale envelope</td><td><strong>Blocking input:</strong> define object count, segments/bytes, lookup-versus-traversal mix, latency, and memory/disk ceilings.</td><td>Determines batch and index representations and conformance fixtures.</td></tr>
-              <tr><td>Fetcher concurrency model</td><td>Require concurrent/asynchronous execution capability; approve the exact Python SPI separately.</td><td>The core must overlap independent I/O without prematurely committing to Rust or doubling every public façade method.</td></tr>
-              <tr><td>Phase-one browsing</td><td>Optional capability; not required for resolve/read/open.</td><td>Some applications already know exact names and have no directory model.</td></tr>
-              <tr><td>Mutable sources</td><td>Allowed under <code>EXPIRATION_ONLY</code>; enforceable identity required for <code>SNAPSHOT_PINNED</code>.</td><td>Supports baseline requirements without making false stability claims.</td></tr>
-              <tr><td>Expiration and re-resolution</td><td>No public <code>refresh</code>. Until an automatic policy is approved, an expired view fails before I/O and callers obtain a replacement with <code>resolve</code>.</td><td>A proposed <code>revalidate_after</code> plus hard <code>expires_at</code> model must preserve the requirement that an expired plan is never used to start work.</td></tr>
-              <tr><td>Service routing reference</td><td>The representation remains open. Any future locator must be transport-neutral and bounded, and the selected local fetcher must validate every target against application policy.</td><td>Supports stateless regional routing without allowing a remote plan to choose credentials or unrestricted origins.</td></tr>
-              <tr><td>Semantic projection</td><td>Out of scope for v1. <code>assembly-plan/v1</code> always means exact final bytes.</td><td>A future carrier-plus-projection result needs a new plan version, required capability, and separate format-specific façade so old clients fail closed.</td></tr>
-              <tr><td>Service request batching</td><td>No manual multi-range fetch in v1; rely on bounded concurrency and transport multiplexing.</td><td>A batch contract adds complexity and should follow benchmark evidence.</td></tr>
-              <tr><td>Defensive binding extensions</td><td>Keep the common binding client-only; any cache identity is optional or derived, and a public <code>resource_policy</code> requires separate approval.</td><td>Preserves cache and authority safety without presenting non-requirement fields as mandatory API.</td></tr>
-              <tr><td>Convenience transport adapter</td><td>Separate follow-up only after approval of a generic transport contract and user-provided protocol translation.</td><td>Keeps the core SPI independent of any server API, authentication scheme, or transport implementation.</td></tr>
-              <tr><td>Portable-list hard ceilings</td><td>Conservative inline and decode limits; applications may lower them.</td><td>Prevents the control artifact from becoming an unbounded bulk-data path.</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-
       <section id="appendix">
-        <h2>11. Appendix: requirements traceability and references</h2>
+        <h2>10. Appendix: requirements traceability and references</h2>
         <h3>Requirement-to-design traceability</h3>
         <div class="table-wrap">
           <table>
@@ -1153,9 +1130,9 @@ replacement = assembly.resolve(descriptor.reference)</code></pre>
               <tr><td>Synthesized structure or fully generated results</td><td><code>ServiceSegment</code> supports service-produced bytes without teaching MSC the file format.</td></tr>
               <tr><td>Small literal structure</td><td><code>InlineSegment</code> supports strictly bounded bytes with no external I/O.</td></tr>
               <tr><td>Unambiguous complete ordering and length</td><td>The provider returns a complete ordered plan; MSC checks the global segment-length sum before I/O.</td></tr>
-              <tr><td>Versioned language-neutral assembly list</td><td><code>assembly-list/v1</code> provides canonical batches and cross-language golden vectors.</td></tr>
-              <tr><td>Expiration and replacement</td><td>Expiration is mandatory; started work may finish; another resolve returns a distinct generation and view. Automatic re-resolution remains an approval gate.</td></tr>
-              <tr><td>Optional revisions and checksums</td><td>Baseline expiration-only semantics remain valid; callers may require computed snapshot-pinned consistency.</td></tr>
+              <tr><td>Versioned language-neutral assembly list</td><td><code>assembly-list/v1</code> provides strict JSON batches and cross-language golden vectors.</td></tr>
+              <tr><td>Expiration and replacement</td><td>Expiration is mandatory; started work may finish; another resolve returns a distinct generation and view. V1 performs no automatic re-resolution.</td></tr>
+              <tr><td>Optional revisions and checksums</td><td>Deferred from the MVP. V1 enforces expiration and exact lengths; applications retain responsibility for stronger snapshot identity.</td></tr>
               <tr><td>No universal service transport</td><td>Planning and fulfillment use separate in-process SPIs; service fulfillment is supplied by user code and MSC defines no server contract.</td></tr>
               <tr><td>Existing MSC behavior unchanged</td><td>The feature is a parallel package using existing StorageClient instances as dependencies.</td></tr>
             </tbody>
@@ -1172,7 +1149,6 @@ replacement = assembly.resolve(descriptor.reference)</code></pre>
         <h3>Public standards</h3>
         <ul>
           <li><a href="https://www.rfc-editor.org/rfc/rfc9110.html">RFC 9110 — HTTP Semantics</a></li>
-          <li><a href="https://www.rfc-editor.org/rfc/rfc8785.html">RFC 8785 — JSON Canonicalization Scheme</a></li>
         </ul>
 
         <p class="small">

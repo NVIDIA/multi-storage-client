@@ -151,10 +151,10 @@
         <div class="architecture" role="img" aria-label="The application supplies a plan provider, configured object bindings, and service fetcher implementations. AssemblyClient validates and freezes them before returning AssemblyView.">
           <div class="arch-row">
             <div class="arch-node user"><strong>AssemblyPlanProvider</strong><br><span class="small">application implementation or MSC static adapter</span></div>
-            <div class="arch-node new"><strong>AssemblyClient.resolve()</strong><br><span class="small">resolve · validate · freeze · capabilities</span></div>
+            <div class="arch-node new"><strong>AssemblyClient.resolve()</strong><br><span class="small">resolve · validate · freeze</span></div>
             <div class="arch-node new"><strong>AssemblyView</strong><br><span class="small">one fixed executable generation</span></div>
           </div>
-          <div class="arch-arrow">metadata-bearing complete plan → validated frozen bindings + capabilities → exact view</div>
+          <div class="arch-arrow">metadata-bearing complete plan → validated frozen bindings → exact view</div>
           <div class="arch-row">
             <div class="arch-node existing"><strong>ObjectSourceBinding</strong><br><span class="small">configured StorageClient</span></div>
             <div class="arch-node user"><strong>ServiceSegmentFetcher</strong><br><span class="small">application implementation</span></div>
@@ -188,10 +188,7 @@
         self,
         request: ResolveAssemblyRequest,
     ) -> AssemblyPlan:
-        """Return descriptor metadata and the complete ordered plan."""
-
-    def close(self) -> None:
-        pass</code></pre>
+        """Return descriptor metadata and the complete ordered plan."""</code></pre>
 
         <div class="grid-2">
           <div class="card">
@@ -215,6 +212,12 @@ provider = StaticAssemblyListProvider.from_batches(batches)</code></pre>
           <li>The plan and embedded descriptor must agree on reference, generation, size, and expiration.</li>
           <li>The provider exposes no separate refresh operation. A replacement is another <code>get_plan()</code> result reached through <code>AssemblyClient.resolve()</code>.</li>
         </ul>
+
+        <div class="callout info">
+          <strong><code>AssemblyListBatch</code> is a portable artifact, not a browsing API.</strong> One or more batches carry
+          a version, list ID, expiration, batch position, and object definitions. MSC's static provider validates the batch
+          set and builds an exact-reference lookup. It does not expose pagination, <code>list()</code>, or <code>glob()</code>.
+        </div>
       </section>
 
       <section id="plan">
@@ -252,7 +255,7 @@ provider = StaticAssemblyListProvider.from_batches(batches)</code></pre>
             kind="service",
             fetcher_id="rewrite",
             operation="build-metadata",
-            parameters=FrozenJsonObject.from_mapping({"layout": "v3"}),
+            parameters={"layout": "v3"},
             length=16_384,
             range_mode=ServiceRangeMode.WHOLE_RESULT,
         ),
@@ -263,8 +266,7 @@ provider = StaticAssemblyListProvider.from_batches(batches)</code></pre>
           <li>Tuple order is the logical byte order. Do not add a second ordering field.</li>
           <li>The checked sum of segment lengths must equal <code>descriptor.size</code>.</li>
           <li>Every <code>source_id</code> and <code>fetcher_id</code> must match a local binding supplied to <code>AssemblyClient</code>.</li>
-          <li>In v1, the client-only object binding rejects source selectors and <code>ENFORCE_DURING_READ</code> validators; <code>IDENTITY_ONLY</code> metadata does not pin bytes. MSC can instead verify a checksum over the complete object segment.</li>
-          <li>A service revision supports stronger consistency only when the selected fetcher advertises and enforces that revision kind; MSC can also verify a checksum over the complete service result.</li>
+          <li>V1 does not model source selectors, validators, revisions, or checksums. The provider and local bindings own any stronger consistency policy.</li>
           <li>MSC validates the complete plan before returning a view or performing byte I/O.</li>
         </ul>
 
@@ -278,11 +280,11 @@ provider = StaticAssemblyListProvider.from_batches(batches)</code></pre>
           <strong>V1 always means exact final bytes.</strong> Every valid composition of object, service, and inline segments
           must produce the caller's complete logical object. Informational application annotations cannot turn the result into
           a semantic superset that requires format-specific projection. Such a contract would require a new plan version and
-          an explicitly supported capability.
+          an explicitly versioned contract.
         </div>
 
         <p class="small">
-          Treat plan and SPI versions as compatibility boundaries. Unknown plan versions or required capabilities are rejected;
+          Treat plan and SPI versions as compatibility boundaries. Unknown plan versions, segment kinds, or fields are rejected;
           published provider and fetcher SPIs will not gain new required abstract methods within the same version.
         </p>
       </section>
@@ -307,7 +309,7 @@ object_sources = {
           <li>The plan selects only the alias <code>raw</code>; it cannot select or reconfigure the underlying authority.</li>
           <li>The binding must be able to interpret every <code>resource</code> assigned to its alias.</li>
           <li>StorageClients remain application-owned and are always borrowed by AssemblyClient; manage them through their existing public APIs.</li>
-          <li>Request stronger consistency only when every non-inline segment has enforceable evidence; in v1, an object segment needs a verified complete checksum.</li>
+          <li>The v1 binding validates returned length but does not enforce an object version or checksum. Apply stronger identity policy inside application-owned dependencies when required.</li>
         </ul>
       </section>
 
@@ -352,9 +354,10 @@ object_sources = {
           <li>Do not choose segment ordering or read another plan alias.</li>
           <li>Return exactly the declared complete length or requested subrange, according to the advertised range mode.</li>
           <li>Honor the supplied deadline and cancellation signal, emit bounded byte chunks, and make the result stream closeable.</li>
-          <li>Keep advertised capability values stable for the fetcher's injected lifetime, and preserve stable-subrange behavior throughout each operation.</li>
+          <li>Keep <code>range_modes</code> stable for the fetcher's injected lifetime, and preserve stable-subrange behavior throughout each operation.</li>
           <li>Treat each request as independently executable; do not require sticky sessions or hidden ordering state.</li>
           <li>Interpret <code>operation</code> and <code>parameters</code> under local allowlist, authentication, and routing policy. Never accept credentials from the plan.</li>
+          <li>MSC serializes calls to one fetcher instance in v1. Different fetcher instances may run concurrently under the client's global limit.</li>
         </ul>
 
         <div class="table-wrap">
@@ -368,9 +371,9 @@ object_sources = {
         </div>
 
         <p>
-          <code>RetrySafety.NEVER</code> is the safe default. Declare <code>RetrySafety.SAFE</code> only when your implementation
-          can repeat the operation without changing its meaning. Internal scheduling and retry mechanics are specified in the
-          <a href="implementation-and-test-plan.html#sources">Implementation &amp; Test Plan</a>.
+          Assembly invokes <code>fetch()</code> once for each planned service operation and adds no outer retry. A fetcher may
+          implement its own retry policy behind the SPI, provided it remains within the supplied deadline and preserves the
+          operation's application-defined semantics.
         </p>
 
         <div class="callout info">
@@ -398,6 +401,8 @@ object_sources = {
             "raw": ObjectSourceBinding(client=raw_storage),
         },
         service_fetchers=service_fetchers,
+        max_concurrency=16,
+        timeout_seconds=300,
     )
 
 
@@ -414,16 +419,17 @@ assembly = create_assembly_client(
           <li><code>raw</code> must match every intended <code>ObjectSegment.source_id</code>.</li>
           <li><code>rewrite</code> must match every intended <code>ServiceSegment.fetcher_id</code>.</li>
           <li>If no plan contains service segments, pass an empty <code>service_fetchers</code> mapping and implement no fetcher.</li>
-          <li>Injected dependencies are borrowed by default; the application remains responsible for their lifecycle.</li>
-          <li>Unknown aliases, incomplete plans, and unsupported capabilities fail before <code>resolve()</code> returns a view.</li>
+          <li>Injected dependencies are borrowed; the application remains responsible for their lifecycle.</li>
+          <li><code>max_concurrency</code> and <code>timeout_seconds</code> are the only public execution knobs in v1; other safety limits are private MSC constants.</li>
+          <li>Unknown aliases and incomplete or malformed plans fail before <code>resolve()</code> returns a view.</li>
         </ul>
       </section>
 
       <section id="view">
         <h2>7. Resolve once, then operate on AssemblyView</h2>
-        <div class="formula">get_plan(request) → descriptor metadata + complete plan → validate + freeze + capabilities → exact AssemblyView</div>
+        <div class="formula">get_plan(request) → descriptor metadata + complete plan → validate + freeze → exact AssemblyView</div>
 
-        <pre><code>reference = AssemblyReference.from_mapping(
+        <pre><code>reference = AssemblyReference(
     namespace="exports",
     key="run-42.bin",
     parameters={"variant": "training"},
@@ -438,9 +444,8 @@ with assembly.resolve(reference) as view:
     )
 
     with view.open() as reader:
-        if reader.seekable():
-            reader.seek(descriptor.size - 4)
-            trailer = reader.read(4)
+        prefix = reader.read(4096)
+        next_chunk = reader.read(4096)  # forward-only in v1
 
     view.materialize("/tmp/run-42.bin", overwrite=False)</code></pre>
 
@@ -448,17 +453,17 @@ with assembly.resolve(reference) as view:
           <table>
             <thead><tr><th>Operation</th><th>Caller-visible behavior</th></tr></thead>
             <tbody>
-              <tr><td><code>resolve</code></td><td>Returns only after the single provider call, complete-plan validation, binding freeze, and capability computation all succeed.</td></tr>
+              <tr><td><code>resolve</code></td><td>Returns only after the single provider call, complete-plan validation, and binding freeze all succeed.</td></tr>
               <tr><td><code>metadata</code></td><td>Returns the view's immutable <code>AssemblyDescriptor</code>; the descriptor itself is not executable.</td></tr>
               <tr><td><code>read</code></td><td>Returns one logical byte range from the fixed view generation.</td></tr>
-              <tr><td><code>open</code></td><td>Returns a read-only stream over the same validated generation and plan; call <code>seekable()</code> before seeking.</td></tr>
+              <tr><td><code>open</code></td><td>Returns a forward-only read stream over the same validated generation and plan. Use <code>view.read(range)</code> for random range access.</td></tr>
               <tr><td><code>materialize</code></td><td>Publishes the complete logical object to a local path without exposing a partial successful result.</td></tr>
             </tbody>
           </table>
         </div>
 
         <ul>
-          <li>A view contains its descriptor, complete validated plan, frozen bindings, computed consistency/capabilities, and lifecycle state.</li>
+          <li>A view contains its descriptor, complete validated plan, frozen bindings, and lifecycle state.</li>
           <li>The view never resolves a different generation implicitly.</li>
           <li>Closing a view prevents new operations through that view; it does not mutate another view.</li>
           <li>Manage the parent <code>AssemblyClient</code> and application-owned dependencies at the composition boundary.</li>
@@ -466,7 +471,7 @@ with assembly.resolve(reference) as view:
       </section>
 
       <section id="freshness">
-        <h2>8. Handle expiration, replacement, and consistency explicitly</h2>
+        <h2>8. Handle expiration, replacement, and the MVP consistency boundary explicitly</h2>
         <div class="grid-2">
           <div class="card">
             <h3>Expiration</h3>
@@ -474,15 +479,15 @@ with assembly.resolve(reference) as view:
               <li>Every descriptor has a mandatory future <code>expires_at</code>.</li>
               <li>A new operation on an expired view raises <code>AssemblyExpiredError</code>.</li>
               <li>An operation admitted while valid may finish after expiration.</li>
-              <li>There is no public refresh method or implicit generation fall-forward in the proposed v1 policy.</li>
+              <li>There is no public refresh method or implicit generation fall-forward in v1.</li>
             </ul>
           </div>
           <div class="card">
-            <h3>Consistency</h3>
+            <h3>Consistency boundary</h3>
             <ul>
-              <li><code>EXPIRATION_ONLY</code> is the default and does not promise immutable source bytes.</li>
-              <li><code>SNAPSHOT_PINNED</code> is opt-in. In v1, every object segment needs a verified complete checksum; each service segment needs a fetcher-enforced revision or a verified complete checksum.</li>
-              <li>Unsupported stronger consistency fails before byte I/O.</li>
+              <li>V1 plans contain no selectors, validators, operation revisions, or checksums.</li>
+              <li>MSC validates exact returned lengths and surfaces storage or service transport failures.</li>
+              <li>Same-length source mutation may be undetectable. Dataset or sample snapshot semantics remain the application's responsibility.</li>
             </ul>
           </div>
         </div>
@@ -498,8 +503,8 @@ except AssemblyExpiredError:
 
         <p>
           Another resolve returns a newly resolved and validated view. It never mutates the old one. If replacement resolution
-          fails, the old view remains unchanged and expired. A future automatic re-resolution policy requires separate approval;
-          an expired plan may never begin new work.
+          fails, the old view remains unchanged and expired. V1 performs no automatic re-resolution, and an expired plan may
+          never begin new work.
         </p>
       </section>
 
@@ -510,11 +515,10 @@ except AssemblyExpiredError:
             <thead><tr><th>What you observe</th><th>What to check</th></tr></thead>
             <tbody>
               <tr><td><code>AssemblyExpiredError</code></td><td>Resolve the same reference again; do not extend or mutate the old view.</td></tr>
-              <tr><td>Resolve returns no view</td><td>Check descriptor/plan agreement, expiration, complete-plan length, aliases, and requested consistency.</td></tr>
+              <tr><td>Resolve returns no view</td><td>Check descriptor/plan agreement, expiration, complete-plan length, segment kinds, and aliases.</td></tr>
               <tr><td>Unknown object alias</td><td>Ensure <code>ObjectSegment.source_id</code> matches a configured <code>object_sources</code> key.</td></tr>
               <tr><td>Unknown service alias</td><td>Ensure <code>ServiceSegment.fetcher_id</code> matches an application-supplied fetcher.</td></tr>
               <tr><td>Service length or protocol failure</td><td>Check the fetcher's advertised range mode, returned length, chunk contract, deadline, and cancellation behavior.</td></tr>
-              <tr><td>Stronger consistency is rejected</td><td>Confirm every object segment has a complete checksum and every service segment has either a fetcher-enforced revision or a complete checksum.</td></tr>
             </tbody>
           </table>
         </div>
@@ -527,7 +531,7 @@ except AssemblyExpiredError:
           <li>Implement and inject <code>ServiceSegmentFetcher</code> only when service segments are present.</li>
           <li>Keep credentials, dependency objects, and executable behavior out of portable plans.</li>
           <li>Exercise full-object, partial-range, open-reader, materialization, expiration, and replacement-resolution flows.</li>
-          <li>Request only consistency guarantees that the plan evidence, Assembly core, and selected fetchers can enforce together.</li>
+          <li>Do not treat the v1 view itself as a dataset snapshot contract; enforce stronger identity inside application-owned dependencies when required.</li>
           <li>Close AssemblyClient, views, and readers predictably, and manage application-owned providers, fetchers, StorageClients, and related resources through their own public APIs.</li>
         </ul>
 
