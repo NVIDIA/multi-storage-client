@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -9,7 +10,9 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -20,10 +23,43 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
+// Hard service limits. No MSFS configuration can raise these, so any size
+// derived from config has to be reconciled against them before a request is
+// issued. S3-compatible endpoints may impose lower ceilings of their own.
+const (
+	s3MinPartSize      = 5 * 1024 * 1024        // every part but the last
+	s3MaxPartSize      = 5 * 1024 * 1024 * 1024 // one UploadPart body
+	s3MaxSinglePutSize = 5 * 1024 * 1024 * 1024 // one PutObject body
+	s3MaxPartCount     = 10000                  // parts per multipart upload
+)
+
 // `s3ContextStruct` holds the S3-specific backend details.
 type s3ContextStruct struct {
 	backend  *backendStruct
 	s3Client *s3.Client
+}
+
+type s3WriteStream struct {
+	s3Context       *s3ContextStruct
+	fullFilePath    string
+	uploadID        string
+	partSize        uint64
+	nextPartNumber  int32
+	completedParts  []types.CompletedPart
+	completedPartsM sync.Mutex
+	err             error
+	errMu           sync.Mutex
+	wg              sync.WaitGroup
+	// jobs feeds a fixed pool of uploaders. queueClosed is guarded by
+	// globals.Lock rather than a mutex: every caller of queuePartNumber,
+	// complete and abort is a `...Locked` function.
+	jobs        chan s3StreamPart
+	queueClosed bool
+}
+
+type s3StreamPart struct {
+	partNumber int32
+	data       []byte
 }
 
 // `backendCommon` is called to return a pointer to the context's common `backendStruct`.
@@ -71,19 +107,25 @@ func (backend *backendStruct) setupS3Context() (err error) {
 			}}))
 	}
 
-	if backendS3.skipTLSCertificateVerify {
-		configOptions = append(configOptions, config.WithHTTPClient(awshttp.NewBuildableClient().WithTransportOptions(func(t *http.Transport) {
+	connectionCount := max(int(globals.config.writeCommitWorkers), int(backend.uploadPartConcurrency), 32)
+	httpClient := awshttp.NewBuildableClient().WithTransportOptions(func(t *http.Transport) {
+		t.MaxIdleConns = connectionCount * 2
+		t.MaxIdleConnsPerHost = connectionCount
+		t.MaxConnsPerHost = connectionCount * 2
+		if backendS3.skipTLSCertificateVerify {
 			if t.TLSClientConfig == nil {
 				t.TLSClientConfig = &tls.Config{}
 			}
 			t.TLSClientConfig.InsecureSkipVerify = true
 			t.TLSClientConfig.MinVersion = tls.VersionTLS12
-		})))
-	}
-
-	configOptions = append(configOptions, config.WithRetryer(func() aws.Retryer {
-		return backend
-	}))
+		}
+	})
+	configOptions = append(configOptions,
+		config.WithHTTPClient(httpClient),
+		config.WithRetryer(func() aws.Retryer {
+			return backend
+		}),
+	)
 
 	s3Config, err = config.LoadDefaultConfig(context.Background(), configOptions...)
 	if err != nil {
@@ -489,4 +531,588 @@ func (s3Context *s3ContextStruct) statFile(statFileInput *statFileInputStruct) (
 	}
 
 	return
+}
+
+// `s3UseSinglePut` decides between one PutObject and a multipart upload.
+//
+// multipartThreshold is `multipart_cache_line_threshold * cache_line_size`, both
+// from MSFS configuration, so it can name a size the service will not accept in
+// one request: the default works out to exactly s3MaxSinglePutSize, which makes
+// the shipped configuration safe only by coincidence. forceSinglePut and a zero
+// threshold carry no size bound at all. Reconcile against the service limit here
+// rather than discovering it after the whole body has been staged.
+//
+// The clamp only ever moves a decision from single PutObject to multipart, so
+// objects at or below the limit behave exactly as before.
+func s3UseSinglePut(size, multipartThreshold uint64, forceSinglePut bool) (singlePut bool) {
+	singlePut = forceSinglePut || multipartThreshold == 0 || size <= multipartThreshold
+	return singlePut && size <= s3MaxSinglePutSize
+}
+
+func (s3Context *s3ContextStruct) writeFile(writeFileInput *writeFileInputStruct) (writeFileOutput *writeFileOutputStruct, err error) {
+	var (
+		backend            = s3Context.backend
+		fullFilePath       = backend.prefix + writeFileInput.filePath
+		multipartThreshold = backend.multiPartCacheLineThreshold * globals.config.cacheLineSize
+		s3PutObjectInput   *s3.PutObjectInput
+		s3PutObjectOutput  *s3.PutObjectOutput
+	)
+
+	// Multipart addresses the body at per-part offsets, so it is the only route
+	// for an object above the single-request limit. Every caller supplies this;
+	// refuse rather than let the size decision silently depend on it.
+	if writeFileInput.readerAt == nil {
+		err = fmt.Errorf("%s: writeFileInput.readerAt is required", fullFilePath)
+		return
+	}
+
+	if s3UseSinglePut(writeFileInput.size, multipartThreshold, writeFileInput.forceSinglePut) {
+		s3PutObjectInput = &s3.PutObjectInput{
+			Bucket:        aws.String(backend.bucketContainerName),
+			Key:           aws.String(fullFilePath),
+			Body:          writeFileInput.body,
+			ContentLength: aws.Int64(int64(writeFileInput.size)),
+		}
+		if writeFileInput.ifMatch != "" {
+			s3PutObjectInput.IfMatch = aws.String(writeFileInput.ifMatch)
+		}
+
+		s3PutObjectOutput, err = s3Context.s3Client.PutObject(context.Background(), s3PutObjectInput)
+		if err != nil {
+			return
+		}
+
+		writeFileOutput = &writeFileOutputStruct{
+			size:  writeFileInput.size,
+			mTime: time.Now(),
+		}
+		if s3PutObjectOutput.ETag != nil {
+			writeFileOutput.eTag = trimS3ETag(*s3PutObjectOutput.ETag)
+		}
+		return
+	}
+
+	writeFileOutput, err = s3Context.writeFileMultipart(fullFilePath, writeFileInput)
+	if err != nil {
+		return
+	}
+
+	if writeFileOutput.eTag == "" {
+		// The upload already committed. This HEAD only recovers the eTag, so its
+		// failure must not surface as a failed write.
+		s3HeadObjectOutput, headErr := s3Context.s3Client.HeadObject(context.Background(), &s3.HeadObjectInput{
+			Bucket: aws.String(backend.bucketContainerName),
+			Key:    aws.String(fullFilePath),
+		})
+		if headErr == nil && s3HeadObjectOutput.ETag != nil {
+			writeFileOutput.eTag = trimS3ETag(*s3HeadObjectOutput.ETag)
+		}
+	}
+
+	return
+}
+
+// `s3MultipartLayout` reconciles a configured part size with the service's part
+// rules: every part but the last must be at least s3MinPartSize, no part may
+// exceed s3MaxPartSize, and an upload may not exceed s3MaxPartCount parts. Both
+// bounds are otherwise reachable from configuration alone, and each one fails
+// only at CompleteMultipartUpload, after every part has been uploaded.
+//
+// The part count is capped by growing the part size rather than by reducing
+// concurrency, because in this path each part body is an io.SectionReader over
+// an already-resident buffer, so a larger part costs no additional memory.
+func s3MultipartLayout(size, configuredPartSize uint64) (partSize, partCount uint64, err error) {
+	partSize = configuredPartSize
+	if partSize < s3MinPartSize {
+		partSize = s3MinPartSize
+	}
+
+	if smallestAllowed := (size + s3MaxPartCount - 1) / s3MaxPartCount; smallestAllowed > partSize {
+		partSize = smallestAllowed
+	}
+
+	if partSize > s3MaxPartSize {
+		err = fmt.Errorf("size %d requires %d byte parts, above the %d byte part limit",
+			size, partSize, uint64(s3MaxPartSize))
+		return
+	}
+
+	partCount = (size + partSize - 1) / partSize
+	if partCount == 0 {
+		partCount = 1
+	}
+	return
+}
+
+func (s3Context *s3ContextStruct) writeFileMultipart(fullFilePath string, writeFileInput *writeFileInputStruct) (writeFileOutput *writeFileOutputStruct, err error) {
+	var (
+		backend          = s3Context.backend
+		completedParts   []types.CompletedPart
+		createOutput     *s3.CreateMultipartUploadOutput
+		partSize         = backend.uploadPartCacheLines * globals.config.cacheLineSize
+		partCount        uint64
+		uploadID         string
+		uploadPartErr    error
+		uploadPartErrMu  sync.Mutex
+		uploadPartWG     sync.WaitGroup
+		uploadPartTokens chan struct{}
+	)
+
+	if partSize == 0 {
+		partSize = globals.config.cacheLineSize
+	}
+	partSize, partCount, err = s3MultipartLayout(writeFileInput.size, partSize)
+	if err != nil {
+		err = fmt.Errorf("%s: %w", fullFilePath, err)
+		return
+	}
+	completedParts = make([]types.CompletedPart, partCount)
+
+	createInput := &s3.CreateMultipartUploadInput{
+		Bucket: aws.String(backend.bucketContainerName),
+		Key:    aws.String(fullFilePath),
+	}
+	createOutput, err = s3Context.s3Client.CreateMultipartUpload(context.Background(), createInput)
+	if err != nil {
+		return
+	}
+	uploadID = aws.ToString(createOutput.UploadId)
+
+	defer func() {
+		if err != nil && uploadID != "" {
+			_, _ = s3Context.s3Client.AbortMultipartUpload(context.Background(), &s3.AbortMultipartUploadInput{
+				Bucket:   aws.String(backend.bucketContainerName),
+				Key:      aws.String(fullFilePath),
+				UploadId: aws.String(uploadID),
+			})
+		}
+	}()
+
+	concurrency := backend.uploadPartConcurrency
+	if concurrency == 0 {
+		concurrency = 1
+	}
+	uploadPartTokens = make(chan struct{}, concurrency)
+
+	for partIndex := range partCount {
+		offset := partIndex * partSize
+		length := partSize
+		if offset+length > writeFileInput.size {
+			length = writeFileInput.size - offset
+		}
+
+		uploadPartWG.Add(1)
+		uploadPartTokens <- struct{}{}
+		go func() {
+			defer uploadPartWG.Done()
+			defer func() { <-uploadPartTokens }()
+
+			partNumber := int32(partIndex + 1)
+			body := io.NewSectionReader(writeFileInput.readerAt, int64(offset), int64(length))
+			uploadOutput, uploadErr := s3Context.s3Client.UploadPart(context.Background(), &s3.UploadPartInput{
+				Bucket:        aws.String(backend.bucketContainerName),
+				Key:           aws.String(fullFilePath),
+				UploadId:      aws.String(uploadID),
+				PartNumber:    aws.Int32(partNumber),
+				Body:          body,
+				ContentLength: aws.Int64(int64(length)),
+			})
+			if uploadErr != nil {
+				uploadPartErrMu.Lock()
+				if uploadPartErr == nil {
+					uploadPartErr = uploadErr
+				}
+				uploadPartErrMu.Unlock()
+				return
+			}
+
+			completedParts[partIndex] = types.CompletedPart{
+				ETag:       uploadOutput.ETag,
+				PartNumber: aws.Int32(partNumber),
+			}
+		}()
+	}
+
+	uploadPartWG.Wait()
+	if uploadPartErr != nil {
+		err = uploadPartErr
+		return
+	}
+
+	sort.Slice(completedParts, func(i, j int) bool {
+		return aws.ToInt32(completedParts[i].PartNumber) < aws.ToInt32(completedParts[j].PartNumber)
+	})
+
+	completeOutput, err := s3Context.s3Client.CompleteMultipartUpload(context.Background(), &s3.CompleteMultipartUploadInput{
+		Bucket:   aws.String(backend.bucketContainerName),
+		Key:      aws.String(fullFilePath),
+		UploadId: aws.String(uploadID),
+		MultipartUpload: &types.CompletedMultipartUpload{
+			Parts: completedParts,
+		},
+	})
+	if err != nil {
+		return
+	}
+
+	writeFileOutput = &writeFileOutputStruct{
+		size:  writeFileInput.size,
+		mTime: time.Now(),
+	}
+	if completeOutput.ETag != nil {
+		writeFileOutput.eTag = trimS3ETag(*completeOutput.ETag)
+	}
+	return
+}
+
+func trimS3ETag(eTag string) string {
+	return strings.TrimLeft(strings.TrimRight(eTag, "\""), "\"")
+}
+
+func (s3Context *s3ContextStruct) writeFileOverlay(inode *inodeStruct) (writeFileOutput *writeFileOutputStruct, err error) {
+	var (
+		backend        = s3Context.backend
+		completedParts []types.CompletedPart
+		createOutput   *s3.CreateMultipartUploadOutput
+		fullFilePath   = backend.prefix + inode.objectPath
+		partCount      uint64
+		partSize       = backend.uploadPartCacheLines * globals.config.cacheLineSize
+		uploadID       string
+	)
+
+	if !inode.writeStateActive {
+		return nil, errors.New("missing write state")
+	}
+	if inode.sizeInMemory == 0 {
+		return s3Context.writeFile(&writeFileInputStruct{
+			filePath: inode.objectPath,
+			ifMatch:  inode.eTag,
+			body:     bytes.NewReader(nil),
+			readerAt: bytes.NewReader(nil),
+			size:     0,
+		})
+	}
+	partSize, partCount, err = s3MultipartLayout(inode.sizeInMemory, partSize)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", fullFilePath, err)
+	}
+	completedParts = make([]types.CompletedPart, 0, partCount)
+
+	// Merged once here rather than per part: segments are appended one per FUSE
+	// write and never coalesced, so this list can be long, while the merge of a
+	// sequential rewrite collapses to a single range.
+	dirtyRanges := inode.writeState.mergedDirtyRanges()
+
+	createInput := &s3.CreateMultipartUploadInput{
+		Bucket: aws.String(backend.bucketContainerName),
+		Key:    aws.String(fullFilePath),
+	}
+	createOutput, err = s3Context.s3Client.CreateMultipartUpload(context.Background(), createInput)
+	if err != nil {
+		return nil, err
+	}
+	uploadID = aws.ToString(createOutput.UploadId)
+
+	defer func() {
+		if err != nil && uploadID != "" {
+			_, _ = s3Context.s3Client.AbortMultipartUpload(context.Background(), &s3.AbortMultipartUploadInput{
+				Bucket:   aws.String(backend.bucketContainerName),
+				Key:      aws.String(fullFilePath),
+				UploadId: aws.String(uploadID),
+			})
+		}
+	}()
+
+	for partIndex := range partCount {
+		offset := partIndex * partSize
+		length := partSize
+		if offset+length > inode.sizeInMemory {
+			length = inode.sizeInMemory - offset
+		}
+		partNumber := int32(partIndex + 1)
+
+		if !inode.writeState.truncateAtOpen && offset+length <= inode.sizeInBackend && !inode.writeState.hasDirtyOverlap(offset, length) {
+			copyOutput, copyErr := s3Context.s3Client.UploadPartCopy(context.Background(), &s3.UploadPartCopyInput{
+				Bucket:     aws.String(backend.bucketContainerName),
+				Key:        aws.String(fullFilePath),
+				UploadId:   aws.String(uploadID),
+				PartNumber: aws.Int32(partNumber),
+				// QueryEscape would emit "+" for a space, which S3 percent-decodes
+				// back to "+", and would escape the bucket/key separator.
+				CopySource:      aws.String((&url.URL{Path: backend.bucketContainerName + "/" + fullFilePath}).EscapedPath()),
+				CopySourceRange: aws.String(fmt.Sprintf("bytes=%d-%d", offset, offset+length-1)),
+			})
+			if copyErr != nil {
+				err = copyErr
+				return nil, err
+			}
+			completedParts = append(completedParts, types.CompletedPart{
+				ETag:       copyOutput.CopyPartResult.ETag,
+				PartNumber: aws.Int32(partNumber),
+			})
+			continue
+		}
+
+		partData, partErr := s3Context.assembleOverlayPart(inode, offset, length, dirtyRanges)
+		if partErr != nil {
+			err = partErr
+			return nil, err
+		}
+		uploadOutput, uploadErr := s3Context.s3Client.UploadPart(context.Background(), &s3.UploadPartInput{
+			Bucket:        aws.String(backend.bucketContainerName),
+			Key:           aws.String(fullFilePath),
+			UploadId:      aws.String(uploadID),
+			PartNumber:    aws.Int32(partNumber),
+			Body:          bytes.NewReader(partData),
+			ContentLength: aws.Int64(int64(len(partData))),
+		})
+		if uploadErr != nil {
+			err = uploadErr
+			return nil, err
+		}
+		completedParts = append(completedParts, types.CompletedPart{
+			ETag:       uploadOutput.ETag,
+			PartNumber: aws.Int32(partNumber),
+		})
+	}
+
+	completeOutput, err := s3Context.s3Client.CompleteMultipartUpload(context.Background(), &s3.CompleteMultipartUploadInput{
+		Bucket:   aws.String(backend.bucketContainerName),
+		Key:      aws.String(fullFilePath),
+		UploadId: aws.String(uploadID),
+		MultipartUpload: &types.CompletedMultipartUpload{
+			Parts: completedParts,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	writeFileOutput = &writeFileOutputStruct{
+		size:  inode.sizeInMemory,
+		mTime: time.Now(),
+	}
+	if completeOutput.ETag != nil {
+		writeFileOutput.eTag = trimS3ETag(*completeOutput.ETag)
+	}
+	return writeFileOutput, nil
+}
+
+func (s3Context *s3ContextStruct) assembleOverlayPart(inode *inodeStruct, offset, length uint64, dirtyRanges []writeRange) ([]byte, error) {
+	partData := make([]byte, length)
+	if !inode.writeState.truncateAtOpen && offset < inode.sizeInBackend {
+		readLimit := offset + length
+		if readLimit > inode.sizeInBackend {
+			readLimit = inode.sizeInBackend
+		}
+		// Bytes the overlay below rewrites in full need not be fetched first. A
+		// whole-object rewrite hits this for every part, which is where the read
+		// would otherwise cost one part-sized GET per part, all discarded.
+		if readLimit > offset && !rangesCover(dirtyRanges, offset, readLimit-offset) {
+			baseBytes, err := s3Context.readRange(inode.objectPath, offset, readLimit-offset, inode.eTag)
+			if err != nil {
+				return nil, err
+			}
+			copy(partData, baseBytes)
+		}
+	}
+	for _, segment := range inode.writeState.segments {
+		overlayBytes(partData, offset, segment)
+	}
+	return partData, nil
+}
+
+func (s3Context *s3ContextStruct) readRange(filePath string, offset, length uint64, ifMatch string) ([]byte, error) {
+	if length == 0 {
+		return nil, nil
+	}
+	getInput := &s3.GetObjectInput{
+		Bucket: aws.String(s3Context.backend.bucketContainerName),
+		Key:    aws.String(s3Context.backend.prefix + filePath),
+		Range:  aws.String(fmt.Sprintf("bytes=%d-%d", offset, offset+length-1)),
+	}
+	if ifMatch != "" {
+		getInput.IfMatch = aws.String(ifMatch)
+	}
+	getOutput, err := s3Context.s3Client.GetObject(context.Background(), getInput)
+	if err != nil {
+		return nil, err
+	}
+	defer getOutput.Body.Close()
+	return io.ReadAll(getOutput.Body)
+}
+
+func (stream *s3WriteStream) init(backend *backendStruct, filePath string) error {
+	var (
+		concurrency uint64
+		createOut   *s3.CreateMultipartUploadOutput
+		err         error
+		partSize    uint64
+		s3Context   *s3ContextStruct
+	)
+
+	s3Context, ok := backend.context.(*s3ContextStruct)
+	if !ok {
+		return errors.New("backend is not S3")
+	}
+
+	partSize = backend.uploadPartCacheLines * globals.config.cacheLineSize
+	if partSize < s3MinPartSize {
+		partSize = s3MinPartSize
+	}
+	concurrency = backend.uploadPartConcurrency
+	if concurrency == 0 {
+		concurrency = 1
+	}
+
+	fullFilePath := backend.prefix + filePath
+	createOut, err = s3Context.s3Client.CreateMultipartUpload(context.Background(), &s3.CreateMultipartUploadInput{
+		Bucket: aws.String(backend.bucketContainerName),
+		Key:    aws.String(fullFilePath),
+	})
+	if err != nil {
+		return err
+	}
+
+	stream.s3Context = s3Context
+	stream.fullFilePath = fullFilePath
+	stream.uploadID = aws.ToString(createOut.UploadId)
+	stream.partSize = partSize
+	stream.nextPartNumber = 1
+	stream.completedParts = nil
+	stream.err = nil
+
+	// A goroutine per part made the goroutine count track the part count, which
+	// is bounded only by the object size. A fixed pool bounds it at the
+	// configured concurrency instead.
+	//
+	// The queue is sized to the largest part count an upload may legally have, so
+	// in practice queuePartNumber never has to wait -- which matters because it
+	// runs under globals.Lock, where blocking would stall every mount.
+	stream.jobs = make(chan s3StreamPart, s3MaxPartCount)
+	stream.queueClosed = false
+	for range concurrency {
+		stream.wg.Add(1)
+		go func() {
+			defer stream.wg.Done()
+			for job := range stream.jobs {
+				stream.uploadPart(job.partNumber, job.data)
+			}
+		}()
+	}
+	return nil
+}
+
+func (stream *s3WriteStream) queuePart(data []byte) {
+	partNumber := stream.nextPartNumber
+	stream.nextPartNumber++
+	stream.queuePartNumber(partNumber, data)
+}
+
+func (stream *s3WriteStream) queuePartNumber(partNumber int32, data []byte) {
+	if stream.queueClosed {
+		stream.setErr(fmt.Errorf("part %d queued after the multipart stream stopped accepting parts", partNumber))
+		return
+	}
+	select {
+	case stream.jobs <- s3StreamPart{partNumber: partNumber, data: data}:
+	default:
+		// Never wait here. This runs under globals.Lock, so blocking would freeze
+		// every mount, and a full queue means the part count already passed
+		// s3MaxPartCount, which CompleteMultipartUpload would reject regardless.
+		stream.setErr(fmt.Errorf("multipart stream exceeded %d queued parts", uint64(s3MaxPartCount)))
+	}
+}
+
+func (stream *s3WriteStream) uploadPart(partNumber int32, data []byte) {
+	uploadOut, err := stream.s3Context.s3Client.UploadPart(context.Background(), &s3.UploadPartInput{
+		Bucket:        aws.String(stream.s3Context.backend.bucketContainerName),
+		Key:           aws.String(stream.fullFilePath),
+		UploadId:      aws.String(stream.uploadID),
+		PartNumber:    aws.Int32(partNumber),
+		Body:          bytes.NewReader(data),
+		ContentLength: aws.Int64(int64(len(data))),
+	})
+	if err != nil {
+		stream.setErr(err)
+		return
+	}
+
+	stream.completedPartsM.Lock()
+	stream.completedParts = append(stream.completedParts, types.CompletedPart{
+		ETag:       uploadOut.ETag,
+		PartNumber: aws.Int32(partNumber),
+	})
+	stream.completedPartsM.Unlock()
+}
+
+// drainQueue stops accepting parts and waits for the pool to finish. Idempotent,
+// because complete calls abort on failure and abort drains again.
+func (stream *s3WriteStream) drainQueue() {
+	if !stream.queueClosed {
+		stream.queueClosed = true
+		close(stream.jobs)
+	}
+	stream.wg.Wait()
+}
+
+func (stream *s3WriteStream) complete(finalPart []byte, size uint64) (*writeFileOutputStruct, error) {
+	if len(finalPart) > 0 {
+		stream.queuePart(finalPart)
+	}
+	stream.drainQueue()
+	if err := stream.getErr(); err != nil {
+		_ = stream.abort()
+		return nil, err
+	}
+
+	sort.Slice(stream.completedParts, func(i, j int) bool {
+		return aws.ToInt32(stream.completedParts[i].PartNumber) < aws.ToInt32(stream.completedParts[j].PartNumber)
+	})
+
+	completeOut, err := stream.s3Context.s3Client.CompleteMultipartUpload(context.Background(), &s3.CompleteMultipartUploadInput{
+		Bucket:   aws.String(stream.s3Context.backend.bucketContainerName),
+		Key:      aws.String(stream.fullFilePath),
+		UploadId: aws.String(stream.uploadID),
+		MultipartUpload: &types.CompletedMultipartUpload{
+			Parts: stream.completedParts,
+		},
+	})
+	if err != nil {
+		_ = stream.abort()
+		return nil, err
+	}
+
+	output := &writeFileOutputStruct{
+		size:  size,
+		mTime: time.Now(),
+	}
+	if completeOut.ETag != nil {
+		output.eTag = trimS3ETag(*completeOut.ETag)
+	}
+	return output, nil
+}
+
+func (stream *s3WriteStream) abort() error {
+	stream.drainQueue()
+	_, err := stream.s3Context.s3Client.AbortMultipartUpload(context.Background(), &s3.AbortMultipartUploadInput{
+		Bucket:   aws.String(stream.s3Context.backend.bucketContainerName),
+		Key:      aws.String(stream.fullFilePath),
+		UploadId: aws.String(stream.uploadID),
+	})
+	return err
+}
+
+func (stream *s3WriteStream) setErr(err error) {
+	stream.errMu.Lock()
+	if stream.err == nil {
+		stream.err = err
+	}
+	stream.errMu.Unlock()
+}
+
+func (stream *s3WriteStream) getErr() error {
+	stream.errMu.Lock()
+	defer stream.errMu.Unlock()
+	return stream.err
 }

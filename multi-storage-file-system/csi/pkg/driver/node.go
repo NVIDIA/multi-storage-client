@@ -459,6 +459,7 @@ type volumeBackendJSON struct {
 	MultipartCacheLineThreshold string `json:"multipartCacheLineThreshold"`
 	UploadPartCacheLines        string `json:"uploadPartCacheLines"`
 	UploadPartConcurrency       string `json:"uploadPartConcurrency"`
+	MultipartUploadThreshold    string `json:"multipartUploadThresholdBytes"`
 }
 
 // defaultDirName returns the mount subdirectory name used when a backend does
@@ -570,6 +571,7 @@ func renderBackendTuningExtra(get func(key string) string) string {
 	optionalStr("multipartCacheLineThreshold", "multipart_cache_line_threshold")
 	optionalStr("uploadPartCacheLines", "upload_part_cache_lines")
 	optionalStr("uploadPartConcurrency", "upload_part_concurrency")
+	optionalStr("multipartUploadThresholdBytes", "multipart_upload_threshold_bytes")
 	return extra.String()
 }
 
@@ -617,19 +619,20 @@ func backendFromJSON(e volumeBackendJSON, volumeReadonly bool) (csiBackend, erro
 	}
 	b.manifestPath = e.ManifestPath
 	attrs := map[string]string{
-		"manifestPath":                e.ManifestPath,
-		"manifestGenWorkers":          e.ManifestGenWorkers,
-		"flatDirConfirmationPages":    e.FlatDirConfirmationPages,
-		"traceLevel":                  e.TraceLevel,
-		"directoryPageSize":           e.DirectoryPageSize,
-		"uid":                         e.Uid,
-		"gid":                         e.Gid,
-		"dirPerm":                     e.DirPerm,
-		"filePerm":                    e.FilePerm,
-		"flushOnClose":                e.FlushOnClose,
-		"multipartCacheLineThreshold": e.MultipartCacheLineThreshold,
-		"uploadPartCacheLines":        e.UploadPartCacheLines,
-		"uploadPartConcurrency":       e.UploadPartConcurrency,
+		"manifestPath":                  e.ManifestPath,
+		"manifestGenWorkers":            e.ManifestGenWorkers,
+		"flatDirConfirmationPages":      e.FlatDirConfirmationPages,
+		"traceLevel":                    e.TraceLevel,
+		"directoryPageSize":             e.DirectoryPageSize,
+		"uid":                           e.Uid,
+		"gid":                           e.Gid,
+		"dirPerm":                       e.DirPerm,
+		"filePerm":                      e.FilePerm,
+		"flushOnClose":                  e.FlushOnClose,
+		"multipartCacheLineThreshold":   e.MultipartCacheLineThreshold,
+		"uploadPartCacheLines":          e.UploadPartCacheLines,
+		"uploadPartConcurrency":         e.UploadPartConcurrency,
+		"multipartUploadThresholdBytes": e.MultipartUploadThreshold,
 	}
 	b.extra = renderBackendTuningExtra(func(key string) string { return attrs[key] })
 	return b, nil
@@ -775,6 +778,9 @@ func (ns *nodeServer) writeConfig(targetPath string, volCtx, secrets map[string]
 	optionalGlobalStr("cacheLinesToPrefetch", "cache_lines_to_prefetch")
 	optionalGlobalStr("dirtyCacheLinesFlushTrigger", "dirty_cache_lines_flush_trigger")
 	optionalGlobalStr("dirtyCacheLinesMax", "dirty_cache_lines_max")
+	optionalGlobalStr("writeCommitWorkers", "write_commit_workers")
+	optionalGlobalStr("writeCommitQueueDepth", "write_commit_queue_depth")
+	optionalGlobalStr("writeCachePromotion", "write_cache_promotion")
 	if v := volCtx["allowOther"]; v != "" {
 		fmt.Fprintf(&globalExtra, "allow_other: %s\n", v)
 	}

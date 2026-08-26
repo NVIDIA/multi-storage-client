@@ -595,6 +595,15 @@ func (pseudoContext *pseudoContextStruct) statFile(statFileInput *statFileInputS
 	return
 }
 
+// The PSEUDO namespace and its file contents are synthesized on demand from the
+// configured tree shape, so there is no stored object for a write to update.
+// This is a permanent non-support rather than a missing implementation, and
+// `checkConfigFile` rejects a writable PSEUDO backend at mount.
+func (pseudoContext *pseudoContextStruct) writeFile(writeFileInput *writeFileInputStruct) (writeFileOutput *writeFileOutputStruct, err error) {
+	err = errors.New("[PSEUDO] writeFile not implemented")
+	return
+}
+
 // `redactSecrets` is a no-op for the PSEUDO backend, which has no secrets.
 func (pseudoContext *pseudoContextStruct) redactSecrets(s string) string {
 	return s

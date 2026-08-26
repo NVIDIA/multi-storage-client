@@ -1080,6 +1080,30 @@ func checkConfigFile() (err error) {
 		return
 	}
 
+	config.writeDeferralMaxBytes, ok = parseUint64(configFileMap, "write_deferral_max_bytes", uint64(1073741824))
+	if !ok {
+		err = errors.New("bad write_deferral_max_bytes value")
+		return
+	}
+
+	config.writeCommitWorkers, ok = parseUint64(configFileMap, "write_commit_workers", uint64(32))
+	if !ok || config.writeCommitWorkers == 0 || config.writeCommitWorkers > 65536 {
+		err = errors.New("bad write_commit_workers value")
+		return
+	}
+
+	config.writeCommitQueueDepth, ok = parseUint64(configFileMap, "write_commit_queue_depth", uint64(256))
+	if !ok || config.writeCommitQueueDepth == 0 || config.writeCommitQueueDepth > 1048576 {
+		err = errors.New("bad write_commit_queue_depth value")
+		return
+	}
+
+	config.writeCachePromotion, ok = parseBool(configFileMap, "write_cache_promotion", false)
+	if !ok {
+		err = errors.New("bad write_cache_promotion value")
+		return
+	}
+
 	config.autoSIGHUPInterval, ok = parseSeconds(configFileMap, "auto_sighup_interval", time.Duration(0))
 	if !ok {
 		err = errors.New("bad auto_sighup_interval value")
@@ -1195,7 +1219,7 @@ func checkConfigFile() (err error) {
 				return
 			}
 
-			backendAsStructNew.flushOnClose, ok = parseBool(backendAsMap, "flush_on_close", true)
+			backendAsStructNew.flushOnClose, ok = parseBool(backendAsMap, "flush_on_close", false)
 			if !ok {
 				err = fmt.Errorf("bad flush_on_close at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
 				return
@@ -1267,6 +1291,12 @@ func checkConfigFile() (err error) {
 				return
 			}
 
+			backendAsStructNew.multipartUploadThreshold, ok = parseUint64(backendAsMap, "multipart_upload_threshold_bytes", uint64(67108864))
+			if !ok {
+				err = fmt.Errorf("bad multipart_upload_threshold_bytes at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+				return
+			}
+
 			backendAsStructNew.bucketContainerName, ok = parseString(backendAsMap, "bucket_container_name", nil)
 			if !ok {
 				err = fmt.Errorf("missing or bad bucket_container_name at backends[%v (\"%s\")]", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
@@ -1327,6 +1357,11 @@ func checkConfigFile() (err error) {
 
 			switch backendAsStructNew.backendType {
 			case "AIStore":
+				if !backendAsStructNew.readOnly {
+					err = fmt.Errorf("backends[%v (\"%s\")] specified as backend_type \"AIStore\" must be readonly", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					return
+				}
+
 				backendConfigAIStoreAsInterface, ok = backendAsMap["AIStore"]
 				if ok {
 					backendConfigAIStoreAsMap, ok = backendConfigAIStoreAsInterface.(map[string]interface{})
@@ -1391,6 +1426,11 @@ func checkConfigFile() (err error) {
 
 				backendAsStructNew.backendTypeSpecifics = backendConfigAIStoreAsStruct
 			case "GCS":
+				if !backendAsStructNew.readOnly {
+					err = fmt.Errorf("backends[%v (\"%s\")] specified as backend_type \"GCS\" must be readonly", backendsAsInterfaceSliceIndex, backendAsStructNew.dirName)
+					return
+				}
+
 				backendConfigGCSAsInterface, ok = backendAsMap["GCS"]
 				if ok {
 					backendConfigGCSAsMap, ok = backendConfigGCSAsInterface.(map[string]interface{})
@@ -2181,6 +2221,26 @@ func checkConfigFile() (err error) {
 			return
 		}
 
+		if globals.config.writeDeferralMaxBytes != config.writeDeferralMaxBytes {
+			err = errors.New("cannot change write_deferral_max_bytes via SIGHUP")
+			return
+		}
+
+		if globals.config.writeCommitWorkers != config.writeCommitWorkers {
+			err = errors.New("cannot change write_commit_workers via SIGHUP")
+			return
+		}
+
+		if globals.config.writeCommitQueueDepth != config.writeCommitQueueDepth {
+			err = errors.New("cannot change write_commit_queue_depth via SIGHUP")
+			return
+		}
+
+		if globals.config.writeCachePromotion != config.writeCachePromotion {
+			err = errors.New("cannot change write_cache_promotion via SIGHUP")
+			return
+		}
+
 		if globals.config.autoSIGHUPInterval != config.autoSIGHUPInterval {
 			err = errors.New("cannot change auto_sighup_interval via SIGHUP")
 			return
@@ -2243,6 +2303,11 @@ func checkConfigFile() (err error) {
 
 				if backendAsStructOld.uploadPartConcurrency != backendAsStructNew.uploadPartConcurrency {
 					err = fmt.Errorf("cannot change upload_part_concurrency in backends[\"%s\"]", dirName)
+					return
+				}
+
+				if backendAsStructOld.multipartUploadThreshold != backendAsStructNew.multipartUploadThreshold {
+					err = fmt.Errorf("cannot change multipart_upload_threshold_bytes in backends[\"%s\"]", dirName)
 					return
 				}
 

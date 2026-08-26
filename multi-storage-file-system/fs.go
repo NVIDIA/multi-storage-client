@@ -23,6 +23,9 @@ func initFS() {
 	globalsLock("fs.go:23:2:initFS")
 
 	globals.backendMap = make(map[uint64]*backendStruct)
+	globals.writeCommitPool = newWriteCommitPool(globals.config.writeCommitWorkers, globals.config.writeCommitQueueDepth)
+	globals.writeCommitControls = make(map[uint64]*writeCommitControl)
+	globals.writeCachePromotionPool = newWriteCachePromotionPool(globals.config.writeCommitWorkers, globals.config.writeCommitQueueDepth)
 
 	globals.lastNonce = FUSERootDirInodeNumber
 
@@ -117,10 +120,20 @@ func drainFS() {
 		err     error
 	)
 
+	if globals.writeCommitPool != nil {
+		globals.writeCommitPool.drain()
+		globals.writeCommitPool = nil
+	}
+	if globals.writeCachePromotionPool != nil {
+		globals.writeCachePromotionPool.drain()
+		globals.writeCachePromotionPool = nil
+	}
+	globals.dataCacheActivityWG.Wait()
+
 	globals.inodeEvictorCancelFunc()
 	globals.inodeEvictorWaitGroup.Wait()
 
-	globalsLock("fs.go:123:2:drainFS")
+	globalsLock("fs.go:136:2:drainFS")
 
 	for dirName, backend = range globals.config.backends {
 		globals.backendsToUnmount[dirName] = backend
@@ -166,7 +179,7 @@ func processToMountList() {
 		timeNow time.Time
 	)
 
-	globalsLock("fs.go:169:2:processToMountList")
+	globalsLock("fs.go:182:2:processToMountList")
 
 	timeNow = time.Now()
 
@@ -248,7 +261,7 @@ func processToMountList() {
 // `processToUnmountList` is called to remove each backend subdirectory of the FUSE
 // file system's root directory found on the globals.backendsToUnmount list.
 func processToUnmountList() {
-	globalsLock("fs.go:251:2:processToUnmountList")
+	globalsLock("fs.go:264:2:processToUnmountList")
 	processToUnmountListAlreadyLocked()
 	globalsUnlock()
 }
@@ -437,13 +450,38 @@ func (childInode *inodeStruct) convertToPhysInodeIfNecessary() {
 		globals.logger.Fatalf("[FATAL] globals.virtChildDirEntryMap.delete(childInode.parentInodeNumber, childInode.basename) returned !ok")
 	}
 
-	ok = globals.physChildDirEntryMap.put(childInode.parentInodeNumber, childInode.basename, childInode.inodeNumber)
+	ok = globals.physChildDirEntryMap.putInfo(childInode.parentInodeNumber, childInode.basename, childInode.dirEntryInfo())
 	if !ok {
 		dumpStack()
-		globals.logger.Fatalf("[FATAL] globals.physChildDirEntryMap.put(childInode.parentInodeNumber, childInode.basename, childInode.inodeNumber) returned !ok")
+		globals.logger.Fatalf("[FATAL] globals.physChildDirEntryMap.putInfo(childInode.parentInodeNumber, childInode.basename, childInode.dirEntryInfo()) returned !ok")
 	}
 
 	childInode.touch(nil)
+}
+
+// `dirEntryInfo` returns the directory-entry metadata stored in child maps and
+// used by B+Tree-backed readdir-plus.
+func (inode *inodeStruct) dirEntryInfo() DirEntryInfo {
+	return DirEntryInfo{
+		InodeNumber:   inode.inodeNumber,
+		InodeType:     inode.inodeType,
+		Size:          inode.sizeInMemory,
+		Mode:          inode.mode,
+		MTimeUnixNano: inode.mTime.UnixNano(),
+	}
+}
+
+// `updateParentDirEntryLocked` refreshes a physical/virtual parent entry after
+// an inode's attributes change. Caller must hold globals.Lock().
+func (inode *inodeStruct) updateParentDirEntryLocked() {
+	if inode.inodeType != FileObject && inode.inodeType != PseudoDir {
+		return
+	}
+	if inode.isVirt {
+		_ = globals.virtChildDirEntryMap.putInfo(inode.parentInodeNumber, inode.basename, inode.dirEntryInfo())
+		return
+	}
+	_ = globals.physChildDirEntryMap.putInfo(inode.parentInodeNumber, inode.basename, inode.dirEntryInfo())
 }
 
 // `createPseudoDirInode` is called while globals.Lock() is held to create a new PseudoDir inodeStruct.
@@ -504,10 +542,10 @@ func (parentInode *inodeStruct) createPseudoDirInode(isVirt bool, basename strin
 			globals.logger.Fatalf("[FATAL] globals.virtChildDirEntryMap.put(parentInode.inodeNumber, pseudoDirInode.basename, pseudoDirInode.inodeNumber) returned !ok")
 		}
 	} else {
-		ok = globals.physChildDirEntryMap.put(parentInode.inodeNumber, pseudoDirInode.basename, pseudoDirInode.inodeNumber)
+		ok = globals.physChildDirEntryMap.putInfo(parentInode.inodeNumber, pseudoDirInode.basename, pseudoDirInode.dirEntryInfo())
 		if !ok {
 			dumpStack()
-			globals.logger.Fatalf("[FATAL] globals.physChildDirEntryMap.put(parentInode.inodeNumber, pseudoDirInode.basename, pseudoDirInode.inodeNumber) returned !ok")
+			globals.logger.Fatalf("[FATAL] globals.physChildDirEntryMap.putInfo(parentInode.inodeNumber, pseudoDirInode.basename, pseudoDirInode.dirEntryInfo()) returned !ok")
 		}
 	}
 
@@ -585,10 +623,10 @@ func (parentInode *inodeStruct) createFileObjectInode(isVirt bool, basename stri
 			globals.logger.Fatalf("[FATAL] globals.virtChildDirEntryMap.put(parentInode.inodeNumber, fileObjectInode.basename, fileObjectInode.inodeNumber) returned !ok")
 		}
 	} else {
-		ok = globals.physChildDirEntryMap.put(parentInode.inodeNumber, fileObjectInode.basename, fileObjectInode.inodeNumber)
+		ok = globals.physChildDirEntryMap.putInfo(parentInode.inodeNumber, fileObjectInode.basename, fileObjectInode.dirEntryInfo())
 		if !ok {
 			dumpStack()
-			globals.logger.Fatalf("[FATAL] globals.physChildDirEntryMap.put(parentInode.inodeNumber, fileObjectInode.basename, fileObjectInode.inodeNumber) returned !ok")
+			globals.logger.Fatalf("[FATAL] globals.physChildDirEntryMap.putInfo(parentInode.inodeNumber, fileObjectInode.basename, fileObjectInode.dirEntryInfo()) returned !ok")
 		}
 	}
 
@@ -768,7 +806,7 @@ func (inode *inodeStruct) touch(mTimeAsInterface interface{}) {
 
 	switch inode.inodeType {
 	case FileObject:
-		if !inode.pendingDelete && (len(inode.fhSet) == 0) && ((inode.inboundCacheLineCount + inode.outboundCacheLineCount + inode.dirtyCacheLineCount) == 0) {
+		if !inode.pendingDelete && !inode.writeStateActive && !inode.writeDirty && (len(inode.fhSet) == 0) && ((inode.inboundCacheLineCount + inode.outboundCacheLineCount + inode.dirtyCacheLineCount) == 0) {
 			if inode.isVirt {
 				inode.xTime = time.Now().Add(globals.config.virtualFileTTL)
 			} else {
@@ -828,7 +866,7 @@ func inodeEvictor() {
 	for {
 		select {
 		case <-ticker.C:
-			globalsLock("fs.go:831:4:inodeEvictor")
+			globalsLock("fs.go:869:4:inodeEvictor")
 
 			// Scan globals.inodeEvictionLRU looking for expired inodes to evict
 
@@ -1015,8 +1053,7 @@ func (parentInode *inodeStruct) findChildInode(basename string) (childInode *ino
 
 	// Check manifest per-directory TSV before S3 fallback
 	if backend.manifestPath != "" {
-		manifestPartFile := manifestPartPath(backend.manifestPath, parentInode.objectPath)
-		mEntry, mFound := lookupInManifestPart(manifestPartFile, basename)
+		mEntry, mFound := lookupInManifestPartWithDelta(backend.manifestPath, parentInode.objectPath, basename)
 		if mFound {
 			if mEntry.Kind == "d" {
 				childInode = parentInode.createPseudoDirInode(false, basename)
@@ -1107,7 +1144,7 @@ func prefetchDirectory(dirInodeNumber uint64) {
 		startTime               = time.Now()
 	)
 
-	globalsLock("fs.go:1110:2:prefetchDirectory")
+	globalsLock("fs.go:1147:2:prefetchDirectory")
 
 	dirInode, ok = globals.inodeMap.get(dirInodeNumber)
 	if !ok {
@@ -1136,7 +1173,7 @@ func prefetchDirectory(dirInodeNumber uint64) {
 			globals.logger.Printf("[WARN] listDirectoryWrapper(dirInode.backend.context, listDirectoryInput) failed: %v", err)
 		}
 
-		globalsLock("fs.go:1139:3:prefetchDirectory")
+		globalsLock("fs.go:1176:3:prefetchDirectory")
 
 		dirInode, ok = globals.inodeMap.get(dirInodeNumber)
 		if !ok {
@@ -1302,7 +1339,7 @@ func dumpFS(w io.Writer) {
 		rootDirInode *inodeStruct
 	)
 
-	globalsLock("fs.go:1305:2:dumpFS")
+	globalsLock("fs.go:1342:2:dumpFS")
 
 	rootDirInode, ok = globals.inodeMap.get(FUSERootDirInodeNumber)
 	if !ok {
@@ -1466,7 +1503,7 @@ func (thisInode *inodeStruct) finishPendingDelete() {
 
 Restart:
 
-	globalsLock("fs.go:1469:2:(*inodeStruct).finishPendingDelete")
+	globalsLock("fs.go:1506:2:(*inodeStruct).finishPendingDelete")
 
 	// Let's just drop cache lines that are either "clean" io "dirty"
 
@@ -1509,6 +1546,8 @@ Restart:
 	}
 
 	// Once we make it here, we need to atomically delete the object (if any)
+	thisInode.closeWriteFileLocked()
+	clearWriteCommitControlLocked(thisInode.inodeNumber)
 
 	if !thisInode.isVirt {
 		backend, ok = globals.backendMap[thisInode.backendNonce]
@@ -1522,10 +1561,17 @@ Restart:
 			ifMatch:  "",
 		}
 
-		// It's actually ok if the object is already gone
+		// It's actually ok if the object is already gone: DeleteObject is
+		// idempotent and reports success for a key that does not exist. An error
+		// therefore means the delete did not happen -- permission, network,
+		// throttling -- and the object may still be present. A tombstone recorded
+		// then hides a live object, and unlike the in-memory removal below the
+		// overlay survives remount, so that divergence is durable.
 		_, err = deleteFileWrapper(backend.context, deleteFileInput)
 		if err != nil {
 			globals.logger.Printf("[WARN] deleteBackendObjectWhenAndIfNecessary() got deleteFileWrapper(thisInode.backend.context, deleteFileInput) err: %v", err)
+		} else {
+			appendManifestDeltaForInodeLocked(backend, thisInode, manifestDeltaDelete)
 		}
 	}
 

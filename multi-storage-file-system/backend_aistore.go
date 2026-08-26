@@ -490,3 +490,8 @@ func (aisContext *aistoreContextStruct) statFile(statFileInput *statFileInputStr
 
 	return
 }
+
+func (aisContext *aistoreContextStruct) writeFile(writeFileInput *writeFileInputStruct) (writeFileOutput *writeFileOutputStruct, err error) {
+	err = errors.New("[AIStore] writeFile not implemented")
+	return
+}

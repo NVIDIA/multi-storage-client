@@ -266,7 +266,7 @@ volumeAttributes:
     ]
 ```
 
-`dirName` values must be unique; a missing `bucketName`, unsupported `backendType`, or duplicate `manifestPath` is rejected. Credentials are volume-level (one `authType` / Secret shared by all S3 backends). Per-backend tuning fields (`manifestPath`, `manifestGenWorkers`, `uid`, perms, …) may be set per entry (numeric values as strings); under CSI a `manifestPath` manifest is regenerated on every (re)mount (not persisted by the driver — see NGCDP-9116). See the [CSI README](../../README.md#multiple-backends-in-one-volume) for the full field list.
+`dirName` values must be unique; a missing `bucketName`, unsupported `backendType`, or duplicate `manifestPath` is rejected. Credentials are volume-level (one `authType` / Secret shared by all S3 backends). Per-backend tuning fields (`manifestPath`, `manifestGenWorkers`, `uid`, perms, …) may be set per entry (numeric values as strings); under CSI a `manifestPath` manifest is regenerated on every (re)mount for `readonly` backends, and never generated at mount for writable ones (not persisted by the driver — see NGCDP-9116). See the [CSI README](../../README.md#multiple-backends-in-one-volume) for the full field list.
 
 ## Verification after install
 

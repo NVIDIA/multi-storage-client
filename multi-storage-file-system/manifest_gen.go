@@ -85,6 +85,16 @@ func manifestPartPath(manifestDir, objectPath string) string {
 	return filepath.Join(manifestDir, safe+".tsv")
 }
 
+// `manifestPartParentPath` inverts `manifestPartPath` for a part path expressed
+// relative to the manifest directory: _root.tsv maps back to "" and
+// dir-r0/r0.tsv maps back to "dir-r0/r0/".
+func manifestPartParentPath(relPath string) string {
+	if relPath == "_root.tsv" {
+		return ""
+	}
+	return strings.TrimSuffix(relPath, ".tsv") + "/"
+}
+
 // `generateManifest` is called to walk a backend namespace and write per-directory TSV manifest files.
 func generateManifest(cfg *manifestGenConfig) (err error) {
 	var (
