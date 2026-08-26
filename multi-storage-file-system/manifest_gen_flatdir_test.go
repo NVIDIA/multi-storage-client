@@ -193,6 +193,10 @@ func (m *mockBackendContext) statFile(_ *statFileInputStruct) (*statFileOutputSt
 	return nil, errors.New("not implemented")
 }
 
+func (m *mockBackendContext) writeFile(_ *writeFileInputStruct) (*writeFileOutputStruct, error) {
+	return nil, errors.New("not implemented")
+}
+
 func newMockBackend(prefix string, objects []mockObject) *backendStruct {
 	sort.Slice(objects, func(i, j int) bool { return objects[i].key < objects[j].key })
 	backend := &backendStruct{

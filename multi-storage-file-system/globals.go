@@ -126,7 +126,7 @@ type backendStruct struct {
 	// From <config-file>
 	dirName                     string              //     JSON/YAML "dir_name"                       required
 	readOnly                    bool                //     JSON/YAML "readonly"                       default:true
-	flushOnClose                bool                //     JSON/YAML "flush_on_close"                 default:true
+	flushOnClose                bool                //     JSON/YAML "flush_on_close"                 default:false
 	uid                         uint64              //     JSON/YAML "uid"                            default:<current euid>
 	gid                         uint64              //     JSON/YAML "gid"                            default:<current egid>
 	dirPerm                     uint64              //     JSON/YAML "dir_perm"                       default:0o555(ro)/0o777(rw)
@@ -135,6 +135,7 @@ type backendStruct struct {
 	multiPartCacheLineThreshold uint64              //     JSON/YAML "multipart_cache_line_threshold" default:512
 	uploadPartCacheLines        uint64              //     JSON/YAML "upload_part_cache_lines"        default:32
 	uploadPartConcurrency       uint64              //     JSON/YAML "upload_part_concurrency"        default:32
+	multipartUploadThreshold    uint64              //     JSON/YAML "multipart_upload_threshold_bytes" default:67108864 (64Mi)
 	bucketContainerName         string              //     JSON/YAML "bucket_container_name"          required
 	prefix                      string              //     JSON/YAML "prefix"                         default:""
 	traceLevel                  uint64              //     JSON/YAML "trace_level"                    default:0
@@ -205,6 +206,10 @@ type configStruct struct {
 	virtChildDirEntryMapPageDirtyFlushTrigger uint64                     // JSON/YAML "virt_child_dir_entry_map_page_dirty_flush_trigger" default:50
 	virtChildDirEntryMapFlushedPerGC          uint64                     // JSON/YAML "virt_child_dir_entry_map_flushes_per_gc"           default:10
 	processMemoryLimit                        uint64                     // JSON/YAML "process_memory_limit"                              default:4294967296 (4Gi)
+	writeDeferralMaxBytes                     uint64                     // JSON/YAML "write_deferral_max_bytes"                          default:1073741824 (1Gi); 0 == unlimited
+	writeCommitWorkers                        uint64                     // JSON/YAML "write_commit_workers"                              default:32
+	writeCommitQueueDepth                     uint64                     // JSON/YAML "write_commit_queue_depth"                          default:256
+	writeCachePromotion                       bool                       // JSON/YAML "write_cache_promotion"                             default:false
 	autoSIGHUPInterval                        time.Duration              // JSON/YAML "auto_sighup_interval"                              default:0 (none)
 	observability                             *observabilityConfigStruct // JSON/YAML "observability"                                     default:nil (disabled)
 	endpoint                                  string                     // JSON/YAML "endpoint"                                          default:""
@@ -373,6 +378,9 @@ type inodeStruct struct {
 	dirtyCacheLineCount    uint64              // [inodeType == FileObject] count of .cache[] elements in state CacheLineDirty
 	fhSet                  map[uint64]struct{} // Key == fhStruct.nonce; &fhStruct = globals.fhMap[Key]
 	pendingDelete          bool                // [inodeType == FileObject] marked for deletion (prevents being reported in DoReadDir{|Plus}() output but also reuse until last file close enables removal)
+	writeState             writeState          // [inodeType == FileObject] in-memory write state for dirty ranges / stream tail
+	writeStateActive       bool                // [inodeType == FileObject] true if writeState contains active write state
+	writeDirty             bool                // [inodeType == FileObject] true if writeState has changes not yet uploaded
 }
 
 // `globalsStruct` is the sync.Mutex protected global data structure under which all details about daemon state are tracked.
@@ -412,6 +420,10 @@ type globalsStruct struct {
 	fhMap                    map[uint64]*fhStruct                                    // Key == fhStruct.nonce
 	fissionMetrics           *fissionMetricsStruct                                   //
 	backendMetrics           *backendMetricsStruct                                   //
+	deferredWriteBytes       uint64                                                  // Sum of bytes buffered for new S3 objects not yet promoted to multipart upload (guarded by globals.Lock)
+	writeCommitPool          *writeCommitPool                                        // Bounded workers for independent small-object PutObject commits
+	writeCommitControls      map[uint64]*writeCommitControl                          // Resident commit coordination keyed by inode number (guarded by globals.Lock)
+	writeCachePromotionPool  *writeCachePromotionPool                                // Bounded workers that populate committed write bytes into read-cache slots
 }
 
 var globals globalsStruct

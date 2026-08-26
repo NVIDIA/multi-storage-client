@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -69,14 +70,17 @@ type backendContextIf interface {
 	// As error will result if either the specified path is not a `file` or non-existent.
 	statFile(statFileInput *statFileInputStruct) (statFileOutput *statFileOutputStruct, err error)
 
+	// `writeFile` is called to replace a `file` at the specified path with
+	// the supplied full-object content. Object stores do not support in-place
+	// byte-range mutation, so callers must provide the complete object image.
+	writeFile(writeFileInput *writeFileInputStruct) (writeFileOutput *writeFileOutputStruct, err error)
+
 	// `redactSecrets` returns s with this backend's configured secret values
 	// (access keys, tokens, etc.) replaced by placeholders. Backends without
 	// secrets return s unchanged. Use the package-level `redactSecrets` wrapper
 	// at call sites so a nil backend (e.g. a config-parse error before any
 	// backend exists) is handled gracefully.
 	redactSecrets(s string) string
-
-	// [TODO] writeFile equivalents: simple PUT as well as the exciting challenges of MPU
 }
 
 // `deleteFileInputStruct` lays out the fields provided as input
@@ -208,6 +212,23 @@ type statFileOutputStruct struct {
 	size  uint64
 }
 
+// `writeFileInputStruct` lays out the fields provided as input to writeFile().
+type writeFileInputStruct struct {
+	filePath       string // Relative to backend.prefix
+	ifMatch        string // If == "", always writes; if != "", existing object's eTag must match
+	body           io.Reader
+	readerAt       io.ReaderAt // Required by S3; addresses the body at per-part offsets for multipart uploads.
+	size           uint64
+	forceSinglePut bool // S3: bypass the legacy whole-object multipart threshold.
+}
+
+// `writeFileOutputStruct` lays out the fields produced as output by writeFile().
+type writeFileOutputStruct struct {
+	eTag  string
+	mTime time.Time
+	size  uint64
+}
+
 // `recordRequest` records the request counter at the START of an operation.
 // Matches Python's behavior: request.sum is recorded BEFORE the operation executes (line 209).
 // This should be called immediately at the start of each backend operation (not in defer).
@@ -288,7 +309,7 @@ func deleteFileWrapper(backendContext backendContextIf, deleteFileInput *deleteF
 	latency = time.Since(startTime).Seconds()
 
 	go func(backend *backendStruct, latency float64, err error) {
-		globalsLock("backend.go:291:3:funcLit@290")
+		globalsLock("backend.go:312:3:funcLit@311")
 		if err == nil {
 			globals.backendMetrics.DeleteFileSuccesses.Inc()
 			globals.backendMetrics.DeleteFileSuccessLatencies.Observe(latency)
@@ -342,7 +363,7 @@ func listDirectoryWrapper(backendContext backendContextIf, listDirectoryInput *l
 	latency = time.Since(startTime).Seconds()
 
 	go func(backend *backendStruct, latency float64, err error) {
-		globalsLock("backend.go:345:3:funcLit@344")
+		globalsLock("backend.go:366:3:funcLit@365")
 		if err == nil {
 			globals.backendMetrics.ListDirectorySuccesses.Inc()
 			globals.backendMetrics.ListDirectorySuccessLatencies.Observe(latency)
@@ -403,7 +424,7 @@ func listObjectsWrapper(backendContext backendContextIf, listObjectsInput *listO
 
 	if globals.backendMetrics != nil && backendCommon.backendMetrics != nil {
 		go func(backend *backendStruct, latency float64, err error) {
-			globalsLock("backend.go:406:4:funcLit@405")
+			globalsLock("backend.go:427:4:funcLit@426")
 			if err == nil {
 				globals.backendMetrics.ListObjectsSuccesses.Inc()
 				globals.backendMetrics.ListObjectsSuccessLatencies.Observe(latency)
@@ -543,7 +564,7 @@ func readFileWrapper(backendContext backendContextIf, readFileInput *readFileInp
 	latency = time.Since(startTime).Seconds()
 
 	go func(backend *backendStruct, latency float64, err error) {
-		globalsLock("backend.go:546:3:funcLit@545")
+		globalsLock("backend.go:567:3:funcLit@566")
 		if err == nil {
 			globals.backendMetrics.ReadFileSuccesses.Inc()
 			globals.backendMetrics.ReadFileSuccessLatencies.Observe(latency)
@@ -607,7 +628,7 @@ func statDirectoryWrapper(backendContext backendContextIf, statDirectoryInput *s
 	latency = time.Since(startTime).Seconds()
 
 	go func(backend *backendStruct, latency float64, err error) {
-		globalsLock("backend.go:610:3:funcLit@609")
+		globalsLock("backend.go:631:3:funcLit@630")
 		if err == nil {
 			globals.backendMetrics.StatDirectorySuccesses.Inc()
 			globals.backendMetrics.StatDirectorySuccessLatencies.Observe(latency)
@@ -668,7 +689,7 @@ func statFileWrapper(backendContext backendContextIf, statFileInput *statFileInp
 	latency = time.Since(startTime).Seconds()
 
 	go func(backend *backendStruct, latency float64, err error) {
-		globalsLock("backend.go:671:3:funcLit@670")
+		globalsLock("backend.go:692:3:funcLit@691")
 		if err == nil {
 			globals.backendMetrics.StatFileSuccesses.Inc()
 			globals.backendMetrics.StatFileSuccessLatencies.Observe(latency)
@@ -715,4 +736,34 @@ func statFileWrapper(backendContext backendContextIf, statFileInput *statFileInp
 	return
 }
 
-// [TODO] writeFileWrapper equivalents
+// `writeFileWrapper` wraps backendContext.writeFile with centralized metrics and tracing.
+func writeFileWrapper(backendContext backendContextIf, writeFileInput *writeFileInputStruct) (writeFileOutput *writeFileOutputStruct, err error) {
+	var (
+		backendCommon = backendContext.backendCommon()
+		startTime     time.Time
+	)
+
+	recordRequest(backendCommon.dirName, "writeFile")
+
+	startTime = time.Now()
+
+	writeFileOutput, err = backendContext.writeFile(writeFileInput)
+
+	recordBackendMetrics(backendCommon.dirName, "writeFile", startTime, err, int64(writeFileInput.size))
+
+	switch backendCommon.traceLevel {
+	case 0:
+	case 1:
+		if err != nil {
+			globals.logger.Printf("[WARN] %s.writeFile(%q,size:%d) returning err: %s", backendCommon.dirName, writeFileInput.filePath, writeFileInput.size, redactSecrets(backendCommon, err.Error()))
+		}
+	default:
+		if err == nil {
+			globals.logger.Printf("[INFO] %s.writeFile(%q,size:%d) succeeded", backendCommon.dirName, writeFileInput.filePath, writeFileInput.size)
+		} else {
+			globals.logger.Printf("[WARN] %s.writeFile(%q,size:%d) returning err: %s", backendCommon.dirName, writeFileInput.filePath, writeFileInput.size, redactSecrets(backendCommon, err.Error()))
+		}
+	}
+
+	return
+}

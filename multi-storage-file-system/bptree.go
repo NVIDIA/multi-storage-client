@@ -1188,18 +1188,31 @@ func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBa
 
 // `put` is called to put a `childInode` in a `parentInode's` logical `{phys|virt}ChildDirEntryMap`.
 func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) put(parentInodeNumber uint64, childInodeBasename string, childInodeNumber uint64) (ok bool) {
-	var (
-		err error
-	)
-
 	info := DirEntryInfo{
 		InodeNumber: childInodeNumber,
 	}
+
+	return parentInodeNumberChildBasenameToChildInodeNumber.putInfo(parentInodeNumber, childInodeBasename, info)
+}
+
+// `putInfo` is called to put a fully-populated child entry in a `parentInode's`
+// logical `{phys|virt}ChildDirEntryMap`.
+func (parentInodeNumberChildBasenameToChildInodeNumber *parentInodeNumberChildBasenameToChildInodeNumberStruct) putInfo(parentInodeNumber uint64, childInodeBasename string, info DirEntryInfo) (ok bool) {
+	var (
+		err error
+	)
 
 	ok, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.Put(uint64StringTupleToByteSlice(parentInodeNumber, childInodeBasename), info)
 	if err != nil {
 		dumpStack()
 		globals.logger.Fatalf("[FATAL] parentInodeNumberChildBasenameToChildInodeNumber.bpTree.Put() failed: %v", err)
+	}
+	if !ok {
+		ok, err = parentInodeNumberChildBasenameToChildInodeNumber.bpTree.PatchByKey(uint64StringTupleToByteSlice(parentInodeNumber, childInodeBasename), info)
+		if err != nil {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] parentInodeNumberChildBasenameToChildInodeNumber.bpTree.PatchByKey() failed: %v", err)
+		}
 	}
 
 	parentInodeNumberChildBasenameToChildInodeNumber.flushIfNecessary()
@@ -1502,6 +1515,14 @@ func (m *shardedDirEntryMap) put(parentInodeNumber uint64, childInodeBasename st
 	s := m.shardFor(parentInodeNumber)
 	s.mu.Lock()
 	ok = s.tree.put(parentInodeNumber, childInodeBasename, childInodeNumber)
+	s.mu.Unlock()
+	return
+}
+
+func (m *shardedDirEntryMap) putInfo(parentInodeNumber uint64, childInodeBasename string, info DirEntryInfo) (ok bool) {
+	s := m.shardFor(parentInodeNumber)
+	s.mu.Lock()
+	ok = s.tree.putInfo(parentInodeNumber, childInodeBasename, info)
 	s.mu.Unlock()
 	return
 }
