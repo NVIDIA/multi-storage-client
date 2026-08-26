@@ -472,7 +472,7 @@ Manifest generation is a separate mechanism and warms only namespace metadata. I
 Measured Scale and Performance
 ==============================
 
-These are single-node measurements of the **read path and namespace bootstrap** against same-region storage. They record what has been measured, not a supported configuration limit; write-path throughput is not characterized here. See :ref:`msfs-scale-boundary`.
+These are single-node measurements of the **read path, write path and namespace bootstrap** against same-region storage. They record what has been measured, not a supported configuration limit. See :ref:`msfs-scale-boundary`.
 
 Namespace Scale: 100M Objects
 -----------------------------
@@ -556,6 +556,92 @@ The result was **18 wins, 3 ties, and 3 losses** across the 24 cells.
 Cold reads scale with thread count because each reader issues concurrent ranged GETs: large-file 64 KiB sequential moves 92 MiB/s at one thread and 192 MiB/s at eight, while s3fs cold stays flat near 125 MiB/s on the same families. Cache-resident reads reach 4,536 MiB/s on that family at eight threads. At eight threads MSFS wins or ties every family.
 
 Two caveats keep the losses honest. The large-file 64 KiB losses at one and two threads are largely a page-cache artifact: on a 184 GiB host, s3fs serves its warm reads from the Linux page cache over its own cache files, and after dropping caches it falls to about 148 MiB/s on the same data. The large-file 4 KiB results reflect a real per-operation FUSE ceiling — at one or two threads only one or two FUSE operations are in flight, so neither additional readers nor cache geometry help. ``--direct`` forces strict 4 KiB operations with no kernel read-ahead, a deliberately pessimistic operating point; workloads that do not use ``O_DIRECT`` benefit from page-cache assistance and reach roughly 2.6 GiB/s on the same data.
+
+Write Throughput
+----------------
+
+Measured on an EC2 ``c5n.18xlarge`` in ``us-west-2`` against same-region S3, driven by ``elbencho -w --direct`` and compared against s3fs-fuse 1.93. Both filesystems ran the identical workload on the same host, bucket and day, so the columns are directly comparable. MSFS ran with ``cache_line_size: 1048576``, ``cache_lines: 1024``, ``multipart_upload_threshold_bytes: 67108864``, ``write_commit_workers: 32`` and ``flush_on_close: true``.
+
+Figures are aggregate MiB/s once every thread has finished.
+
+.. list-table:: Write throughput, MSFS vs s3fs (MiB/s)
+   :widths: 40 14 14 14
+   :header-rows: 1
+
+   * - Workload
+     - MSFS
+     - s3fs
+     - Ratio
+   * - 1,024 x 1 MiB, 4 KiB blocks, 1 thread
+     - 16
+     - 5
+     - 3.2x
+   * - 1,024 x 1 MiB, 4 KiB blocks, 4 threads
+     - 18
+     - 14
+     - 1.3x
+   * - 1,024 x 1 MiB, 4 KiB blocks, 8 threads
+     - 17
+     - 14
+     - 1.2x
+   * - 1,024 x 1 MiB, 64 KiB blocks, 1 thread
+     - 18
+     - 7
+     - 2.6x
+   * - 1,024 x 1 MiB, 64 KiB blocks, 4 threads
+     - 19
+     - 17
+     - 1.1x
+   * - 1,024 x 1 MiB, 64 KiB blocks, 8 threads
+     - 19
+     - 17
+     - 1.1x
+   * - 1 GiB per thread, 4 KiB sequential, 1 thread
+     - 146
+     - 54
+     - 2.7x
+   * - 1 GiB per thread, 4 KiB sequential, 4 threads
+     - 221
+     - 80
+     - 2.8x
+   * - 1 GiB per thread, 4 KiB sequential, 8 threads
+     - 120
+     - 89
+     - 1.3x
+   * - 1 GiB per thread, 64 KiB sequential, 1 thread
+     - 404
+     - 123
+     - 3.3x
+   * - 1 GiB per thread, 64 KiB sequential, 4 threads
+     - 674
+     - 140
+     - 4.8x
+   * - 1 GiB per thread, 64 KiB sequential, 8 threads
+     - 446
+     - 96
+     - 4.6x
+   * - Shared 1 GiB object, 64 KiB random, 1 thread
+     - 382
+     - 107
+     - 3.6x
+   * - Shared 1 GiB object, 64 KiB random, 4 threads
+     - 574
+     - 108
+     - 5.3x
+   * - Shared 1 GiB object, 64 KiB random, 8 threads
+     - 502
+     - 127
+     - 4.0x
+
+Random small-block writes into a shared object are the widest gap, and are described rather than tabulated because s3fs cannot be run there at the same scale. Rewriting a 1 GiB object with random 4 KiB blocks, s3fs sustains about 100 IOPS — under 1 MiB/s, roughly 43 minutes per run — because each write rewrites the whole object. MSFS sustains 33,000-36,000 IOPS, about 135 MiB/s, finishing in about 7 seconds. MSFS holds that rate flat from 1 to 8 threads.
+
+Small-file throughput is bounded by per-object commit latency rather than bandwidth, which is why the 1 MiB rows sit an order of magnitude below the 1 GiB rows for both filesystems. Deferred ``PutObject`` is what makes those rows competitive at all: committing a small object in one request instead of a three-request multipart upload moved this family from about 3 MiB/s to 16-19 MiB/s. Raising ``write_commit_workers`` increases how many small objects commit in parallel.
+
+The 8-thread large-file rows are lower than the 4-thread rows for both filesystems, so that knee is the host and S3 rather than either implementation.
+
+.. note::
+
+   Write cells are only comparable when the workload shape matches exactly. Writing one object per thread and writing one shared object from many threads exercise different paths and produce very different numbers at the same thread count, as the shared-object rows above show.
 
 Reproducing These Numbers
 -------------------------
