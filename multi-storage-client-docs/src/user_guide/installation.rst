@@ -55,12 +55,6 @@ Likewise, there are extras for each higher level library.
    # PyTorch.
    pip install "multi-storage-client[torch]"
 
-   # Xarray.
-   pip install "multi-storage-client[xarray]"
-
-   # Zarr.
-   pip install "multi-storage-client[zarr]"
-
    # Ray
    pip install "multi-storage-client[ray]"
 

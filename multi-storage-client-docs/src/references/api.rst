@@ -205,17 +205,3 @@ PyTorch
 .. automodule:: multistorageclient.contrib.torch
    :members:
    :undoc-members:
-
-Xarray
-======
-
-.. automodule:: multistorageclient.contrib.xarray
-   :members:
-   :undoc-members:
-
-Zarr
-====
-
-.. automodule:: multistorageclient.contrib.zarr
-   :members:
-   :undoc-members:

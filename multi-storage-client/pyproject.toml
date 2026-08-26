@@ -117,13 +117,6 @@ ray = [
 torch = [
     "torch>=2.13,<3"
 ]
-xarray = [
-    "xarray>=2024.07.0"
-]
-zarr = [
-    "zarr>=2.18.3,<3; python_version=='3.10'",
-    "zarr>=2.18.7,<3; python_version>='3.11'"
-]
 
 [dependency-groups]
 dev = [
