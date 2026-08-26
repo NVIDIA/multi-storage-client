@@ -132,53 +132,39 @@ In addition to the ``load`` and ``save`` methods, the ``torch`` module provides 
 Xarray
 ******
 
-:py:mod:`multistorageclient.xarray` aliases the :py:mod:`multistorageclient.contrib.xarray` module.
-
-This module provides ``open_zarr`` for reading Xarray datasets from Zarr files/objects.
-
-.. code-block:: python
-   :linenos:
-
-   import multistorageclient as msc
-
-   # Create a client for the data-s3-iad profile and load a Zarr array into an Xarray dataset.
-   xarray_dataset = msc.xarray.open_zarr("msc://data-s3-iad/abc.zarr")
-
-Note: ``Xarray`` supports fsspec URLs natively, so you can use Xarray standard interface with ``msc://`` URLs.
+Xarray supports ``msc://`` URLs through MSC's built-in fsspec implementation. Use the native Xarray API directly.
 
 .. code-block:: python
    :linenos:
 
    import xarray
 
-   # Use Xarray native interface to load a Zarr array into an Xarray dataset.
+   # Load a Zarr array through MSC's fsspec implementation.
    xarray_dataset = xarray.open_zarr("msc://data-s3-iad/abc.zarr")
+
+.. warning::
+
+   The former ``msc.xarray`` adapter is no longer available. Replace
+   ``msc.xarray.open_zarr("msc://...")`` with ``xarray.open_zarr("msc://...")``.
 
 ****
 Zarr
 ****
 
-:py:mod:`multistorageclient.zarr` aliases the :py:mod:`multistorageclient.contrib.zarr` module.
-
-This module provides ``open_consolidated`` for reading Zarr groups from files/objects.
-
-.. code-block:: python
-   :linenos:
-
-   import multistorageclient as msc
-
-   # Create a client for the data-s3-iad profile and load a Zarr array.
-   z = msc.zarr.open_consolidated("msc://data-s3-iad/abc.zarr")
-
-.. note:: ``Zarr`` supports fsspec URLs natively, so you can use Zarr standard interface with ``msc://`` URLs.
+Zarr supports ``msc://`` URLs through MSC's built-in fsspec implementation. Use the native Zarr API directly.
 
 .. code-block:: python
    :linenos:
 
    import zarr
 
-   # Use Zarr native interface to load a Zarr array.
-   z = zarr.open("msc://data-s3-iad/abc.zarr")
+   # Load a Zarr array through MSC's fsspec implementation.
+   z = zarr.open("msc://data-s3-iad/abc.zarr", mode="r")
+
+.. note::
+
+   The former ``msc.zarr`` adapter is no longer available. Replace
+   ``msc.zarr.open_consolidated("msc://...")`` with ``zarr.open("msc://...")``.
 
 ****
 Path

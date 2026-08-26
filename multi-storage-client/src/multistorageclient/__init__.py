@@ -90,7 +90,7 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    if name in ["numpy", "pickle", "os", "zarr", "async_fs", "xarray", "torch", "ray", "hydra"]:
+    if name in ["numpy", "pickle", "os", "async_fs", "torch", "ray", "hydra"]:
         module = importlib.import_module(f"{__package__}.contrib.{name}")
         globals()[name] = module  # Cache for subsequent access
         return module
