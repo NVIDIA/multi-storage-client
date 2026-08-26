@@ -620,6 +620,18 @@ Figures are aggregate MiB/s once every thread has finished.
      - 446
      - 96
      - 4.6x
+   * - 1 GiB per thread, 64 KiB random, 1 thread
+     - 338
+     - 73
+     - 4.6x
+   * - 1 GiB per thread, 64 KiB random, 4 threads
+     - 299
+     - 78
+     - 3.8x
+   * - 1 GiB per thread, 64 KiB random, 8 threads
+     - 290
+     - 90
+     - 3.2x
    * - Shared 1 GiB object, 64 KiB random, 1 thread
      - 382
      - 107
@@ -633,7 +645,7 @@ Figures are aggregate MiB/s once every thread has finished.
      - 127
      - 4.0x
 
-Random small-block writes into a shared object are the widest gap, and are described rather than tabulated because s3fs cannot be run there at the same scale. Rewriting a 1 GiB object with random 4 KiB blocks, s3fs sustains about 100 IOPS — under 1 MiB/s, roughly 43 minutes per run — because each write rewrites the whole object. MSFS sustains 33,000-36,000 IOPS, about 135 MiB/s, finishing in about 7 seconds. MSFS holds that rate flat from 1 to 8 threads.
+Random 4 KiB writes are the widest gap and are described rather than tabulated, because s3fs cannot be run there at the same scale. Rewriting a 1 GiB object with random 4 KiB blocks, s3fs sustains about 100 IOPS — under 1 MiB/s, roughly 43 minutes per run — because each write rewrites the whole object. MSFS sustains 33,000-36,000 IOPS, about 135 MiB/s, finishing in about 7 seconds, and holds that rate flat from 1 to 8 threads against one shared object. Writing a separate 1 GiB object per thread with random 4 KiB blocks, MSFS reaches 138 MiB/s at one thread and 68-73 MiB/s at four and eight; the equivalent s3fs run would take several hours, so no ratio is given.
 
 Small-file throughput is bounded by per-object commit latency rather than bandwidth, which is why the 1 MiB rows sit an order of magnitude below the 1 GiB rows for both filesystems. Deferred ``PutObject`` is what makes those rows competitive at all: committing a small object in one request instead of a three-request multipart upload moved this family from about 3 MiB/s to 16-19 MiB/s. Raising ``write_commit_workers`` increases how many small objects commit in parallel.
 
@@ -641,7 +653,7 @@ The 8-thread large-file rows are lower than the 4-thread rows for both filesyste
 
 .. note::
 
-   Write cells are only comparable when the workload shape matches exactly. Writing one object per thread and writing one shared object from many threads exercise different paths and produce very different numbers at the same thread count, as the shared-object rows above show.
+   Write cells are only comparable when the workload shape matches exactly. The two random 64 KiB groups above make the point: at eight threads, one object per thread gives 290 MiB/s while one shared object gives 502 MiB/s. Same block size, same thread count, different path. Never compare a number from one group against the other.
 
 Reproducing These Numbers
 -------------------------
