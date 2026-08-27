@@ -41,6 +41,45 @@ Key Features
 - **Standard Unix tools:** Use with ``mount``, ``umount``, and ``/etc/fstab``
 - **Observability:** Integrated telemetry with OpenTelemetry metrics
 
+When to Use MSFS
+================
+
+MSFS exists for one situation: an application that must see a filesystem, over
+data that lives in object storage. If you can call an object-storage API
+directly, do that instead — the Python :doc:`Multi-Storage Client </index>`
+avoids a FUSE hop entirely and will be faster.
+
+MSFS is a good fit when:
+
+- **The application cannot be changed** to speak S3 — a training framework that
+  takes a directory path, a third-party binary, a shell pipeline, or code in a
+  language with no usable SDK.
+- **The access pattern is read-heavy** over a working set that fits the
+  node-local cache. Repeat reads are served from cache and never reach the
+  backend.
+- **Datasets are large but the working set is not.** Manifest-based bootstrap
+  makes a 100M-object namespace browsable in under two minutes without listing
+  it on every mount.
+- **Writes are whole-file** — created once, written, closed. Deferred
+  ``PutObject`` makes this efficient, and small files commit in a single request.
+
+Look elsewhere when:
+
+- **Many nodes need the same cache.** Each MSFS process owns its own; there is
+  no shared or coordinated tier. Placing ``cache_dir_path`` on a shared
+  filesystem does not change this. Front the bucket with a caching tier such as
+  AIStore instead, which MSFS can read as a backend.
+- **You need POSIX semantics object stores cannot provide** — byte-range
+  in-place updates, hard links, atomic rename across directories, or ``O_APPEND``
+  from several writers. A write replaces the whole object.
+- **Per-user authorization is required.** Access is per mount: anyone who can
+  read the mount point can read everything the backend credentials reach.
+- **The workload is many small concurrent writes.** Small-object writes are
+  bounded by per-object commit latency rather than bandwidth; see
+  :ref:`msfs-measured-scale`.
+- **You need a warm cache immediately after mount.** There is no pre-warm API
+  and the cache is discarded on unmount.
+
 Deployment Model
 ================
 

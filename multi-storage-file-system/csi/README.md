@@ -401,6 +401,49 @@ This mounts `images/`, `labels/`, and `cache/` under the volume. `dirName` value
 
 **`manifestPath` under CSI:** the `msfs` process runs inside the CSI node DaemonSet pod, so `manifestPath` resolves in that pod's filesystem (not the application pod) and is **not** persisted by the driver — the generated config dir is removed on `NodeUnpublishVolume`. As a result the manifest is **regenerated on every (re)mount**, but only for `readonly: true` backends: MSFS restricts mount-time generation to read-only backends, so a `readonly: false` volume with `manifestPath` logs `skipping generation` and mounts without manifest metadata unless the manifest was generated out of band into a path the mount can read. Manifest ingest itself runs for writable backends too, so a persisted `manifestPath` also replays the append-only delta log written by an earlier mount. Persisting it across mounts requires a DaemonSet-mounted volume and is tracked as a follow-up (NGCDP-9116). Note that manifest generation does a `RemoveAll` on `manifestPath`, which is why two backends in one volume may not share one.
 
+## Credential resolution
+
+`resolveCredentialMode` decides per mount, so one driver instance serves mixed
+static and IRSA volumes simultaneously — useful during a migration.
+
+| `authType` | Secret with both keys? | Resolved mode | Generated `msfs.yaml` | Environment given to `msfs` |
+|---|---|---|---|---|
+| unset or `auto` | yes | `static` | `${AWS_ACCESS_KEY_ID}` / `${AWS_SECRET_ACCESS_KEY}` placeholders | keys exported from the Secret |
+| unset or `auto` | no | `irsa` | placeholders omitted | host env passed through unchanged |
+| `static` | yes | `static` | placeholders present | keys exported from the Secret |
+| `static` | no | **error** | - | `InvalidArgument`: `authType=static requires both access_key_id and secret_access_key` |
+| `irsa` or `wif` | ignored | `irsa` | placeholders omitted | host env passed through unchanged |
+| `none` or `anonymous` | ignored | `none` | S3 gets `anonymous: true`; AIStore token left empty | no AWS variables injected |
+| anything else | - | **error** | - | `InvalidArgument` listing the valid values |
+
+**Why the placeholders are omitted in `irsa` mode.** If `msfs.yaml` kept
+`${AWS_ACCESS_KEY_ID}` while the variable was unset, the AWS SDK would treat it
+as an intended static credential and fail with a missing-credentials error
+rather than falling through to the projected-token chain. The symptom is an auth
+failure on a cluster where IRSA is configured correctly. This is asserted by
+`TestWriteConfig_WorkloadIdentityModeOmitsStaticCredentialPlaceholders` in
+`node_test.go`; do not "fix" the generated config by adding them back.
+
+Note that `auto` resolving to `irsa` is not a check that IRSA works — it only
+means no usable Secret was supplied. On a cluster without IRSA the mount is
+created and the failure appears at first S3 request instead.
+
+**Per-workload IRSA** reads the workload pod's token from
+`volume_context["csi.storage.k8s.io/serviceAccount.tokens"]`, matching on the
+audience configured in `auth.perWorkloadIrsa.audience` (default
+`sts.amazonaws.com`). It writes the token to `aws-web-identity-token` in the
+per-mount config dir with mode `0600` and points `AWS_WEB_IDENTITY_TOKEN_FILE`
+at it, with `AWS_ROLE_ARN` taken from `volumeAttributes.roleArn`. If that
+`volume_context` key is absent — older kubelet, or `tokenRequests` not set on
+the `CSIDriver` — the driver falls back to driver-SA IRSA rather than failing.
+That fallback is why a misconfigured cluster looks like "IRSA works but every
+mount uses the wrong role".
+
+Cluster-side IAM role and OIDC trust setup are AWS account operations. Neither
+the chart nor the driver provisions them; see the
+[chart README](charts/msfs-csi/README.md#aws-side-for-irsa-one-time-manual--by-design)
+for copy-paste trust and bucket policies.
+
 ## Secret keys reference
 
 Only required when `authType=static` (or `auto` with a Secret provided). In `irsa` mode the Secret is unused.
@@ -474,6 +517,8 @@ mounts silently at runtime rather than at build time.
 | `exec format error` in CSI pod | Image built for wrong architecture | Rebuild with `--platform linux/amd64` |
 | `ImagePullBackOff` | Missing imagePullSecret | Check `kubectl get secrets -n msfs` |
 | Mount timeout | msfs failed to start within the 30s publish window (bad config or credentials) | Check CSI driver logs: `kubectl logs -n msfs <csi-pod> -c msfs-csi-driver` |
+| Missing-credentials error although IRSA is configured | The mount resolved to `static` because a partial Secret was attached, so the config kept `${AWS_ACCESS_KEY_ID}` placeholders | Remove the `nodePublishSecretRef`, or set `authType: irsa` explicitly. See [Credential resolution](#credential-resolution) |
+| Every mount uses the same IAM role under per-workload IRSA | `tokenRequests` is absent from the `CSIDriver`, so the driver silently fell back to driver-SA IRSA | Install via the chart with `auth.perWorkloadIrsa.enabled=true`, or uncomment the block in `deploy/csi-driver.yaml` |
 | Mount is read-only unexpectedly | `readonly` defaults to `true`, and a read-only publish is a hard floor a backend cannot override | Set `volumeAttributes.readonly: "false"` **and** ensure the PV has `accessModes: [ReadWriteMany]` rather than `ReadOnlyMany` |
 | Slow first access on a large bucket | `manifestPath` is not persisted, so the manifest regenerates on every remount | Known limitation (NGCDP-9116); omit `manifestPath` if regeneration costs more than it saves |
 | Throughput collapses on a large bucket | `process_memory_limit` defaults to 4 GiB and cannot be set through CSI | Mount MSFS directly, or reduce the working set. See [Settings that cannot be set through CSI](#settings-that-cannot-be-set-through-csi) |
