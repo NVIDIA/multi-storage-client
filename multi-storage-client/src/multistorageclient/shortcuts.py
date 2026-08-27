@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import builtins
 import logging
 import os
 import re
@@ -294,7 +295,7 @@ def open(url: str, mode: str = "rb", **kwargs: Any) -> PosixFile | ObjectFile:
     return client.open(path, mode, **kwargs)
 
 
-def glob(pattern: str, attribute_filter_expression: str | None = None) -> list[str]:
+def glob(pattern: str, attribute_filter_expression: str | None = None) -> builtins.list[str]:
     """
     Return a list of files matching a pattern.
 
@@ -435,7 +436,7 @@ def sync(
 
 def sync_replicas(
     source_url: str,
-    replica_indices: list[int] | None = None,
+    replica_indices: builtins.list[int] | None = None,
     delete_unmatched_files: bool = False,
     execution_mode: ExecutionMode = ExecutionMode.LOCAL,
     patterns: PatternList | None = None,

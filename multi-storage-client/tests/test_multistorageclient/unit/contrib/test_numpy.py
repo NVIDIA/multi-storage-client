@@ -74,14 +74,17 @@ def test_numpy_load(file_storage_config_with_cache, sample_data):
 
         # test file path
         result = msc.numpy.load(temp.name, allow_pickle=True, mmap_mode="r")
+        assert isinstance(result, np.ndarray)
         assert np.array_equal(result, sample_data)
 
         # test POSIX path
         result = msc.numpy.load(temp.name, allow_pickle=True, mmap_mode="r")
+        assert isinstance(result, np.ndarray)
         assert np.array_equal(result, sample_data)
 
         # test MultiStoragePath
         result = msc.numpy.load(msc.Path(temp.name), allow_pickle=True, mmap_mode="r")
+        assert isinstance(result, np.ndarray)
         assert np.array_equal(result, sample_data)
 
         # test file object
@@ -90,6 +93,7 @@ def test_numpy_load(file_storage_config_with_cache, sample_data):
                 _ = msc.numpy.load(fp, allow_pickle=True, mmap_mode="r")  # memmap mode is not supported for file handle
 
             result = msc.numpy.load(fp, allow_pickle=True)
+            assert isinstance(result, np.ndarray)
             assert np.array_equal(result, sample_data)
 
 
@@ -163,6 +167,7 @@ def test_numpy_save_with_attributes(
 
             # Verify content was written correctly
             result = msc.numpy.load(f"{MSC_PROTOCOL}test/{file_path}")
+            assert isinstance(result, np.ndarray)
             assert np.array_equal(result, sample_data)
 
             # Verify attributes for storage providers that support metadata
@@ -180,6 +185,7 @@ def test_numpy_save_with_attributes(
             msc.numpy.save(msc.Path(f"{MSC_PROTOCOL}test/{file_path2}"), sample_data, attributes=test_attributes)
 
             result = msc.numpy.load(msc.Path(f"{MSC_PROTOCOL}test/{file_path2}"))
+            assert isinstance(result, np.ndarray)
             assert np.array_equal(result, sample_data)
 
             # Test save with attributes using file kwarg
@@ -187,6 +193,7 @@ def test_numpy_save_with_attributes(
             msc.numpy.save(file=f"{MSC_PROTOCOL}test/{file_path3}", arr=sample_data, attributes=test_attributes)
 
             result = msc.numpy.load(f"{MSC_PROTOCOL}test/{file_path3}")
+            assert isinstance(result, np.ndarray)
             assert np.array_equal(result, sample_data)
 
         finally:

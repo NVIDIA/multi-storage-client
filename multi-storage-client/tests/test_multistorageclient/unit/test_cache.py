@@ -25,7 +25,7 @@ import pytest
 import xattr
 
 import multistorageclient.cache as cache_module
-from multistorageclient import StorageClient
+from multistorageclient import StorageClient, _xattr
 from multistorageclient.cache import DEFAULT_CACHE_REFRESH_INTERVAL, CacheManager
 from multistorageclient.caching.cache_config import (
     CacheConfig,
@@ -384,7 +384,7 @@ def test_partial_chunk_metadata_is_set_before_publish(tmpdir, monkeypatch):
         probe_file.write(b"probe")
     try:
         xattr.setxattr(probe_path, "user.etag", b"probe")
-        xattr.getxattr(probe_path, "user.etag")
+        _xattr.getxattr(probe_path, "user.etag")
     except OSError:
         pytest.skip("xattr is not supported on this filesystem")
     finally:
@@ -407,9 +407,9 @@ def test_partial_chunk_metadata_is_set_before_publish(tmpdir, monkeypatch):
     def checking_replace(src: str, dst: str) -> None:
         if dst == chunk_path:
             observed["chunk_visible_before_replace"] = os.path.exists(dst)
-            observed["etag"] = xattr.getxattr(src, "user.etag").decode("utf-8")
-            observed["cache_line_size"] = xattr.getxattr(src, "user.cache_line_size").decode("utf-8")
-            observed["object_size"] = xattr.getxattr(src, "user.size").decode("utf-8")
+            observed["etag"] = _xattr.getxattr(src, "user.etag").decode("utf-8")
+            observed["cache_line_size"] = _xattr.getxattr(src, "user.cache_line_size").decode("utf-8")
+            observed["object_size"] = _xattr.getxattr(src, "user.size").decode("utf-8")
         original_replace(src, dst)
 
     monkeypatch.setattr(cache_module.os, "replace", checking_replace)
@@ -427,7 +427,7 @@ def test_partial_chunk_metadata_is_set_before_publish(tmpdir, monkeypatch):
     assert observed["etag"] == source_version
     assert observed["cache_line_size"] == str(1024 * 1024)
     assert observed["object_size"] == str(len(storage_provider._data))
-    assert xattr.getxattr(chunk_path, "user.etag").decode("utf-8") == source_version
+    assert _xattr.getxattr(chunk_path, "user.etag").decode("utf-8") == source_version
 
 
 def test_assemble_result_handles_short_final_chunk(tmpdir):
@@ -503,7 +503,7 @@ def test_short_final_chunk_without_xattr_falls_back_to_remote_read(tmpdir, monke
         raise OSError("xattr unsupported")
 
     monkeypatch.setattr(cache_module.xattr, "setxattr", raise_xattr_error)
-    monkeypatch.setattr(cache_module.xattr, "getxattr", raise_xattr_error)
+    monkeypatch.setattr(cache_module._xattr, "getxattr", raise_xattr_error)
 
     result = cache_manager.read(
         key,
@@ -1313,9 +1313,9 @@ def test_concurrent_chunk_creation_with_locking():
             chunk_data = f.read()
         assert len(chunk_data) > 0, "Chunk file should contain data"
 
-        etag = xattr.getxattr(chunk0_path, "user.etag").decode("utf-8")
+        etag = _xattr.getxattr(chunk0_path, "user.etag").decode("utf-8")
         assert etag, "Chunk should have etag metadata"
-        chunk_size = int(xattr.getxattr(chunk0_path, "user.cache_line_size").decode("utf-8"))
+        chunk_size = int(_xattr.getxattr(chunk0_path, "user.cache_line_size").decode("utf-8"))
         assert chunk_size == 1024 * 1024, f"Expected chunk size 1MB, got {chunk_size}"
 
         # Verify only one chunk0 exists (no duplicates from race conditions)

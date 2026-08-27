@@ -27,3 +27,13 @@ def test_missing_numpy_dependency():
 
         # This should not raise an error due to lazy import
         import multistorageclient as msc  # noqa
+
+
+def test_unknown_attribute_raises_attribute_error():
+    import multistorageclient as msc
+
+    # Held in a variable so this reads as a dynamic lookup: multistorageclient declares its
+    # contrib modules for type checkers, so a literal attribute access would not type check.
+    unknown = "not_a_contrib_module"
+    with pytest.raises(AttributeError, match="has no attribute"):
+        getattr(msc, unknown)
