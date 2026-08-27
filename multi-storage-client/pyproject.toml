@@ -85,6 +85,7 @@ azure-storage-blob = [
     "azure-identity>=1.25,<2"
 ]
 boto3 = [
+    "awscrt>=0.32.1,<1",
     "boto3>=1.36,<2"
 ]
 google-cloud-storage = [

@@ -113,11 +113,11 @@ def test_rdma_put_reuses_writable_buffer_and_copies_readonly(engine_cls: MagicMo
 
     # Writable buffers (bytearray, writable memoryview) are registered in place.
     writable = bytearray(b"writable payload")
-    provider._put_object(path="test-bucket/k1", body=writable)
+    provider._rdma_put({"Bucket": "test-bucket", "Key": "k1"}, writable)
     assert engine.transfer.call_args.args[0] is writable
 
     view = memoryview(bytearray(b"view payload"))
-    provider._put_object(path="test-bucket/k2", body=view)
+    provider._rdma_put({"Bucket": "test-bucket", "Key": "k2"}, view)
     assert engine.transfer.call_args.args[0] is view
 
     # Read-only bytes are copied into a writable bytearray (cannot be pinned).
@@ -155,7 +155,7 @@ def test_rdma_get_byte_range_sizes_buffer_and_passes_range(engine_cls: MagicMock
 
     result = provider._get_object(path="test-bucket/key.bin", byte_range=Range(offset=10, size=32))
 
-    assert isinstance(result, bytearray)
+    assert isinstance(result, bytes)
     assert len(result) == 32
     assert engine.transfer.call_args.kwargs["is_put"] is False
     _, get_kwargs = provider._s3_client.get_object.call_args

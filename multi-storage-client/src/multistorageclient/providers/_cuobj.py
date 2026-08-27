@@ -78,7 +78,7 @@ class CuObjError(RuntimeError):
 
 
 def _require_cuobj() -> None:
-    if not _HAS_CUOBJ:
+    if _rust_ext is None or not _HAS_CUOBJ:
         raise CuObjError(
             "cuObject support is not available: the multistorageclient_rust extension was built "
             "without the 'rdma' feature (or is not built). Rebuild the wheel with cuObject support "
@@ -95,6 +95,7 @@ def is_available() -> bool:
     """
     if not _HAS_CUOBJ:
         return False
+    assert _rust_ext is not None
     try:
         return bool(_rust_ext.cuobj_available())
     except Exception:
@@ -107,6 +108,7 @@ def register_buffer(addr: int, size: int) -> None:
     Registration is required before requesting an RDMA token for the buffer.
     """
     _require_cuobj()
+    assert _rust_ext is not None
     try:
         _rust_ext.cuobj_register_buffer(addr, size)
     except Exception as error:
@@ -116,6 +118,7 @@ def register_buffer(addr: int, size: int) -> None:
 def deregister_buffer(addr: int) -> None:
     """Deregister a buffer previously passed to :func:`register_buffer`."""
     _require_cuobj()
+    assert _rust_ext is not None
     try:
         _rust_ext.cuobj_deregister_buffer(addr)
     except Exception as error:
@@ -130,6 +133,7 @@ def get_rdma_token(addr: int, size: int, offset: int = 0, is_put: bool = True) -
     :func:`put_rdma_token` once the request finishes.
     """
     _require_cuobj()
+    assert _rust_ext is not None
     try:
         return _rust_ext.cuobj_get_rdma_token(addr, size, offset, is_put)
     except Exception as error:
@@ -139,6 +143,7 @@ def get_rdma_token(addr: int, size: int, offset: int = 0, is_put: bool = True) -
 def put_rdma_token(token: str) -> None:
     """Release an RDMA descriptor returned by :func:`get_rdma_token`."""
     _require_cuobj()
+    assert _rust_ext is not None
     try:
         _rust_ext.cuobj_put_rdma_token(token)
     except Exception as error:
@@ -189,6 +194,7 @@ class CuObjEngine:
         }
 
     def install_hooks(self, s3_client) -> None:
+        """Register token-injection hooks for S3 RDMA transfer operations."""
         events = s3_client.meta.events
         events.register("before-sign.s3.PutObject", self._inject_token)
         events.register("before-sign.s3.GetObject", self._inject_token)

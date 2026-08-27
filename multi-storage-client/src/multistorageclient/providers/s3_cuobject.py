@@ -29,7 +29,7 @@ import base64
 import io
 import os
 import struct
-from typing import IO, Any, Optional, Union
+from typing import IO, Any, Optional, Union, cast
 
 from ..types import Range
 from ..utils import split_path, validate_attributes
@@ -92,7 +92,7 @@ class S3CuObjectStorageProvider(S3StorageProvider):
 
     def _get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
         bucket, key = split_path(path)
-        return self._rdma_get(path, bucket, key, byte_range)
+        return bytes(self._rdma_get(path, bucket, key, byte_range))
 
     def _put_object(
         self,
@@ -132,7 +132,7 @@ class S3CuObjectStorageProvider(S3StorageProvider):
         return self._rdma_upload(remote_path, f, attributes, content_type)
 
     @staticmethod
-    def _rdma_checksum(buffer) -> str:
+    def _rdma_checksum(buffer: Union[bytes, bytearray, memoryview]) -> str:
         """Base64 CRC64NVME of ``buffer`` for the ``x-amz-checksum-crc64nvme`` header.
 
         CRC64NVME is hardware-accelerated and computed via ``awscrt`` (the same
@@ -144,9 +144,9 @@ class S3CuObjectStorageProvider(S3StorageProvider):
             raise RuntimeError(
                 "RDMA PUT computes a CRC64NVME checksum and requires the 'awscrt' package (pip install awscrt)."
             ) from error
-        return base64.b64encode(struct.pack(">Q", checksums.crc64nvme(buffer))).decode("ascii")
+        return base64.b64encode(struct.pack(">Q", checksums.crc64nvme(cast(bytes, buffer)))).decode("ascii")
 
-    def _rdma_put(self, kwargs: dict[str, Any], body: bytes) -> int:
+    def _rdma_put(self, kwargs: dict[str, Any], body: Union[bytes, bytearray, memoryview]) -> int:
         """Single-shot RDMA PUT: cuObject transfers the registered buffer; the HTTP body is empty.
 
         A CRC64NVME checksum of the payload is computed on the client and sent as
@@ -160,7 +160,7 @@ class S3CuObjectStorageProvider(S3StorageProvider):
         assert engine is not None
         # cuObject pins a writable region: reuse the caller's buffer when it is
         # writable, and copy only a read-only (immutable) body such as bytes.
-        buffer = bytearray(body) if memoryview(body).readonly else body
+        buffer = bytearray(body) if memoryview(body).readonly else cast(Union[bytearray, memoryview], body)
         if len(buffer) == 0:
             self._s3_client.put_object(**kwargs)
             return 0
