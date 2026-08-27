@@ -562,7 +562,10 @@ Write Throughput
 
 Measured on an EC2 ``c5n.18xlarge`` in ``us-west-2`` against same-region S3, driven by ``elbencho -w --direct`` and compared against s3fs-fuse 1.93. Both filesystems ran the identical workload on the same host, bucket and day, so the columns are directly comparable. MSFS ran with ``cache_line_size: 1048576``, ``cache_lines: 1024``, ``multipart_upload_threshold_bytes: 67108864``, ``write_commit_workers: 32`` and ``flush_on_close: true``.
 
-Figures are aggregate MiB/s once every thread has finished.
+Figures are aggregate MiB/s once every thread has finished. The sequential
+large-file rows write 80 GiB per cell, matching the read matrix in scale, so
+each ran between two and fifteen minutes. The remaining rows are smaller and
+their size is stated in the row.
 
 .. list-table:: Write throughput, MSFS vs s3fs (MiB/s)
    :widths: 40 14 14 14
@@ -596,30 +599,38 @@ Figures are aggregate MiB/s once every thread has finished.
      - 19
      - 17
      - 1.1x
-   * - 1 GiB per thread, 4 KiB sequential, 1 thread
-     - 146
-     - 54
-     - 2.7x
-   * - 1 GiB per thread, 4 KiB sequential, 4 threads
-     - 221
-     - 80
-     - 2.8x
-   * - 1 GiB per thread, 4 KiB sequential, 8 threads
-     - 120
-     - 89
-     - 1.3x
-   * - 1 GiB per thread, 64 KiB sequential, 1 thread
-     - 404
-     - 123
-     - 3.3x
-   * - 1 GiB per thread, 64 KiB sequential, 4 threads
-     - 674
-     - 140
-     - 4.8x
-   * - 1 GiB per thread, 64 KiB sequential, 8 threads
-     - 446
+   * - 80 GiB, 4 KiB sequential, 1 thread
+     - 141
+     - 32
+     - 4.4x
+   * - 80 GiB, 4 KiB sequential, 2 threads
+     - 239
+     - 57
+     - 4.2x
+   * - 80 GiB, 4 KiB sequential, 4 threads
+     - 279
+     - 83
+     - 3.4x
+   * - 80 GiB, 4 KiB sequential, 8 threads
+     - 92
+     - 101
+     - 0.91x
+   * - 80 GiB, 64 KiB sequential, 1 thread
+     - 358
+     - 62
+     - 5.8x
+   * - 80 GiB, 64 KiB sequential, 2 threads
+     - 573
+     - 78
+     - 7.3x
+   * - 80 GiB, 64 KiB sequential, 4 threads
+     - 706
      - 96
-     - 4.6x
+     - 7.4x
+   * - 80 GiB, 64 KiB sequential, 8 threads
+     - 434
+     - 106
+     - 4.1x
    * - 1 GiB per thread, 64 KiB random, 1 thread
      - 338
      - 73
@@ -649,7 +660,7 @@ Random 4 KiB writes are the widest gap and are described rather than tabulated, 
 
 Small-file throughput is bounded by per-object commit latency rather than bandwidth, which is why the 1 MiB rows sit an order of magnitude below the 1 GiB rows for both filesystems. Deferred ``PutObject`` is what makes those rows competitive at all: committing a small object in one request instead of a three-request multipart upload moved this family from about 3 MiB/s to 16-19 MiB/s. Raising ``write_commit_workers`` increases how many small objects commit in parallel.
 
-The 8-thread large-file rows are lower than the 4-thread rows for both filesystems, so that knee is the host and S3 rather than either implementation.
+Large-file writes peak at four threads and fall back at eight. The one cell MSFS loses is the extreme of that pattern: 4 KiB sequential at eight threads drops from 279 MiB/s to 92 while s3fs continues climbing to 101. Smallest block size and highest thread count is the worst case for a write path that serializes per-file bookkeeping, and it is the operating point to avoid until it is addressed. Every other cell is a 3.4x to 7.4x win, and 64 KiB blocks scale cleanly to four threads.
 
 .. note::
 
