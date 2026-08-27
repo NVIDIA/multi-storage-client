@@ -17,6 +17,21 @@ from typing import Any
 
 from multistorageclient.types import Range
 
+def cuobj_available() -> bool:
+    """Return whether the cuObject client is connected to an RDMA fabric."""
+
+def cuobj_register_buffer(addr: int, size: int) -> None:
+    """Register a contiguous buffer with cuObject for RDMA transfers."""
+
+def cuobj_deregister_buffer(addr: int) -> None:
+    """Deregister a buffer previously registered with cuObject."""
+
+def cuobj_get_rdma_token(addr: int, size: int, offset: int, is_put: bool) -> str:
+    """Return an RDMA descriptor for a registered buffer region."""
+
+def cuobj_put_rdma_token(token: str) -> None:
+    """Release an RDMA descriptor returned by :func:`cuobj_get_rdma_token`."""
+
 class RustClient:
     """
     RustClient provides asynchronous methods for interacting with an object storage backend (e.g., S3).

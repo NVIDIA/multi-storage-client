@@ -47,6 +47,7 @@ def __getattr__(name: str) -> Any:
         # S3
         "S3StorageProvider": ".s3",
         "StaticS3CredentialsProvider": ".s3",
+        "S3CuObjectStorageProvider": ".s3_cuobject",
         # S8K
         "S8KStorageProvider": ".s8k",
         # AIS
@@ -75,6 +76,7 @@ def __getattr__(name: str) -> Any:
                 ".gcs_s3": ["boto3"],
                 ".oci": ["oci"],
                 ".s3": ["boto3"],
+                ".s3_cuobject": ["boto3"],
                 ".s8k": ["boto3"],
                 ".ais": ["aistore"],
                 ".ais_s3": ["boto3", "aistore"],
@@ -90,6 +92,7 @@ def __getattr__(name: str) -> Any:
                 ".gcs_s3": "Google Cloud Storage with S3 API",
                 ".oci": "Oracle Cloud Infrastructure",
                 ".s3": "Amazon S3 or other S3-compatible storage",
+                ".s3_cuobject": "S3-over-RDMA (NVIDIA cuObject)",
                 ".s8k": "S8K storage",
                 ".ais": "NVIDIA AIStore",
                 ".ais_s3": "NVIDIA AIStore with S3 API",
