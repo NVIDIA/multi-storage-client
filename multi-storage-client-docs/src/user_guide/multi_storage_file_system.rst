@@ -41,6 +41,45 @@ Key Features
 - **Standard Unix tools:** Use with ``mount``, ``umount``, and ``/etc/fstab``
 - **Observability:** Integrated telemetry with OpenTelemetry metrics
 
+When to Use MSFS
+================
+
+MSFS exists for one situation: an application that must see a filesystem, over
+data that lives in object storage. If you can call an object-storage API
+directly, do that instead — the Python :doc:`Multi-Storage Client </index>`
+avoids a FUSE hop entirely and will be faster.
+
+MSFS is a good fit when:
+
+- **The application cannot be changed** to speak S3 — a training framework that
+  takes a directory path, a third-party binary, a shell pipeline, or code in a
+  language with no usable SDK.
+- **The access pattern is read-heavy** over a working set that fits the
+  node-local cache. Repeat reads are served from cache and never reach the
+  backend.
+- **Datasets are large but the working set is not.** Manifest-based bootstrap
+  makes a 100M-object namespace browsable in under two minutes without listing
+  it on every mount.
+- **Writes are whole-file** — created once, written, closed. Deferred
+  ``PutObject`` makes this efficient, and small files commit in a single request.
+
+Look elsewhere when:
+
+- **Many nodes need the same cache.** Each MSFS process owns its own; there is
+  no shared or coordinated tier. Placing ``cache_dir_path`` on a shared
+  filesystem does not change this. Front the bucket with a caching tier such as
+  AIStore instead, which MSFS can read as a backend.
+- **You need POSIX semantics object stores cannot provide** — byte-range
+  in-place updates, hard links, atomic rename across directories, or ``O_APPEND``
+  from several writers. A write replaces the whole object.
+- **Per-user authorization is required.** Access is per mount: anyone who can
+  read the mount point can read everything the backend credentials reach.
+- **The workload is many small concurrent writes.** Small-object writes are
+  bounded by per-object commit latency rather than bandwidth; see
+  :ref:`msfs-measured-scale`.
+- **You need a warm cache immediately after mount.** There is no pre-warm API
+  and the cache is discarded on unmount.
+
 Deployment Model
 ================
 
@@ -564,6 +603,21 @@ Measured on an EC2 ``c5n.18xlarge`` in ``us-west-2`` against same-region S3, dri
 
 Figures are aggregate MiB/s once every thread has finished.
 
+The sequential large-file rows write **80 GiB per cell as 80 separate 1 GiB
+files, partitioned across threads** — 80 files on one thread, 20 files each on
+four, 10 each on eight — so the total work is identical at every thread count
+and no two threads write the same object. This matches the scale of the read
+matrix above and of the June 2026 write matrix. MSFS cells ran roughly 2 to 15
+minutes; the same cells on s3fs ran roughly 13 to 43 minutes, because it is
+slower on identical work. The remaining rows are smaller and state their size
+and layout in the row itself.
+
+Workload layout is not a detail here. The shared-object rows below write **one**
+1 GiB object from every thread, and at eight threads that writes 502 MiB/s
+against 290 for one object per thread — the same block size and thread count,
+1.7x apart. Reproducing "80 GiB" with a different file count or sharing pattern
+will produce materially different numbers.
+
 .. list-table:: Write throughput, MSFS vs s3fs (MiB/s)
    :widths: 40 14 14 14
    :header-rows: 1
@@ -596,30 +650,38 @@ Figures are aggregate MiB/s once every thread has finished.
      - 19
      - 17
      - 1.1x
-   * - 1 GiB per thread, 4 KiB sequential, 1 thread
-     - 146
-     - 54
-     - 2.7x
-   * - 1 GiB per thread, 4 KiB sequential, 4 threads
-     - 221
-     - 80
-     - 2.8x
-   * - 1 GiB per thread, 4 KiB sequential, 8 threads
-     - 120
-     - 89
-     - 1.3x
-   * - 1 GiB per thread, 64 KiB sequential, 1 thread
-     - 404
-     - 123
-     - 3.3x
-   * - 1 GiB per thread, 64 KiB sequential, 4 threads
-     - 674
-     - 140
-     - 4.8x
-   * - 1 GiB per thread, 64 KiB sequential, 8 threads
-     - 446
+   * - 80 GiB, 4 KiB sequential, 1 thread
+     - 141
+     - 32
+     - 4.4x
+   * - 80 GiB, 4 KiB sequential, 2 threads
+     - 239
+     - 57
+     - 4.2x
+   * - 80 GiB, 4 KiB sequential, 4 threads
+     - 279
+     - 83
+     - 3.4x
+   * - 80 GiB, 4 KiB sequential, 8 threads
+     - 92
+     - 101
+     - 0.91x
+   * - 80 GiB, 64 KiB sequential, 1 thread
+     - 358
+     - 62
+     - 5.8x
+   * - 80 GiB, 64 KiB sequential, 2 threads
+     - 573
+     - 78
+     - 7.3x
+   * - 80 GiB, 64 KiB sequential, 4 threads
+     - 706
      - 96
-     - 4.6x
+     - 7.4x
+   * - 80 GiB, 64 KiB sequential, 8 threads
+     - 434
+     - 106
+     - 4.1x
    * - 1 GiB per thread, 64 KiB random, 1 thread
      - 338
      - 73
@@ -649,7 +711,7 @@ Random 4 KiB writes are the widest gap and are described rather than tabulated, 
 
 Small-file throughput is bounded by per-object commit latency rather than bandwidth, which is why the 1 MiB rows sit an order of magnitude below the 1 GiB rows for both filesystems. Deferred ``PutObject`` is what makes those rows competitive at all: committing a small object in one request instead of a three-request multipart upload moved this family from about 3 MiB/s to 16-19 MiB/s. Raising ``write_commit_workers`` increases how many small objects commit in parallel.
 
-The 8-thread large-file rows are lower than the 4-thread rows for both filesystems, so that knee is the host and S3 rather than either implementation.
+Large-file writes peak at four threads and fall back at eight. The one cell MSFS loses is the extreme of that pattern: 4 KiB sequential at eight threads drops from 279 MiB/s to 92 while s3fs continues climbing to 101. Smallest block size and highest thread count is the worst case for a write path that serializes per-file bookkeeping, and it is the operating point to avoid until it is addressed. Every other cell is a 3.4x to 7.4x win, and 64 KiB blocks scale cleanly to four threads.
 
 .. note::
 
