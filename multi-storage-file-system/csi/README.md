@@ -206,7 +206,7 @@ csi/
     server.go                   Unix socket listener, logging interceptor
     identity.go                 CSI Identity service (3 RPCs)
     node.go                     CSI Node service (Publish/Unpublish + config gen)
-    controller.go               CSI Controller service (CreateVolume, DeleteVolume, ValidateVolumeCapabilities)
+    controller.go               CSI Controller service — registered but inert (see below)
   deploy/
     csi-driver.yaml             CSIDriver K8s object
     daemonset.yaml              Node plugin DaemonSet + registrar
@@ -224,6 +224,15 @@ csi/
 
 The Dockerfile is at `multi-storage-file-system/Dockerfile.csi` (build context needs the msfs source).
 
+**On `controller.go`.** The Controller service is registered on the same socket
+(`driver.go`), but it does not provision anything and nothing calls it in any
+documented flow: `CSIDriver.attachRequired` is `false`, so there is no
+`external-provisioner` or `external-attacher`, and no controller Deployment is
+installed. `CreateVolume` echoes the request name and parameters back without
+touching S3; `DeleteVolume` is an explicit no-op and never deletes a bucket.
+Buckets must exist before you mount them. Dynamic provisioning is future scope
+— do not read the presence of `CreateVolume` as support for it.
+
 ## How NodePublishVolume works
 
 1. Kubelet calls `NodePublishVolume` with `targetPath`, `volumeAttributes`, and `secrets`.
@@ -235,13 +244,21 @@ The Dockerfile is at `multi-storage-file-system/Dockerfile.csi` (build context n
    - **`irsa` (driver-SA, default)** — no AWS env vars are injected; the EKS-set `AWS_ROLE_ARN` / `AWS_WEB_IDENTITY_TOKEN_FILE` of the **driver** pod reach msfs unchanged, so every mount shares the driver's IAM role.
    - **`irsa` (per-workload)** — when the chart sets `auth.perWorkloadIrsa.enabled=true` (CSIDriver `tokenRequests`), the kubelet passes the **workload** pod's projected token in `volume_context`. The plugin writes it to `<config-dir>/aws-web-identity-token` (mode `0600`) and overrides `AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN` (from `volumeAttributes.roleArn`) so the mount assumes the workload's own role. With `requiresRepublish`, the kubelet re-publishes periodically and the plugin rewrites the token file in place — msfs is not restarted.
 5. The plugin execs `msfs <config-path>`. MSFS creates a FUSE mount at `targetPath`.
-6. Kubelet bind-mounts `targetPath` into the app pod.
+6. The plugin waits up to **30 seconds** for the mount to appear. If it does not, publish fails and the pod stays in `ContainerCreating`.
+7. Kubelet bind-mounts `targetPath` into the app pod.
+
+**Per-workload IRSA needs `tokenRequests` on the `CSIDriver` object.** The Helm
+chart renders it when `auth.perWorkloadIrsa.enabled=true` (default `false`). The
+raw manifests in `deploy/` ship with that block **commented out**, so a cluster
+installed from `deploy/csi-driver.yaml` gets driver-SA IRSA only — the kubelet
+never sends a workload token and `volumeAttributes.roleArn` is ignored. Uncomment
+it there, or install via the chart.
 
 ## How NodeUnpublishVolume works
 
 1. Kubelet calls `NodeUnpublishVolume` with `targetPath`.
-2. The plugin sends SIGTERM to the msfs process (SIGKILL after 5s if needed).
-3. Runs `fusermount -u` on the target path.
+2. The plugin sends `SIGTERM` to the msfs process, then `SIGKILL` after a 5-second grace period.
+3. Runs `fusermount -u` on the target path, falling back to `umount` if that fails. Unmount is bounded at 10 seconds.
 4. Cleans up the temporary config directory and mount point.
 
 ## volumeAttributes reference
@@ -309,7 +326,8 @@ Valid as flat keys for a single-backend volume, and as fields inside each
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `uid` / `gid` | mounting user | Owner reported for every file and directory. |
+| `uid` | mounting user | Owner UID reported for every file and directory. |
+| `gid` | mounting user | Owner GID reported for every file and directory. |
 | `dirPerm` | `555` ro / `777` rw | Directory permission bits, 3-digit octal. |
 | `filePerm` | `444` ro / `666` rw | File permission bits, 3-digit octal. Objects carry no mode, so this is backend-wide policy and `chmod` is accepted but not applied. |
 | `flushOnClose` | `false` | When `"true"`, `close()` waits for the backend commit. When false, the commit is asynchronous and `fsync()` is the durability barrier. |
@@ -395,6 +413,59 @@ The K8s Secret referenced by `nodePublishSecretRef` should contain:
 | `secret_access_key` | Yes | AWS secret access key |
 | `session_token` | No | AWS session token (for temporary credentials) |
 
+## Extending the driver
+
+Where each behaviour lives, so a change lands in the right place:
+
+| To change | Edit | Notes |
+|---|---|---|
+| Add a `volumeAttributes` key that maps to a **mount-wide** MSFS setting | `writeConfig` in `pkg/driver/node.go` | Add one `optionalGlobalStr("yourKey", "your_msfs_key")` line, then document it under [Mount-wide tuning](#mount-wide-tuning). |
+| Add a **per-backend** MSFS setting | `renderMSFSBackend` in `pkg/driver/node.go` | Use `optionalStr` for numerics/bools, `optionalQuoted` for strings that need YAML quoting. Also add the field to `volumeBackendJSON` and its `backendFromJSON` mapping so `backendsJson` accepts it. |
+| Add a credential mode | `resolveCredentialMode` + `buildEnv` in `pkg/driver/node.go` | Covered by `node_test.go`; add a case there. |
+| Change mount/unmount behaviour | `NodePublishVolume` / `NodeUnpublishVolume` in `pkg/driver/node.go` | Timeouts are the `unmountTimeout`, `killGrace` and publish-wait constants at the top of the file. |
+| Change what the chart installs | `charts/msfs-csi/templates/` and `values.yaml` | Keep `deploy/*.yaml` in sync; they are the no-Helm path and drift silently. |
+
+**Docs and code must agree in both directions.** Every key in the tables above
+should be one the driver reads, and every key the driver reads should appear in
+a table. To check:
+
+```bash
+cd multi-storage-file-system/csi
+
+# keys the driver reads. Three access patterns, all three are needed:
+#   optional*      -> the tuning keys
+#   volCtx["..."]  -> inline lookups (allowOther, authType, bucketName, ...)
+#   valOrDefault   -> keys with a default (dirName, region, endpoint)
+{ rg -o 'optional(GlobalStr|Str|Quoted)\("([a-zA-Z]+)"' -r '$2' pkg/driver/node.go
+  rg -o 'volCtx\["([a-zA-Z]+)"\]' -r '$1' pkg/driver/node.go
+  rg -o 'valOrDefault\(volCtx, "([a-zA-Z]+)"' -r '$1' pkg/driver/node.go
+} | sort -u
+
+# keys the README documents (one key per table cell, or this misses them)
+rg -o '^\| `([a-zA-Z]+)`' -r '$1' README.md | sort -u
+```
+
+Keep one key per table cell. Writing ``| `uid` / `gid` |`` in a single cell
+hides `gid` from the second command and the drift goes unnoticed.
+
+Build and test:
+
+```bash
+cd multi-storage-file-system/csi
+go build ./... && go vet ./... && go test ./...
+helm lint ../charts/msfs-csi 2>/dev/null || helm lint charts/msfs-csi
+helm template charts/msfs-csi          # render without installing
+
+# image (build context is multi-storage-file-system/, needs the msfs source)
+cd .. && docker build --platform linux/amd64 -f Dockerfile.csi -t <registry>/msfs-csi:dev .
+```
+
+The driver execs the `msfs` binary rather than linking it, so MSFS behaviour
+changes do not require a driver change — but the generated `msfs.yaml` uses
+`msfs_version: 1`, the MSFS-native schema in
+[`config.go`](../config.go), so a renamed or removed MSFS config key will break
+mounts silently at runtime rather than at build time.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -402,7 +473,10 @@ The K8s Secret referenced by `nodePublishSecretRef` should contain:
 | Pod stuck in `ContainerCreating` | CSI driver not running on that node | Check `kubectl get pods -n msfs -l app.kubernetes.io/name=msfs-csi-node` |
 | `exec format error` in CSI pod | Image built for wrong architecture | Rebuild with `--platform linux/amd64` |
 | `ImagePullBackOff` | Missing imagePullSecret | Check `kubectl get secrets -n msfs` |
-| Mount timeout | msfs failed to start (bad config or credentials) | Check CSI driver logs: `kubectl logs -n msfs <csi-pod> -c msfs-csi-driver` |
+| Mount timeout | msfs failed to start within the 30s publish window (bad config or credentials) | Check CSI driver logs: `kubectl logs -n msfs <csi-pod> -c msfs-csi-driver` |
+| Mount is read-only unexpectedly | `readonly` defaults to `true`, and a read-only publish is a hard floor a backend cannot override | Set `volumeAttributes.readonly: "false"` **and** ensure the PV has `accessModes: [ReadWriteMany]` rather than `ReadOnlyMany` |
+| Slow first access on a large bucket | `manifestPath` is not persisted, so the manifest regenerates on every remount | Known limitation (NGCDP-9116); omit `manifestPath` if regeneration costs more than it saves |
+| Throughput collapses on a large bucket | `process_memory_limit` defaults to 4 GiB and cannot be set through CSI | Mount MSFS directly, or reduce the working set. See [Settings that cannot be set through CSI](#settings-that-cannot-be-set-through-csi) |
 | Empty mount in app pod | MSFS started but bucket is empty or prefix wrong | Verify `volumeAttributes` in pod spec |
 | `fusermount: bad mount point` on cleanup | Mount already gone | Safe to ignore; cleanup continues |
 
