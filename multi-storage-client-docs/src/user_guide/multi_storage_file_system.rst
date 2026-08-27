@@ -601,10 +601,22 @@ Write Throughput
 
 Measured on an EC2 ``c5n.18xlarge`` in ``us-west-2`` against same-region S3, driven by ``elbencho -w --direct`` and compared against s3fs-fuse 1.93. Both filesystems ran the identical workload on the same host, bucket and day, so the columns are directly comparable. MSFS ran with ``cache_line_size: 1048576``, ``cache_lines: 1024``, ``multipart_upload_threshold_bytes: 67108864``, ``write_commit_workers: 32`` and ``flush_on_close: true``.
 
-Figures are aggregate MiB/s once every thread has finished. The sequential
-large-file rows write 80 GiB per cell, matching the read matrix in scale, so
-each ran between two and fifteen minutes. The remaining rows are smaller and
-their size is stated in the row.
+Figures are aggregate MiB/s once every thread has finished.
+
+The sequential large-file rows write **80 GiB per cell as 80 separate 1 GiB
+files, partitioned across threads** — 80 files on one thread, 20 files each on
+four, 10 each on eight — so the total work is identical at every thread count
+and no two threads write the same object. This matches the scale of the read
+matrix above and of the June 2026 write matrix. MSFS cells ran roughly 2 to 15
+minutes; the same cells on s3fs ran roughly 13 to 43 minutes, because it is
+slower on identical work. The remaining rows are smaller and state their size
+and layout in the row itself.
+
+Workload layout is not a detail here. The shared-object rows below write **one**
+1 GiB object from every thread, and at eight threads that reads 502 MiB/s
+against 290 for one object per thread — the same block size and thread count,
+1.7x apart. Reproducing "80 GiB" with a different file count or sharing pattern
+will produce materially different numbers.
 
 .. list-table:: Write throughput, MSFS vs s3fs (MiB/s)
    :widths: 40 14 14 14

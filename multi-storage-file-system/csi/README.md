@@ -266,7 +266,7 @@ it there, or install via the chart.
 | Key | Required | Default | Description |
 |-----|----------|---------|-------------|
 | `bucketName` | Conditional | - | Bucket / AIStore bucket name. Required for a single-backend volume; omit when using `backendsJson`. |
-| `backendsJson` | No | - | JSON array of backend objects to expose **multiple** backends in one volume (multi-bucket / multi-backend). Each object: `dirName`, `backendType`, `bucketName` (required), `prefix`, `readonly`, plus S3 (`region`, `endpoint`) and AIStore (`aisEndpoint`, `aisProvider`, `aisAuthnToken`, `aisAuthnTokenFile`, `aisSkipTLSCertificateVerify`, `aisTimeout`, `aisManifestGenBackend`) fields, plus the per-backend tuning fields (`manifestPath`, `manifestGenWorkers`, `flatDirConfirmationPages`, `traceLevel`, `directoryPageSize`, `uid`, `gid`, `dirPerm`, `filePerm`, `flushOnClose`, `multipartCacheLineThreshold`, `uploadPartCacheLines`, `uploadPartConcurrency`) — numeric values passed as strings (e.g. `"uid": "1000"`). When set, the single-backend attributes below are ignored. Credentials (`authType` / Secret) are shared by all backends. |
+| `backendsJson` | No | - | JSON array of backend objects to expose **multiple** backends in one volume (multi-bucket / multi-backend). Each object: `dirName`, `backendType`, `bucketName` (required), `prefix`, `readonly`, plus S3 (`region`, `endpoint`) and AIStore (`aisEndpoint`, `aisProvider`, `aisAuthnToken`, `aisAuthnTokenFile`, `aisSkipTLSCertificateVerify`, `aisTimeout`, `aisManifestGenBackend`) fields, plus the per-backend tuning fields (`manifestPath`, `manifestGenWorkers`, `flatDirConfirmationPages`, `traceLevel`, `directoryPageSize`, `uid`, `gid`, `dirPerm`, `filePerm`, `flushOnClose`, `multipartCacheLineThreshold`, `multipartUploadThresholdBytes`, `uploadPartCacheLines`, `uploadPartConcurrency`) — numeric values passed as strings (e.g. `"uid": "1000"`). When set, the single-backend attributes below are ignored. Credentials (`authType` / Secret) are shared by all backends. |
 | `backendType` | No | `S3` | MSFS backend emitted by the CSI driver: `S3` or `AIStore` |
 | `dirName` | No | `s3` / `ais` | Directory name exposed under the MSFS mount for the generated backend |
 | `authType` | No | `auto` | Credential mode: `auto` (static if Secret provided, else IRSA), `static`, `irsa` (alias `wif`), `none` (alias `anonymous`; no credentials — unsigned S3 / empty AIStore token) |
@@ -308,15 +308,27 @@ flat `volumeAttributes` keys even when `backendsJson` is used.
 | `writeCommitWorkers` | `32` | Small objects committed concurrently. File-level concurrency, separate from `uploadPartConcurrency`. |
 | `writeCommitQueueDepth` | `256` | Detached commits allowed to queue before release applies backpressure. |
 | `writeCachePromotion` | `false` | Admit bytes retained from a successful write into the read cache, with no extra GET. |
-| `allowOther` | - | Set `"true"` to allow users other than the mounting user to access the mount. |
+| `allowOther` | `true` | **Omitting this leaves the mount readable by other local users on the node.** MSFS defaults `allow_other` to `true` and the driver emits nothing when the attribute is absent, so the MSFS default applies. Set `"false"` to restrict the mount to the mounting user. |
 
 **Cache sizing is the highest-impact knob.** The default of 128 x 10 MiB is
 about 1.25 GiB; the read benchmarks in the
 [MSFS user guide](https://nvidia.github.io/multi-storage-client/user_guide/multi_storage_file_system.html)
 used `cacheLines: 10000`, roughly 100 GiB. Capacity is a hard bound and eviction
 is LRU, so a dataset larger than the cache holds only its active working set.
-The cache lives in the CSI DaemonSet pod, so budget its memory limit
-accordingly — `cacheLineSize x cacheLines` per mounted volume, on every node.
+
+`cacheLineSize x cacheLines` is reserved **per mounted volume, on every node**,
+and which resource it consumes depends on `cache_storage` — which CSI cannot
+set, so the MSFS default of `mapped-file` always applies to a CSI mount:
+
+| `cache_storage` | Backed by | Budget on the DaemonSet |
+|---|---|---|
+| `mapped-file` (MSFS default, and what CSI always gets) | One memory-mapped file under `cache_dir_path` | **Ephemeral storage**, not a memory limit. Page-cache pressure still shows up as node memory use. |
+| `per-inode-file` | Per-inode files served with `pread` | Ephemeral storage. |
+| `ram` | Anonymous `mmap`, outside the Go heap | Memory. Pages commit on first touch, and it is not counted against `process_memory_limit`. |
+
+So on CSI, size the pod's `ephemeral-storage` request rather than its memory
+limit, and note that `cache_dir_path` defaults to empty — the cache lands in the
+container's writable layer or its `emptyDir` unless a volume is mounted for it.
 
 ### Per-backend tuning
 
@@ -380,7 +392,9 @@ A writable, cache-heavy mount for a training workload:
       writeCachePromotion: "true"
 ```
 
-Remember to raise the DaemonSet's memory limit to match the cache you asked for.
+Remember to raise the DaemonSet's `ephemeral-storage` request to match the cache
+you asked for — 4096 x 10 MiB is about 40 GiB per volume per node, and with the
+default `mapped-file` storage that lands on disk rather than in the memory limit.
 
 ## Multiple backends in one volume
 
@@ -409,7 +423,7 @@ static and IRSA volumes simultaneously — useful during a migration.
 | `authType` | Secret with both keys? | Resolved mode | Generated `msfs.yaml` | Environment given to `msfs` |
 |---|---|---|---|---|
 | unset or `auto` | yes | `static` | `${AWS_ACCESS_KEY_ID}` / `${AWS_SECRET_ACCESS_KEY}` placeholders | keys exported from the Secret |
-| unset or `auto` | no | `irsa` | placeholders omitted | host env passed through unchanged |
+| unset or `auto` | no, or only one of the two | `irsa` | placeholders omitted | host env passed through unchanged |
 | `static` | yes | `static` | placeholders present | keys exported from the Secret |
 | `static` | no | **error** | - | `InvalidArgument`: `authType=static requires both access_key_id and secret_access_key` |
 | `irsa` or `wif` | ignored | `irsa` | placeholders omitted | host env passed through unchanged |
@@ -517,7 +531,7 @@ mounts silently at runtime rather than at build time.
 | `exec format error` in CSI pod | Image built for wrong architecture | Rebuild with `--platform linux/amd64` |
 | `ImagePullBackOff` | Missing imagePullSecret | Check `kubectl get secrets -n msfs` |
 | Mount timeout | msfs failed to start within the 30s publish window (bad config or credentials) | Check CSI driver logs: `kubectl logs -n msfs <csi-pod> -c msfs-csi-driver` |
-| Missing-credentials error although IRSA is configured | The mount resolved to `static` because a partial Secret was attached, so the config kept `${AWS_ACCESS_KEY_ID}` placeholders | Remove the `nodePublishSecretRef`, or set `authType: irsa` explicitly. See [Credential resolution](#credential-resolution) |
+| Missing-credentials error although IRSA is configured | Under `authType: static` a complete Secret is required, and the config keeps `${AWS_ACCESS_KEY_ID}` placeholders. A *partial* Secret under `auto` resolves to `irsa` instead and never uses the Secret at all, so credentials silently come from the driver's role rather than the keys you supplied | Set `authType: irsa` explicitly for IRSA, or supply both `access_key_id` and `secret_access_key`. See [Credential resolution](#credential-resolution) |
 | Every mount uses the same IAM role under per-workload IRSA | `tokenRequests` is absent from the `CSIDriver`, so the driver silently fell back to driver-SA IRSA | Install via the chart with `auth.perWorkloadIrsa.enabled=true`, or uncomment the block in `deploy/csi-driver.yaml` |
 | Mount is read-only unexpectedly | `readonly` defaults to `true`, and a read-only publish is a hard floor a backend cannot override | Set `volumeAttributes.readonly: "false"` **and** ensure the PV has `accessModes: [ReadWriteMany]` rather than `ReadOnlyMany` |
 | Slow first access on a large bucket | `manifestPath` is not persisted, so the manifest regenerates on every remount | Known limitation (NGCDP-9116); omit `manifestPath` if regeneration costs more than it saves |
