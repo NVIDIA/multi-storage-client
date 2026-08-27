@@ -327,8 +327,12 @@ set, so the MSFS default of `mapped-file` always applies to a CSI mount:
 | `ram` | Anonymous `mmap`, outside the Go heap | Memory. Pages commit on first touch, and it is not counted against `process_memory_limit`. |
 
 So on CSI, size the pod's `ephemeral-storage` request rather than its memory
-limit, and note that `cache_dir_path` defaults to empty — the cache lands in the
-container's writable layer or its `emptyDir` unless a volume is mounted for it.
+limit. `cache_dir_path` also cannot be set through CSI and defaults to empty,
+which resolves to `os.TempDir()` — `$TMPDIR`, or `/tmp` — **inside the driver
+container**. Unless a volume is mounted there, the cache consumes the container's
+writable layer, and a large `cacheLines` can fill the node's disk or trip the
+pod's ephemeral-storage limit. The directory is created per mount and removed on
+unmount, so nothing persists across a remount.
 
 ### Per-backend tuning
 
@@ -338,10 +342,19 @@ Valid as flat keys for a single-backend volume, and as fields inside each
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `uid` | mounting user | Owner UID reported for every file and directory. |
-| `gid` | mounting user | Owner GID reported for every file and directory. |
+| `uid` | **`0` under CSI** | Owner UID reported for every file and directory. MSFS defaults to the euid of the process that mounts, and under CSI that process is the driver container — which is privileged with no `runAsUser`, so the euid is `0`. Files therefore appear **root-owned inside your unprivileged application pod** unless you set this. |
+| `gid` | **`0` under CSI** | Owner GID, same reasoning as `uid`. |
 | `dirPerm` | `555` ro / `777` rw | Directory permission bits, 3-digit octal. |
 | `filePerm` | `444` ro / `666` rw | File permission bits, 3-digit octal. Objects carry no mode, so this is backend-wide policy and `chmod` is accepted but not applied. |
+
+Ownership and permissions interact in a way worth checking before you deploy.
+None of the shipped examples in `deploy/` set `uid` or `gid`, so a mount is
+root-owned by default. Reads still work because `filePerm` defaults to `444`
+(world-readable), and a writable mount works because the defaults become `777`
+and `666` — but that also means **a writable mount is world-writable inside the
+pod**. If your application checks ownership, or you want tighter bits, set
+`uid`, `gid`, `dirPerm` and `filePerm` explicitly to match the pod's
+`securityContext`.
 | `flushOnClose` | `false` | When `"true"`, `close()` waits for the backend commit. When false, the commit is asynchronous and `fsync()` is the durability barrier. |
 | `multipartUploadThresholdBytes` | `67108864` (64 MiB) | Buffered size at which a new object is promoted from a single `PutObject` to a streaming multipart upload. `0` disables deferral. |
 | `multipartCacheLineThreshold` | `512` | Files fitting in this many cache lines upload in a single PUT. |
