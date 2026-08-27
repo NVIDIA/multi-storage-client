@@ -228,11 +228,11 @@ def test_single_client_is_rust_client_enabled(single_backend_config):
     assert single._is_rust_client_enabled() is False
 
     # Mock provider with _rust_client = None (disabled) - should return False
-    setattr(single._storage_provider, "_rust_client", None)
+    single._storage_provider._rust_client = None  # pyright: ignore[reportAttributeAccessIssue]
     assert single._is_rust_client_enabled() is False
 
     # Mock provider with _rust_client set to a value - should return True
-    setattr(single._storage_provider, "_rust_client", MagicMock())
+    single._storage_provider._rust_client = MagicMock()  # pyright: ignore[reportAttributeAccessIssue]
     assert single._is_rust_client_enabled() is True
 
 
@@ -298,7 +298,9 @@ def test_single_list_recursive_uses_provider_recursive_listing(single_backend_co
     single = client._delegate
     assert isinstance(single, SingleStorageClient)
 
-    expected_obj = ObjectMetadata(key="data/file.bin", content_length=1, type="file", last_modified=datetime.now())
+    expected_obj = ObjectMetadata(
+        key="data/file.bin", content_length=1, type="file", last_modified=datetime.now(tz=timezone.utc)
+    )
     single._storage_provider.list_objects_recursive = MagicMock(return_value=iter([expected_obj]))
 
     results = list(client.list_recursive(path="data/"))
@@ -319,7 +321,9 @@ def test_single_list_recursive_uses_metadata_provider_when_configured(single_bac
     single = client._delegate
     assert isinstance(single, SingleStorageClient)
 
-    expected_obj = ObjectMetadata(key="data/file.bin", content_length=1, type="file", last_modified=datetime.now())
+    expected_obj = ObjectMetadata(
+        key="data/file.bin", content_length=1, type="file", last_modified=datetime.now(tz=timezone.utc)
+    )
     metadata_provider = MagicMock()
     metadata_provider.realpath.return_value = MagicMock(exists=False)
     metadata_provider.list_objects.return_value = iter([expected_obj])
@@ -347,7 +351,9 @@ def test_single_list_recursive_file_short_circuit_applies_key_bounds(single_back
 
     single.is_file = MagicMock(return_value=True)  # type: ignore[method-assign]
     single.info = MagicMock(
-        return_value=ObjectMetadata(key="data/file.bin", content_length=1, type="file", last_modified=datetime.now())
+        return_value=ObjectMetadata(
+            key="data/file.bin", content_length=1, type="file", last_modified=datetime.now(tz=timezone.utc)
+        )
     )  # type: ignore[method-assign]
     single._storage_provider.list_objects_recursive = MagicMock(
         side_effect=AssertionError("should short-circuit on file path")
@@ -447,7 +453,7 @@ def test_download_files_delegates_metadata_to_single(single_backend_config):
     client = StorageClient(single_backend_config)
     client._delegate.download_files = MagicMock()
 
-    meta = [ObjectMetadata(key="/remote/a", content_length=42, last_modified=datetime.now())]
+    meta = [ObjectMetadata(key="/remote/a", content_length=42, last_modified=datetime.now(tz=timezone.utc))]
     client.download_files(["/remote/a"], ["/local/a"], metadata=meta, max_workers=8)
 
     client._delegate.download_files.assert_called_once_with(["/remote/a"], ["/local/a"], meta, 8)

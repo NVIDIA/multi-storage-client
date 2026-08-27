@@ -19,7 +19,6 @@ import os
 import threading
 import time
 import weakref
-from typing import Optional
 
 import opentelemetry.sdk.environment_variables as sdk_environment_variables
 import opentelemetry.sdk.metrics as sdk_metrics
@@ -46,10 +45,10 @@ class DiperiodicExportingMetricReader(sdk_metrics_export.MetricReader):
     """
 
     #: Collect buffer.
-    _collect_metrics_data: Optional[sdk_metrics_export.MetricsData]
+    _collect_metrics_data: sdk_metrics_export.MetricsData | None
     _collect_metrics_data_lock: threading.Lock
     #: Export buffer.
-    _export_metrics_data: Optional[sdk_metrics_export.MetricsData]
+    _export_metrics_data: sdk_metrics_export.MetricsData | None
     _export_metrics_data_lock: threading.Lock
 
     _exporter: sdk_metrics_export.MetricExporter
@@ -60,16 +59,16 @@ class DiperiodicExportingMetricReader(sdk_metrics_export.MetricReader):
 
     _shutdown_event: threading.Event
     _shutdown_event_lock: threading.Lock
-    _collect_daemon: Optional[threading.Thread]
-    _export_daemon: Optional[threading.Thread]
+    _collect_daemon: threading.Thread | None
+    _export_daemon: threading.Thread | None
 
     def __init__(
         self,
         exporter: sdk_metrics_export.MetricExporter,
-        collect_interval_millis: Optional[float] = None,
-        collect_timeout_millis: Optional[float] = None,
-        export_interval_millis: Optional[float] = None,
-        export_timeout_millis: Optional[float] = None,
+        collect_interval_millis: float | None = None,
+        collect_timeout_millis: float | None = None,
+        export_interval_millis: float | None = None,
+        export_timeout_millis: float | None = None,
     ):
         """
         :param exporter: Metrics exporter.
@@ -168,7 +167,7 @@ class DiperiodicExportingMetricReader(sdk_metrics_export.MetricReader):
         self._export_iteration()
 
     # :py:meth:`sdk_metrics_export.MetricReader._collect` is reserved. Using another name.
-    def _collect_iteration(self, timeout_millis: Optional[float] = None) -> None:
+    def _collect_iteration(self, timeout_millis: float | None = None) -> None:
         try:
             # Only set when registered on a :py:class:`sdk_metrics.MeterProvider` which calls
             # :py:meth:`sdk_metrics_export.MetricReader._set_collect_callback`.
@@ -192,7 +191,7 @@ class DiperiodicExportingMetricReader(sdk_metrics_export.MetricReader):
                 )
             )
 
-    def _export_iteration(self, timeout_millis: Optional[float] = None) -> None:
+    def _export_iteration(self, timeout_millis: float | None = None) -> None:
         with self._export_metrics_data_lock:
             with self._collect_metrics_data_lock:
                 # Rotate the collect + export buffers.
@@ -238,9 +237,14 @@ class DiperiodicExportingMetricReader(sdk_metrics_export.MetricReader):
 
         with self._shutdown_event_lock:
             if not self._shutdown_event.is_set():
+                # Signal the collect + export daemons to stop first. Their loops only
+                # exit once this event is set, and the export daemon performs a final
+                # collect + export on the way out. Joining before setting the event
+                # would block for the full timeout and then run that final export
+                # against an already-shut-down exporter.
+                self._shutdown_event.set()
                 if self._collect_daemon is not None:
                     self._collect_daemon.join(timeout=(deadline_ns - time.time_ns()) / 10**9)
                 if self._export_daemon is not None:
                     self._export_daemon.join(timeout=(deadline_ns - time.time_ns()) / 10**9)
                 self._exporter.shutdown(timeout_millis=(deadline_ns - time.time_ns()) / 10**6)
-                self._shutdown_event.set()

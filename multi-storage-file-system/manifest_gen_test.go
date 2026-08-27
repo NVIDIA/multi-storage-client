@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestManifestPartPath(t *testing.T) {
@@ -121,6 +122,76 @@ func TestLookupInManifestPart(t *testing.T) {
 	if found {
 		t.Error("expected not to find nonexistent")
 	}
+}
+
+func TestManifestDeltaOverlayUpsertAndDelete(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(manifestPartPath(tmpDir, ""), []byte(
+		"f\tbase.bin\t100\tbase-etag\t2026-01-01T00:00:00Z\n"+
+			"f\tdeleted.bin\t200\tdelete-etag\t2026-01-02T00:00:00Z\n",
+	), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := appendManifestDeltaRecord(tmpDir, "", manifestDeltaUpsert, &manifestDirEntry{
+		Kind:     "f",
+		Basename: "new.bin",
+		Size:     300,
+		ETag:     "new-etag",
+		MTime:    mustParseTime(t, "2026-01-03T00:00:00Z"),
+	}); err != nil {
+		t.Fatalf("appendManifestDeltaRecord(new): %v", err)
+	}
+	if err := appendManifestDeltaRecord(tmpDir, "", manifestDeltaUpsert, &manifestDirEntry{
+		Kind:     "f",
+		Basename: "base.bin",
+		Size:     400,
+		ETag:     "updated-etag",
+		MTime:    mustParseTime(t, "2026-01-04T00:00:00Z"),
+	}); err != nil {
+		t.Fatalf("appendManifestDeltaRecord(update): %v", err)
+	}
+	if err := appendManifestDeltaRecord(tmpDir, "", manifestDeltaDelete, &manifestDirEntry{
+		Basename: "deleted.bin",
+		MTime:    mustParseTime(t, "2026-01-05T00:00:00Z"),
+	}); err != nil {
+		t.Fatalf("appendManifestDeltaRecord(delete): %v", err)
+	}
+
+	entries, err := readManifestPartWithDelta(tmpDir, "")
+	if err != nil {
+		t.Fatalf("readManifestPartWithDelta: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 overlaid entries, got %d: %#v", len(entries), entries)
+	}
+
+	base, found := lookupInManifestPartWithDelta(tmpDir, "", "base.bin")
+	if !found {
+		t.Fatalf("expected updated base.bin")
+	}
+	if base.Size != 400 || base.ETag != "updated-etag" {
+		t.Fatalf("base.bin overlay = size %d etag %q", base.Size, base.ETag)
+	}
+	newEntry, found := lookupInManifestPartWithDelta(tmpDir, "", "new.bin")
+	if !found {
+		t.Fatalf("expected new.bin from delta")
+	}
+	if newEntry.Size != 300 || newEntry.ETag != "new-etag" {
+		t.Fatalf("new.bin overlay = size %d etag %q", newEntry.Size, newEntry.ETag)
+	}
+	if _, found := lookupInManifestPartWithDelta(tmpDir, "", "deleted.bin"); found {
+		t.Fatalf("deleted.bin should be hidden by delta tombstone")
+	}
+}
+
+func mustParseTime(t *testing.T, value string) time.Time {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		t.Fatalf("time.Parse(%q): %v", value, err)
+	}
+	return parsed
 }
 
 func TestLookupInManifestPartNonexistentFile(t *testing.T) {

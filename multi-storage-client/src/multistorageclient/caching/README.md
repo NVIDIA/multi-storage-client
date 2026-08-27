@@ -20,7 +20,7 @@ cache_config = CacheConfig(
     location="/path/to/cache",
     size_mb=1000,  # 1GB cache
     check_source_version=True,
-    eviction_policy=FIFO  # Default is "fifo", can also use "lru" or "random"
+    eviction_policy=FIFO,  # Default is "fifo", can also use "lru" or "random"
 )
 
 # Create a cache manager

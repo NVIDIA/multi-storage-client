@@ -16,7 +16,7 @@
 import os
 import queue
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 import ray
@@ -114,7 +114,10 @@ def test_ray_queue_producer_consumer(ray_cluster):
     # Producer runs in the main thread
     [
         input_queue.put(
-            (OperationType.ADD, ObjectMetadata(key=f"test_{i}", content_length=100, last_modified=datetime.now()))
+            (
+                OperationType.ADD,
+                ObjectMetadata(key=f"test_{i}", content_length=100, last_modified=datetime.now(tz=timezone.utc)),
+            )
         )
         for i in range(300)
     ]

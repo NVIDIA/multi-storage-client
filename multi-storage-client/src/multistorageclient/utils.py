@@ -22,9 +22,9 @@ import os
 import re
 import shutil
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from lark import Lark, Transformer
 from wcmatch import glob as wcmatch_glob
@@ -146,7 +146,7 @@ def insert_directories(keys: list[str]) -> list[str]:
     return sorted(expanded_keys)
 
 
-def import_class(class_name: str, module_name: str, package_name: Optional[str] = None) -> Any:
+def import_class(class_name: str, module_name: str, package_name: str | None = None) -> Any:
     """
     Dynamically imports a class from a given module and package.
 
@@ -235,9 +235,9 @@ def extract_prefix_from_glob(s: str) -> str:
 
 
 def merge_dictionaries_no_overwrite(
-    dict1: Optional[dict[str, Any]] = None,
-    dict2: Optional[dict[str, Any]] = None,
-    conflicted_keys: Optional[list[str]] = None,
+    dict1: dict[str, Any] | None = None,
+    dict2: dict[str, Any] | None = None,
+    conflicted_keys: list[str] | None = None,
     allow_idempotent: bool = False,
 ) -> tuple[dict[str, Any], list[str]]:
     """
@@ -283,7 +283,7 @@ def merge_dictionaries_no_overwrite(
     return dict1, conflicted_keys
 
 
-def find_executable_path(executable_name: str) -> Optional[Path]:
+def find_executable_path(executable_name: str) -> Path | None:
     """
     Find the path of an executable in the PATH environment variable.
 
@@ -296,7 +296,7 @@ def find_executable_path(executable_name: str) -> Optional[Path]:
     return None
 
 
-def _get_cgroup_cpu_limit() -> Optional[int]:
+def _get_cgroup_cpu_limit() -> int | None:
     """
     Try to read CPU limit from cgroup v2 and v1 filesystems.
 
@@ -355,12 +355,11 @@ def get_available_cpu_count() -> int:
     :return: Number of available CPUs for the current job/process
     """
     # Check if running in a Slurm job
-    if "SLURM_JOB_ID" in os.environ:
-        if "SLURM_CPUS_PER_TASK" in os.environ:
-            try:
-                return int(os.environ["SLURM_CPUS_PER_TASK"])
-            except (ValueError, TypeError):
-                pass
+    if "SLURM_JOB_ID" in os.environ and "SLURM_CPUS_PER_TASK" in os.environ:
+        try:
+            return int(os.environ["SLURM_CPUS_PER_TASK"])
+        except (ValueError, TypeError):
+            pass
 
     # Try reading from cgroup filesystem (works in containers/K8s pods)
     try:
@@ -374,7 +373,7 @@ def get_available_cpu_count() -> int:
     return multiprocessing.cpu_count()
 
 
-def ensure_adequate_file_descriptors(target: int = 4096) -> Optional[int]:
+def ensure_adequate_file_descriptors(target: int = 4096) -> int | None:
     """
     Attempt to increase the file descriptor soft limit to enable higher concurrency.
 
@@ -397,7 +396,7 @@ def ensure_adequate_file_descriptors(target: int = 4096) -> Optional[int]:
 
 
 def calculate_worker_processes_and_threads(
-    num_worker_processes: Optional[int] = None,
+    num_worker_processes: int | None = None,
     execution_mode: ExecutionMode = ExecutionMode.LOCAL,
     source_client: Optional["AbstractStorageClient"] = None,
     target_client: Optional["AbstractStorageClient"] = None,
@@ -430,21 +429,24 @@ def calculate_worker_processes_and_threads(
     # Under the following conditions, multiprocessing is not needed for the local execution mode.
     # 1. Both source and target clients are using the Rust client or POSIX file storage provider.
     # 2. One of the clients is using the Rust client and the other is using the POSIX file storage provider.
-    if execution_mode == ExecutionMode.LOCAL:
-        if source_client is not None and target_client is not None:
-            if all(
-                client._is_rust_client_enabled() or client._is_posix_file_storage_provider()
-                for client in (source_client, target_client)
-            ):
-                num_worker_processes = 1
-                num_worker_threads = int(os.getenv("MSC_NUM_THREADS_PER_PROCESS", "8"))
+    if (
+        execution_mode == ExecutionMode.LOCAL
+        and source_client is not None
+        and target_client is not None
+        and all(
+            client._is_rust_client_enabled() or client._is_posix_file_storage_provider()
+            for client in (source_client, target_client)
+        )
+    ):
+        num_worker_processes = 1
+        num_worker_threads = int(os.getenv("MSC_NUM_THREADS_PER_PROCESS", "8"))
     elif execution_mode == ExecutionMode.RAY:
         num_worker_threads = int(os.getenv("MSC_NUM_THREADS_PER_PROCESS", "8"))
 
     return num_worker_processes, num_worker_threads
 
 
-def validate_attributes(attributes: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+def validate_attributes(attributes: dict[str, Any] | None) -> dict[str, Any] | None:
     """
     Validates key and string value lengths.
 
@@ -567,7 +569,11 @@ class AttributeFilterEvaluator(Transformer):
 
     def number(self, n):
         """Handle numeric literals."""
-        return float(n[0])
+        # Return the literal as a string: equality/inequality compare against
+        # str(metadata[key]) (always a string), and the ordering operators coerce
+        # both sides with float(). Returning a float here would make '=' / '!=' on
+        # numeric literals never/always match string-typed metadata values.
+        return str(n[0])
 
     def parens(self, items):
         """Handle parenthesized expressions."""
@@ -595,12 +601,10 @@ def create_attribute_filter_evaluator(attribute_filter_expression: str) -> Calla
         tree = attribute_filter_parser.parse(attribute_filter_expression)
         return AttributeFilterEvaluator().transform(tree)
     except Exception as e:
-        raise ValueError(f"Invalid attribute filter expression: {attribute_filter_expression}. Error: {str(e)}")
+        raise ValueError(f"Invalid attribute filter expression: {attribute_filter_expression}. Error: {e!s}")
 
 
-def matches_attribute_filter_expression(
-    obj_metadata: ObjectMetadata, evaluator: Optional[Callable[[dict], bool]]
-) -> bool:
+def matches_attribute_filter_expression(obj_metadata: ObjectMetadata, evaluator: Callable[[dict], bool] | None) -> bool:
     """
     Check if an object's metadata matches the given attribute filter expression.
 
@@ -628,7 +632,7 @@ class NullStorageClient:
     def list_recursive(self, **kwargs: Any) -> Iterator[ObjectMetadata]:
         return iter([])
 
-    def commit_metadata(self, prefix: Optional[str] = None) -> None:
+    def commit_metadata(self, prefix: str | None = None) -> None:
         pass
 
     def _is_rust_client_enabled(self) -> bool:

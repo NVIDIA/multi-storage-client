@@ -21,13 +21,11 @@ import tempfile
 import urllib.request
 import uuid
 from datetime import datetime, timezone
-from typing import Union, cast
+from typing import cast
 
 import pytest
 
-import multistorageclient.telemetry as telemetry
-import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
-from multistorageclient import StorageClient, StorageClientConfig
+from multistorageclient import StorageClient, StorageClientConfig, telemetry
 from multistorageclient.constants import MEMORY_LOAD_LIMIT
 from multistorageclient.providers.ais import AIStoreStorageProvider
 from multistorageclient.providers.ais_s3 import AIStoreS3StorageProvider
@@ -38,6 +36,7 @@ from multistorageclient.providers.posix_file import PosixFileStorageProvider
 from multistorageclient.providers.s3 import S3StorageProvider
 from multistorageclient.providers.s8k import S8KStorageProvider
 from multistorageclient.types import PreconditionFailedError, Range
+from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
 from test_multistorageclient.utils.wait import wait_for_is_file
 
@@ -739,7 +738,7 @@ def test_storage_with_base_path_contains_prefix(temp_data_store_type: type[tempd
     ],
 )
 def test_storage_providers_with_rust_client(
-    temp_data_store_type: type[Union[tempdatastore.TemporaryAWSS3Bucket, tempdatastore.TemporarySwiftStackBucket]],
+    temp_data_store_type: type[tempdatastore.TemporaryAWSS3Bucket | tempdatastore.TemporarySwiftStackBucket],
 ):
     with temp_data_store_type(enable_rust_client=True) as temp_data_store:
         profile = "data"
@@ -841,7 +840,7 @@ def test_storage_providers_with_rust_client(
     ],
 )
 def test_storage_providers_with_rust_client_bucket_override(
-    temp_data_store_type: type[Union[tempdatastore.TemporaryAWSS3Bucket, tempdatastore.TemporarySwiftStackBucket]],
+    temp_data_store_type: type[tempdatastore.TemporaryAWSS3Bucket | tempdatastore.TemporarySwiftStackBucket],
 ):
     with temp_data_store_type(enable_rust_client=True) as temp_data_store:
         profile = "data"
@@ -966,7 +965,7 @@ def test_download_files(temp_data_store_type: type[tempdatastore.TemporaryDataSt
         for path, body in file_contents.items():
             storage_client.write(path=path, body=body)
 
-        for path in file_contents.keys():
+        for path in file_contents:
             wait_for_is_file(storage_client=storage_client, path=path, is_file=True)
 
         remote_paths = list(file_contents.keys())

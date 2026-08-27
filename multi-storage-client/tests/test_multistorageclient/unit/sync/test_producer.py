@@ -16,8 +16,8 @@
 import queue
 import threading
 import time
-from datetime import datetime
-from typing import Optional, cast
+from datetime import datetime, timezone
+from typing import cast
 
 import pytest
 
@@ -53,7 +53,7 @@ def _setup_test_clients(posix_profile: str, remote_profile: str, temp_posix, tem
 
 class MockStorageClient:
     def __init__(self):
-        self._metadata_provider: Optional[object] = None
+        self._metadata_provider: object | None = None
 
     def list(self, **kwargs):
         raise Exception("No Such Method")
@@ -61,7 +61,7 @@ class MockStorageClient:
     def list_recursive(self, **kwargs):
         return self.list(**kwargs)
 
-    def commit_metadata(self, prefix: Optional[str] = None) -> None:
+    def commit_metadata(self, prefix: str | None = None) -> None:
         pass
 
     def _is_rust_client_enabled(self) -> bool:
@@ -96,7 +96,7 @@ def test_match_file_metadata_seconds_resolution():
         num_workers=1,
         shutdown_event=threading.Event(),
     )
-    base = datetime(2025, 1, 1, 12, 0, 0)
+    base = datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
     same_size = 100
 
     # Same second, different microseconds: should match (treated as equal at second resolution)
@@ -106,11 +106,15 @@ def test_match_file_metadata_seconds_resolution():
 
     # Target one second newer: should match
     source_info = ObjectMetadata(key="a", content_length=same_size, last_modified=base)
-    target_info = ObjectMetadata(key="a", content_length=same_size, last_modified=datetime(2025, 1, 1, 12, 0, 1))
+    target_info = ObjectMetadata(
+        key="a", content_length=same_size, last_modified=datetime(2025, 1, 1, 12, 0, 1, tzinfo=timezone.utc)
+    )
     assert producer._match_file_metadata(source_info, target_info) is True
 
     # Target one second older: should not match
-    source_info = ObjectMetadata(key="a", content_length=same_size, last_modified=datetime(2025, 1, 1, 12, 0, 1))
+    source_info = ObjectMetadata(
+        key="a", content_length=same_size, last_modified=datetime(2025, 1, 1, 12, 0, 1, tzinfo=timezone.utc)
+    )
     target_info = ObjectMetadata(key="a", content_length=same_size, last_modified=base)
     assert producer._match_file_metadata(source_info, target_info) is False
 
@@ -146,7 +150,7 @@ def test_match_file_metadata_attribute_changes_depend_on_metadata_provider(
         shutdown_event=threading.Event(),
         preserve_source_attributes=preserve_source_attributes,
     )
-    base = datetime(2025, 1, 1, 12, 0, 0)
+    base = datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
     source_info = ObjectMetadata(
         key="a",
@@ -181,7 +185,7 @@ def test_target_listing_requests_attributes_only_when_needed(
         ObjectMetadata(
             key="file1.txt",
             content_length=100,
-            last_modified=datetime(2025, 1, 1, 0, 0, 0),
+            last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
             metadata={"version": "1"},
         )
     ]
@@ -189,7 +193,7 @@ def test_target_listing_requests_attributes_only_when_needed(
         ObjectMetadata(
             key="file1.txt",
             content_length=100,
-            last_modified=datetime(2025, 1, 1, 0, 0, 1),
+            last_modified=datetime(2025, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
             metadata={"version": "1"},
         )
     ]
@@ -225,8 +229,16 @@ def test_listing_uses_list_recursive_by_default():
     source_client = MockStorageClient()
     target_client = MockStorageClient()
 
-    source_files = [ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0))]
-    target_files = [ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 1))]
+    source_files = [
+        ObjectMetadata(
+            key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        )
+    ]
+    target_files = [
+        ObjectMetadata(
+            key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
+        )
+    ]
     list_recursive_calls = []
 
     def source_list_recursive(**kwargs):
@@ -264,8 +276,16 @@ def test_listing_uses_list_when_parallel_listing_disabled(monkeypatch):
     source_client = MockStorageClient()
     target_client = MockStorageClient()
 
-    source_files = [ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0))]
-    target_files = [ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 1))]
+    source_files = [
+        ObjectMetadata(
+            key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        )
+    ]
+    target_files = [
+        ObjectMetadata(
+            key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
+        )
+    ]
     list_calls = []
 
     def source_list(**kwargs):
@@ -311,11 +331,15 @@ def test_listing_falls_back_to_list_when_attributes_are_requested():
         ObjectMetadata(
             key="file1.txt",
             content_length=100,
-            last_modified=datetime(2025, 1, 1, 0, 0, 0),
+            last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
             metadata={"version": "1"},
         )
     ]
-    target_files = [ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 1))]
+    target_files = [
+        ObjectMetadata(
+            key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
+        )
+    ]
     source_list_kwargs = {}
 
     def source_list(**kwargs):
@@ -415,8 +439,12 @@ def test_producer_updates_final_total():
     target_client = MockStorageClient()
 
     source_files = [
-        ObjectMetadata(key="file0.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
-        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+        ObjectMetadata(
+            key="file0.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        ),
+        ObjectMetadata(
+            key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        ),
     ]
 
     source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
@@ -446,18 +474,36 @@ def test_progress_bar_update_in_producer_thread_without_deletion():
     target_client = MockStorageClient()
 
     source_files = [
-        ObjectMetadata(key="file0.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
-        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
-        ObjectMetadata(key="file2.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
-        ObjectMetadata(key="file3.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+        ObjectMetadata(
+            key="file0.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        ),
+        ObjectMetadata(
+            key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        ),
+        ObjectMetadata(
+            key="file2.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        ),
+        ObjectMetadata(
+            key="file3.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        ),
     ]
 
     target_files = [
-        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 1, 0, 0)),
-        ObjectMetadata(key="file2.txt", content_length=100, last_modified=datetime(2025, 1, 1, 1, 0, 0)),
-        ObjectMetadata(key="file4.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
-        ObjectMetadata(key="file5.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
-        ObjectMetadata(key="file6.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+        ObjectMetadata(
+            key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 1, 0, 0, tzinfo=timezone.utc)
+        ),
+        ObjectMetadata(
+            key="file2.txt", content_length=100, last_modified=datetime(2025, 1, 1, 1, 0, 0, tzinfo=timezone.utc)
+        ),
+        ObjectMetadata(
+            key="file4.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        ),
+        ObjectMetadata(
+            key="file5.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        ),
+        ObjectMetadata(
+            key="file6.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        ),
     ]
 
     source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
@@ -495,10 +541,18 @@ def test_progress_bar_update_in_producer_thread_with_deletion():
     target_client = MockStorageClient()
 
     target_files = [
-        ObjectMetadata(key="file0.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
-        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
-        ObjectMetadata(key="file2.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
-        ObjectMetadata(key="file3.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+        ObjectMetadata(
+            key="file0.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        ),
+        ObjectMetadata(
+            key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        ),
+        ObjectMetadata(
+            key="file2.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        ),
+        ObjectMetadata(
+            key="file3.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        ),
     ]
 
     target_client.list = lambda **kwargs: iter(target_files)  # type: ignore
@@ -534,14 +588,24 @@ def test_batch_flushing_on_operation_type_change():
     target_client = MockStorageClient()
 
     source_files = [
-        ObjectMetadata(key="file0.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
-        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
-        ObjectMetadata(key="file2.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+        ObjectMetadata(
+            key="file0.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        ),
+        ObjectMetadata(
+            key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        ),
+        ObjectMetadata(
+            key="file2.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        ),
     ]
 
     target_files = [
-        ObjectMetadata(key="file3.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
-        ObjectMetadata(key="file4.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+        ObjectMetadata(
+            key="file3.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        ),
+        ObjectMetadata(
+            key="file4.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        ),
     ]
 
     source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
@@ -589,7 +653,9 @@ def test_producer_thread_with_shutdown_event():
 
     # Create long list of files to ensure producer is interruptible
     source_files = [
-        ObjectMetadata(key=f"file{i}.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0))
+        ObjectMetadata(
+            key=f"file{i}.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        )
         for i in range(1_000_000)
     ]
 
@@ -637,28 +703,48 @@ def test_batch_flushing_on_size_bucket_change():
 
     source_files = [
         # SMALL bucket (< 1MB)
-        ObjectMetadata(key="file0_small1.txt", content_length=500 * 1024, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
-        ObjectMetadata(key="file1_small2.txt", content_length=800 * 1024, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
-        # MEDIUM bucket (1MB - 64MB)
         ObjectMetadata(
-            key="file2_medium1.txt", content_length=2 * 1024 * 1024, last_modified=datetime(2025, 1, 1, 0, 0, 0)
+            key="file0_small1.txt",
+            content_length=500 * 1024,
+            last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
         ),
         ObjectMetadata(
-            key="file3_medium2.txt", content_length=10 * 1024 * 1024, last_modified=datetime(2025, 1, 1, 0, 0, 0)
+            key="file1_small2.txt",
+            content_length=800 * 1024,
+            last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+        ),
+        # MEDIUM bucket (1MB - 64MB)
+        ObjectMetadata(
+            key="file2_medium1.txt",
+            content_length=2 * 1024 * 1024,
+            last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+        ),
+        ObjectMetadata(
+            key="file3_medium2.txt",
+            content_length=10 * 1024 * 1024,
+            last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
         ),
         # LARGE bucket (64MB - 1GB)
         ObjectMetadata(
-            key="file4_large1.txt", content_length=100 * 1024 * 1024, last_modified=datetime(2025, 1, 1, 0, 0, 0)
+            key="file4_large1.txt",
+            content_length=100 * 1024 * 1024,
+            last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
         ),
         ObjectMetadata(
-            key="file5_large2.txt", content_length=500 * 1024 * 1024, last_modified=datetime(2025, 1, 1, 0, 0, 0)
+            key="file5_large2.txt",
+            content_length=500 * 1024 * 1024,
+            last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
         ),
         # VERY_LARGE bucket (> 1GB)
         ObjectMetadata(
-            key="file6_vlarge1.txt", content_length=2 * 1024 * 1024 * 1024, last_modified=datetime(2025, 1, 1, 0, 0, 0)
+            key="file6_vlarge1.txt",
+            content_length=2 * 1024 * 1024 * 1024,
+            last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
         ),
         ObjectMetadata(
-            key="file7_vlarge2.txt", content_length=3 * 1024 * 1024 * 1024, last_modified=datetime(2025, 1, 1, 0, 0, 0)
+            key="file7_vlarge2.txt",
+            content_length=3 * 1024 * 1024 * 1024,
+            last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
         ),
     ]
 

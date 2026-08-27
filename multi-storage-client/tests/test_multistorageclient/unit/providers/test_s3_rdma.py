@@ -264,9 +264,9 @@ def test_transfer_registers_full_nbytes_for_multibyte_memoryview():
         patch.object(cuobj, "get_rdma_token", return_value="tok") as get_token,
         patch.object(cuobj, "put_rdma_token"),
         patch.object(cuobj, "deregister_buffer"),
+        engine.transfer(buffer, is_put=False),
     ):
-        with engine.transfer(buffer, is_put=False):
-            pass
+        pass
 
     assert register.call_args.args[1] == 8  # nbytes, not len() == 4
     assert get_token.call_args.args[1] == 8

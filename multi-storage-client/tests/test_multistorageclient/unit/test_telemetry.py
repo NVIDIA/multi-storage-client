@@ -16,7 +16,7 @@
 from multiprocessing import get_context
 from multiprocessing.managers import BaseProxy
 from multiprocessing.pool import Pool
-from typing import Any, Optional
+from typing import Any
 
 import psutil
 import pytest
@@ -24,7 +24,7 @@ from opentelemetry.context import get_current
 from opentelemetry.metrics import Counter, Meter, MeterProvider, _Gauge
 from opentelemetry.trace import Span, Tracer, TracerProvider, use_span
 
-import multistorageclient.telemetry as telemetry
+from multistorageclient import telemetry
 from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
 from test_multistorageclient.unit.utils.telemetry.trace.export import InMemorySpanExporter
 
@@ -36,13 +36,13 @@ def test_telemetry_init_local() -> None:
     }
 
     # Make sure caching works.
-    telemetry_resources_str: Optional[str] = None
-    meter_provider_str: Optional[str] = None
-    meter_str: Optional[str] = None
-    gauge_str: Optional[str] = None
-    counter_str: Optional[str] = None
-    tracer_provider_str: Optional[str] = None
-    tracer_str: Optional[str] = None
+    telemetry_resources_str: str | None = None
+    meter_provider_str: str | None = None
+    meter_str: str | None = None
+    gauge_str: str | None = None
+    counter_str: str | None = None
+    tracer_provider_str: str | None = None
+    tracer_str: str | None = None
 
     for _ in range(2):
         telemetry_resources: telemetry.Telemetry = telemetry.init(mode=telemetry.TelemetryMode.LOCAL)
@@ -53,7 +53,7 @@ def test_telemetry_init_local() -> None:
         else:
             assert telemetry_resources_str == str(telemetry_resources)
 
-        meter_provider: Optional[MeterProvider] = telemetry_resources.meter_provider(
+        meter_provider: MeterProvider | None = telemetry_resources.meter_provider(
             config=opentelemetry_config["metrics"]
         )
         assert meter_provider is not None
@@ -64,7 +64,7 @@ def test_telemetry_init_local() -> None:
         else:
             assert meter_provider_str == str(meter_provider)
 
-        meter: Optional[Meter] = telemetry_resources.meter(config=opentelemetry_config["metrics"])
+        meter: Meter | None = telemetry_resources.meter(config=opentelemetry_config["metrics"])
         assert meter is not None
         assert not isinstance(meter, BaseProxy)
 
@@ -73,7 +73,7 @@ def test_telemetry_init_local() -> None:
         else:
             assert meter_str == str(meter)
 
-        gauge: Optional[_Gauge] = telemetry_resources.gauge(
+        gauge: _Gauge | None = telemetry_resources.gauge(
             opentelemetry_config["metrics"], name=telemetry.Telemetry.GaugeName.DATA_SIZE
         )
         assert gauge is not None
@@ -86,7 +86,7 @@ def test_telemetry_init_local() -> None:
 
         gauge.set(1)
 
-        counter: Optional[Counter] = telemetry_resources.counter(
+        counter: Counter | None = telemetry_resources.counter(
             config=opentelemetry_config["metrics"], name=telemetry.Telemetry.CounterName.DATA_SIZE_SUM
         )
         assert counter is not None
@@ -99,7 +99,7 @@ def test_telemetry_init_local() -> None:
 
         counter.add(1)
 
-        tracer_provider: Optional[TracerProvider] = telemetry_resources.tracer_provider(opentelemetry_config["traces"])
+        tracer_provider: TracerProvider | None = telemetry_resources.tracer_provider(opentelemetry_config["traces"])
         assert tracer_provider is not None
         assert not isinstance(tracer_provider, BaseProxy)
 
@@ -108,7 +108,7 @@ def test_telemetry_init_local() -> None:
         else:
             assert tracer_provider_str == str(tracer_provider)
 
-        tracer: Optional[Tracer] = telemetry_resources.tracer(opentelemetry_config["traces"])
+        tracer: Tracer | None = telemetry_resources.tracer(opentelemetry_config["traces"])
         assert tracer is not None
         assert not isinstance(tracer, BaseProxy)
 
@@ -161,21 +161,21 @@ def _test_telemetry_init_client(
     assert telemetry_resources_referent_str == str(telemetry_resources)
     assert telemetry_resources_proxy_repr != repr(telemetry_resources)
 
-    meter_provider: Optional[MeterProvider] = telemetry_resources.meter_provider(opentelemetry_config["metrics"])
+    meter_provider: MeterProvider | None = telemetry_resources.meter_provider(opentelemetry_config["metrics"])
     assert meter_provider is not None
     assert isinstance(meter_provider, BaseProxy)
 
     assert meter_provider_referent_str == str(meter_provider)
     assert meter_provider_proxy_repr != repr(meter_provider)
 
-    meter: Optional[Meter] = telemetry_resources.meter(config=opentelemetry_config["metrics"])
+    meter: Meter | None = telemetry_resources.meter(config=opentelemetry_config["metrics"])
     assert meter is not None
     assert isinstance(meter, BaseProxy)
 
     assert meter_referent_str == str(meter)
     assert meter_proxy_repr != repr(meter)
 
-    gauge: Optional[_Gauge] = telemetry_resources.gauge(
+    gauge: _Gauge | None = telemetry_resources.gauge(
         opentelemetry_config["metrics"], name=telemetry.Telemetry.GaugeName.DATA_SIZE
     )
     assert gauge is not None
@@ -186,7 +186,7 @@ def _test_telemetry_init_client(
 
     gauge.set(1)
 
-    counter: Optional[Counter] = telemetry_resources.counter(
+    counter: Counter | None = telemetry_resources.counter(
         config=opentelemetry_config["metrics"], name=telemetry.Telemetry.CounterName.DATA_SIZE_SUM
     )
     assert counter is not None
@@ -197,14 +197,14 @@ def _test_telemetry_init_client(
 
     counter.add(1)
 
-    tracer_provider: Optional[TracerProvider] = telemetry_resources.tracer_provider(opentelemetry_config["traces"])
+    tracer_provider: TracerProvider | None = telemetry_resources.tracer_provider(opentelemetry_config["traces"])
     assert tracer_provider is not None
     assert isinstance(tracer_provider, BaseProxy)
 
     assert tracer_provider_referent_str == str(tracer_provider)
     assert tracer_provider_proxy_repr != repr(tracer_provider)
 
-    tracer: Optional[Tracer] = telemetry_resources.tracer(opentelemetry_config["traces"])
+    tracer: Tracer | None = telemetry_resources.tracer(opentelemetry_config["traces"])
     assert tracer is not None
     assert isinstance(tracer, BaseProxy)
 
@@ -238,15 +238,15 @@ def test_telemetry_init_server_client(process_start_method: str) -> None:
     telemetry_resources: telemetry.Telemetry = telemetry.init(mode=telemetry.TelemetryMode.SERVER)
     assert isinstance(telemetry_resources, BaseProxy)
 
-    meter_provider: Optional[MeterProvider] = telemetry_resources.meter_provider(opentelemetry_config["metrics"])
+    meter_provider: MeterProvider | None = telemetry_resources.meter_provider(opentelemetry_config["metrics"])
     assert meter_provider is not None
     assert isinstance(meter_provider, BaseProxy)
 
-    meter: Optional[Meter] = telemetry_resources.meter(config=opentelemetry_config["metrics"])
+    meter: Meter | None = telemetry_resources.meter(config=opentelemetry_config["metrics"])
     assert meter is not None
     assert isinstance(meter, BaseProxy)
 
-    gauge: Optional[_Gauge] = telemetry_resources.gauge(
+    gauge: _Gauge | None = telemetry_resources.gauge(
         opentelemetry_config["metrics"], name=telemetry.Telemetry.GaugeName.DATA_SIZE
     )
     assert gauge is not None
@@ -254,7 +254,7 @@ def test_telemetry_init_server_client(process_start_method: str) -> None:
 
     gauge.set(1)
 
-    counter: Optional[Counter] = telemetry_resources.counter(
+    counter: Counter | None = telemetry_resources.counter(
         config=opentelemetry_config["metrics"], name=telemetry.Telemetry.CounterName.DATA_SIZE_SUM
     )
     assert counter is not None
@@ -262,11 +262,11 @@ def test_telemetry_init_server_client(process_start_method: str) -> None:
 
     counter.add(1)
 
-    tracer_provider: Optional[TracerProvider] = telemetry_resources.tracer_provider(opentelemetry_config["traces"])
+    tracer_provider: TracerProvider | None = telemetry_resources.tracer_provider(opentelemetry_config["traces"])
     assert tracer_provider is not None
     assert isinstance(tracer_provider, BaseProxy)
 
-    tracer: Optional[Tracer] = telemetry_resources.tracer(opentelemetry_config["traces"])
+    tracer: Tracer | None = telemetry_resources.tracer(opentelemetry_config["traces"])
     assert tracer is not None
     assert isinstance(tracer, BaseProxy)
 
@@ -305,6 +305,30 @@ def test_telemetry_init_server_client(process_start_method: str) -> None:
             "tracer_proxy_repr": repr(tracer),
         },
     )
+
+
+def test_metric_instrument_proxies_expose_mutating_methods() -> None:
+    """
+    The shared metric instrument proxies declare their mutating method explicitly.
+
+    Relying on ``multiprocessing``'s default ``public_methods`` discovery is fragile: an
+    OpenTelemetry build whose ``Counter``/``Gauge`` delegates ``add``/``set`` (instead of
+    defining it on the class) isn't surfaced by ``dir()``, so the generated ``AutoProxy``
+    drops the method and every record raises ``AutoProxy[...] object has no attribute 'add'``.
+    Pinning ``exposed`` keeps the proxy method set independent of the instrument's runtime shape.
+    """
+    # BaseManager registry entries are ``(callable, exposed, method_to_typeid, proxytype)``.
+    registry = telemetry.TelemetryManager._registry  # pyright: ignore [reportAttributeAccessIssue]
+    counter_exposed = registry[telemetry._fully_qualified_name(Counter)][1]
+    gauge_exposed = registry[telemetry._fully_qualified_name(_Gauge)][1]
+
+    assert counter_exposed is not None and "add" in counter_exposed
+    assert gauge_exposed is not None and "set" in gauge_exposed
+
+    # The constructor must stay unexposed: an exposed ``__init__`` would override
+    # ``BaseProxy.__init__`` and break proxy construction.
+    assert "__init__" not in counter_exposed
+    assert "__init__" not in gauge_exposed
 
 
 def _test_telemetry_init_automatic() -> None:

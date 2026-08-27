@@ -52,8 +52,8 @@ instantiates :class:`CuObjEngine` when the ``rdma`` option is configured.
 
 import ctypes
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator, Optional, Union
 
 # The cuObject token API lives in the multistorageclient_rust extension behind
 # the crate's `rdma` feature. Import the compiled module defensively: a default
@@ -150,7 +150,7 @@ def put_rdma_token(token: str) -> None:
         raise CuObjError("cuMemObjPutRDMAToken failed") from error
 
 
-def _buffer_address(buffer: Union[bytearray, memoryview], nbytes: int) -> int:
+def _buffer_address(buffer: bytearray | memoryview, nbytes: int) -> int:
     """Return the address of a writable, contiguous buffer for RDMA registration.
 
     A writable buffer is required: GET delivers payload into it over RDMA, and a
@@ -224,7 +224,7 @@ class CuObjEngine:
             )
 
     @contextmanager
-    def transfer(self, buffer: Union[bytearray, memoryview], is_put: bool) -> Iterator[None]:
+    def transfer(self, buffer: bytearray | memoryview, is_put: bool) -> Iterator[None]:
         """Register ``buffer``, publish its RDMA token for the wrapped request, then clean up.
 
         The descriptor is formatted ``<cuobject-descriptor>:<hex addr>:<hex size>``
@@ -233,7 +233,7 @@ class CuObjEngine:
         nbytes = memoryview(buffer).nbytes
         addr = _buffer_address(buffer, nbytes)
         register_buffer(addr, nbytes)
-        token: Optional[str] = None
+        token: str | None = None
         try:
             token = get_rdma_token(addr, nbytes, 0, is_put)
             _thread_state.rdma_token = f"{token}:{addr:016x}:{nbytes:016x}"

@@ -38,7 +38,7 @@ def setup_msc_config(config_dict: dict[str, Any]) -> None:
     """
     Setup the multi-storage client configuration.
     """
-    config_file = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+    config_file = tempfile.NamedTemporaryFile(suffix=".json", delete=False)  # noqa: SIM115
     _config_files.append(config_file.name)
 
     with open(config_file.name, "w") as f:

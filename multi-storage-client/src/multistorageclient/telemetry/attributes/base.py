@@ -29,7 +29,6 @@ class AttributesProvider(ABC):
         """
         Collect attributes.
         """
-        pass
 
 
 def collect_attributes(attributes_providers: Sequence[AttributesProvider]) -> api_types.Attributes:

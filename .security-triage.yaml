@@ -1,0 +1,20 @@
+version: "1.0"
+project: "multi-storage-client"
+last_updated: "2026-07-27T08:40:03+08:00"
+
+repository_exposure_classification:
+  visibility: "Public"
+  basis: "The origin repository is the publicly accessible NVIDIA/multi-storage-client GitHub repository."
+  confirmed_by: "shunjiad"
+  date: "2026-07-27"
+
+service_exposure_classification:
+  tier: "External / Regulated"
+  confidence: "high"
+  basis: "External (Open Source) SDK and CLI with FUSE and Kubernetes CSI deployment modes that handle storage credentials and data paths."
+  confirmed_by: "shunjiad"
+  date: "2026-07-27"
+
+false_positives: []
+accepted_risks: []
+suppressed_cves: []

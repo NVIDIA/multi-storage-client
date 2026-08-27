@@ -15,6 +15,7 @@
 
 import random
 from abc import ABC, abstractmethod
+from typing import ClassVar
 
 from .cache_item import CacheItem
 
@@ -43,7 +44,6 @@ class EvictionPolicy(ABC):
         :param cache_items: List of cache items to sort.
         :return: Sorted list of cache items according to the policy.
         """
-        pass
 
 
 class LRUEvictionPolicy(EvictionPolicy):
@@ -157,7 +157,7 @@ class EvictionPolicyFactory:
     This factory creates instances of different eviction policies based on the policy type.
     """
 
-    _policy_map: dict[str, type[EvictionPolicy]] = {
+    _policy_map: ClassVar[dict[str, type[EvictionPolicy]]] = {
         LRU: LRUEvictionPolicy,
         MRU: MRUEvictionPolicy,
         FIFO: FIFOEvictionPolicy,

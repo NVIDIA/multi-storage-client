@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Sequence
-from typing import IO, TYPE_CHECKING, Any, Optional, Union
+from typing import IO, TYPE_CHECKING, Any
 
 from ..constants import MEMORY_LOAD_LIMIT
 from ..types import ExecutionMode, SignerType, SourceVersionCheckMode, SymlinkHandling, SyncResult
@@ -47,14 +47,14 @@ class AbstractStorageClient(ABC):
     (SingleStorageClient) and multi-backend (CompositeStorageClient) configurations.
     """
 
-    _config: "StorageClientConfig"
-    _storage_provider: Optional["StorageProvider"]
-    _metadata_provider: Optional["MetadataProvider"]
-    _metadata_provider_lock: Optional[Any]  # threading.Lock
-    _credentials_provider: Optional["CredentialsProvider"]
-    _retry_config: Optional["RetryConfig"]
-    _cache_manager: Optional["CacheManager"]
-    _replica_manager: Optional[Any]  # ReplicaManager
+    _config: StorageClientConfig
+    _storage_provider: StorageProvider | None
+    _metadata_provider: MetadataProvider | None
+    _metadata_provider_lock: Any | None  # threading.Lock
+    _credentials_provider: CredentialsProvider | None
+    _retry_config: RetryConfig | None
+    _cache_manager: CacheManager | None
+    _replica_manager: Any | None  # ReplicaManager
 
     @property
     @abstractmethod
@@ -62,52 +62,46 @@ class AbstractStorageClient(ABC):
         """
         :return: The profile name of the storage client.
         """
-        pass
 
     @property
     @abstractmethod
-    def replicas(self) -> list["AbstractStorageClient"]:
+    def replicas(self) -> list[AbstractStorageClient]:
         """
         :return: List of replica storage clients, sorted by read priority.
         """
-        pass
 
     @abstractmethod
     def is_default_profile(self) -> bool:
         """
         :return: ``True`` if the storage client is using the default profile, ``False`` otherwise.
         """
-        pass
 
     @abstractmethod
     def _is_rust_client_enabled(self) -> bool:
         """
         :return: ``True`` if the storage provider is using the Rust client, ``False`` otherwise.
         """
-        pass
 
     @abstractmethod
     def _is_posix_file_storage_provider(self) -> bool:
         """
         :return: ``True`` if the storage client is using a POSIX file storage provider, ``False`` otherwise.
         """
-        pass
 
     @abstractmethod
-    def get_posix_path(self, path: str) -> Optional[str]:
+    def get_posix_path(self, path: str) -> str | None:
         """
         Returns the physical POSIX filesystem path for POSIX storage providers.
 
         :param path: The path to resolve (may be a symlink or virtual path).
         :return: Physical POSIX filesystem path if POSIX storage, None otherwise.
         """
-        pass
 
     @abstractmethod
     def read(
         self,
         path: str,
-        byte_range: Optional[Range] = None,
+        byte_range: Range | None = None,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
     ) -> bytes:
         """
@@ -119,7 +113,6 @@ class AbstractStorageClient(ABC):
         :return: The content of the object as bytes.
         :raises FileNotFoundError: If the file at the specified path does not exist.
         """
-        pass
 
     @abstractmethod
     def open(
@@ -127,14 +120,14 @@ class AbstractStorageClient(ABC):
         path: str,
         mode: str = "rb",
         buffering: int = -1,
-        encoding: Optional[str] = None,
+        encoding: str | None = None,
         disable_read_cache: bool = False,
         memory_load_limit: int = MEMORY_LOAD_LIMIT,
         atomic: bool = True,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
-        attributes: Optional[dict[str, Any]] = None,
-        prefetch_file: Optional[bool] = None,
-    ) -> Union[PosixFile, ObjectFile]:
+        attributes: dict[str, Any] | None = None,
+        prefetch_file: bool | None = None,
+    ) -> PosixFile | ObjectFile:
         """
         Open a file for reading or writing.
 
@@ -158,10 +151,9 @@ class AbstractStorageClient(ABC):
         :raises FileNotFoundError: If the file does not exist (read mode).
         :raises NotImplementedError: If the operation is not supported (e.g., write on CompositeStorageClient).
         """
-        pass
 
     @abstractmethod
-    def download_file(self, remote_path: str, local_path: Union[str, IO]) -> None:
+    def download_file(self, remote_path: str, local_path: str | IO) -> None:
         """
         Download a remote file to a local path or file-like object.
 
@@ -169,14 +161,13 @@ class AbstractStorageClient(ABC):
         :param local_path: The local file path or file-like object to write to.
         :raises FileNotFoundError: If the remote file does not exist.
         """
-        pass
 
     @abstractmethod
     def download_files(
         self,
         remote_paths: list[str],
         local_paths: list[str],
-        metadata: Optional[Sequence[Optional[ObjectMetadata]]] = None,
+        metadata: Sequence[ObjectMetadata | None] | None = None,
         max_workers: int = 16,
     ) -> None:
         """
@@ -189,14 +180,13 @@ class AbstractStorageClient(ABC):
         :raises ValueError: If remote_paths and local_paths have different lengths.
         :raises FileNotFoundError: If any remote file does not exist.
         """
-        pass
 
     @abstractmethod
     def glob(
         self,
         pattern: str,
         include_url_prefix: bool = False,
-        attribute_filter_expression: Optional[str] = None,
+        attribute_filter_expression: str | None = None,
     ) -> list[str]:
         """
         Matches and retrieves a list of object keys in the storage provider that match the specified pattern.
@@ -206,18 +196,17 @@ class AbstractStorageClient(ABC):
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
         :return: A list of object paths that match the specified pattern.
         """
-        pass
 
     @abstractmethod
     def list_recursive(
         self,
         path: str = "",
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         max_workers: int = 32,
         look_ahead: int = 2,
         include_url_prefix: bool = False,
-        patterns: Optional[PatternList] = None,
+        patterns: PatternList | None = None,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         """
@@ -233,7 +222,6 @@ class AbstractStorageClient(ABC):
         :param symlink_handling: How to handle symbolic links during listing.
         :return: An iterator over ObjectMetadata for matching files.
         """
-        pass
 
     @abstractmethod
     def is_file(self, path: str) -> bool:
@@ -243,7 +231,6 @@ class AbstractStorageClient(ABC):
         :param path: The logical path to check.
         :return: ``True`` if the key points to a file, ``False`` otherwise.
         """
-        pass
 
     @abstractmethod
     def is_empty(self, path: str) -> bool:
@@ -254,7 +241,6 @@ class AbstractStorageClient(ABC):
         :param path: The logical path to check (typically a directory or folder prefix).
         :return: ``True`` if no objects exist under the specified path prefix, ``False`` otherwise.
         """
-        pass
 
     @abstractmethod
     def info(self, path: str, strict: bool = True) -> ObjectMetadata:
@@ -266,14 +252,13 @@ class AbstractStorageClient(ABC):
         :return: ObjectMetadata containing file information (size, last modified, etc.).
         :raises FileNotFoundError: If the file at the specified path does not exist.
         """
-        pass
 
     @abstractmethod
     def write(
         self,
         path: str,
         body: bytes,
-        attributes: Optional[dict[str, Any]] = None,
+        attributes: dict[str, Any] | None = None,
     ) -> None:
         """
         Write bytes to a file at the specified path.
@@ -283,7 +268,6 @@ class AbstractStorageClient(ABC):
         :param attributes: Optional attributes to add to the file.
         :raises NotImplementedError: If write operations are not supported (e.g., CompositeStorageClient).
         """
-        pass
 
     @abstractmethod
     def delete(self, path: str, recursive: bool = False) -> None:
@@ -295,7 +279,6 @@ class AbstractStorageClient(ABC):
         :raises FileNotFoundError: If the file or directory does not exist.
         :raises NotImplementedError: If delete operations are not supported (e.g., CompositeStorageClient).
         """
-        pass
 
     @abstractmethod
     def delete_many(self, paths: list[str]) -> None:
@@ -306,7 +289,6 @@ class AbstractStorageClient(ABC):
         :param paths: List of logical paths of the files to delete.
         :raises NotImplementedError: If delete operations are not supported (e.g., CompositeStorageClient).
         """
-        pass
 
     @abstractmethod
     def copy(self, src_path: str, dest_path: str) -> None:
@@ -318,7 +300,6 @@ class AbstractStorageClient(ABC):
         :raises FileNotFoundError: If the source file does not exist.
         :raises NotImplementedError: If copy operations are not supported (e.g., CompositeStorageClient).
         """
-        pass
 
     @abstractmethod
     def make_symlink(self, path: str, target: str) -> None:
@@ -333,14 +314,13 @@ class AbstractStorageClient(ABC):
         :param target: The logical key that the symlink points to.
         :raises NotImplementedError: If symlink creation is not supported.
         """
-        pass
 
     @abstractmethod
     def upload_file(
         self,
         remote_path: str,
-        local_path: Union[str, IO],
-        attributes: Optional[dict[str, Any]] = None,
+        local_path: str | IO,
+        attributes: dict[str, Any] | None = None,
     ) -> None:
         """
         Upload a local file to remote storage.
@@ -351,14 +331,13 @@ class AbstractStorageClient(ABC):
         :raises FileNotFoundError: If the local file does not exist.
         :raises NotImplementedError: If upload operations are not supported (e.g., CompositeStorageClient).
         """
-        pass
 
     @abstractmethod
     def upload_files(
         self,
         remote_paths: list[str],
         local_paths: list[str],
-        attributes: Optional[Sequence[Optional[dict[str, Any]]]] = None,
+        attributes: Sequence[dict[str, Any] | None] | None = None,
         max_workers: int = 16,
     ) -> None:
         """
@@ -373,34 +352,32 @@ class AbstractStorageClient(ABC):
         :raises ValueError: If attributes is provided and has a different length than remote_paths.
         :raises NotImplementedError: If upload operations are not supported (e.g., CompositeStorageClient).
         """
-        pass
 
     @abstractmethod
-    def commit_metadata(self, prefix: Optional[str] = None) -> None:
+    def commit_metadata(self, prefix: str | None = None) -> None:
         """
         Commits any pending updates to the metadata provider. No-op if not using a metadata provider.
 
         :param prefix: If provided, scans the prefix to find files to commit.
         """
-        pass
 
     @abstractmethod
     def sync_from(
         self,
-        source_client: "AbstractStorageClient",
+        source_client: AbstractStorageClient,
         source_path: str = "",
         target_path: str = "",
         delete_unmatched_files: bool = False,
         description: str = "Syncing",
-        num_worker_processes: Optional[int] = None,
+        num_worker_processes: int | None = None,
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
-        patterns: Optional[PatternList] = None,
+        patterns: PatternList | None = None,
         preserve_source_attributes: bool = False,
-        source_files: Optional[list[str]] = None,
+        source_files: list[str] | None = None,
         ignore_hidden: bool = True,
         commit_metadata: bool = True,
         dryrun: bool = False,
-        dryrun_output_path: Optional[str] = None,
+        dryrun_output_path: str | None = None,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> SyncResult:
         """
@@ -440,18 +417,17 @@ class AbstractStorageClient(ABC):
         :raises ValueError: If both source_files and patterns are provided.
         :raises NotImplementedError: If sync operations are not supported (e.g., CompositeStorageClient as target).
         """
-        pass
 
     @abstractmethod
     def sync_replicas(
         self,
         source_path: str,
-        replica_indices: Optional[list[int]] = None,
+        replica_indices: list[int] | None = None,
         delete_unmatched_files: bool = False,
         description: str = "Syncing replica",
-        num_worker_processes: Optional[int] = None,
+        num_worker_processes: int | None = None,
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
-        patterns: Optional[PatternList] = None,
+        patterns: PatternList | None = None,
         ignore_hidden: bool = True,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> None:
@@ -472,19 +448,18 @@ class AbstractStorageClient(ABC):
             :py:attr:`SymlinkHandling.PRESERVE` recreates symlinks on each replica via
             :py:meth:`make_symlink` instead of copying bytes.
         """
-        pass
 
     @abstractmethod
     def list(
         self,
         path: str = "",
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         include_directories: bool = False,
         include_url_prefix: bool = False,
-        attribute_filter_expression: Optional[str] = None,
+        attribute_filter_expression: str | None = None,
         show_attributes: bool = False,
-        patterns: Optional[PatternList] = None,
+        patterns: PatternList | None = None,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         """
@@ -506,7 +481,6 @@ class AbstractStorageClient(ABC):
             reproduced on a compatible destination.
         :return: An iterator over ObjectMetadata for matching objects.
         """
-        pass
 
     @abstractmethod
     def generate_presigned_url(
@@ -514,8 +488,8 @@ class AbstractStorageClient(ABC):
         path: str,
         *,
         method: str = "GET",
-        signer_type: Optional[SignerType] = None,
-        signer_options: Optional[dict[str, Any]] = None,
+        signer_type: SignerType | None = None,
+        signer_options: dict[str, Any] | None = None,
     ) -> str:
         """
         Generate a pre-signed URL granting temporary access to the object at *path*.
@@ -527,4 +501,3 @@ class AbstractStorageClient(ABC):
         :return: A pre-signed URL string.
         :raises NotImplementedError: If the underlying storage provider does not support presigned URLs.
         """
-        pass

@@ -22,7 +22,7 @@ import queue
 import tempfile
 import threading
 import time
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from ..constants import DEFAULT_SYNC_BATCH_SIZE
 from ..types import DryrunResult, ExecutionMode, SymlinkHandling, SyncError, SyncResult
@@ -81,17 +81,17 @@ class SyncManager:
         self,
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
         description: str = "Syncing",
-        num_worker_processes: Optional[int] = None,
+        num_worker_processes: int | None = None,
         delete_unmatched_files: bool = False,
-        pattern_matcher: Optional[PatternMatcher] = None,
+        pattern_matcher: PatternMatcher | None = None,
         preserve_source_attributes: bool = False,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
-        source_files: Optional[list[str]] = None,
+        source_files: list[str] | None = None,
         ignore_hidden: bool = True,
         commit_metadata: bool = True,
         batch_size: int = DEFAULT_SYNC_BATCH_SIZE,
         dryrun: bool = False,
-        dryrun_output_path: Optional[str] = None,
+        dryrun_output_path: str | None = None,
     ) -> SyncResult:
         """
         Synchronize objects from source to target storage location.
@@ -379,13 +379,13 @@ class SyncManager:
         self,
         description: str = "Syncing",
         delete_unmatched_files: bool = False,
-        pattern_matcher: Optional[PatternMatcher] = None,
+        pattern_matcher: PatternMatcher | None = None,
         preserve_source_attributes: bool = False,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
-        source_files: Optional[list[str]] = None,
+        source_files: list[str] | None = None,
         ignore_hidden: bool = True,
         batch_size: int = DEFAULT_SYNC_BATCH_SIZE,
-        output_path: Optional[str] = None,
+        output_path: str | None = None,
     ) -> SyncResult:
         """Dryrun variant: enumerate and compare only, stream results to JSONL files on disk."""
         sync_start_time = time.time()

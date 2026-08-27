@@ -19,8 +19,9 @@ import os
 from typing import Any
 
 import requests
-import requests.adapters as requests_adapters
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from multistorageclient.instrumentation.auth import AccessTokenProvider, AzureAccessTokenProvider
 
@@ -35,7 +36,7 @@ class _OTLPMSALMetricExporter(OTLPMetricExporter):
     _MAX_RETRIES = 5
     _BACKOFF_FACTOR = 0.5
 
-    class AccessTokenHTTPAdapter(requests_adapters.HTTPAdapter):
+    class AccessTokenHTTPAdapter(HTTPAdapter):
         """
         HTTP adapter for retry and auth.
         """
@@ -53,13 +54,13 @@ class _OTLPMSALMetricExporter(OTLPMetricExporter):
                 "status_forcelist": [429, 500, 502, 503, 504],
             }
 
-            retry_sig = inspect.signature(requests_adapters.Retry.__init__)
+            retry_sig = inspect.signature(Retry.__init__)
             if "allowed_methods" in retry_sig.parameters:
                 retry_kwargs["allowed_methods"] = ["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE", "POST"]
             elif "method_whitelist" in retry_sig.parameters:
                 retry_kwargs["method_whitelist"] = ["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE", "POST"]
 
-            kwargs["max_retries"] = requests_adapters.Retry(**retry_kwargs)
+            kwargs["max_retries"] = Retry(**retry_kwargs)
             super().__init__(*args, **kwargs)
             self._access_token_provider = access_token_provider
 

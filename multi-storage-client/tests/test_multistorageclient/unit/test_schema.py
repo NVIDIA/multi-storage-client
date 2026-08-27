@@ -42,7 +42,7 @@ def test_validate_profiles():
         )
 
     # Valid configurations
-    for provider in STORAGE_PROVIDER_MAPPING.keys():
+    for provider in STORAGE_PROVIDER_MAPPING:
         validate_config(
             {
                 "profiles": {

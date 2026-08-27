@@ -21,8 +21,8 @@ import tempfile
 import threading
 import time
 from collections import OrderedDict
-from datetime import datetime
-from typing import Any, Optional, Union
+from datetime import datetime, timezone
+from typing import Any
 
 import xattr
 from filelock import BaseFileLock, FileLock, Timeout
@@ -38,6 +38,8 @@ DEFAULT_CACHE_SIZE_MB = "10000"
 DEFAULT_CACHE_REFRESH_INTERVAL = 300  # 5 minutes
 DEFAULT_LOCK_TIMEOUT = 600  # 10 minutes
 DEFAULT_CACHE_LINE_SIZE = "64M"
+
+logger = logging.getLogger(__name__)
 
 
 class CacheManager:
@@ -57,9 +59,9 @@ class CacheManager:
         self._profile = profile
         self._cache_config = cache_config
         self._max_cache_size = cache_config.size_bytes()
-        self._last_refresh_time = datetime.now()
+        self._last_refresh_time = datetime.now(tz=timezone.utc)
         self._cache_refresh_interval = cache_config.eviction_policy.refresh_interval
-        self._cache_refresh_thread: Optional[threading.Thread] = None
+        self._cache_refresh_thread: threading.Thread | None = None
         self._cache_refresh_thread_lock = threading.Lock()
 
         # Range cache configuration
@@ -102,7 +104,7 @@ class CacheManager:
         """
         return eviction_policy.lower() in {LRU, MRU, FIFO, RANDOM, NO_EVICTION}
 
-    def get_file_size(self, file_path: str) -> Optional[int]:
+    def get_file_size(self, file_path: str) -> int | None:
         """
         Get the size of the file in bytes.
 
@@ -160,7 +162,7 @@ class CacheManager:
         """
         Evict cache entries based on the configured eviction policy.
         """
-        logging.debug("\nStarting evict_files...")
+        logger.debug("\nStarting evict_files...")
         cache_items: list[CacheItem] = []
 
         # Traverse the directory and subdirectories
@@ -178,19 +180,19 @@ class CacheManager:
                         rel_path = os.path.relpath(file_path, self._cache_path)
                         cache_item = CacheItem.from_path(file_path, rel_path)
                         if cache_item and cache_item.file_size:
-                            logging.debug(f"Found file: {rel_path}, size: {cache_item.file_size}")
+                            logger.debug(f"Found file: {rel_path}, size: {cache_item.file_size}")
                             cache_items.append(cache_item)
                 except OSError:
                     # Ignore if file has already been evicted
                     pass
 
-        logging.debug(f"\nFound {len(cache_items)} files before sorting")
+        logger.debug(f"\nFound {len(cache_items)} files before sorting")
 
         # Sort items according to eviction policy
         cache_items = self._eviction_policy.sort_items(cache_items)
-        logging.debug("\nFiles after sorting by policy:")
+        logger.debug("\nFiles after sorting by policy:")
         for item in cache_items:
-            logging.debug(f"File: {item.file_path}")
+            logger.debug(f"File: {item.file_path}")
 
         # Rebuild the cache
         cache = OrderedDict()
@@ -198,31 +200,31 @@ class CacheManager:
         for item in cache_items:
             cache[item.file_path] = item.file_size
             cache_size += item.file_size
-        logging.debug(f"Total cache size: {cache_size}, Max allowed: {self._max_cache_size}")
+        logger.debug(f"Total cache size: {cache_size}, Max allowed: {self._max_cache_size}")
 
         # Calculate target size based on purge_factor
         # purge_factor = percentage of cache to DELETE (0-100)
         # target_size = what cache size should be after purging
         purge_factor = self._cache_config.eviction_policy.purge_factor
         target_size = self._max_cache_size * (1.0 - purge_factor / 100.0)
-        logging.debug(f"Purge factor: {purge_factor}%, Target size after purge: {target_size}")
+        logger.debug(f"Purge factor: {purge_factor}%, Target size after purge: {target_size}")
 
         # Evict files to reduce cache size to target_size
         # Once eviction is triggered, evict down to target_size (not just to max_cache_size)
         if cache_size > self._max_cache_size:
-            logging.debug(
+            logger.debug(
                 f"Cache size {cache_size} exceeds max {self._max_cache_size}, starting eviction to target {target_size}"
             )
             while cache_size > target_size and cache:
                 # Pop the first item in the OrderedDict (according to policy's sorting)
                 file_to_evict, file_size = cache.popitem(last=False)
                 cache_size -= file_size
-                logging.debug(f"Evicting file: {file_to_evict}, size: {file_size}, remaining: {cache_size}")
+                logger.debug(f"Evicting file: {file_to_evict}, size: {file_size}, remaining: {cache_size}")
                 self._delete_cache_file_at_path(file_to_evict)
 
-        logging.debug("\nFinal cache contents:")
-        for file_path in cache.keys():
-            logging.debug(f"Remaining file: {file_path}")
+        logger.debug("\nFinal cache contents:")
+        for file_path in cache:
+            logger.debug(f"Remaining file: {file_path}")
 
     def check_source_version(self) -> bool:
         """Check if etag is used in the cache config."""
@@ -255,11 +257,11 @@ class CacheManager:
     def read(
         self,
         key: str,
-        source_version: Optional[str] = None,
-        byte_range: Optional[Range] = None,
-        storage_provider: Optional[Any] = None,
-        source_size: Optional[int] = None,
-    ) -> Optional[bytes]:
+        source_version: str | None = None,
+        byte_range: Range | None = None,
+        storage_provider: Any | None = None,
+        source_size: int | None = None,
+    ) -> bytes | None:
         """Read the contents of a file from the cache if it exists.
 
         This method handles both full-file reads and partial file caching. For range reads
@@ -304,9 +306,9 @@ class CacheManager:
         self,
         key: str,
         mode: str = "rb",
-        source_version: Optional[str] = None,
+        source_version: str | None = None,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
-    ) -> Optional[Any]:
+    ) -> Any | None:
         """Open a file from the cache and return the file object."""
         try:
             if self.contains(key=key, check_source_version=check_source_version, source_version=source_version):
@@ -320,7 +322,7 @@ class CacheManager:
         # cache miss
         return None
 
-    def set(self, key: str, source: Union[str, bytes], source_version: Optional[str] = None) -> None:
+    def set(self, key: str, source: str | bytes, source_version: str | None = None) -> None:
         """Store a file in the cache."""
         file_path = self._get_cache_file_path(key)
         # Ensure the directory exists
@@ -343,7 +345,7 @@ class CacheManager:
             try:
                 xattr.setxattr(file_path, "user.etag", source_version.encode("utf-8"))
             except OSError as e:
-                logging.warning(f"Failed to set xattr on {file_path}: {e}")
+                logger.warning(f"Failed to set xattr on {file_path}: {e}")
 
         # Make the file read-only for all users
         self._make_readonly(file_path)
@@ -357,7 +359,7 @@ class CacheManager:
         self,
         key: str,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
-        source_version: Optional[str] = None,
+        source_version: str | None = None,
     ) -> bool:
         """Check if the cache contains a file corresponding to the given key."""
         try:
@@ -385,7 +387,7 @@ class CacheManager:
                 return False
 
         except Exception as e:
-            logging.error(f"Error checking cache: {e}")
+            logger.error(f"Error checking cache: {e}")
             return False
 
     def delete(self, key: str) -> None:
@@ -412,13 +414,13 @@ class CacheManager:
         try:
             # Skip eviction if policy is NO_EVICTION
             if self._cache_config.eviction_policy.policy.lower() == NO_EVICTION:
-                self._last_refresh_time = datetime.now()
+                self._last_refresh_time = datetime.now(tz=timezone.utc)
                 return True
 
             # If the process acquires the lock, then proceed with the cache eviction
             with self._cache_refresh_lock_file.acquire(blocking=False):
                 self.evict_files()
-                self._last_refresh_time = datetime.now()
+                self._last_refresh_time = datetime.now(tz=timezone.utc)
                 return True
         except Timeout:
             # If the process cannot acquire the lock, ignore and wait for the next turn
@@ -478,7 +480,7 @@ class CacheManager:
 
     def _should_refresh_cache(self) -> bool:
         """Check if enough time has passed since the last refresh."""
-        now = datetime.now()
+        now = datetime.now(tz=timezone.utc)
         return (now - self._last_refresh_time).total_seconds() > self._cache_refresh_interval
 
     def _run_refresh_cache(self) -> None:
@@ -526,8 +528,8 @@ class CacheManager:
         end_chunk: int,
         configured_cache_line_size: int,
         storage_provider,
-        source_version: Optional[str],
-        source_size: Optional[int],
+        source_version: str | None,
+        source_size: int | None,
     ) -> None:
         """Download all missing chunks for a given range with optimized performance."""
 
@@ -554,7 +556,7 @@ class CacheManager:
         start_chunk: int,
         end_chunk: int,
         cache_line_size: int,
-        source_version: Optional[str],
+        source_version: str | None,
     ) -> list[int]:
         """Identify which chunks are missing or invalid."""
         chunks_to_download = []
@@ -567,7 +569,7 @@ class CacheManager:
 
         return chunks_to_download
 
-    def _is_chunk_valid(self, chunk_path: str, source_version: Optional[str], cache_line_size: int) -> bool:
+    def _is_chunk_valid(self, chunk_path: str, source_version: str | None, cache_line_size: int) -> bool:
         """Check if a chunk exists and has valid metadata."""
         if not os.path.exists(chunk_path):
             return False
@@ -606,8 +608,8 @@ class CacheManager:
         chunk_idx: int,
         cache_line_size: int,
         storage_provider,
-        source_version: Optional[str],
-        source_size: Optional[int],
+        source_version: str | None,
+        source_size: int | None,
     ) -> None:
         """Download and cache a single chunk with proper locking.
 
@@ -648,8 +650,8 @@ class CacheManager:
         chunk_idx: int,
         cache_line_size: int,
         storage_provider,
-        source_version: Optional[str],
-        source_size: Optional[int],
+        source_version: str | None,
+        source_size: int | None,
     ) -> None:
         """Fetch chunk data from storage and cache it locally.
 
@@ -685,10 +687,10 @@ class CacheManager:
         self,
         chunk_path: str,
         chunk_data: bytes,
-        source_version: Optional[str],
+        source_version: str | None,
         chunk_idx: int,
         cache_line_size: int,
-        source_size: Optional[int],
+        source_size: int | None,
     ) -> None:
         """Atomically write chunk data to cache with metadata.
 
@@ -731,7 +733,7 @@ class CacheManager:
                     pass
 
     def _set_chunk_metadata(
-        self, chunk_path: str, source_version: Optional[str], cache_line_size: int, object_size: Optional[int]
+        self, chunk_path: str, source_version: str | None, cache_line_size: int, object_size: int | None
     ) -> None:
         """Set xattr metadata for a chunk file.
         :param chunk_path: The path to the chunk file
@@ -750,7 +752,7 @@ class CacheManager:
             # xattrs may not be supported; continue without failing
             pass
 
-    def _get_chunk_object_size(self, chunk_path: str) -> Optional[int]:
+    def _get_chunk_object_size(self, chunk_path: str) -> int | None:
         """Return the stored object size for a chunk, if available."""
         try:
             return int(xattr.getxattr(chunk_path, "user.size").decode("utf-8"))
@@ -857,7 +859,7 @@ class CacheManager:
                     if object_size is None:
                         # No metadata to validate; treat as corrupt.
                         self._remove_invalid_chunk(actual_path)
-                        raise IOError(
+                        raise OSError(
                             f"Chunk file {actual_path} is too small for requested slice: "
                             f"size={file_size}, needed={chunk_offset + length}"
                         )
@@ -866,7 +868,7 @@ class CacheManager:
                     expected_chunk_size = min(configured_cache_line_size, max(object_size - chunk_start, 0))
                     if file_size < expected_chunk_size:
                         self._remove_invalid_chunk(actual_path)
-                        raise IOError(
+                        raise OSError(
                             f"Chunk file {actual_path} is smaller than expected object metadata: "
                             f"size={file_size}, expected={expected_chunk_size}"
                         )
@@ -881,7 +883,7 @@ class CacheManager:
                     chunk_data = f.read(expected_length)
                 if len(chunk_data) != expected_length:
                     self._remove_invalid_chunk(actual_path)
-                    raise IOError(
+                    raise OSError(
                         f"Chunk file {actual_path} returned a short read: "
                         f"expected={expected_length}, actual={len(chunk_data)}"
                     )
@@ -911,8 +913,8 @@ class CacheManager:
                 pass
 
     def _read_range_from_full_cached_file(
-        self, cache_path: str, byte_range: Range, source_version: Optional[str]
-    ) -> Optional[bytes]:
+        self, cache_path: str, byte_range: Range, source_version: str | None
+    ) -> bytes | None:
         """Read a byte range from a full cached file if it exists and is valid.
 
         This method checks if a full cached file exists at the given cache path,
@@ -949,8 +951,8 @@ class CacheManager:
         cache_path: str,
         byte_range: Range,
         storage_provider,
-        source_version: Optional[str],
-        source_size: Optional[int],
+        source_version: str | None,
+        source_size: int | None,
         original_key: str,
     ) -> bytes:
         """Read a byte range using optimized chunk-based caching.
@@ -999,7 +1001,7 @@ class CacheManager:
             )
         except Exception as e:
             # If any step fails, fall back to getting the object directly
-            logging.warning(f"Failed to process chunks for {original_key}: {e}")
+            logger.warning(f"Failed to process chunks for {original_key}: {e}")
             if source_size is not None:
                 remaining = source_size - byte_range.offset
                 if remaining <= 0:

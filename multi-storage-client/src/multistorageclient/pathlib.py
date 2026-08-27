@@ -20,7 +20,6 @@ import stat
 from functools import total_ordering
 from pathlib import Path, PurePath, PurePosixPath
 from types import NotImplementedType
-from typing import Union
 
 from .client import StorageClient
 from .shortcuts import resolve_storage_client
@@ -94,7 +93,7 @@ class MultiStoragePath:
     _storage_client: StorageClient
     _path: str
 
-    def __init__(self, path: Union[str, os.PathLike]):
+    def __init__(self, path: str | os.PathLike):
         """
         Initialize path object supporting multiple storage backends.
 

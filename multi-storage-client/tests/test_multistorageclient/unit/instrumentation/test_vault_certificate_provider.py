@@ -188,9 +188,11 @@ class TestVaultCertificateProvider:
 
         provider = VaultCertificateProvider(**vault_config)
 
-        with patch("multistorageclient.instrumentation.auth.time.sleep"):
-            with pytest.raises(RuntimeError, match="Failed to authenticate to Vault"):
-                provider._authenticate_to_vault()
+        with (
+            patch("multistorageclient.instrumentation.auth.time.sleep"),
+            pytest.raises(RuntimeError, match="Failed to authenticate to Vault"),
+        ):
+            provider._authenticate_to_vault()
 
     def test_fetch_certificates_from_vault_success(self, provider_with_mocked_vault):
         """Test successful certificate fetching."""
@@ -222,9 +224,11 @@ class TestVaultCertificateProvider:
 
         provider = VaultCertificateProvider(**vault_config)
 
-        with patch("multistorageclient.instrumentation.auth.time.sleep"):
-            with pytest.raises(RuntimeError, match="Failed to fetch certificates"):
-                provider._fetch_certificates_from_vault("test-token")
+        with (
+            patch("multistorageclient.instrumentation.auth.time.sleep"),
+            pytest.raises(RuntimeError, match="Failed to fetch certificates"),
+        ):
+            provider._fetch_certificates_from_vault("test-token")
 
     def test_write_certificates_to_disk(self, vault_config, valid_cert_data):
         """Test writing certificates to disk with correct permissions."""
@@ -518,6 +522,8 @@ class TestOptionalDependencyImport:
 
     def test_constructor_raises_import_error_without_hvac(self, vault_config):
         """Test that VaultCertificateProvider raises ImportError when hvac is not installed."""
-        with patch("multistorageclient.instrumentation.auth.hvac", None):
-            with pytest.raises(ImportError, match="pip install 'multi-storage-client\\[vault\\]'"):
-                VaultCertificateProvider(**vault_config)
+        with (
+            patch("multistorageclient.instrumentation.auth.hvac", None),
+            pytest.raises(ImportError, match="pip install 'multi-storage-client\\[vault\\]'"),
+        ):
+            VaultCertificateProvider(**vault_config)

@@ -105,7 +105,7 @@ func main() {
 	startHTTPHandler()
 
 	for _, backend := range globals.config.backends {
-		if backend.readOnly && backend.manifestPath != "" {
+		if manifestBootstrapEligible(backend) {
 			manifestBackend := backend
 			go func() {
 				manifestStartTime := time.Now()
@@ -117,6 +117,12 @@ func main() {
 						manifestBackend.manifestPath, manifestBackend.dirName, statErr)
 					return
 				case os.IsNotExist(statErr):
+					if !manifestGenerationEligible(manifestBackend) {
+						globals.logger.Printf("[INFO] manifest-bootstrap: no manifest at %q for writable backend %q, skipping generation",
+							manifestBackend.manifestPath, manifestBackend.dirName)
+						return
+					}
+
 					globals.logger.Printf("[INFO] manifest-bootstrap: manifest not found at %q, generating for backend %q...",
 						manifestBackend.manifestPath, manifestBackend.dirName)
 
@@ -241,6 +247,22 @@ func main() {
 			globals.logger.Fatalf("[FATAL] received unexpected FUSE error: %v", err)
 		}
 	}
+}
+
+// `manifestBootstrapEligible` reports whether a backend ingests its manifest at
+// mount. Writable backends are included: the base manifest is immutable and the
+// append-only delta overlay carries mutations, so ingest reconstructs entries
+// written through a previous mount session.
+func manifestBootstrapEligible(backend *backendStruct) bool {
+	return backend.manifestPath != ""
+}
+
+// `manifestGenerationEligible` reports whether a missing manifest may be
+// generated at mount. Generation lists the entire backend namespace, so it is
+// only safe when nothing can mutate that namespace underneath it. A writable
+// backend must have its manifest generated out of band.
+func manifestGenerationEligible(backend *backendStruct) bool {
+	return backend.readOnly
 }
 
 // initObservability initializes metrics via OTLP for MSCP.

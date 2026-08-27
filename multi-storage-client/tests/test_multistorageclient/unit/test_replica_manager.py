@@ -17,7 +17,7 @@ import os
 import tempfile
 import time
 import uuid
-from typing import Any, Dict, Tuple, Union
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -28,7 +28,7 @@ from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.utils.wait import wait
 
 # Type alias for configuration dictionary to avoid complex nested types
-ConfigDict = Dict[str, Any]
+ConfigDict = dict[str, Any]
 
 
 def create_basic_replica_config(
@@ -91,7 +91,7 @@ def create_cache_config(base_config: ConfigDict) -> ConfigDict:
 
 def create_test_clients(
     config: ConfigDict, origin_profile: str = "origin", origin_with_replica_profile: str = "origin_with_replica"
-) -> Tuple[StorageClient, StorageClient]:
+) -> tuple[StorageClient, StorageClient]:
     """Create origin and replica-aware clients from config."""
     origin_client = StorageClient(config=StorageClientConfig.from_dict(config, profile=origin_profile))
     origin_with_replica_client = StorageClient(
@@ -100,9 +100,7 @@ def create_test_clients(
     return origin_client, origin_with_replica_client
 
 
-def write_and_verify_origin_file(
-    origin_client: StorageClient, test_file_path: str, test_content: Union[str, bytes]
-) -> None:
+def write_and_verify_origin_file(origin_client: StorageClient, test_file_path: str, test_content: str | bytes) -> None:
     """Write content to origin and verify it exists."""
     content_bytes = test_content.encode() if isinstance(test_content, str) else test_content
     origin_client.write(test_file_path, content_bytes)
@@ -110,7 +108,7 @@ def write_and_verify_origin_file(
 
 
 def verify_replicas_have_file(
-    origin_with_replica_client: StorageClient, test_file_path: str, test_content: Union[str, bytes]
+    origin_with_replica_client: StorageClient, test_file_path: str, test_content: str | bytes
 ) -> None:
     """Verify that all replicas have the file with correct content."""
     for replica in origin_with_replica_client.replicas:
@@ -260,7 +258,7 @@ def test_replica_read_with_cache() -> None:
     ],
 )
 def test_async_replica_upload_with_different_content_types(
-    test_content: Union[str, bytes], file_extension: str, encode_content: bool
+    test_content: str | bytes, file_extension: str, encode_content: bool
 ) -> None:
     """Test async replica upload with different content types."""
     with (

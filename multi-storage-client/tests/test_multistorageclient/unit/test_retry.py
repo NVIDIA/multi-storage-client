@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Optional, cast
+from typing import Any, ClassVar, cast
 from unittest.mock import patch
 
 import pytest
@@ -35,7 +35,7 @@ class FakeStorageProvider:
         self.attempts = 0
         self.error_count = error_count
 
-    def get_object(self, path: str, byte_range: Optional[Range] = None):
+    def get_object(self, path: str, byte_range: Range | None = None):
         # Simulates reading an object from storage, raising a retryable connection time out error
         # for the first 'error_count' attempts before succeeding.
         self.attempts += 1
@@ -99,7 +99,7 @@ def test_retry_decorator_in_storage_client():
     with pytest.raises(RetryableError) as e:
         result = storage_client.read("some_path")
 
-    assert "Simulated connection time out error." in str(e), f"Unexpected error message: {str(e)}"
+    assert "Simulated connection time out error." in str(e), f"Unexpected error message: {e!s}"
     assert storage_provider.attempts == 3
 
 
@@ -130,7 +130,7 @@ def test_delete_many_retries_retryable_errors():
 
 def test_gcs_batch_delete_service_unavailable_response_is_retryable():
     class FakeBatch:
-        _responses = [type("Response", (), {"status_code": 503, "text": "server(s) are not responding"})()]
+        _responses: ClassVar = [type("Response", (), {"status_code": 503, "text": "server(s) are not responding"})()]
 
         def __enter__(self):
             return self
@@ -167,7 +167,7 @@ def test_retry_decorator_outside_storage_client():
     with pytest.raises(RetryableError) as e:
         _ = fake_storage_provider.get_object_outside_storage_client("some_path")
 
-    assert "Simulated connection time out error." in str(e), f"Unexpected error message: {str(e)}"
+    assert "Simulated connection time out error." in str(e), f"Unexpected error message: {e!s}"
     assert fake_storage_provider.attempts == 1
 
 
@@ -201,9 +201,8 @@ def test_retry_with_custom_backoff_multiplier():
     def mock_sleep(seconds):
         sleep_times.append(seconds)
 
-    with patch("time.sleep", side_effect=mock_sleep):
-        with pytest.raises(RetryableError):
-            storage_client.read("some_path")
+    with patch("time.sleep", side_effect=mock_sleep), pytest.raises(RetryableError):
+        storage_client.read("some_path")
 
     # We should have 2 sleep calls (attempts 0 and 1, but not on the final failure at attempt 2)
     assert len(sleep_times) == 2
@@ -241,14 +240,13 @@ def test_file_not_found_error_logging(caplog):
             self._retry_config = storage_client._retry_config
 
         @retry
-        def get_object(self, path: str, byte_range: Optional[Range] = None):
+        def get_object(self, path: str, byte_range: Range | None = None):
             raise FileNotFoundError(f"Object {path} not found")
 
     storage_client._storage_provider = cast(StorageProvider, FileNotFoundStorageProvider())
 
-    with caplog.at_level(logging.DEBUG):
-        with pytest.raises(FileNotFoundError):
-            storage_client.read("nonexistent_file.txt")
+    with caplog.at_level(logging.DEBUG), pytest.raises(FileNotFoundError):
+        storage_client.read("nonexistent_file.txt")
 
     error_logs = [record for record in caplog.records if record.levelname == "ERROR"]
     assert len(error_logs) == 0, "FileNotFoundError should not be logged at ERROR level"

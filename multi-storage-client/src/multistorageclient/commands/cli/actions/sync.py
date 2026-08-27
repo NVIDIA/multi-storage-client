@@ -15,7 +15,6 @@
 
 import argparse
 import sys
-from typing import Optional
 
 import multistorageclient as msc
 from multistorageclient.types import ExecutionMode, PatternList, PatternType, SymlinkHandling
@@ -75,14 +74,16 @@ class SyncAction(Action):
         )
         parser.add_argument(
             "--symlink-handling",
-            choices=["follow", "skip", "preserve"],
+            choices=["follow", "follow_strict", "skip", "preserve", "preserve_strict"],
             default="follow",
             help=(
                 "How to handle symbolic links during sync. "
-                "'follow' (default) dereferences symlinks and copies target bytes. "
+                "'follow' (default) dereferences internal symlinks and skips external symlinks. "
+                "'follow_strict' dereferences internal symlinks and raises on external symlinks. "
                 "'skip' excludes symlinks. "
-                "'preserve' recreates symlinks on the target via make_symlink "
-                "(required for round-trip fidelity)."
+                "'preserve' recreates internal symlinks on the target via make_symlink and skips external symlinks. "
+                "'preserve_strict' recreates internal symlinks and raises on external symlinks. "
+                "These modes apply only to POSIX sources; object-storage providers ignore this option."
             ),
         )
         parser.add_argument(
@@ -181,7 +182,7 @@ class SyncAction(Action):
         try:
             # Create ordered pattern list if patterns are provided
             ordered_patterns = getattr(args, "ordered_patterns", [])
-            patterns: Optional[PatternList] = ordered_patterns if ordered_patterns else None
+            patterns: PatternList | None = ordered_patterns if ordered_patterns else None
 
             # Convert --no-ignore-hidden flag to ignore_hidden parameter (inverted logic)
             ignore_hidden = not args.no_ignore_hidden
@@ -226,7 +227,7 @@ class SyncAction(Action):
                 print("Synchronization completed successfully")
             return 0
         except Exception as e:
-            print(f"Error during synchronization: {str(e)}", file=sys.stderr)
+            print(f"Error during synchronization: {e!s}", file=sys.stderr)
             return 1
         finally:
             if args.ray_cluster:
@@ -235,4 +236,4 @@ class SyncAction(Action):
 
                     ray.shutdown()
                 except Exception as e:
-                    print(f"Error shutting down Ray: {str(e)}", file=sys.stderr)
+                    print(f"Error shutting down Ray: {e!s}", file=sys.stderr)

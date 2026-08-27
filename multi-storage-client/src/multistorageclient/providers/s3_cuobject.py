@@ -27,14 +27,17 @@ See https://docs.nvidia.com/gpudirect-storage/cuobject.
 
 import base64
 import io
+import logging
 import os
 import struct
-from typing import IO, Any, Optional, Union, cast
+from typing import IO, Any, cast
 
 from ..types import Range
 from ..utils import split_path, validate_attributes
 from ._cuobj import CuObjEngine
 from .s3 import EXPRESS_ONEZONE_STORAGE_CLASS, MiB, S3StorageProvider
+
+logger = logging.getLogger(__name__)
 
 PROVIDER = "s3_cuobject"
 
@@ -90,7 +93,7 @@ class S3CuObjectStorageProvider(S3StorageProvider):
         self._rdma_engine = CuObjEngine()
         self._rdma_engine.install_hooks(self._s3_client)
 
-    def _get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
+    def _get_object(self, path: str, byte_range: Range | None = None) -> bytes:
         bucket, key = split_path(path)
         return bytes(self._rdma_get(path, bucket, key, byte_range))
 
@@ -98,10 +101,10 @@ class S3CuObjectStorageProvider(S3StorageProvider):
         self,
         path: str,
         body: bytes,
-        if_match: Optional[str] = None,
-        if_none_match: Optional[str] = None,
-        attributes: Optional[dict[str, str]] = None,
-        content_type: Optional[str] = None,
+        if_match: str | None = None,
+        if_none_match: str | None = None,
+        attributes: dict[str, str] | None = None,
+        content_type: str | None = None,
     ) -> int:
         bucket, key = split_path(path)
 
@@ -125,14 +128,14 @@ class S3CuObjectStorageProvider(S3StorageProvider):
     def _upload_file(
         self,
         remote_path: str,
-        f: Union[str, IO],
-        attributes: Optional[dict[str, str]] = None,
-        content_type: Optional[str] = None,
+        f: str | IO,
+        attributes: dict[str, str] | None = None,
+        content_type: str | None = None,
     ) -> int:
         return self._rdma_upload(remote_path, f, attributes, content_type)
 
     @staticmethod
-    def _rdma_checksum(buffer: Union[bytes, bytearray, memoryview]) -> str:
+    def _rdma_checksum(buffer: bytes | bytearray | memoryview) -> str:
         """Base64 CRC64NVME of ``buffer`` for the ``x-amz-checksum-crc64nvme`` header.
 
         CRC64NVME is hardware-accelerated and computed via ``awscrt`` (the same
@@ -146,7 +149,7 @@ class S3CuObjectStorageProvider(S3StorageProvider):
             ) from error
         return base64.b64encode(struct.pack(">Q", checksums.crc64nvme(cast(bytes, buffer)))).decode("ascii")
 
-    def _rdma_put(self, kwargs: dict[str, Any], body: Union[bytes, bytearray, memoryview]) -> int:
+    def _rdma_put(self, kwargs: dict[str, Any], body: bytes | bytearray | memoryview) -> int:
         """Single-shot RDMA PUT: cuObject transfers the registered buffer; the HTTP body is empty.
 
         A CRC64NVME checksum of the payload is computed on the client and sent as
@@ -160,7 +163,7 @@ class S3CuObjectStorageProvider(S3StorageProvider):
         assert engine is not None
         # cuObject pins a writable region: reuse the caller's buffer when it is
         # writable, and copy only a read-only (immutable) body such as bytes.
-        buffer = bytearray(body) if memoryview(body).readonly else cast(Union[bytearray, memoryview], body)
+        buffer = bytearray(body) if memoryview(body).readonly else cast(bytearray | memoryview, body)
         if len(buffer) == 0:
             self._s3_client.put_object(**kwargs)
             return 0
@@ -170,14 +173,14 @@ class S3CuObjectStorageProvider(S3StorageProvider):
             engine.check_reply(response)
         return len(buffer)
 
-    def _rdma_get(self, path: str, bucket: str, key: str, byte_range: Optional[Range]) -> bytearray:
+    def _rdma_get(self, path: str, bucket: str, key: str, byte_range: Range | None) -> bytearray:
         """Single-shot RDMA GET into a registered buffer; returns the buffer."""
         engine = self._rdma_engine
         assert engine is not None
-        if_match: Optional[str] = None
+        if_match: str | None = None
         if byte_range is not None:
             size = byte_range.size
-            bytes_range: Optional[str] = f"bytes={byte_range.offset}-{byte_range.offset + byte_range.size - 1}"
+            bytes_range: str | None = f"bytes={byte_range.offset}-{byte_range.offset + byte_range.size - 1}"
         else:
             metadata = self._get_object_metadata(path)
             size = metadata.content_length
@@ -205,7 +208,7 @@ class S3CuObjectStorageProvider(S3StorageProvider):
         return self._translate_errors(_invoke_api, operation="GET", bucket=bucket, key=key)
 
     def _rdma_create_extra(
-        self, bucket: str, attributes: Optional[dict[str, str]], content_type: Optional[str]
+        self, bucket: str, attributes: dict[str, str] | None, content_type: str | None
     ) -> dict[str, Any]:
         extra: dict[str, Any] = {}
         if content_type:
@@ -220,9 +223,9 @@ class S3CuObjectStorageProvider(S3StorageProvider):
     def _rdma_upload(
         self,
         remote_path: str,
-        f: Union[str, IO],
-        attributes: Optional[dict[str, str]],
-        content_type: Optional[str],
+        f: str | IO,
+        attributes: dict[str, str] | None,
+        content_type: str | None,
     ) -> int:
         """RDMA upload entry point: single-shot below the part size, multipart above it."""
         bucket, key = split_path(remote_path)
@@ -295,8 +298,8 @@ class S3CuObjectStorageProvider(S3StorageProvider):
             except BaseException:
                 try:
                     self._s3_client.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id)
-                except Exception:
-                    pass
+                except Exception as error:
+                    logger.warning("Failed to abort RDMA multipart upload %s: %s", upload_id, error)
                 raise
             return size
 

@@ -527,6 +527,15 @@ func (dataCacheLineTracker *dataCacheLineTrackerStruct) fetch() {
 		return
 	}
 
+	mappedTracker, mapped := inode.cacheMap[dataCacheLineTracker.lineNumber]
+	if !mapped || mappedTracker != dataCacheLineTracker.pos {
+		globals.dataCacheLineInboundLRU.popThis(dataCacheLineTracker)
+		dataCacheLineTracker.notifyWaiters()
+		dataCacheLineTracker.free()
+		globalsUnlock()
+		return
+	}
+
 	globals.dataCacheLineInboundLRU.popThis(dataCacheLineTracker)
 	dataCacheLineTracker.contentGeneration.Add(1)
 

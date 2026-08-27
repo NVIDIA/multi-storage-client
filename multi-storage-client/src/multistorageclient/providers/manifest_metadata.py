@@ -21,7 +21,7 @@ import os
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Any, Optional, Union
+from typing import Any
 
 from ..types import (
     AWARE_DATETIME_MIN,
@@ -89,7 +89,7 @@ class Manifest:
     format: str = "jsonl"
 
     @staticmethod
-    def from_dict(data: dict) -> "Manifest":
+    def from_dict(data: dict) -> Manifest:
         """
         Creates a Manifest instance from a dictionary (parsed from JSON).
         """
@@ -116,7 +116,7 @@ class ManifestMetadataProvider(MetadataProvider):
     _manifest_path: str
     _writable: bool
     _allow_overwrites: bool
-    _format: Union[ManifestFormat, str]
+    _format: ManifestFormat | str
 
     def __init__(
         self,
@@ -124,7 +124,7 @@ class ManifestMetadataProvider(MetadataProvider):
         manifest_path: str,
         writable: bool = False,
         allow_overwrites: bool = False,
-        manifest_format: Union[ManifestFormat, str] = ManifestFormat.JSONL,
+        manifest_format: ManifestFormat | str = ManifestFormat.JSONL,
     ) -> None:
         """
         Creates a :py:class:`ManifestMetadataProvider`.
@@ -220,7 +220,7 @@ class ManifestMetadataProvider(MetadataProvider):
         storage_provider: StorageProvider,
         manifest_base: str,
         manifest_part_reference: ManifestPartReference,
-        manifest_format: Union[ManifestFormat, str] = ManifestFormat.JSONL,
+        manifest_format: ManifestFormat | str = ManifestFormat.JSONL,
     ) -> list[ManifestObjectMetadata]:
         """
         Loads a manifest part and converts to ManifestObjectMetadata.
@@ -250,7 +250,7 @@ class ManifestMetadataProvider(MetadataProvider):
         self,
         storage_provider: StorageProvider,
         object_metadata: list[ManifestObjectMetadata],
-        manifest_format: Union[ManifestFormat, str] = ManifestFormat.JSONL,
+        manifest_format: ManifestFormat | str = ManifestFormat.JSONL,
     ) -> None:
         """
         Writes the main manifest and its part files.
@@ -307,10 +307,10 @@ class ManifestMetadataProvider(MetadataProvider):
     def list_objects(
         self,
         path: str,
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         include_directories: bool = False,
-        attribute_filter_expression: Optional[str] = None,
+        attribute_filter_expression: str | None = None,
         show_attributes: bool = False,
     ) -> Iterator[ObjectMetadata]:
         """
@@ -446,7 +446,7 @@ class ManifestMetadataProvider(MetadataProvider):
             last_modified=AWARE_DATETIME_MIN,
         )
 
-    def glob(self, pattern: str, attribute_filter_expression: Optional[str] = None) -> list[str]:
+    def glob(self, pattern: str, attribute_filter_expression: str | None = None) -> list[str]:
         """
         List objects in the manifest.
 

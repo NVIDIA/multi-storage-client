@@ -17,11 +17,12 @@ import io
 import os
 from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
-from typing import IO, Any, Optional, TypeVar, Union
+from typing import IO, Any, TypeVar
 
-from aistore.sdk import Client
+from aistore.sdk import Client, RetryConfig
 from aistore.sdk.authn import AuthNClient
 from aistore.sdk.errors import AISError
+from aistore.sdk.obj.content_iterator import ParallelBuffer
 from aistore.sdk.obj.object_props import ObjectProps
 from dateutil.parser import parse as dateutil_parser
 from requests.exceptions import HTTPError
@@ -51,21 +52,21 @@ class StaticAISCredentialProvider(CredentialsProvider):
     A concrete implementation of the :py:class:`multistorageclient.types.CredentialsProvider` that provides static AIStore credentials.
     """
 
-    _username: Optional[str]
-    _password: Optional[str]
-    _authn_endpoint: Optional[str]
-    _token: Optional[str]
+    _username: str | None
+    _password: str | None
+    _authn_endpoint: str | None
+    _token: str | None
     _skip_verify: bool
-    _ca_cert: Optional[str]
+    _ca_cert: str | None
 
     def __init__(
         self,
-        username: Optional[str] = None,
-        password: Optional[str] = None,
-        authn_endpoint: Optional[str] = None,
-        token: Optional[str] = None,
+        username: str | None = None,
+        password: str | None = None,
+        authn_endpoint: str | None = None,
+        token: str | None = None,
         skip_verify: bool = True,
-        ca_cert: Optional[str] = None,
+        ca_cert: str | None = None,
     ):
         """
         Initializes the :py:class:`StaticAISCredentialProvider` with the given credentials.
@@ -105,13 +106,13 @@ class AIStoreStorageProvider(BaseStorageProvider):
         endpoint: str = os.getenv("AIS_ENDPOINT", ""),
         provider: str = PROVIDER,
         skip_verify: bool = True,
-        ca_cert: Optional[str] = None,
-        timeout: Optional[Union[float, tuple[float, float]]] = None,
-        retry: Optional[dict[str, Any]] = None,
+        ca_cert: str | None = None,
+        timeout: float | tuple[float, float] | None = None,
+        retry: dict[str, Any] | None = None,
         base_path: str = "",
-        credentials_provider: Optional[CredentialsProvider] = None,
-        config_dict: Optional[dict[str, Any]] = None,
-        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
+        credentials_provider: CredentialsProvider | None = None,
+        config_dict: dict[str, Any] | None = None,
+        telemetry_provider: Callable[[], Telemetry] | None = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -123,7 +124,8 @@ class AIStoreStorageProvider(BaseStorageProvider):
         :param timeout: Request timeout in seconds; a single float
             for both connect/read timeouts (e.g., ``5.0``), a tuple for separate connect/read
             timeouts (e.g., ``(3.0, 10.0)``), or ``None`` to disable timeout.
-        :param retry: ``urllib3.util.Retry`` parameters.
+        :param retry: ``urllib3.util.Retry`` parameters. Applied as the ``http_retry`` of the client's
+            ``aistore.sdk.RetryConfig`` (the network-level retry defaults are preserved).
         :param base_path: The root prefix path within the bucket where all operations will be scoped.
         :param credentials_provider: The provider to retrieve AIStore credentials.
         :param config_dict: Resolved MSC config.
@@ -137,7 +139,10 @@ class AIStoreStorageProvider(BaseStorageProvider):
         )
 
         # https://aistore.nvidia.com/docs/python-sdk#client.Client
-        client_retry = None if retry is None else Retry(**retry)
+        retry_config = None
+        if retry is not None:
+            retry_config = RetryConfig.default()
+            retry_config.http_retry = Retry(**retry)
         token = None
         if timeout is None:
             timeout = float(DEFAULT_READ_TIMEOUT)
@@ -145,7 +150,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
             token = credentials_provider.get_credentials().token
             self.client = Client(
                 endpoint=endpoint,
-                retry=client_retry,
+                retry_config=retry_config,
                 skip_verify=skip_verify,
                 ca_cert=ca_cert,
                 timeout=timeout,
@@ -153,7 +158,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
             )
         else:
             self.client = Client(
-                endpoint=endpoint, retry=client_retry, timeout=timeout, skip_verify=skip_verify, ca_cert=ca_cert
+                endpoint=endpoint, retry_config=retry_config, timeout=timeout, skip_verify=skip_verify, ca_cert=ca_cert
             )
         self.provider = provider
 
@@ -184,8 +189,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
             error_info = f"status_code: {status_code}, message: {error.message}"
             raise RuntimeError(f"Failed to {operation} object(s) at {bucket}/{key}. {error_info}") from error
         except HTTPError as error:
-            status_code = error.response.status_code
-            if status_code == 404:
+            if error.response is not None and error.response.status_code == 404:
                 raise FileNotFoundError(f"Object {bucket}/{key} does not exist.")  # pylint: disable=raise-missing-from
             else:
                 raise RuntimeError(
@@ -200,25 +204,26 @@ class AIStoreStorageProvider(BaseStorageProvider):
         self,
         path: str,
         body: bytes,
-        if_match: Optional[str] = None,
-        if_none_match: Optional[str] = None,
-        attributes: Optional[dict[str, str]] = None,
+        if_match: str | None = None,
+        if_none_match: str | None = None,
+        attributes: dict[str, str] | None = None,
     ) -> int:
         # ais does not support if_match and if_none_match
         bucket, key = split_path(path)
 
         def _invoke_api() -> int:
             obj = self.client.bucket(bucket, self.provider).object(obj_name=key)
-            obj.put_content(body)
             validated_attributes = validate_attributes(attributes)
+            writer = obj.get_writer()
+            writer.put_content(body)
             if validated_attributes:
-                obj.set_custom_props(custom_metadata=validated_attributes, replace_existing=True)
+                writer.set_custom_props(custom_metadata=validated_attributes, replace_existing=True)
 
             return len(body)
 
         return self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
 
-    def _get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
+    def _get_object(self, path: str, byte_range: Range | None = None) -> bytes:
         bucket, key = split_path(path)
         if byte_range:
             bytes_range = f"bytes={byte_range.offset}-{byte_range.offset + byte_range.size - 1}"
@@ -228,10 +233,19 @@ class AIStoreStorageProvider(BaseStorageProvider):
         def _invoke_api() -> bytes:
             obj = self.client.bucket(bucket, self.provider).object(obj_name=key)
             if byte_range:
-                reader = obj.get(byte_range=bytes_range)  # pyright: ignore [reportArgumentType]
+                reader = obj.get_reader(byte_range=bytes_range)  # pyright: ignore [reportArgumentType]
             else:
-                reader = obj.get()
-            return reader.read_all()
+                reader = obj.get_reader()
+            content = reader.read_all()
+            if isinstance(content, bytes):
+                return content
+            elif isinstance(content, ParallelBuffer):
+                try:
+                    return content.tobytes()
+                finally:
+                    content.close()
+            else:
+                raise TypeError(f"Unexpected read_all() return type: {type(content)}")
 
         return self._translate_errors(_invoke_api, operation="GET", bucket=bucket, key=key)
 
@@ -256,7 +270,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
             _invoke_api, operation="COPY", bucket=f"{src_bucket}->{dest_bucket}", key=f"{src_key}->{dest_key}"
         )
 
-    def _delete_object(self, path: str, if_match: Optional[str] = None) -> None:
+    def _delete_object(self, path: str, if_match: str | None = None) -> None:
         bucket, key = split_path(path)
 
         def _invoke_api() -> None:
@@ -294,8 +308,9 @@ class AIStoreStorageProvider(BaseStorageProvider):
 
         def _invoke_api() -> None:
             obj = self.client.bucket(bucket, self.provider).object(obj_name=key)
-            obj.put_content(b"")
-            obj.set_custom_props(custom_metadata={"msc-symlink-target": relative_target}, replace_existing=True)
+            writer = obj.get_writer()
+            writer.put_content(b"")
+            writer.set_custom_props(custom_metadata={"msc-symlink-target": relative_target}, replace_existing=True)
 
         self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
 
@@ -343,17 +358,16 @@ class AIStoreStorageProvider(BaseStorageProvider):
                     status_code = None
                     if isinstance(e, AISError):
                         status_code = e.status_code
-                    elif isinstance(e, HTTPError):
+                    elif isinstance(e, HTTPError) and e.response is not None:
                         status_code = e.response.status_code
 
-                    if status_code == 404:
-                        if self._is_dir(path):
-                            return ObjectMetadata(
-                                key=path + "/",
-                                type="directory",
-                                content_length=0,
-                                last_modified=AWARE_DATETIME_MIN,
-                            )
+                    if status_code == 404 and self._is_dir(path):
+                        return ObjectMetadata(
+                            key=path + "/",
+                            type="directory",
+                            content_length=0,
+                            last_modified=AWARE_DATETIME_MIN,
+                        )
                     # Re-raise to be handled by _translate_errors
                     raise
 
@@ -362,8 +376,8 @@ class AIStoreStorageProvider(BaseStorageProvider):
     def _list_objects(
         self,
         path: str,
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         include_directories: bool = False,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
@@ -402,7 +416,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="LIST", bucket=bucket, key=prefix)
 
-    def _upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, str]] = None) -> int:
+    def _upload_file(self, remote_path: str, f: str | IO, attributes: dict[str, str] | None = None) -> int:
         file_size: int = 0
 
         if isinstance(f, str):
@@ -422,7 +436,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
 
         return file_size
 
-    def _download_file(self, remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> int:
+    def _download_file(self, remote_path: str, f: str | IO, metadata: ObjectMetadata | None = None) -> int:
         if metadata is None:
             metadata = self._get_object_metadata(remote_path)
 

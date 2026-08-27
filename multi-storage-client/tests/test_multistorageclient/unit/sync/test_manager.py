@@ -16,8 +16,8 @@
 import json
 import os
 import shutil
-from datetime import datetime
-from typing import Optional, cast
+from datetime import datetime, timezone
+from typing import cast
 from unittest import mock
 
 import pytest
@@ -34,7 +34,7 @@ class MockStorageClient:
     def list_recursive(self, **kwargs):
         return self.list(**kwargs)
 
-    def commit_metadata(self, prefix: Optional[str] = None) -> None:
+    def commit_metadata(self, prefix: str | None = None) -> None:
         pass
 
     def _is_rust_client_enabled(self) -> bool:
@@ -64,10 +64,14 @@ def test_sync_objects_commits_metadata_by_default():
     target_client = MockStorageClient()
 
     source_files = [
-        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+        ObjectMetadata(
+            key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        ),
     ]
     target_files = [
-        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 1, 0, 0)),
+        ObjectMetadata(
+            key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 1, 0, 0, tzinfo=timezone.utc)
+        ),
     ]
 
     source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
@@ -91,10 +95,14 @@ def test_sync_objects_skips_commit_when_commit_metadata_false():
     target_client = MockStorageClient()
 
     source_files = [
-        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0)),
+        ObjectMetadata(
+            key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        ),
     ]
     target_files = [
-        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 1, 0, 0)),
+        ObjectMetadata(
+            key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 1, 0, 0, tzinfo=timezone.utc)
+        ),
     ]
 
     source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
@@ -139,8 +147,8 @@ class TestSyncObjectsDryrun:
         target_client = MockStorageClient()
 
         source_files = [
-            ObjectMetadata(key="a.txt", content_length=100, last_modified=datetime(2025, 1, 1)),
-            ObjectMetadata(key="b.txt", content_length=200, last_modified=datetime(2025, 1, 2)),
+            ObjectMetadata(key="a.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)),
+            ObjectMetadata(key="b.txt", content_length=200, last_modified=datetime(2025, 1, 2, tzinfo=timezone.utc)),
         ]
 
         source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
@@ -172,7 +180,7 @@ class TestSyncObjectsDryrun:
         target_client = MockStorageClient()
 
         target_files = [
-            ObjectMetadata(key="old.txt", content_length=50, last_modified=datetime(2025, 1, 1)),
+            ObjectMetadata(key="old.txt", content_length=50, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)),
         ]
 
         source_client.list = lambda **kwargs: iter([])  # type: ignore
@@ -203,12 +211,12 @@ class TestSyncObjectsDryrun:
         target_client = MockStorageClient()
 
         source_files = [
-            ObjectMetadata(key="new.txt", content_length=100, last_modified=datetime(2025, 1, 2)),
-            ObjectMetadata(key="same.txt", content_length=100, last_modified=datetime(2025, 1, 1)),
+            ObjectMetadata(key="new.txt", content_length=100, last_modified=datetime(2025, 1, 2, tzinfo=timezone.utc)),
+            ObjectMetadata(key="same.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)),
         ]
         target_files = [
-            ObjectMetadata(key="old.txt", content_length=50, last_modified=datetime(2025, 1, 1)),
-            ObjectMetadata(key="same.txt", content_length=100, last_modified=datetime(2025, 1, 1)),
+            ObjectMetadata(key="old.txt", content_length=50, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)),
+            ObjectMetadata(key="same.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)),
         ]
 
         source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
@@ -239,10 +247,10 @@ class TestSyncObjectsDryrun:
         target_client = MockStorageClient()
 
         source_files = [
-            ObjectMetadata(key="file.txt", content_length=100, last_modified=datetime(2025, 1, 1)),
+            ObjectMetadata(key="file.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)),
         ]
         target_files = [
-            ObjectMetadata(key="file.txt", content_length=100, last_modified=datetime(2025, 1, 1)),
+            ObjectMetadata(key="file.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)),
         ]
 
         source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
@@ -312,10 +320,14 @@ class TestSyncObjectsDryrun:
         target_client = MockStorageClient()
 
         source_files = [
-            ObjectMetadata(key="changed.txt", content_length=200, last_modified=datetime(2025, 1, 2)),
+            ObjectMetadata(
+                key="changed.txt", content_length=200, last_modified=datetime(2025, 1, 2, tzinfo=timezone.utc)
+            ),
         ]
         target_files = [
-            ObjectMetadata(key="changed.txt", content_length=100, last_modified=datetime(2025, 1, 1)),
+            ObjectMetadata(
+                key="changed.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)
+            ),
         ]
 
         source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
@@ -344,7 +356,7 @@ class TestSyncObjectsDryrun:
         target_client = MockStorageClient()
 
         target_files = [
-            ObjectMetadata(key="extra.txt", content_length=50, last_modified=datetime(2025, 1, 1)),
+            ObjectMetadata(key="extra.txt", content_length=50, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)),
         ]
 
         source_client.list = lambda **kwargs: iter([])  # type: ignore
@@ -371,7 +383,9 @@ class TestSyncObjectsDryrun:
         target_client = MockStorageClient()
 
         source_files = [
-            ObjectMetadata(key="data.bin", content_length=4096, last_modified=datetime(2025, 6, 15, 12, 30, 0)),
+            ObjectMetadata(
+                key="data.bin", content_length=4096, last_modified=datetime(2025, 6, 15, 12, 30, 0, tzinfo=timezone.utc)
+            ),
         ]
 
         source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
@@ -401,7 +415,7 @@ class TestSyncObjectsDryrun:
         target_client = MockStorageClient()
 
         source_files = [
-            ObjectMetadata(key="a.txt", content_length=100, last_modified=datetime(2025, 1, 1)),
+            ObjectMetadata(key="a.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)),
         ]
 
         source_client.list = lambda **kwargs: iter(source_files)  # type: ignore

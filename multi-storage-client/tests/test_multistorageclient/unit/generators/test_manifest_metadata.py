@@ -22,7 +22,6 @@ from datetime import datetime, timezone
 
 import pytest
 
-import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.generators import ManifestMetadataGenerator
 from multistorageclient.providers.manifest_formats import ManifestFormat, get_format_handler
@@ -34,6 +33,7 @@ from multistorageclient.providers.manifest_metadata import (
     SEQUENCE_PADDING,
 )
 from multistorageclient.types import ObjectMetadata
+from test_multistorageclient.unit.utils import tempdatastore
 
 try:
     import pyarrow  # noqa: F401

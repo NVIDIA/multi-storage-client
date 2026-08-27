@@ -154,9 +154,11 @@ def test_retry_exhaustion_raises_error():
         call_count += 1
         raise FileNotFoundError(f"Persistent failure on attempt {call_count}")
 
-    with patch("os.makedirs", side_effect=mock_makedirs):
-        with pytest.raises(FileNotFoundError, match="Persistent failure on attempt 5"):
-            safe_makedirs("/test/path")
+    with (
+        patch("os.makedirs", side_effect=mock_makedirs),
+        pytest.raises(FileNotFoundError, match="Persistent failure on attempt 5"),
+    ):
+        safe_makedirs("/test/path")
 
     assert call_count == 5, f"Expected 5 attempts (max retries), got {call_count}"
 
@@ -170,9 +172,8 @@ def test_no_retry_on_other_errors():
         call_count += 1
         raise PermissionError("Access denied")
 
-    with patch("os.makedirs", side_effect=mock_makedirs):
-        with pytest.raises(PermissionError, match="Access denied"):
-            safe_makedirs("/test/path")
+    with patch("os.makedirs", side_effect=mock_makedirs), pytest.raises(PermissionError, match="Access denied"):
+        safe_makedirs("/test/path")
 
     assert call_count == 1, f"Expected 1 attempt (no retry), got {call_count}"
 
@@ -201,8 +202,10 @@ def test_file_exists_error_with_exist_ok_false():
         call_count += 1
         raise FileExistsError("Directory already exists")
 
-    with patch("os.makedirs", side_effect=mock_makedirs):
-        with pytest.raises(FileExistsError, match="Directory already exists"):
-            safe_makedirs("/test/path", exist_ok=False)
+    with (
+        patch("os.makedirs", side_effect=mock_makedirs),
+        pytest.raises(FileExistsError, match="Directory already exists"),
+    ):
+        safe_makedirs("/test/path", exist_ok=False)
 
     assert call_count == 1, f"Expected 1 attempt, got {call_count}"

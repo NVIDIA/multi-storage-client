@@ -455,22 +455,62 @@ func ingestFromDirTSVs(manifestDir string, backend *backendStruct) (err error) {
 	restore := ingestTuneForBulk()
 	defer restore()
 
+	// One parse serves every directory. Overlaying per base TSV would otherwise
+	// rescan the whole log once per directory, and the parent set collected here
+	// is what makes delta-only directories reachable below.
+	// A missing log is not an error. An unreadable one is: the base manifest is a
+	// snapshot, so continuing without the deltas silently reverts the namespace to
+	// generation time, hiding everything written since and resurrecting everything
+	// deleted since.
+	deltas, deltaErr := readAllManifestDeltas(manifestDir)
+	if deltaErr != nil {
+		atomic.AddInt64(&stats.errors, 1)
+		return fmt.Errorf("reading manifest delta log in %q failed: %w", manifestDir, deltaErr)
+	}
+
 	pathsCh := make(chan string, 1000)
 	batchCh := make(chan *dirBatch, 64)
 
 	go func() {
 		defer close(pathsCh)
+
+		covered := make(map[string]struct{})
 		_ = filepath.Walk(manifestDir, func(walkPath string, info os.FileInfo, walkErr error) error {
 			if walkErr != nil {
 				globals.logger.Printf("[WARN] manifest-ingest: walk error at %q: %v", walkPath, walkErr)
 				return nil
 			}
+			if info != nil && info.IsDir() && info.Name() == manifestDeltaDirName {
+				return filepath.SkipDir
+			}
 			if info == nil || info.IsDir() || !strings.HasSuffix(walkPath, ".tsv") {
 				return nil
 			}
-			pathsCh <- walkPath
+			relPath, relErr := filepath.Rel(manifestDir, walkPath)
+			if relErr != nil {
+				atomic.AddInt64(&stats.errors, 1)
+				globals.logger.Printf("[WARN] manifest-ingest: filepath.Rel(%q, %q) failed: %v", manifestDir, walkPath, relErr)
+				return nil
+			}
+			parentDirPath := manifestPartParentPath(relPath)
+			covered[parentDirPath] = struct{}{}
+			pathsCh <- parentDirPath
 			return nil
 		})
+
+		// A directory created after the manifest was generated has no base TSV,
+		// so the walk above cannot reach it. Its records are only in the log.
+		deltaOnlyDirs := 0
+		for parentDirPath := range deltas {
+			if _, found := covered[parentDirPath]; found {
+				continue
+			}
+			deltaOnlyDirs++
+			pathsCh <- parentDirPath
+		}
+		if deltaOnlyDirs > 0 {
+			globals.logger.Printf("[INFO] manifest-ingest: %d directories found only in the delta log", deltaOnlyDirs)
+		}
 	}()
 
 	var readerWG sync.WaitGroup
@@ -478,25 +518,11 @@ func ingestFromDirTSVs(manifestDir string, backend *backendStruct) (err error) {
 		readerWG.Add(1)
 		go func() {
 			defer readerWG.Done()
-			for walkPath := range pathsCh {
-				relPath, relErr := filepath.Rel(manifestDir, walkPath)
-				if relErr != nil {
-					atomic.AddInt64(&stats.errors, 1)
-					globals.logger.Printf("[WARN] manifest-ingest: filepath.Rel(%q, %q) failed: %v", manifestDir, walkPath, relErr)
-					continue
-				}
-
-				var parentDirPath string
-				if relPath == "_root.tsv" {
-					parentDirPath = ""
-				} else {
-					parentDirPath = strings.TrimSuffix(relPath, ".tsv") + "/"
-				}
-
-				entries, readErr := readManifestPart(walkPath)
+			for parentDirPath := range pathsCh {
+				entries, readErr := readManifestPartWithDeltaRecords(manifestDir, parentDirPath, deltas[parentDirPath])
 				if readErr != nil {
 					atomic.AddInt64(&stats.errors, 1)
-					globals.logger.Printf("[WARN] manifest-ingest: readManifestPart(%q) failed (relPath=%q): %v", walkPath, relPath, readErr)
+					globals.logger.Printf("[WARN] manifest-ingest: reading manifest part for %q failed: %v", parentDirPath, readErr)
 					continue
 				}
 

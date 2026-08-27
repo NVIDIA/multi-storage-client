@@ -23,7 +23,7 @@ import tempfile
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import requests
 
@@ -79,7 +79,6 @@ class CertificateProvider(ABC):
         :return: CertificatePaths containing paths to client cert, key, and CA cert.
         :raises RuntimeError: If certificate fetching fails.
         """
-        pass
 
 
 class VaultCertificateProvider(CertificateProvider):
@@ -132,7 +131,7 @@ class VaultCertificateProvider(CertificateProvider):
         self._cert_key = cert_key
         self._key_key = key_key
         self._ca_key = ca_key
-        self._cached_paths: Optional[CertificatePaths] = None
+        self._cached_paths: CertificatePaths | None = None
 
     def _get_cert_cache_dir(self) -> str:
         """Get the directory path for caching certificates."""
@@ -158,7 +157,7 @@ class VaultCertificateProvider(CertificateProvider):
         """Get the path to the cache metadata file."""
         return os.path.join(self._get_cert_cache_dir(), ".cache_metadata")
 
-    def _read_cache_metadata(self) -> Optional[dict[str, Any]]:
+    def _read_cache_metadata(self) -> dict[str, Any] | None:
         """Read and return cached metadata, or None if missing/corrupt."""
         metadata_path = self._get_cache_metadata_path()
         if not os.path.exists(metadata_path):
@@ -166,7 +165,7 @@ class VaultCertificateProvider(CertificateProvider):
         try:
             with open(metadata_path) as f:
                 return json.load(f)
-        except (IOError, OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError):
             return None
 
     def _write_cache_metadata(self) -> None:
@@ -215,10 +214,7 @@ class VaultCertificateProvider(CertificateProvider):
         if metadata.get("config_fingerprint") != self._compute_config_fingerprint():
             return False
 
-        if self._is_client_cert_expired():
-            return False
-
-        return True
+        return not self._is_client_cert_expired()
 
     def _invalidate_disk_cache(self) -> None:
         """Remove cached certificate files and metadata from disk."""
@@ -418,9 +414,9 @@ class AzureAccessTokenProvider(AccessTokenProvider):
             # scopes should be a list to avoid assertion error in msal
             # Ref: https://github.com/AzureAD/microsoft-authentication-library-for-python/blob/1.31.1/msal/application.py#L1429
             self.azure_scopes = list(self.auth_options["scopes"])
-        except KeyError as e:
+        except KeyError:
             logger.error("Error: 'scopes' key is missing in auth options")
-            raise e
+            raise
 
         # Auth options that shouldn't be passed to :py:class:`msal.ConfidentialClientApplication`.
         nonpassthrough_auth_options_keys: set[str] = {"scopes"}
@@ -429,7 +425,8 @@ class AzureAccessTokenProvider(AccessTokenProvider):
         }
 
         import msal
-        from requests.adapters import HTTPAdapter, Retry
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
 
         msal_session = requests.Session()
         retries = Retry(
@@ -461,13 +458,13 @@ class AzureAccessTokenProvider(AccessTokenProvider):
             except requests.exceptions.ConnectionError as e:
                 # This is a special case where we need to retry because the server closed the connection
                 # MSAL http client's retry mechanism doesn't handle this case properly
-                logger.debug(f"Getting token attempt {retry_count + 1} failed with error: {str(e)}")
+                logger.debug(f"Getting token attempt {retry_count + 1} failed with error: {e!s}")
                 retry_count += 1
                 if retry_count < MAX_RETRIES:
                     sleep_time = min(BACKOFF_FACTOR * (2**retry_count), 60)
                     time.sleep(sleep_time)
             except Exception as e:
-                logger.error(f"Unexpected error during getting token attempt {retry_count + 1}: {str(e)}")
+                logger.error(f"Unexpected error during getting token attempt {retry_count + 1}: {e!s}")
                 return None
 
         logger.debug(f"All {MAX_RETRIES} token fetch attempts failed")

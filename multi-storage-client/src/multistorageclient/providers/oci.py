@@ -17,7 +17,7 @@ import io
 import os
 import tempfile
 from collections.abc import Callable, Iterator
-from typing import IO, Any, Optional, TypeVar, Union
+from typing import IO, Any, TypeVar
 
 import oci
 from dateutil.parser import parse as dateutil_parser
@@ -63,17 +63,17 @@ class OracleStorageProvider(BaseStorageProvider):
     """
 
     _namespace: str
-    _credentials_provider: Optional[CredentialsProvider]
+    _credentials_provider: CredentialsProvider | None
     _oci_client: ObjectStorageClient
 
     def __init__(
         self,
         namespace: str,
         base_path: str = "",
-        credentials_provider: Optional[CredentialsProvider] = None,
-        retry_strategy: Optional[dict[str, Any]] = None,
-        config_dict: Optional[dict[str, Any]] = None,
-        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
+        credentials_provider: CredentialsProvider | None = None,
+        retry_strategy: dict[str, Any] | None = None,
+        config_dict: dict[str, Any] | None = None,
+        telemetry_provider: Callable[[], Telemetry] | None = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -201,9 +201,9 @@ class OracleStorageProvider(BaseStorageProvider):
         self,
         path: str,
         body: bytes,
-        if_match: Optional[str] = None,
-        if_none_match: Optional[str] = None,
-        attributes: Optional[dict[str, str]] = None,
+        if_match: str | None = None,
+        if_none_match: str | None = None,
+        attributes: dict[str, str] | None = None,
     ) -> int:
         bucket, key = split_path(path)
         self._refresh_oci_client_if_needed()
@@ -226,7 +226,7 @@ class OracleStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
 
-    def _get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
+    def _get_object(self, path: str, byte_range: Range | None = None) -> bytes:
         bucket, key = split_path(path)
         self._refresh_oci_client_if_needed()
 
@@ -262,7 +262,7 @@ class OracleStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="COPY", bucket=src_bucket, key=src_key)
 
-    def _delete_object(self, path: str, if_match: Optional[str] = None) -> None:
+    def _delete_object(self, path: str, if_match: str | None = None) -> None:
         bucket, key = split_path(path)
         self._refresh_oci_client_if_needed()
 
@@ -364,7 +364,7 @@ class OracleStorageProvider(BaseStorageProvider):
 
             try:
                 return self._translate_errors(_invoke_api, operation="HEAD", bucket=bucket, key=key)
-            except FileNotFoundError as error:
+            except FileNotFoundError:
                 if strict:
                     # If the object does not exist on the given path, we will append a trailing slash and
                     # check if the path is a directory.
@@ -376,13 +376,13 @@ class OracleStorageProvider(BaseStorageProvider):
                             content_length=0,
                             last_modified=AWARE_DATETIME_MIN,
                         )
-                raise error
+                raise
 
     def _list_objects(
         self,
         path: str,
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         include_directories: bool = False,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
@@ -393,15 +393,8 @@ class OracleStorageProvider(BaseStorageProvider):
             # ListObjects only includes object names by default.
             #
             # Request additional fields needed for creating an ObjectMetadata.
-            fields = ",".join(
-                [
-                    "etag",
-                    "name",
-                    "size",
-                    "timeModified",
-                ]
-            )
-            next_start_with: Optional[str] = start_after
+            fields = "etag,name,size,timeModified"
+            next_start_with: str | None = start_after
             while True:
                 if include_directories:
                     response = self._oci_client.list_objects(
@@ -482,7 +475,7 @@ class OracleStorageProvider(BaseStorageProvider):
     def supports_parallel_listing(self) -> bool:
         return True
 
-    def _upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, str]] = None) -> int:
+    def _upload_file(self, remote_path: str, f: str | IO, attributes: dict[str, str] | None = None) -> int:
         bucket, key = split_path(remote_path)
         file_size: int = 0
         self._refresh_oci_client_if_needed()
@@ -547,7 +540,7 @@ class OracleStorageProvider(BaseStorageProvider):
 
             return self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
 
-    def _download_file(self, remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> int:
+    def _download_file(self, remote_path: str, f: str | IO, metadata: ObjectMetadata | None = None) -> int:
         self._refresh_oci_client_if_needed()
 
         if metadata is None:

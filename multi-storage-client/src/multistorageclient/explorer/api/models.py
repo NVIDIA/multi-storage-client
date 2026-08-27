@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List, Optional
 
 from pydantic import BaseModel
 
@@ -22,10 +21,10 @@ class ListRequest(BaseModel):
     """Request model for listing files"""
 
     url: str
-    start_after: Optional[str] = None
-    end_at: Optional[str] = None
+    start_after: str | None = None
+    end_at: str | None = None
     include_directories: bool = True
-    limit: Optional[int] = None
+    limit: int | None = None
 
 
 class InfoRequest(BaseModel):
@@ -75,4 +74,4 @@ class ConfigUploadResponse(BaseModel):
 
     status: str
     message: str
-    profiles: List[str]
+    profiles: list[str]

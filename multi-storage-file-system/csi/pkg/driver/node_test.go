@@ -509,12 +509,15 @@ func TestWriteConfig_SingleBackendTuningFieldsRendered(t *testing.T) {
 	ns := newNodeServer("node-test", "/usr/local/bin/msfs")
 	dir, configPath := writeConfigOrFatal(t, ns,
 		map[string]string{
-			"bucketName":         "bucket-a",
-			"backendType":        "S3",
-			"manifestPath":       "/var/lib/msfs/single",
-			"manifestGenWorkers": "200",
-			"uid":                "1000",
-			"dirPerm":            "775",
+			"bucketName":            "bucket-a",
+			"backendType":           "S3",
+			"manifestPath":          "/var/lib/msfs/single",
+			"manifestGenWorkers":    "200",
+			"uid":                   "1000",
+			"dirPerm":               "775",
+			"writeCommitWorkers":    "16",
+			"writeCommitQueueDepth": "128",
+			"writeCachePromotion":   "true",
 		},
 		map[string]string{},
 		credentialModeIRSA,
@@ -527,6 +530,9 @@ func TestWriteConfig_SingleBackendTuningFieldsRendered(t *testing.T) {
 		"manifest_gen_workers: 200",
 		"uid: 1000",
 		`dir_perm: "775"`,
+		"write_commit_workers: 16",
+		"write_commit_queue_depth: 128",
+		"write_cache_promotion: true",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("single-backend tuning config missing %q; got:\n%s", want, body)

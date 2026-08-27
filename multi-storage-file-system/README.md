@@ -98,6 +98,10 @@ The MSFS-specific global (i.e. "top-level") settings are described in the follow
 | virt_child_dir_entry_map_page_dirty_flush_trigger | decimal              |                       50 | Flushing of the virtual directory entry B+Tree will be triggered once the number of dirty pages reaches this number                                                                                                 |
 | virt_child_dir_entry_map_flushes_per_gc           | decimal              |                       10 | If != 0, number of flushes of the virtual directory entry B+Tree between each garbage collection trigger                                                                                                            |
 | process_memory_limit                              | decimal bytes        |         4294967296 (4Gi) | If != 0, sets the limit on the amount of memory for the entire process (including cache lines and the evict high limits on metadata pages)                                                                          |
+| write_deferral_max_bytes                          | decimal bytes        |         1073741824 (1Gi) | If != 0, global cap on the total bytes buffered for deferred (not-yet-promoted) new-object writes across all backends; when a write would exceed it, the file being written is promoted to Multi-Part Upload early   |
+| write_commit_workers                              | decimal              |                       32 | Number of bounded workers that commit independent deferred small objects concurrently; this is file-level concurrency and is separate from per-file `upload_part_concurrency`                                     |
+| write_commit_queue_depth                          | decimal              |                      256 | Maximum number of detached small-object commits waiting for a worker; when full, release applies backpressure without holding the global filesystem lock                                                            |
+| write_cache_promotion                             | boolean              |                    false | If true, exact bytes already retained after a successful write commit are admitted into the read cache from offset zero until cache capacity is exhausted; no backend GET is issued solely to populate the cache       |
 | auto_sighup_interval                              | decimal seconds      |                        0 | If != 0, schedules SIGHUP processing                                                                                                                                                                                |
 | endpoint                                          | string               |                       "" | If != "", enables a RESTful service endpoint (including the "http:// or "https://" scheme though "https://" is not currently supported)                                                                             |
 | backends                                          | array                |                          | An array of each object store backend to be presented as a pseudo-directory underneath the `mountpoint1                                                                                                             |
@@ -114,7 +118,7 @@ the `backends` array as described by settings in the following table:
 | :------------------------------ | :------------------- | ------------------: | :----------------------------------------------------------------------------------------------------------------------- |
 | dir_name                        | string               |                     | Name of the pseudo-direcory underneath `mountpoint` where this backend's files will appear                               |
 | readonly                        | boolean              |                true | If true, the entire pseudo-directory for this backend will be read only                                                  |
-| flush_on_close                  | boolean              |                true | If true, last close of a modified file will trigger a synchronous flush                                                  |
+| flush_on_close                  | boolean              |               false | If true, release of a modified file will wait for a synchronous backend flush; if false, release schedules an asynchronous flush. Applications that require a durability acknowledgement should call `fsync` / `fdatasync`. |
 | uid                             | decimal              |      (current euid) | UserID of this backend's top-level directory and every element underneath it                                             |
 | gid                             | decimal              |      (current egid) | GroupID of this backend's top-level directory and every element underneath it                                            |
 | dir_perm                        | string (in octal)    | "555"(ro)/"777"(rw) | Permission (Mode) Bits (in 3-digit octal form) of this backend's top-level directory and all directories below it        |
@@ -123,6 +127,7 @@ the `backends` array as described by settings in the following table:
 | multipart_cache_line_threshold  | decimal              |                 512 | Files that fit in this many cache lines will be uploaded in a single PUT; otherwise, Multi-Part Upload will be performed |
 | upload_part_cache_lines         | decimal              |                  32 | Consecutive cache lines that make up each Multi-Part Upload `part`                                                       |
 | upload_part_concurrency         | decimal              |                  32 | Number of Multi-Part Uploads simultaneously employed for a single file                                                   |
+| multipart_upload_threshold_bytes | decimal bytes       |     67108864 (64Mi) | A newly created object buffers writes locally until this many bytes accumulate, then it is promoted to a Multi-Part Upload; objects that stay below the threshold commit with a single PUT. Set to 0 to start Multi-Part Upload immediately (disables deferral) |
 | bucket_container_name           | string               |                     | Name of `bucket` (a.k.a. `container`) to present via POSIX                                                               |
 | prefix                          | string               |                  "" | Subdirectory inside `bucket_container_name` to narrow what to present via POSIX; if !="", should end with "/"            |
 | trace_level                     | decimal              |                   0 | If == 0, no tracing; if >= 1, errors traced; if >= 2, successes traced; if > 2, success details traced                   |
@@ -132,6 +137,69 @@ the `backends` array as described by settings in the following table:
 Note that precisely one section (specific content appropriate for the
 specified `backup_type`) must be present. The following sub-sections
 describe the `backup_type`-specific settings.
+
+## Write Durability Semantics
+
+MSFS exposes object storage through a POSIX/FUSE interface, but object stores do
+not support every POSIX write/durability behavior exactly. In particular, FUSE
+may issue `FLUSH` more than once for a single open file because applications can
+duplicate file descriptors with `dup()` or inherit them across `fork()`. Treating
+every `FLUSH` as a remote object commit would add extra PUTs to the write hot
+path and can hurt throughput.
+
+The write durability contract is:
+
+- `fsync()` / `fdatasync()` is the strict durability barrier. MSFS synchronously
+  flushes dirty write state to the backend and returns backend errors to the
+  caller.
+- `FLUSH` validates the file handle but does not force a remote PUT.
+- `flush_on_close: false` is the performance-first default. On final release of
+  a dirty writable file, MSFS schedules an asynchronous backend flush so close
+  latency does not include the remote commit.
+- An asynchronous flush that fails is recorded against the file, and the next
+  `fsync()` / `fdatasync()` on it returns `EIO` once before the record is
+  cleared. Because `close()` was acknowledged before that flush ran, this is the
+  only way an application can still observe the failure. The write itself is not
+  lost: the data stays dirty and a later flush retries it, so a retry that
+  succeeds clears the record and no error is reported.
+- `flush_on_close: true` is available for workloads that prefer close-time
+  durability over write throughput; release of a dirty writable file waits for
+  the backend flush to complete.
+- Newly created objects are written using a deferred strategy: MSFS buffers the
+  incoming bytes locally and does not open a Multi-Part Upload until the buffered
+  size reaches `multipart_upload_threshold_bytes`. Objects that stay below the
+  threshold commit with a single `PutObject`, avoiding the
+  `CreateMultipartUpload`/`UploadPart`/`CompleteMultipartUpload` overhead that
+  dominates small-file writes. Larger objects are promoted to a streaming
+  Multi-Part Upload once the threshold is crossed. `write_deferral_max_bytes`
+  bounds the total memory used by deferred writes across all backends.
+- Independent deferred small objects are committed by a bounded worker pool.
+  The immutable object body is prepared while holding MSFS metadata state, but
+  the S3 `PutObject` executes without the global filesystem lock. Operations on
+  the same inode wait for its in-flight commit; different files upload
+  concurrently. `write_commit_workers` controls concurrency and
+  `write_commit_queue_depth` controls backpressure.
+- `write_cache_promotion: true` optionally admits exact bytes already retained
+  after a successful commit into the normal read cache. Admission starts at
+  offset zero and stops when available cache capacity is exhausted; MSFS does
+  not issue backend reads merely to fill the cache. Population runs through a
+  bounded background pool and publishes each line as Clean only after its bytes,
+  length, ownership, and committed ETag are complete. Deferred bodies and
+  retained multipart buffers can provide complete objects; existing-object
+  overlays contribute only cache lines fully covered by local dirty ranges.
+- Manifest files generated by `manifest_path` are snapshots. Writable,
+  manifest-backed mounts record writes and deletes in an append-only delta log
+  under `<manifest_path>/_msfs_delta/` rather than rewriting large TSV manifests
+  on each write. Lookup/readdir/ingest overlay the delta records on top of the
+  generated manifest.
+- Manifest *ingest* runs at mount whenever `manifest_path` is set, `readonly`
+  either way, so entries a previous session recorded in the delta log are
+  reconstructed. Manifest *generation* at mount is limited to `readonly`
+  backends, because it lists the entire backend namespace and that is only
+  consistent while nothing can mutate it. A writable backend whose
+  `manifest_path` holds no manifest logs `skipping generation` and mounts
+  without manifest metadata, so generate it out of band first:
+  `msfs generate-manifest -backend <dir_name> -output <manifest_path>`.
 
 ### AIStore Backend
 
@@ -285,6 +353,226 @@ Notice the following:
     * The location of the `credentials` file could have been adjusted by setting AWS_SHARED_CREDENTIALS_FILE ENV
     * Since `config_credentials_profile` was not specified, those values come from the `[default]` profile
 * All other settings utilized the various defaults specified above
+
+## Deployment Model
+
+MSFS is not a centralized storage or caching service. It is a FUSE process that
+runs on each compute node, started either directly (`mount -t msfs`) or by the
+CSI node plugin on behalf of a pod. Nothing needs to be provisioned outside the
+compute node, so MSFS is deployable without dedicated storage appliances, but
+the consequence is that **every MSFS process owns an independent cache**. Two
+mounts on the same node, or the same mount on two nodes, share nothing.
+
+| Capability | Status |
+| :--------- | :----- |
+| POSIX read access to S3, AIStore, and GCS backends | Supported |
+| POSIX write access (create, modify, truncate, delete) | S3 backends only |
+| Write-to-read cache promotion after a successful commit | Supported (opt-in) |
+| Multiple buckets or bucket+prefixes as sibling subdirectories of one mount | Supported |
+| Adding and removing backends without unmounting (SIGHUP) | Supported |
+| Manifest-based bootstrap for large namespaces | Supported |
+| Node-local read cache with read-ahead, capacity bound, and LRU eviction | Supported |
+| Cache backed by RAM, a shared mapped file, or per-inode files | Supported |
+| OpenTelemetry metrics and a Prometheus endpoint | Supported |
+| Kubernetes deployment via the CSI node plugin | Supported |
+| Cache shared or coordinated across mounts or nodes | Not implemented |
+| Cache surviving unmount | Not implemented |
+| Explicit data pre-warm API | Not implemented |
+| Per-user (UID/GID) authorization within a mount | Not implemented |
+| Modifying an existing backend in place via SIGHUP | Not implemented |
+
+Access is granted per mount, not per user: whoever can read the mount point can
+read everything the backend credentials can reach. Deployments needing tenant
+isolation must separate tenants by mount.
+
+## Caching and Pre-warming
+
+The cache is line-based. `cache_line_size` (default 10 MiB) is the fetch and
+residency granularity, and `cache_lines` (default 128) is how many lines are
+provisioned, so **the default capacity is about 1.25 GiB**. The read benchmarks
+below used `cache_lines: 10000`, or roughly 100 GiB. Capacity is a hard bound
+and eviction is LRU, so a dataset larger than the cache holds only its active
+working set; for multi-PiB datasets, sizing follows the working set rather than
+the dataset.
+
+`cache_storage` selects where lines live: `ram` (anonymous mmap), `mapped-file`
+(one shared memory-mapped file, the default), or `per-inode-file` (per-inode
+contiguous files served with `pread`). All three are node-local.
+
+### Cache lifetime
+
+Each mount creates its own private cache directory under `cache_dir_path` and
+removes it on unmount. The cache does not survive the mount, and a remount
+starts cold. Files left behind by a crash are not discovered or reused.
+
+Pointing `cache_dir_path` at a shared filesystem such as Lustre places those
+private directories on shared storage but does not produce a shared cache. The
+catalog that makes cached bytes findable — the object-to-line index, cache-line
+state and ETags, in-flight fetch tracking, LRU order, and capacity accounting —
+lives in the memory of a single MSFS process. Two MSFS processes over the same
+Lustre path therefore still use different directories, fetch the same object
+twice, cannot see each other's entries, and cannot coordinate fills,
+invalidation, or eviction. Lustre guarantees consistency for shared files; it
+does not supply object-cache semantics such as key/version lookup, single-flight
+fetches, or ETag invalidation.
+
+### Pre-warming
+
+There is no pre-warm API. Reading files warms the cache of the MSFS process that
+served the reads, so a CPU job can warm a mount that a later job reuses, but
+only if that MSFS process is still running and the working set still fits in
+cache. A pre-warm job that unmounts, or a later job that creates its own mount,
+starts cold.
+
+Manifest generation is a separate mechanism and warms only namespace metadata.
+It makes directory traversal and attribute lookups fast without per-object S3
+calls; it does not fetch file contents.
+
+## Measured Scale and Performance
+
+These are single-node measurements of the **read path and namespace bootstrap**
+against same-region storage. They describe what has been measured, not a
+supported configuration limit; write-path throughput is not characterized here.
+See [Qualified scale boundary](#qualified-scale-boundary).
+
+### Namespace scale: 100M objects
+
+EC2 `c5a.12xlarge` (48 vCPU, 96 GiB), `us-west-2`, S3 bucket in the same region.
+Dataset: 100,237,498 objects across 101,339 directories.
+
+| Phase | Elapsed | Throughput | Peak RSS |
+| :---- | ------: | ---------: | -------: |
+| Manifest generation (parallel BFS listing, 200 workers) | 1m 45s | 954,680 obj/s | |
+| Manifest ingest (per-directory TSV into sharded B+Tree/PebbleDB) | 16m 41s | 100,129 obj/s | ~7.4 GiB |
+| Total bootstrap | ~18m 26s | | |
+
+The mount is **browsable when generation finishes**, at about 105 seconds, not
+when ingest finishes. During ingest, metadata is served from the manifest while
+the optimized index is built in the background, so traversal and enumeration —
+enough to compute dataset splits and begin streaming — work well before the
+18m 26s mark. Generation held at ~1m 43s and ingest at ~16m 50s across repeated
+runs.
+
+Set `process_memory_limit` generously for a run this size. The 4 GiB default sits
+below the working set of a 100M-object ingest, which drives continuous garbage
+collection and collapses throughput.
+
+These figures assume a hierarchical layout. Both phases degrade sharply when a
+single directory holds the whole namespace, because generation finds one key
+prefix to split across ~20 range workers instead of ~200 directory workers, and
+every directory entry lands in one B+Tree shard:
+
+| 100M objects | Generation | Ingest | Peak RSS |
+| :----------- | ---------: | -----: | -------: |
+| 101,339 directories | 1m 43s (977K obj/s) | 16m 29s (101K obj/s) | ~6.5 GiB |
+| 1 directory | 30m 35s (~55K obj/s) | 44m 19s (37.8K obj/s) | ~21 GiB |
+
+The penalty is super-linear in directory width: 10M objects in one directory
+generate in 1m 41s and ingest in 2m 5s, so the same flat shape is far cheaper an
+order of magnitude smaller.
+
+### Read throughput: 24-cell matrix
+
+EC2 `c5n.18xlarge` (72 vCPU, 184 GiB), `us-west-2`, same-region S3, ~100 GiB
+cache. Dataset ~88 GiB: 8,192 x 1 MiB plus 80 x 1 GiB. Six workload families
+(4 KiB and 64 KiB request sizes; small-file and large-file; sequential and
+random) at 1, 2, 4, and 8 application threads, each with a cold and a
+cache-resident pass, driven by `elbencho -r --direct`. Compared against
+s3fs-fuse 1.93 with a local disk cache.
+
+Result: **18 wins, 3 ties, 3 losses** across the 24 cells.
+
+| Workload family | Cache-resident MSFS vs s3fs |
+| :-------------- | :-------------------------- |
+| Small files, 4 KiB sequential | 20x - 52x |
+| Small files, 64 KiB sequential | 6.5x - 27x |
+| Large files, 4 KiB sequential | 0.69x - 1.04x |
+| Large files, 64 KiB sequential | 0.45x - 1.05x |
+| Large files, 4 KiB random | 3.9x - 6.9x |
+| Large files, 64 KiB random | 5.4x - 14x |
+
+Cold reads scale with thread count because each reader issues concurrent ranged
+GETs: large-file 64 KiB sequential moves 92 MiB/s at one thread and 192 MiB/s at
+eight. s3fs cold is flat near 125 MiB/s on the same families. Cache-resident
+reads reach 4,536 MiB/s on that family at eight threads. At eight threads MSFS
+wins or ties every family.
+
+Two caveats keep the losses honest. The large-file 64 KiB losses at one and two
+threads are mostly a page-cache artifact: on a 184 GiB host, s3fs serves its
+warm reads from the Linux page cache over its own cache files, and after
+`drop_caches` it falls to about 148 MiB/s on the same data. The large-file 4 KiB
+results are a real per-operation FUSE ceiling — with one or two threads there
+are only one or two FUSE operations in flight, so neither extra readers nor
+cache geometry help. `--direct` forces strict 4 KiB operations with no kernel
+read-ahead, which is a deliberately pessimistic operating point; workloads that
+do not use `O_DIRECT` get page-cache assistance and reach roughly 2.6 GiB/s on
+the same data.
+
+### Reproducing these numbers
+
+Defaults are not benchmark settings. The values below are what the results above
+were measured with; a run that differs on any of them is not comparable.
+
+| Setting | Value | Why |
+| :------ | :---- | :-- |
+| `fuse_fd_per_worker` | `false` | Shared `/dev/fuse` descriptor. Cloned per-worker descriptors measured 18-25% slower. |
+| `fuse_workers` | `50` | On a 72-vCPU host. The default of `0` uses `runtime.NumCPU()`, which is too many readers on large hosts. |
+| `cache_line_size` | `10485760` | 10 MiB fetch and residency granularity. |
+| `cache_lines` | sized to the working set | `10000` held the whole 88 GiB dataset. |
+| `cache_lines_to_prefetch` | `4` | Read-ahead depth. Higher values can help backends with a different latency knee. |
+| `process_memory_limit` | `68719476736` | The 4 GiB default causes sustained garbage collection on large ingests. |
+| `GOMAXPROCS` | unset on a 72-vCPU host | Left unset so Go uses every vCPU. On a 256-vCPU host, pinning it to 72 matched the EC2 result; leaving it at 32 throttled the read and GC path. |
+
+Two settings live outside the configuration file and must be re-applied after
+every mount, because the FUSE connection id changes:
+
+```bash
+ulimit -n 131072
+
+sudo sh -c 'for d in /sys/fs/fuse/connections/*/; do
+    echo 144 > "${d}max_background"
+    echo 108 > "${d}congestion_threshold"
+done'
+```
+
+The kernel defaults, `max_background=12` and `congestion_threshold=9`, throttle
+in-flight background and read-ahead requests and cap read concurrency well below
+what the thread count suggests. Leaving them at their defaults is the most common
+reason a run appears to stop scaling after a few threads.
+
+### Qualified scale boundary
+
+What the results above establish, and what they do not:
+
+| Dimension | Measured | Not established |
+| :-------- | :------- | :-------------- |
+| Clients | 1 MSFS process per test | Many concurrent clients against one backend, including request fan-out and cache-hit behavior under aggregate load |
+| Application threads | 1 - 8 | Higher concurrency per mount |
+| Objects | ~100M in one namespace | Substantially larger namespaces |
+| Working set | ~88 GiB, cache-resident | Multi-PiB datasets, where the cache holds a small fraction of the data |
+| Latency | Mean throughput per cell | Tail-latency targets |
+| Failure handling | Clean runs | Backend failure and recovery under load |
+| Access pattern | Read path and namespace bootstrap | Write throughput and write durability at scale |
+
+The companion run in which the dataset deliberately exceeded cache capacity, so
+that reads had to keep returning to the backend, stopped after 18 of 24 cases and
+was never completed. Sustained-eviction behavior is therefore not characterized.
+
+## Authentication
+
+Direct mounts take credentials from the configuration file, or from the standard
+AWS configuration and credentials files via `use_config_env` and
+`use_credentials_env`. Environment variable references such as
+`${AWS_ACCESS_KEY_ID}` keep literal secrets out of the configuration file.
+
+Under Kubernetes, the CSI node plugin additionally supports a static Secret
+referenced by `nodePublishSecretRef`, a driver-level workload identity (IRSA on
+EKS), and a per-workload role assumed from `volumeAttributes.roleArn`. See
+[csi/deploy/README.md](csi/deploy/README.md).
+
+Credential rotation and multi-tenant isolation have not been qualified
+end-to-end. Since authorization is per mount rather than per user, a mount
+exposes everything its credentials can reach to every reader of the mount point.
 
 ## Docker Development Environment
 
@@ -443,3 +731,41 @@ make assets
 ```
 
 Those assets include `msfs_install.sh` and `msfs_uninstall.sh` scripts automating the process for installing and uninstalling the appropriate package for the platform.
+
+## Use-Case Suggestions
+
+### Fronting a remote bucket with a fast tier (AIStore)
+
+MSFS caching is node-local and bounded (see
+[Caching and Pre-warming](#caching-and-pre-warming)), so the cost of a first
+touch is paid per node and again after any remount. Where that cost dominates —
+many nodes reading the same dataset once, or working sets too large to stay
+cache-resident — a shared cache tier in front of the remote bucket can absorb it.
+MSFS does not implement such a tier, but it can read one as a backend.
+
+We measured this with AIStore. The 24-cell read matrix was re-run with MSFS
+pointed at an AIStore cluster (3 proxies, 3 targets) fronting the same S3 bucket,
+with the 88 GiB dataset prefetched into the cluster, from a 256 vCPU / 1.5 TiB
+client:
+
+- **First-touch reads were 2.2x to 37x faster** than MSFS reading S3 directly,
+  peaking near 1.7 GiB/s. The gain was largest on small files (23x - 37x at
+  64 KiB, 8.7x - 19x at 4 KiB) and smallest on large files (2.2x - 6.9x),
+  because a first touch lands on in-datacenter targets instead of crossing the
+  network to the remote bucket.
+- **Cache-resident reads were unchanged**, which is the expected result:
+  `backend_read_file_successes_total` stayed flat across the cache-resident pass
+  on all 24 cells, so those reads never reached any backend. Cache-resident
+  throughput is a property of the MSFS cache and the host, not of what sits
+  behind it. A fast tier improves the first touch, not the cached steady state.
+- The 100M-object namespace on the same cluster generated in 1m 27.7s and
+  ingested in about 3m 19s, but only with listing delegated to the underlying
+  store through `manifest_gen_backend`. Listing the fronted bucket through
+  AIStore timed out at this scale, while listing the store directly did not.
+  Object reads still went through AIStore.
+
+The practical reading: a fast tier is worth evaluating when first-touch cost
+dominates, and `manifest_gen_backend` should point at whichever backend lists
+the namespace fastest, which is not necessarily the one serving reads. This was
+one client at 1-8 threads; it does not establish behavior for many concurrent
+clients (see [Qualified scale boundary](#qualified-scale-boundary)).

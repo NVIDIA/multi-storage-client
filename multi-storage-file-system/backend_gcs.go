@@ -472,6 +472,11 @@ func (gcsContext *gcsContextStruct) statFile(statFileInput *statFileInputStruct)
 	return
 }
 
+func (gcsContext *gcsContextStruct) writeFile(writeFileInput *writeFileInputStruct) (writeFileOutput *writeFileOutputStruct, err error) {
+	err = errors.New("[GCS] writeFile not implemented")
+	return
+}
+
 // `eTagToGenerationMetageneration` converts an ETag into the equivalent Generation/Metageneration tuple.
 func eTagToGenerationMetageneration(eTag string) (generation, metageneration int64, err error) {
 	_, err = fmt.Sscanf(eTag, generationMetagenerationETagFormat, &generation, &metageneration)

@@ -21,7 +21,7 @@ import logging
 import os
 import tempfile
 from collections.abc import Callable, Iterator
-from typing import IO, Any, Optional, TypeVar, Union
+from typing import IO, Any, TypeVar
 
 from google.api_core.exceptions import GoogleAPICallError, NotFound
 from google.auth import credentials as auth_credentials
@@ -117,7 +117,7 @@ class GoogleServiceAccountCredentialsProvider(CredentialsProvider):
     #: Google service account private key file contents.
     _info: dict[str, Any]
 
-    def __init__(self, file: Optional[str] = None, info: Optional[dict[str, Any]] = None):
+    def __init__(self, file: str | None = None, info: dict[str, Any] | None = None):
         """
         Initializes the :py:class:`GoogleServiceAccountCredentialsProvider` with either a path to a
         `Google service account private key <https://docs.cloud.google.com/iam/docs/keys-create-delete#creating>`_ file
@@ -158,9 +158,9 @@ class GoogleStorageProvider(BaseStorageProvider):
         project_id: str = os.getenv("GOOGLE_CLOUD_PROJECT_ID", ""),
         endpoint_url: str = "",
         base_path: str = "",
-        credentials_provider: Optional[CredentialsProvider] = None,
-        config_dict: Optional[dict[str, Any]] = None,
-        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
+        credentials_provider: CredentialsProvider | None = None,
+        config_dict: dict[str, Any] | None = None,
+        telemetry_provider: Callable[[], Telemetry] | None = None,
         **kwargs: Any,
     ):
         """
@@ -249,7 +249,7 @@ class GoogleStorageProvider(BaseStorageProvider):
         else:
             return storage.Client(project=self._project_id, client_options=client_options)
 
-    def _create_rust_client(self, rust_client_options: Optional[dict[str, Any]] = None):
+    def _create_rust_client(self, rust_client_options: dict[str, Any] | None = None):
         if self._endpoint_url:
             logger.warning("Rust client for GCS does not support customized endpoint URL, skipping rust client")
             return None
@@ -386,9 +386,9 @@ class GoogleStorageProvider(BaseStorageProvider):
         self,
         path: str,
         body: bytes,
-        if_match: Optional[str] = None,
-        if_none_match: Optional[str] = None,
-        attributes: Optional[dict[str, str]] = None,
+        if_match: str | None = None,
+        if_none_match: str | None = None,
+        attributes: dict[str, str] | None = None,
     ) -> int:
         """
         Uploads an object to Google Cloud Storage.
@@ -435,7 +435,7 @@ class GoogleStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
 
-    def _get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
+    def _get_object(self, path: str, byte_range: Range | None = None) -> bytes:
         bucket, key = split_path(path)
         self._refresh_gcs_client_if_needed()
 
@@ -482,7 +482,7 @@ class GoogleStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="COPY", bucket=src_bucket, key=src_key)
 
-    def _delete_object(self, path: str, if_match: Optional[str] = None) -> None:
+    def _delete_object(self, path: str, if_match: str | None = None) -> None:
         bucket, key = split_path(path)
         self._refresh_gcs_client_if_needed()
 
@@ -607,7 +607,7 @@ class GoogleStorageProvider(BaseStorageProvider):
 
             try:
                 return self._translate_errors(_invoke_api, operation="HEAD", bucket=bucket, key=key)
-            except FileNotFoundError as error:
+            except FileNotFoundError:
                 if strict:
                     # If the object does not exist on the given path, we will append a trailing slash and
                     # check if the path is a directory.
@@ -619,13 +619,13 @@ class GoogleStorageProvider(BaseStorageProvider):
                             content_length=0,
                             last_modified=AWARE_DATETIME_MIN,
                         )
-                raise error
+                raise
 
     def _list_objects(
         self,
         path: str,
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         include_directories: bool = False,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
@@ -700,7 +700,7 @@ class GoogleStorageProvider(BaseStorageProvider):
     def supports_parallel_listing(self) -> bool:
         return True
 
-    def _upload_file(self, remote_path: str, f: Union[str, IO], attributes: Optional[dict[str, str]] = None) -> int:
+    def _upload_file(self, remote_path: str, f: str | IO, attributes: dict[str, str] | None = None) -> int:
         bucket, key = split_path(remote_path)
         file_size: int = 0
         self._refresh_gcs_client_if_needed()
@@ -783,7 +783,7 @@ class GoogleStorageProvider(BaseStorageProvider):
 
             return self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
 
-    def _download_file(self, remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> int:
+    def _download_file(self, remote_path: str, f: str | IO, metadata: ObjectMetadata | None = None) -> int:
         self._refresh_gcs_client_if_needed()
 
         if metadata is None:

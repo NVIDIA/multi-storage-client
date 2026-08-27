@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strconv"
 	"strings"
@@ -537,6 +538,70 @@ func (ramContext *ramContextStruct) statFile(statFileInput *statFileInputStruct)
 	}
 
 	err = nil
+	return
+}
+
+func (ramContext *ramContextStruct) writeFile(writeFileInput *writeFileInputStruct) (writeFileOutput *writeFileOutputStruct, err error) {
+	var (
+		dirName     []string
+		dirNamePart string
+		fileContent []byte
+		fileName    string
+		ok          bool
+		ramDir      []*ramDirStruct
+		ramDirIndex int
+	)
+
+	fileContent, err = io.ReadAll(writeFileInput.body)
+	if err != nil {
+		return
+	}
+	if uint64(len(fileContent)) != writeFileInput.size {
+		err = fmt.Errorf("write body length %d != expected size %d", len(fileContent), writeFileInput.size)
+		return
+	}
+
+	dirName, fileName, ramDir = ramContext.findFullPathElements(ramContext.canonicalFilePath(writeFileInput.filePath))
+	if fileName == "" {
+		err = errors.New("file name is empty")
+		return
+	}
+
+	for ramDirIndex = len(ramDir) - 1; ramDirIndex < len(dirName); ramDirIndex++ {
+		dirNamePart = dirName[ramDirIndex]
+		nextDir := newRamDir(dirNamePart)
+		ok = ramDir[ramDirIndex].dirMap.Put(dirNamePart, nextDir)
+		if !ok {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] ramDir[%d].dirMap.Put(%q) returned !ok", ramDirIndex, dirNamePart)
+		}
+		ramDir = append(ramDir, nextDir)
+	}
+
+	ramDirIndex = len(ramDir) - 1
+	if existingContent, exists := ramDir[ramDirIndex].fileMap.GetByKey(fileName); exists {
+		ramContext.curTotalObjectSpace -= uint64(len(existingContent))
+		ok = ramDir[ramDirIndex].fileMap.DeleteByKey(fileName)
+		if !ok {
+			dumpStack()
+			globals.logger.Fatalf("[FATAL] ramDir[%d].fileMap.DeleteByKey(%q) returned !ok", ramDirIndex, fileName)
+		}
+	} else {
+		ramContext.curTotalObjects++
+	}
+
+	ok = ramDir[ramDirIndex].fileMap.Put(fileName, fileContent)
+	if !ok {
+		dumpStack()
+		globals.logger.Fatalf("[FATAL] ramDir[%d].fileMap.Put(%q) returned !ok", ramDirIndex, fileName)
+	}
+	ramContext.curTotalObjectSpace += uint64(len(fileContent))
+
+	writeFileOutput = &writeFileOutputStruct{
+		eTag:  "",
+		mTime: time.Now(),
+		size:  uint64(len(fileContent)),
+	}
 	return
 }
 

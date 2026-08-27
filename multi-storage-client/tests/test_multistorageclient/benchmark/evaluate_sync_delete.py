@@ -74,7 +74,7 @@ def main() -> None:
         shutil.rmtree(tmpdir, ignore_errors=True)
         try:
             msc.delete(TARGET_URL.rstrip("/") + "/", recursive=True)
-        except Exception:
+        except Exception:  # noqa: S110
             pass
 
 

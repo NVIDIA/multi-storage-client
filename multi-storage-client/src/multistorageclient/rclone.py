@@ -17,7 +17,7 @@ import configparser
 import os
 from functools import cache
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from .utils import find_executable_path
 
@@ -28,7 +28,7 @@ DEFAULT_RCLONE_CONFIG_FILE_SEARCH_PATHS = (
 )
 
 
-def _get_rclone_config_path() -> Optional[Path]:
+def _get_rclone_config_path() -> Path | None:
     """
     Attempt to locate rclone.conf in several standard locations:
       1. The same directory as the `rclone` executable (if found in PATH).
@@ -139,7 +139,7 @@ def _parse_azure_storage_provider_config(section: configparser.SectionProxy) -> 
         credentials_provider["type"] = "AzureCredentials"
     elif any(
         option in credentials_provider_options
-        for option in {"workload_identity_tenant_id", "workload_identity_client_id"}
+        for option in ("workload_identity_tenant_id", "workload_identity_client_id")
     ):
         credentials_provider["type"] = "DefaultAzureCredentials"
 
@@ -287,7 +287,7 @@ def _parse_from_config_parser(config: configparser.ConfigParser) -> dict[str, An
 
 
 @cache
-def read_rclone_config() -> tuple[Optional[dict[str, Any]], Optional[str]]:
+def read_rclone_config() -> tuple[dict[str, Any] | None, str | None]:
     """
     High-level utility to locate an rclone.conf file, parse it, and return its representation.
 

@@ -18,7 +18,7 @@ import io
 import os
 import tempfile
 from collections.abc import Callable, Iterator
-from typing import IO, Any, Optional, TypeVar, Union
+from typing import IO, Any, TypeVar
 
 import boto3
 import botocore
@@ -78,9 +78,9 @@ class StaticS3CredentialsProvider(CredentialsProvider):
 
     _access_key: str
     _secret_key: str
-    _session_token: Optional[str]
+    _session_token: str | None
 
-    def __init__(self, access_key: str, secret_key: str, session_token: Optional[str] = None):
+    def __init__(self, access_key: str, secret_key: str, session_token: str | None = None):
         """
         Initializes the :py:class:`StaticS3CredentialsProvider` with the provided access key, secret key, and optional
         session token.
@@ -150,11 +150,11 @@ class S3StorageProvider(BaseStorageProvider):
         region_name: str = "",
         endpoint_url: str = "",
         base_path: str = "",
-        credentials_provider: Optional[CredentialsProvider] = None,
-        profile_name: Optional[str] = None,
-        config_dict: Optional[dict[str, Any]] = None,
-        telemetry_provider: Optional[Callable[[], Telemetry]] = None,
-        verify: Optional[Union[bool, str]] = None,
+        credentials_provider: CredentialsProvider | None = None,
+        profile_name: str | None = None,
+        config_dict: dict[str, Any] | None = None,
+        telemetry_provider: Callable[[], Telemetry] | None = None,
+        verify: bool | str | None = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -231,7 +231,7 @@ class S3StorageProvider(BaseStorageProvider):
 
         self._signer_cache: dict[tuple, URLSigner] = {}
 
-        self._checksum_algorithm: Optional[str] = self._validate_checksum_algorithm(kwargs.get("checksum_algorithm"))
+        self._checksum_algorithm: str | None = self._validate_checksum_algorithm(kwargs.get("checksum_algorithm"))
 
         self._rust_client = None
         if "rust_client" in kwargs:
@@ -265,7 +265,7 @@ class S3StorageProvider(BaseStorageProvider):
             self._rust_client = self._create_rust_client(rust_client_options)
 
     @staticmethod
-    def _validate_checksum_algorithm(value: Optional[str]) -> Optional[str]:
+    def _validate_checksum_algorithm(value: str | None) -> str | None:
         """
         Normalizes the optional ``checksum_algorithm`` to uppercase, or returns ``None`` if disabled.
         """
@@ -291,13 +291,13 @@ class S3StorageProvider(BaseStorageProvider):
 
     def _create_s3_client(
         self,
-        request_checksum_calculation: Optional[str] = None,
-        response_checksum_validation: Optional[str] = None,
+        request_checksum_calculation: str | None = None,
+        response_checksum_validation: str | None = None,
         max_pool_connections: int = MAX_POOL_CONNECTIONS,
-        connect_timeout: Union[float, int, None] = None,
-        read_timeout: Union[float, int, None] = None,
-        retries: Optional[dict[str, Any]] = None,
-        s3: Optional[dict[str, Any]] = None,
+        connect_timeout: float | None = None,
+        read_timeout: float | None = None,
+        retries: dict[str, Any] | None = None,
+        s3: dict[str, Any] | None = None,
     ):
         """
         Creates and configures the boto3 S3 client, using refreshable credentials if possible.
@@ -336,7 +336,7 @@ class S3StorageProvider(BaseStorageProvider):
 
         if self._credentials_provider:
             creds = self._fetch_credentials()
-            if "expiry_time" in creds and creds["expiry_time"]:
+            if creds.get("expiry_time"):
                 # Use RefreshableCredentials if expiry_time provided.
                 refreshable_credentials = RefreshableCredentials.create_from_metadata(
                     metadata=creds, refresh_using=self._fetch_credentials, method="custom-refresh"
@@ -367,7 +367,7 @@ class S3StorageProvider(BaseStorageProvider):
         session = boto3.Session(profile_name=self._profile_name)
         return session.client("s3", **options)
 
-    def _create_rust_client(self, rust_client_options: Optional[dict[str, Any]] = None):
+    def _create_rust_client(self, rust_client_options: dict[str, Any] | None = None):
         """
         Creates and configures the rust client, using refreshable credentials if possible.
         """
@@ -504,10 +504,10 @@ class S3StorageProvider(BaseStorageProvider):
         self,
         path: str,
         body: bytes,
-        if_match: Optional[str] = None,
-        if_none_match: Optional[str] = None,
-        attributes: Optional[dict[str, str]] = None,
-        content_type: Optional[str] = None,
+        if_match: str | None = None,
+        if_none_match: str | None = None,
+        attributes: dict[str, str] | None = None,
+        content_type: str | None = None,
     ) -> int:
         """
         Uploads an object to the specified S3 path.
@@ -553,7 +553,7 @@ class S3StorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
 
-    def _get_object(self, path: str, byte_range: Optional[Range] = None) -> bytes:
+    def _get_object(self, path: str, byte_range: Range | None = None) -> bytes:
         bucket, key = split_path(path)
 
         def _invoke_api() -> bytes:
@@ -598,7 +598,7 @@ class S3StorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="COPY", bucket=dest_bucket, key=dest_key)
 
-    def _delete_object(self, path: str, if_match: Optional[str] = None) -> None:
+    def _delete_object(self, path: str, if_match: str | None = None) -> None:
         bucket, key = split_path(path)
 
         def _invoke_api() -> None:
@@ -707,7 +707,7 @@ class S3StorageProvider(BaseStorageProvider):
 
             try:
                 return self._translate_errors(_invoke_api, operation="HEAD", bucket=bucket, key=key)
-            except FileNotFoundError as error:
+            except FileNotFoundError:
                 if strict:
                     # If the object does not exist on the given path, we will append a trailing slash and
                     # check if the path is a directory.
@@ -719,13 +719,13 @@ class S3StorageProvider(BaseStorageProvider):
                             content_length=0,
                             last_modified=AWARE_DATETIME_MIN,
                         )
-                raise error
+                raise
 
     def _list_objects(
         self,
         path: str,
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         include_directories: bool = False,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
@@ -807,8 +807,8 @@ class S3StorageProvider(BaseStorageProvider):
     def list_objects_recursive(
         self,
         path: str = "",
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         max_workers: int = 32,
         look_ahead: int = 2,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
@@ -827,7 +827,7 @@ class S3StorageProvider(BaseStorageProvider):
             raise ValueError(f"start_after ({start_after}) must be before end_at ({end_at})!")
 
         full_path = self._prepend_base_path(path)
-        bucket, prefix = split_path(full_path)
+        bucket, _ = split_path(full_path)
 
         if self._is_directory_bucket(bucket):
             yield from self.list_objects(
@@ -850,8 +850,8 @@ class S3StorageProvider(BaseStorageProvider):
         path: str,
         full_path: str,
         bucket: str,
-        start_after: Optional[str],
-        end_at: Optional[str],
+        start_after: str | None,
+        end_at: str | None,
         max_workers: int,
     ) -> Iterator[ObjectMetadata]:
         """
@@ -896,9 +896,9 @@ class S3StorageProvider(BaseStorageProvider):
     def _upload_file(
         self,
         remote_path: str,
-        f: Union[str, IO],
-        attributes: Optional[dict[str, str]] = None,
-        content_type: Optional[str] = None,
+        f: str | IO,
+        attributes: dict[str, str] | None = None,
+        content_type: str | None = None,
     ) -> int:
         file_size: int = 0
 
@@ -990,7 +990,7 @@ class S3StorageProvider(BaseStorageProvider):
 
             return self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
 
-    def _download_file(self, remote_path: str, f: Union[str, IO], metadata: Optional[ObjectMetadata] = None) -> int:
+    def _download_file(self, remote_path: str, f: str | IO, metadata: ObjectMetadata | None = None) -> int:
         if metadata is None:
             metadata = self._get_object_metadata(remote_path)
 
@@ -1066,8 +1066,8 @@ class S3StorageProvider(BaseStorageProvider):
         path: str,
         *,
         method: str = "GET",
-        signer_type: Optional[SignerType] = None,
-        signer_options: Optional[dict[str, Any]] = None,
+        signer_type: SignerType | None = None,
+        signer_options: dict[str, Any] | None = None,
     ) -> str:
         options = signer_options or {}
         bucket, key = split_path(path)

@@ -19,8 +19,8 @@ import uuid
 import pytest
 
 import multistorageclient as msc
-import test_multistorageclient.e2e.common as common
 from multistorageclient.types import PreconditionFailedError
+from test_multistorageclient.e2e import common
 
 
 @pytest.mark.parametrize("profile_name", ["test-azure-uswest"])

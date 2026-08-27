@@ -18,7 +18,6 @@ import os
 import queue
 import sys
 from datetime import datetime, timezone
-from typing import Optional
 from unittest import mock
 
 import pytest
@@ -54,7 +53,7 @@ class MockStorageClient:
     def list(self, **kwargs):
         raise Exception("No Such Method")
 
-    def commit_metadata(self, prefix: Optional[str] = None) -> None:
+    def commit_metadata(self, prefix: str | None = None) -> None:
         pass
 
     def _is_rust_client_enabled(self) -> bool:
@@ -69,7 +68,7 @@ def test_object_metadata_replace():
     target_metadata = ObjectMetadata(
         key="target/path/file.txt",
         content_length=4,
-        last_modified=datetime(2025, 1, 1, 10, 0, 0),
+        last_modified=datetime(2025, 1, 1, 10, 0, 0, tzinfo=timezone.utc),
         etag="etag-1",
         metadata={"existing": "value", "version": "1"},
     )
@@ -124,10 +123,12 @@ def test_sync_with_worker_error_fail_fast():
                 raise PermissionError("Simulated permission error")
             return original_copy2(src, dst, **kwargs)
 
-        with mock.patch.object(sync_module.worker.shutil, "copy2", side_effect=mock_copy2):
-            # Sync should raise SyncError containing worker errors
-            with pytest.raises(SyncError, match="Errors in sync operation"):
-                target_client.sync_from(source_client, source_path, target_path)
+        # Sync should raise SyncError containing worker errors
+        with (
+            mock.patch.object(sync_module.worker.shutil, "copy2", side_effect=mock_copy2),
+            pytest.raises(SyncError, match="Errors in sync operation"),
+        ):
+            target_client.sync_from(source_client, source_path, target_path)
 
 
 def test_batch_posix_to_posix():
@@ -321,7 +322,7 @@ def _make_handler_with_metadata_provider():
 
 
 def _make_add_batch(n: int):
-    items: list[tuple[ObjectMetadata, Optional[ObjectMetadata]]] = [
+    items: list[tuple[ObjectMetadata, ObjectMetadata | None]] = [
         (
             ObjectMetadata(
                 key=f"src/file{i}.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)
@@ -520,7 +521,7 @@ def test_update_posix_metadata(use_metadata_provider: bool):
 
         custom_metadata = {"custom_key": "custom_value", "author": "test"}
         # Use a specific timestamp to verify mtime is set correctly
-        expected_mtime = datetime(2025, 6, 15, 10, 30, 45)
+        expected_mtime = datetime(2025, 6, 15, 10, 30, 45, tzinfo=timezone.utc)
         file_metadata = ObjectMetadata(
             key=test_file,
             content_length=len(content),

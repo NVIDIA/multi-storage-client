@@ -18,7 +18,7 @@ import os
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from typing import Union, cast
+from typing import cast
 
 from torch.distributed.checkpoint.filesystem import FileSystemBase, FileSystemReader, FileSystemWriter
 from torch.distributed.checkpoint.planner import (
@@ -37,25 +37,25 @@ class MultiStorageFileSystem(FileSystemBase):
     """
 
     @contextmanager
-    def create_stream(self, path: Union[str, os.PathLike], mode: str) -> Generator[io.IOBase, None, None]:
+    def create_stream(self, path: str | os.PathLike, mode: str) -> Generator[io.IOBase, None, None]:
         # always download the file here (used for checkpointing)
         with MultiStoragePath(path).open(mode=mode, prefetch_file=True) as fp:
             yield fp
 
-    def concat_path(self, path: Union[str, os.PathLike], suffix: str) -> Union[str, os.PathLike]:
+    def concat_path(self, path: str | os.PathLike, suffix: str) -> str | os.PathLike:
         return MultiStoragePath(path) / suffix
 
-    def rename(self, path: Union[str, os.PathLike], new_path: Union[str, os.PathLike]) -> None:
+    def rename(self, path: str | os.PathLike, new_path: str | os.PathLike) -> None:
         MultiStoragePath(path).rename(new_path)
 
-    def init_path(self, path: Union[str, os.PathLike]) -> Union[str, os.PathLike]:
+    def init_path(self, path: str | os.PathLike) -> str | os.PathLike:
         return MultiStoragePath(path)
 
-    def mkdir(self, path: Union[str, os.PathLike]) -> None:
+    def mkdir(self, path: str | os.PathLike) -> None:
         MultiStoragePath(path).mkdir(parents=True, exist_ok=True)
 
     @classmethod
-    def validate_checkpoint_id(cls, checkpoint_id: Union[str, os.PathLike]) -> bool:
+    def validate_checkpoint_id(cls, checkpoint_id: str | os.PathLike) -> bool:
         try:
             MultiStoragePath(checkpoint_id)
         except ValueError:
@@ -63,13 +63,13 @@ class MultiStorageFileSystem(FileSystemBase):
 
         return True
 
-    def exists(self, path: Union[str, os.PathLike]) -> bool:
+    def exists(self, path: str | os.PathLike) -> bool:
         return MultiStoragePath(path).exists()
 
-    def rm_file(self, path: Union[str, os.PathLike]) -> None:
+    def rm_file(self, path: str | os.PathLike) -> None:
         MultiStoragePath(path).unlink()
 
-    def ls(self, path: Union[str, os.PathLike]) -> list[str]:
+    def ls(self, path: str | os.PathLike) -> list[str]:
         return [str(p) for p in MultiStoragePath(path).iterdir()]
 
 
@@ -93,7 +93,7 @@ class MultiStorageFileSystemReader(FileSystemReader):
     A reader implementation that uses the MultiStorageFileSystem class to handle file system operations.
     """
 
-    def __init__(self, path: Union[str, os.PathLike], thread_count: int = 1) -> None:
+    def __init__(self, path: str | os.PathLike, thread_count: int = 1) -> None:
         """
         Initialize the MultiStorageFileSystemReader with the MultiStorageFileSystem.
 
@@ -124,7 +124,7 @@ class MultiStorageFileSystemReader(FileSystemReader):
         return super().read_data(plan, planner)
 
     @classmethod
-    def validate_checkpoint_id(cls, checkpoint_id: Union[str, os.PathLike]) -> bool:
+    def validate_checkpoint_id(cls, checkpoint_id: str | os.PathLike) -> bool:
         return MultiStorageFileSystem.validate_checkpoint_id(checkpoint_id)
 
 
@@ -135,7 +135,7 @@ class MultiStorageFileSystemWriter(FileSystemWriter):
 
     def __init__(
         self,
-        path: Union[str, os.PathLike],
+        path: str | os.PathLike,
         single_file_per_rank: bool = True,
         sync_files: bool = True,
         thread_count: int = 1,
@@ -159,5 +159,5 @@ class MultiStorageFileSystemWriter(FileSystemWriter):
         self.path = self.fs.init_path(path)
 
     @classmethod
-    def validate_checkpoint_id(cls, checkpoint_id: Union[str, os.PathLike]) -> bool:
+    def validate_checkpoint_id(cls, checkpoint_id: str | os.PathLike) -> bool:
         return MultiStorageFileSystem.validate_checkpoint_id(checkpoint_id)

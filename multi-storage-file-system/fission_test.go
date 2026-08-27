@@ -6,8 +6,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"os"
+	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/NVIDIA/fission/v4"
 )
@@ -26,6 +28,16 @@ var (
 	testFissionFileBContent []byte
 	testFissionFileBMD5     string
 )
+
+type countingRAMContext struct {
+	*ramContextStruct
+	readCalls atomic.Uint64
+}
+
+func (context *countingRAMContext) readFile(input *readFileInputStruct) (*readFileOutputStruct, error) {
+	context.readCalls.Add(1)
+	return context.ramContextStruct.readFile(input)
+}
 
 func fissionTestUp(t *testing.T) {
 	var (
@@ -70,7 +82,8 @@ func fissionTestUp(t *testing.T) {
 				"dir_name": "ram",
 				"bucket_container_name": "ignored",
 				"backend_type": "RAM",
-				"readonly": false
+				"readonly": false,
+				"flush_on_close": true
 			}
 		]
 	}
@@ -458,7 +471,7 @@ func TestFissionDoGetAttrStatX(t *testing.T) {
 	fissionTestUp(t)
 	defer fissionTestDown(t)
 
-	globalsLock("fission_test.go:461:2:TestFissionDoGetAttrStatX")
+	globalsLock("fission_test.go:474:2:TestFissionDoGetAttrStatX")
 	unusedInodeNumber = fetchNonce()
 	globalsUnlock()
 
@@ -616,6 +629,61 @@ func TestFissionDoGetAttrStatX(t *testing.T) {
 	}
 }
 
+// The mount root has no backend, so a SETATTR that skips the size branch has no
+// backend to source uid/gid from. Sourcing them unconditionally faults while
+// globals is held, and DoSetAttr has no deferred unlock, so this hangs rather
+// than failing.
+func TestFissionDoSetAttrRootDirWithoutSize(t *testing.T) {
+	var (
+		errno      syscall.Errno
+		inHeader   *fission.InHeader
+		setAttrIn  *fission.SetAttrIn
+		setAttrOut *fission.SetAttrOut
+	)
+
+	fissionTestUp(t)
+	defer fissionTestDown(t)
+
+	inHeader = &fission.InHeader{
+		NodeID: FUSERootDirInodeNumber,
+	}
+
+	getAttrOut, errno := globals.DoGetAttr(inHeader, &fission.GetAttrIn{})
+	if errno != 0 {
+		t.Fatalf("DoGetAttr(FUSERootDirInodeNumber) unexpectedly failed (errno: %v)", errno)
+	}
+	modeBeforeChmod := getAttrOut.Attr.Mode
+
+	setAttrIn = &fission.SetAttrIn{
+		Valid: fission.SetAttrInValidMode,
+		Mode:  0o700,
+	}
+	setAttrOut, errno = globals.DoSetAttr(inHeader, setAttrIn)
+	if errno != 0 {
+		t.Fatalf("DoSetAttr(FUSERootDirInodeNumber,Mode) unexpectedly failed (errno: %v)", errno)
+	}
+	if setAttrOut.Attr.UID != uint32(globals.config.uid) || setAttrOut.Attr.GID != uint32(globals.config.gid) {
+		t.Fatalf("DoSetAttr(FUSERootDirInodeNumber,Mode) returned uid/gid %v/%v; expected %v/%v",
+			setAttrOut.Attr.UID, setAttrOut.Attr.GID, globals.config.uid, globals.config.gid)
+	}
+	// Permission bits are backend-wide policy, so a chmod must not move them.
+	if setAttrOut.Attr.Mode != modeBeforeChmod {
+		t.Fatalf("DoSetAttr(FUSERootDirInodeNumber,Mode) changed mode from %o to %o; permission bits are backend policy",
+			modeBeforeChmod, setAttrOut.Attr.Mode)
+	}
+
+	setAttrIn = &fission.SetAttrIn{
+		Valid: fission.SetAttrInValidMTimeNow,
+	}
+	setAttrOut, errno = globals.DoSetAttr(inHeader, setAttrIn)
+	if errno != 0 {
+		t.Fatalf("DoSetAttr(FUSERootDirInodeNumber,MTimeNow) unexpectedly failed (errno: %v)", errno)
+	}
+	if setAttrOut.Attr.Ino != FUSERootDirInodeNumber {
+		t.Fatalf("DoSetAttr(FUSERootDirInodeNumber,MTimeNow) returned unexpected setAttrOut")
+	}
+}
+
 func TestFissionDoOpenDirReadDirReadDirPlusReleaseDir(t *testing.T) {
 	var (
 		errno             syscall.Errno
@@ -638,7 +706,7 @@ func TestFissionDoOpenDirReadDirReadDirPlusReleaseDir(t *testing.T) {
 	fissionTestUp(t)
 	defer fissionTestDown(t)
 
-	globalsLock("fission_test.go:641:2:TestFissionDoOpenDirReadDirReadDirPlusReleaseDir")
+	globalsLock("fission_test.go:709:2:TestFissionDoOpenDirReadDirReadDirPlusReleaseDir")
 	unusedInodeNumber = fetchNonce()
 	globalsUnlock()
 
@@ -1014,6 +1082,468 @@ func TestFissionDoOpenReadRelease(t *testing.T) {
 	}
 }
 
+func TestFissionDoCreateWriteReleaseRead(t *testing.T) {
+	var (
+		createIn  *fission.CreateIn
+		createOut *fission.CreateOut
+		dirInfo   DirEntryInfo
+		errno     syscall.Errno
+		inHeader  *fission.InHeader
+		lookupIn  *fission.LookupIn
+		lookupOut *fission.LookupOut
+		openIn    *fission.OpenIn
+		openOut   *fission.OpenOut
+		ramDirIno uint64
+		readIn    *fission.ReadIn
+		readOut   *fission.ReadOut
+		releaseIn *fission.ReleaseIn
+		writeData = []byte("hello from msfs write support")
+		writeIn   *fission.WriteIn
+		writeOut  *fission.WriteOut
+		ok        bool
+	)
+
+	fissionTestUp(t)
+	defer fissionTestDown(t)
+
+	inHeader = &fission.InHeader{NodeID: FUSERootDirInodeNumber}
+	lookupIn = &fission.LookupIn{Name: []byte("ram")}
+	lookupOut, errno = globals.DoLookup(inHeader, lookupIn)
+	if errno != 0 {
+		t.Fatalf("DoLookup(FUSERootDirInodeNumber,Name:\"ram\") unexpectedly failed (errno: %v)", errno)
+	}
+	ramDirIno = lookupOut.EntryOut.NodeID
+
+	inHeader = &fission.InHeader{NodeID: ramDirIno}
+	createIn = &fission.CreateIn{
+		Flags: fission.FOpenRequestWRONLY,
+		Mode:  0o666,
+		Name:  []byte("written-file"),
+	}
+	createOut, errno = globals.DoCreate(inHeader, createIn)
+	if errno != 0 {
+		t.Fatalf("DoCreate(written-file) unexpectedly failed (errno: %v)", errno)
+	}
+
+	inHeader = &fission.InHeader{NodeID: createOut.NodeID}
+	writeIn = &fission.WriteIn{
+		FH:     createOut.FH,
+		Offset: 0,
+		Size:   uint32(len(writeData)),
+		Data:   writeData,
+	}
+	writeOut, errno = globals.DoWrite(inHeader, writeIn)
+	if errno != 0 {
+		t.Fatalf("DoWrite(written-file) unexpectedly failed (errno: %v)", errno)
+	}
+	if writeOut.Size != uint32(len(writeData)) {
+		t.Fatalf("DoWrite returned size %d, expected %d", writeOut.Size, len(writeData))
+	}
+
+	releaseIn = &fission.ReleaseIn{FH: createOut.FH}
+	errno = globals.DoRelease(inHeader, releaseIn)
+	if errno != 0 {
+		t.Fatalf("DoRelease(written-file) unexpectedly failed (errno: %v)", errno)
+	}
+
+	dirInfo, ok = globals.physChildDirEntryMap.getByBasename(ramDirIno, "written-file")
+	if !ok {
+		t.Fatalf("written-file missing from physChildDirEntryMap")
+	}
+	if dirInfo.InodeType != FileObject {
+		t.Fatalf("written-file DirEntryInfo.InodeType = %d, expected %d", dirInfo.InodeType, FileObject)
+	}
+	if dirInfo.Size != uint64(len(writeData)) {
+		t.Fatalf("written-file DirEntryInfo.Size = %d, expected %d", dirInfo.Size, len(writeData))
+	}
+	if dirInfo.Mode&syscall.S_IFMT != syscall.S_IFREG {
+		t.Fatalf("written-file DirEntryInfo.Mode = %#o, expected regular file", dirInfo.Mode)
+	}
+	if dirInfo.MTimeUnixNano == 0 {
+		t.Fatalf("written-file DirEntryInfo.MTimeUnixNano was not populated")
+	}
+
+	inHeader = &fission.InHeader{NodeID: ramDirIno}
+	lookupIn = &fission.LookupIn{Name: []byte("written-file")}
+	lookupOut, errno = globals.DoLookup(inHeader, lookupIn)
+	if errno != 0 {
+		t.Fatalf("DoLookup(written-file) unexpectedly failed (errno: %v)", errno)
+	}
+
+	inHeader = &fission.InHeader{NodeID: lookupOut.NodeID}
+	openIn = &fission.OpenIn{Flags: fission.FOpenRequestRDONLY}
+	openOut, errno = globals.DoOpen(inHeader, openIn)
+	if errno != 0 {
+		t.Fatalf("DoOpen(written-file) unexpectedly failed (errno: %v)", errno)
+	}
+
+	readIn = &fission.ReadIn{
+		FH:     openOut.FH,
+		Offset: 0,
+		Size:   uint32(len(writeData)),
+	}
+	readOut, errno = globals.DoRead(inHeader, readIn)
+	if errno != 0 {
+		t.Fatalf("DoRead(written-file) unexpectedly failed (errno: %v)", errno)
+	}
+	if !bytes.Equal(readOut.Data, writeData) {
+		t.Fatalf("DoRead(written-file) returned %q, expected %q", readOut.Data, writeData)
+	}
+
+	releaseIn = &fission.ReleaseIn{FH: openOut.FH}
+	errno = globals.DoRelease(inHeader, releaseIn)
+	if errno != 0 {
+		t.Fatalf("DoRelease(read handle) unexpectedly failed (errno: %v)", errno)
+	}
+}
+
+// The "ram" backend is writable and sets no file_perm, so its files must report
+// the 0o666 writable default regardless of the mode the create request carried.
+func TestFissionDoCreateModeFollowsBackendPolicy(t *testing.T) {
+	var (
+		createIn     *fission.CreateIn
+		createOut    *fission.CreateOut
+		errno        syscall.Errno
+		expectedMode uint32
+		inHeader     *fission.InHeader
+		lookupIn     *fission.LookupIn
+		lookupOut    *fission.LookupOut
+		ramDirIno    uint64
+		releaseIn    *fission.ReleaseIn
+	)
+
+	fissionTestUp(t)
+	defer fissionTestDown(t)
+
+	inHeader = &fission.InHeader{NodeID: FUSERootDirInodeNumber}
+	lookupIn = &fission.LookupIn{Name: []byte("ram")}
+	lookupOut, errno = globals.DoLookup(inHeader, lookupIn)
+	if errno != 0 {
+		t.Fatalf("DoLookup(FUSERootDirInodeNumber,Name:\"ram\") unexpectedly failed (errno: %v)", errno)
+	}
+	ramDirIno = lookupOut.EntryOut.NodeID
+
+	inHeader = &fission.InHeader{NodeID: ramDirIno}
+	createIn = &fission.CreateIn{
+		Flags: fission.FOpenRequestWRONLY,
+		Mode:  0o600,
+		Name:  []byte("mode-policy-file"),
+	}
+	createOut, errno = globals.DoCreate(inHeader, createIn)
+	if errno != 0 {
+		t.Fatalf("DoCreate(mode-policy-file) unexpectedly failed (errno: %v)", errno)
+	}
+
+	expectedMode = uint32(syscall.S_IFREG | 0o666)
+	if createOut.Attr.Mode != expectedMode {
+		t.Fatalf("DoCreate(Mode:0o600) reported mode %#o; expected file_perm-derived %#o",
+			createOut.Attr.Mode, expectedMode)
+	}
+
+	inHeader = &fission.InHeader{NodeID: createOut.NodeID}
+	releaseIn = &fission.ReleaseIn{FH: createOut.FH}
+	errno = globals.DoRelease(inHeader, releaseIn)
+	if errno != 0 {
+		t.Fatalf("DoRelease(mode-policy-file) unexpectedly failed (errno: %v)", errno)
+	}
+}
+
+func TestFissionWriteReadUsesPromotedCacheWithoutBackendRead(t *testing.T) {
+	fissionTestUp(t)
+	defer fissionTestDown(t)
+	globals.config.writeCachePromotion = true
+
+	backend := globals.config.backends["ram"]
+	counting := &countingRAMContext{ramContextStruct: backend.context.(*ramContextStruct)}
+	backend.context = counting
+
+	lookupOut, errno := globals.DoLookup(
+		&fission.InHeader{NodeID: FUSERootDirInodeNumber},
+		&fission.LookupIn{Name: []byte("ram")},
+	)
+	if errno != 0 {
+		t.Fatalf("DoLookup(ram) failed: %v", errno)
+	}
+
+	createOut, errno := globals.DoCreate(
+		&fission.InHeader{NodeID: lookupOut.NodeID},
+		&fission.CreateIn{
+			Flags: fission.FOpenRequestWRONLY,
+			Mode:  0o666,
+			Name:  []byte("promoted-read"),
+		},
+	)
+	if errno != 0 {
+		t.Fatalf("DoCreate(promoted-read) failed: %v", errno)
+	}
+	data := []byte("write then read without backend fetch")
+	inHeader := &fission.InHeader{NodeID: createOut.NodeID}
+	if _, errno = globals.DoWrite(inHeader, &fission.WriteIn{
+		FH: createOut.FH, Size: uint32(len(data)), Data: data,
+	}); errno != 0 {
+		t.Fatalf("DoWrite(promoted-read) failed: %v", errno)
+	}
+	if errno = globals.DoRelease(inHeader, &fission.ReleaseIn{FH: createOut.FH}); errno != 0 {
+		t.Fatalf("DoRelease(promoted-read) failed: %v", errno)
+	}
+
+	openOut, errno := globals.DoOpen(inHeader, &fission.OpenIn{Flags: fission.FOpenRequestRDONLY})
+	if errno != 0 {
+		t.Fatalf("DoOpen(promoted-read) failed: %v", errno)
+	}
+	readOut, errno := globals.DoRead(inHeader, &fission.ReadIn{
+		FH: openOut.FH, Size: uint32(len(data)),
+	})
+	if errno != 0 {
+		t.Fatalf("DoRead(promoted-read) failed: %v", errno)
+	}
+	if !bytes.Equal(readOut.Data, data) {
+		t.Fatalf("read data = %q, expected %q", readOut.Data, data)
+	}
+	if got := counting.readCalls.Load(); got != 0 {
+		t.Fatalf("backend read calls = %d, expected 0", got)
+	}
+	if errno = globals.DoRelease(inHeader, &fission.ReleaseIn{FH: openOut.FH}); errno != 0 {
+		t.Fatalf("DoRelease(read handle) failed: %v", errno)
+	}
+}
+
+func TestFissionDoFlushDoesNotCommitButFSyncDoes(t *testing.T) {
+	var (
+		backend   *backendStruct
+		createIn  *fission.CreateIn
+		createOut *fission.CreateOut
+		errno     syscall.Errno
+		fSyncIn   *fission.FSyncIn
+		flushIn   *fission.FlushIn
+		inHeader  *fission.InHeader
+		lookupIn  *fission.LookupIn
+		lookupOut *fission.LookupOut
+		ramDirIno uint64
+		releaseIn *fission.ReleaseIn
+		writeData = []byte("flush should not force commit")
+		writeIn   *fission.WriteIn
+		ok        bool
+	)
+
+	fissionTestUp(t)
+	defer fissionTestDown(t)
+
+	inHeader = &fission.InHeader{NodeID: FUSERootDirInodeNumber}
+	lookupIn = &fission.LookupIn{Name: []byte("ram")}
+	lookupOut, errno = globals.DoLookup(inHeader, lookupIn)
+	if errno != 0 {
+		t.Fatalf("DoLookup(FUSERootDirInodeNumber,Name:\"ram\") unexpectedly failed (errno: %v)", errno)
+	}
+	ramDirIno = lookupOut.EntryOut.NodeID
+
+	inHeader = &fission.InHeader{NodeID: ramDirIno}
+	createIn = &fission.CreateIn{
+		Flags: fission.FOpenRequestWRONLY,
+		Mode:  0o666,
+		Name:  []byte("flush-file"),
+	}
+	createOut, errno = globals.DoCreate(inHeader, createIn)
+	if errno != 0 {
+		t.Fatalf("DoCreate(flush-file) unexpectedly failed (errno: %v)", errno)
+	}
+
+	inHeader = &fission.InHeader{NodeID: createOut.NodeID}
+	writeIn = &fission.WriteIn{FH: createOut.FH, Offset: 0, Size: uint32(len(writeData)), Data: writeData}
+	_, errno = globals.DoWrite(inHeader, writeIn)
+	if errno != 0 {
+		t.Fatalf("DoWrite(flush-file) unexpectedly failed (errno: %v)", errno)
+	}
+
+	flushIn = &fission.FlushIn{FH: createOut.FH}
+	errno = globals.DoFlush(inHeader, flushIn)
+	if errno != 0 {
+		t.Fatalf("DoFlush(flush-file) unexpectedly failed (errno: %v)", errno)
+	}
+
+	backend = globals.config.backends["ram"]
+	_, ok = backend.context.(*ramContextStruct).rootDir.fileMap.GetByKey("flush-file")
+	if ok {
+		t.Fatalf("DoFlush committed flush-file to RAM backend; expected dirty state to remain local")
+	}
+
+	fSyncIn = &fission.FSyncIn{FH: createOut.FH}
+	errno = globals.DoFSync(inHeader, fSyncIn)
+	if errno != 0 {
+		t.Fatalf("DoFSync(flush-file) unexpectedly failed (errno: %v)", errno)
+	}
+
+	_, ok = backend.context.(*ramContextStruct).rootDir.fileMap.GetByKey("flush-file")
+	if !ok {
+		t.Fatalf("DoFSync did not commit flush-file to RAM backend")
+	}
+
+	releaseIn = &fission.ReleaseIn{FH: createOut.FH}
+	errno = globals.DoRelease(inHeader, releaseIn)
+	if errno != 0 {
+		t.Fatalf("DoRelease(flush-file) unexpectedly failed (errno: %v)", errno)
+	}
+}
+
+func TestFissionDoReleaseAsyncFlushWhenFlushOnCloseDisabled(t *testing.T) {
+	var (
+		backend   *backendStruct
+		createIn  *fission.CreateIn
+		createOut *fission.CreateOut
+		errno     syscall.Errno
+		inHeader  *fission.InHeader
+		lookupIn  *fission.LookupIn
+		lookupOut *fission.LookupOut
+		ramDirIno uint64
+		releaseIn *fission.ReleaseIn
+		writeData = []byte("async release flush")
+		writeIn   *fission.WriteIn
+		ok        bool
+	)
+
+	fissionTestUp(t)
+	defer fissionTestDown(t)
+
+	backend = globals.config.backends["ram"]
+	backend.flushOnClose = false
+
+	inHeader = &fission.InHeader{NodeID: FUSERootDirInodeNumber}
+	lookupIn = &fission.LookupIn{Name: []byte("ram")}
+	lookupOut, errno = globals.DoLookup(inHeader, lookupIn)
+	if errno != 0 {
+		t.Fatalf("DoLookup(FUSERootDirInodeNumber,Name:\"ram\") unexpectedly failed (errno: %v)", errno)
+	}
+	ramDirIno = lookupOut.EntryOut.NodeID
+
+	inHeader = &fission.InHeader{NodeID: ramDirIno}
+	createIn = &fission.CreateIn{
+		Flags: fission.FOpenRequestWRONLY,
+		Mode:  0o666,
+		Name:  []byte("async-release-file"),
+	}
+	createOut, errno = globals.DoCreate(inHeader, createIn)
+	if errno != 0 {
+		t.Fatalf("DoCreate(async-release-file) unexpectedly failed (errno: %v)", errno)
+	}
+
+	inHeader = &fission.InHeader{NodeID: createOut.NodeID}
+	writeIn = &fission.WriteIn{FH: createOut.FH, Offset: 0, Size: uint32(len(writeData)), Data: writeData}
+	_, errno = globals.DoWrite(inHeader, writeIn)
+	if errno != 0 {
+		t.Fatalf("DoWrite(async-release-file) unexpectedly failed (errno: %v)", errno)
+	}
+
+	releaseIn = &fission.ReleaseIn{FH: createOut.FH}
+	errno = globals.DoRelease(inHeader, releaseIn)
+	if errno != 0 {
+		t.Fatalf("DoRelease(async-release-file) unexpectedly failed (errno: %v)", errno)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		_, ok = backend.context.(*ramContextStruct).rootDir.fileMap.GetByKey("async-release-file")
+		if ok {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("async release flush did not commit async-release-file before timeout")
+}
+
+func TestFissionDoWriteInvalidatesCachedReadData(t *testing.T) {
+	var (
+		errno     syscall.Errno
+		fileAIno  uint64
+		fileFH    uint64
+		inHeader  *fission.InHeader
+		lookupIn  *fission.LookupIn
+		lookupOut *fission.LookupOut
+		openIn    *fission.OpenIn
+		openOut   *fission.OpenOut
+		overwrite = []byte("replacement-data")
+		ramDirIno uint64
+		readIn    *fission.ReadIn
+		readOut   *fission.ReadOut
+		releaseIn *fission.ReleaseIn
+		writeIn   *fission.WriteIn
+	)
+
+	fissionTestUp(t)
+	defer fissionTestDown(t)
+
+	inHeader = &fission.InHeader{NodeID: FUSERootDirInodeNumber}
+	lookupIn = &fission.LookupIn{Name: []byte("ram")}
+	lookupOut, errno = globals.DoLookup(inHeader, lookupIn)
+	if errno != 0 {
+		t.Fatalf("DoLookup(FUSERootDirInodeNumber,Name:\"ram\") unexpectedly failed (errno: %v)", errno)
+	}
+	ramDirIno = lookupOut.EntryOut.NodeID
+
+	inHeader = &fission.InHeader{NodeID: ramDirIno}
+	lookupIn = &fission.LookupIn{Name: []byte("fileA")}
+	lookupOut, errno = globals.DoLookup(inHeader, lookupIn)
+	if errno != 0 {
+		t.Fatalf("DoLookup(fileA) unexpectedly failed (errno: %v)", errno)
+	}
+	fileAIno = lookupOut.EntryOut.NodeID
+
+	inHeader = &fission.InHeader{NodeID: fileAIno}
+	openIn = &fission.OpenIn{Flags: fission.FOpenRequestRDONLY}
+	openOut, errno = globals.DoOpen(inHeader, openIn)
+	if errno != 0 {
+		t.Fatalf("DoOpen(fileA readonly) unexpectedly failed (errno: %v)", errno)
+	}
+	readIn = &fission.ReadIn{FH: openOut.FH, Offset: 0, Size: uint32(len(overwrite))}
+	readOut, errno = globals.DoRead(inHeader, readIn)
+	if errno != 0 {
+		t.Fatalf("initial DoRead(fileA) unexpectedly failed (errno: %v)", errno)
+	}
+	if len(readOut.Data) == 0 {
+		t.Fatalf("initial DoRead(fileA) returned no data")
+	}
+	releaseIn = &fission.ReleaseIn{FH: openOut.FH}
+	errno = globals.DoRelease(inHeader, releaseIn)
+	if errno != 0 {
+		t.Fatalf("DoRelease(initial read handle) unexpectedly failed (errno: %v)", errno)
+	}
+
+	openIn = &fission.OpenIn{Flags: fission.FOpenRequestRDWR | fission.FOpenRequestTRUNC}
+	openOut, errno = globals.DoOpen(inHeader, openIn)
+	if errno != 0 {
+		t.Fatalf("DoOpen(fileA write/trunc) unexpectedly failed (errno: %v)", errno)
+	}
+	fileFH = openOut.FH
+	writeIn = &fission.WriteIn{FH: fileFH, Offset: 0, Size: uint32(len(overwrite)), Data: overwrite}
+	_, errno = globals.DoWrite(inHeader, writeIn)
+	if errno != 0 {
+		t.Fatalf("DoWrite(fileA overwrite) unexpectedly failed (errno: %v)", errno)
+	}
+	releaseIn = &fission.ReleaseIn{FH: fileFH}
+	errno = globals.DoRelease(inHeader, releaseIn)
+	if errno != 0 {
+		t.Fatalf("DoRelease(fileA write handle) unexpectedly failed (errno: %v)", errno)
+	}
+
+	openIn = &fission.OpenIn{Flags: fission.FOpenRequestRDONLY}
+	openOut, errno = globals.DoOpen(inHeader, openIn)
+	if errno != 0 {
+		t.Fatalf("DoOpen(fileA reread) unexpectedly failed (errno: %v)", errno)
+	}
+	readIn = &fission.ReadIn{FH: openOut.FH, Offset: 0, Size: uint32(len(overwrite))}
+	readOut, errno = globals.DoRead(inHeader, readIn)
+	if errno != 0 {
+		t.Fatalf("DoRead(fileA reread) unexpectedly failed (errno: %v)", errno)
+	}
+	if !bytes.Equal(readOut.Data, overwrite) {
+		t.Fatalf("DoRead(fileA reread) returned %q, expected %q", readOut.Data, overwrite)
+	}
+	releaseIn = &fission.ReleaseIn{FH: openOut.FH}
+	errno = globals.DoRelease(inHeader, releaseIn)
+	if errno != 0 {
+		t.Fatalf("DoRelease(fileA reread handle) unexpectedly failed (errno: %v)", errno)
+	}
+}
+
 func TestFissionDoUnlinkNoOpenHandles(t *testing.T) {
 	var (
 		errno     syscall.Errno
@@ -1225,7 +1755,7 @@ func TestFissionDoUnlinkRollbackOnBackendFailure(t *testing.T) {
 	fileAIno = lookupOut.EntryOut.NodeID
 
 	// Verify fileA exists in parent's child map
-	globalsLock("fission_test.go:1228:2:TestFissionDoUnlinkRollbackOnBackendFailure")
+	globalsLock("fission_test.go:1758:2:TestFissionDoUnlinkRollbackOnBackendFailure")
 	_, ok = globals.inodeMap.get(ramDirIno)
 	if !ok {
 		globalsUnlock()
@@ -1615,7 +2145,7 @@ func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 	dir2Ino = lookupOut.EntryOut.NodeID
 
 	// Verify dir2 is physical
-	globalsLock("fission_test.go:1618:2:TestFissionConvertPhysicalToVirtual")
+	globalsLock("fission_test.go:2148:2:TestFissionConvertPhysicalToVirtual")
 	dir2Inode, ok = globals.inodeMap.get(dir2Ino)
 	if !ok {
 		globalsUnlock()
@@ -1641,7 +2171,7 @@ func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 	}
 
 	// Verify virtual directory was created
-	globalsLock("fission_test.go:1644:2:TestFissionConvertPhysicalToVirtual")
+	globalsLock("fission_test.go:2174:2:TestFissionConvertPhysicalToVirtual")
 	dir2Inode, ok = globals.inodeMap.get(dir2Ino)
 	if !ok {
 		globalsUnlock()
@@ -1677,7 +2207,7 @@ func TestFissionConvertPhysicalToVirtual(t *testing.T) {
 
 	// For testing, we'll just remove dir4 from dir2's physChildInodeMap manually
 	// since we can't use DoRmDir on a physical directory
-	globalsLock("fission_test.go:1680:2:TestFissionConvertPhysicalToVirtual")
+	globalsLock("fission_test.go:2210:2:TestFissionConvertPhysicalToVirtual")
 	dir2Inode, ok = globals.inodeMap.get(dir2Ino)
 	if !ok {
 		globalsUnlock()
@@ -1779,7 +2309,7 @@ func TestFissionDoReadFetchFailureReturnsEIO(t *testing.T) {
 	// (contentLength == 0) — exactly the state fetch() leaves on a backend error.
 	// Setting it up directly keeps the subsequent read on the cache-hit path and
 	// avoids depending on a flaky backend.
-	globalsLock("fission_test.go:1782:2:TestFissionDoReadFetchFailureReturnsEIO")
+	globalsLock("fission_test.go:2312:2:TestFissionDoReadFetchFailureReturnsEIO")
 	inode, ok = globals.inodeMap.get(fileBIno)
 	if !ok {
 		globalsUnlock()
@@ -1811,7 +2341,7 @@ func TestFissionDoReadFetchFailureReturnsEIO(t *testing.T) {
 	}
 
 	// The failed line must have been evicted so a later read re-fetches it.
-	globalsLock("fission_test.go:1814:2:TestFissionDoReadFetchFailureReturnsEIO")
+	globalsLock("fission_test.go:2344:2:TestFissionDoReadFetchFailureReturnsEIO")
 	_, ok = inode.cacheMap[0]
 	globalsUnlock()
 	if ok {

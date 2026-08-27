@@ -19,10 +19,9 @@ import os
 
 import pytest
 
-import multistorageclient.telemetry as telemetry
-import test_multistorageclient.unit.utils.tempdatastore as tempdatastore
-from multistorageclient import StorageClient, StorageClientConfig
+from multistorageclient import StorageClient, StorageClientConfig, telemetry
 from multistorageclient.file import PosixFile
+from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
 
 
@@ -106,9 +105,8 @@ def test_file_open(temp_data_store_type: type[tempdatastore.TemporaryDataStore])
 
         # Delete the file.
         storage_client.delete(path=file_path)
-        with pytest.raises(FileNotFoundError):
-            with storage_client.open(path=file_path, mode="rb") as file:
-                pass
+        with pytest.raises(FileNotFoundError), storage_client.open(path=file_path, mode="rb") as file:
+            pass
 
         # Open a file for writes (string).
         with storage_client.open(path=file_path, mode="w") as file:
@@ -145,9 +143,8 @@ def test_file_open(temp_data_store_type: type[tempdatastore.TemporaryDataStore])
 
         # Delete the file.
         storage_client.delete(path=file_path)
-        with pytest.raises(FileNotFoundError):
-            with storage_client.open(path=file_path, mode="r") as file:
-                pass
+        with pytest.raises(FileNotFoundError), storage_client.open(path=file_path, mode="r") as file:
+            pass
 
         # Verify the file creation is atomic.
         fp1 = storage_client.open(path=file_path, mode="w")
@@ -238,8 +235,7 @@ def test_file_read_does_not_create_parent_dirs(temp_data_store_type: type[tempda
 
         assert not os.path.exists(full_dir_path)
 
-        with pytest.raises(FileNotFoundError):
-            with storage_client.open(nonexistent_file_path, "r") as f:
-                f.read()
+        with pytest.raises(FileNotFoundError), storage_client.open(nonexistent_file_path, "r") as f:
+            f.read()
 
         assert not os.path.exists(full_dir_path)

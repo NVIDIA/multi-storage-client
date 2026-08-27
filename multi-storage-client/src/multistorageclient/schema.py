@@ -273,7 +273,7 @@ def validate_config(config_dict: dict[str, Any]) -> None:
 
     # Custom validation: ensure replica_profile uniqueness within each profile's replicas
     profiles = config_dict.get("profiles", {})
-    for profile_name, profile in profiles.items():
+    for profile in profiles.values():
         replicas = profile.get("replicas", [])
         replica_profiles = [r.get("replica_profile") for r in replicas]
         counter = Counter(replica_profiles)

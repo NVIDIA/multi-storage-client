@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import PurePosixPath
-from typing import IO, Any, Optional, Union, cast
+from typing import IO, Any, cast
 
 from ..config import StorageClientConfig
 from ..constants import DEFAULT_SYNC_BATCH_SIZE, MEMORY_LOAD_LIMIT
@@ -62,9 +62,9 @@ class SingleStorageClient(AbstractStorageClient):
 
     _config: StorageClientConfig
     _storage_provider: StorageProvider
-    _metadata_provider_lock: Optional[threading.Lock] = None
-    _stop_event: Optional[threading.Event] = None
-    _replica_manager: Optional[ReplicaManager] = None
+    _metadata_provider_lock: "threading.Lock | None" = None
+    _stop_event: threading.Event | None = None
+    _replica_manager: ReplicaManager | None = None
 
     def __init__(self, config: StorageClientConfig):
         """
@@ -152,7 +152,7 @@ class SingleStorageClient(AbstractStorageClient):
         logger.debug("Shutting down, committing metadata one last time...")
         self.commit_metadata()
 
-    def _get_source_version(self, path: str) -> Optional[str]:
+    def _get_source_version(self, path: str) -> str | None:
         """
         Get etag from metadata provider or storage provider.
         """
@@ -208,9 +208,8 @@ class SingleStorageClient(AbstractStorageClient):
             del state["_replicas"]
 
         # Replica manager could be disabled if it's set to None in the state.
-        if "_replica_manager" in state:
-            if state["_replica_manager"] is not None:
-                del state["_replica_manager"]
+        if "_replica_manager" in state and state["_replica_manager"] is not None:
+            del state["_replica_manager"]
 
         return state
 
@@ -287,7 +286,7 @@ class SingleStorageClient(AbstractStorageClient):
         return self._metadata_provider.generate_physical_path(logical_path, for_overwrite=False).physical_path
 
     def _register_written_file(
-        self, virtual_path: str, physical_path: str, attributes: Optional[dict[str, Any]] = None
+        self, virtual_path: str, physical_path: str, attributes: dict[str, Any] | None = None
     ) -> None:
         """
         Register a written file with the metadata provider.
@@ -312,7 +311,7 @@ class SingleStorageClient(AbstractStorageClient):
         self,
         virtual_paths: Sequence[str],
         physical_paths: Sequence[str],
-        attributes: Optional[Sequence[Optional[dict[str, Any]]]] = None,
+        attributes: Sequence[dict[str, Any] | None] | None = None,
         max_workers: int = 16,
     ) -> None:
         """Register multiple written files with the metadata provider concurrently."""
@@ -338,7 +337,7 @@ class SingleStorageClient(AbstractStorageClient):
         indices: list[int],
         remote_paths: Sequence[str],
         local_paths: list[str],
-        metadata: Optional[Sequence[Optional[ObjectMetadata]]],
+        metadata: Sequence[ObjectMetadata | None] | None,
         max_workers: int,
     ) -> None:
         """
@@ -370,7 +369,7 @@ class SingleStorageClient(AbstractStorageClient):
         indices: list[int],
         local_paths: list[str],
         remote_paths: Sequence[str],
-        attributes: Optional[Sequence[Optional[dict[str, Any]]]],
+        attributes: Sequence[dict[str, Any] | None] | None,
         max_workers: int,
     ) -> None:
         """
@@ -400,7 +399,7 @@ class SingleStorageClient(AbstractStorageClient):
     def read(
         self,
         path: str,
-        byte_range: Optional[Range] = None,
+        byte_range: Range | None = None,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
     ) -> bytes:
         """
@@ -459,11 +458,11 @@ class SingleStorageClient(AbstractStorageClient):
                 # Full file read with cache
                 # Only fetch source version if check_source_version is enabled
                 source_version = None
-                if check_source_version == SourceVersionCheckMode.ENABLE:
+                if check_source_version == SourceVersionCheckMode.ENABLE or (
+                    check_source_version == SourceVersionCheckMode.INHERIT
+                    and self._cache_manager.check_source_version()
+                ):
                     source_version = self._get_source_version(path)
-                elif check_source_version == SourceVersionCheckMode.INHERIT:
-                    if self._cache_manager.check_source_version():
-                        source_version = self._get_source_version(path)
 
                 data = self._cache_manager.read(path, source_version)
                 if data is None:
@@ -502,7 +501,7 @@ class SingleStorageClient(AbstractStorageClient):
         return self._metadata_provider.get_object_metadata(path, include_pending=not strict)
 
     @retry
-    def download_file(self, remote_path: str, local_path: Union[str, IO]) -> None:
+    def download_file(self, remote_path: str, local_path: str | IO) -> None:
         """
         Download a remote file to a local path or file-like object.
 
@@ -523,7 +522,7 @@ class SingleStorageClient(AbstractStorageClient):
         self,
         remote_paths: list[str],
         local_paths: list[str],
-        metadata: Optional[Sequence[Optional[ObjectMetadata]]] = None,
+        metadata: Sequence[ObjectMetadata | None] | None = None,
         max_workers: int = 16,
     ) -> None:
         """
@@ -554,9 +553,7 @@ class SingleStorageClient(AbstractStorageClient):
             self._download_files_batch(list(range(len(remote_paths))), remote_paths, local_paths, metadata, max_workers)
 
     @retry
-    def upload_file(
-        self, remote_path: str, local_path: Union[str, IO], attributes: Optional[dict[str, Any]] = None
-    ) -> None:
+    def upload_file(self, remote_path: str, local_path: str | IO, attributes: dict[str, Any] | None = None) -> None:
         """
         Uploads a file from the local file system to the storage provider.
 
@@ -578,7 +575,7 @@ class SingleStorageClient(AbstractStorageClient):
         self,
         remote_paths: list[str],
         local_paths: list[str],
-        attributes: Optional[Sequence[Optional[dict[str, Any]]]] = None,
+        attributes: Sequence[dict[str, Any] | None] | None = None,
         max_workers: int = 16,
     ) -> None:
         """
@@ -615,7 +612,7 @@ class SingleStorageClient(AbstractStorageClient):
             self._upload_files_batch(list(range(len(remote_paths))), local_paths, remote_paths, attributes, max_workers)
 
     @retry
-    def write(self, path: str, body: bytes, attributes: Optional[dict[str, Any]] = None) -> None:
+    def write(self, path: str, body: bytes, attributes: dict[str, Any] | None = None) -> None:
         """
         Write bytes to a file at the specified path.
 
@@ -775,7 +772,7 @@ class SingleStorageClient(AbstractStorageClient):
         self,
         pattern: str,
         include_url_prefix: bool = False,
-        attribute_filter_expression: Optional[str] = None,
+        attribute_filter_expression: str | None = None,
     ) -> list[str]:
         """
         Matches and retrieves a list of object keys in the storage provider that match the specified pattern.
@@ -798,11 +795,11 @@ class SingleStorageClient(AbstractStorageClient):
     def _resolve_single_file(
         self,
         path: str,
-        start_after: Optional[str],
-        end_at: Optional[str],
+        start_after: str | None,
+        end_at: str | None,
         include_url_prefix: bool,
-        pattern_matcher: Optional[PatternMatcher],
-    ) -> tuple[Optional[ObjectMetadata], Optional[str]]:
+        pattern_matcher: PatternMatcher | None,
+    ) -> tuple[ObjectMetadata | None, str | None]:
         """
         Resolve whether ``path`` should be handled as a single-file listing result.
 
@@ -819,6 +816,13 @@ class SingleStorageClient(AbstractStorageClient):
         """
         if not path:
             return None, path
+
+        if self._is_posix_file_storage_provider() and not self._metadata_provider:
+            provider = cast(PosixFileStorageProvider, self._storage_provider)
+            normalized_path = path.rstrip("/") or path
+            physical_path = provider._prepend_base_path(normalized_path)
+            if os.path.islink(physical_path):
+                return None, normalized_path
 
         if self.is_file(path):
             if pattern_matcher and not pattern_matcher.should_include_file(path):
@@ -848,7 +852,7 @@ class SingleStorageClient(AbstractStorageClient):
         self,
         objects: Iterator[ObjectMetadata],
         include_url_prefix: bool,
-        pattern_matcher: Optional[PatternMatcher],
+        pattern_matcher: PatternMatcher | None,
     ) -> Iterator[ObjectMetadata]:
         for obj in objects:
             if pattern_matcher and not pattern_matcher.should_include_file(obj.key):
@@ -860,12 +864,12 @@ class SingleStorageClient(AbstractStorageClient):
     def list_recursive(
         self,
         path: str = "",
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         max_workers: int = 32,
         look_ahead: int = 2,
         include_url_prefix: bool = False,
-        patterns: Optional[PatternList] = None,
+        patterns: PatternList | None = None,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         """
@@ -917,14 +921,14 @@ class SingleStorageClient(AbstractStorageClient):
         path: str,
         mode: str = "rb",
         buffering: int = -1,
-        encoding: Optional[str] = None,
+        encoding: str | None = None,
         disable_read_cache: bool = False,
         memory_load_limit: int = MEMORY_LOAD_LIMIT,
         atomic: bool = True,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
-        attributes: Optional[dict[str, Any]] = None,
-        prefetch_file: Optional[bool] = None,
-    ) -> Union[PosixFile, ObjectFile]:
+        attributes: dict[str, Any] | None = None,
+        prefetch_file: bool | None = None,
+    ) -> PosixFile | ObjectFile:
         """
         Open a file for reading or writing.
 
@@ -967,7 +971,7 @@ class SingleStorageClient(AbstractStorageClient):
                 prefetch_file=prefetch_file,
             )
 
-    def get_posix_path(self, path: str) -> Optional[str]:
+    def get_posix_path(self, path: str) -> str | None:
         """
         Returns the physical POSIX filesystem path for POSIX storage providers.
 
@@ -998,7 +1002,7 @@ class SingleStorageClient(AbstractStorageClient):
 
         return self._storage_provider.is_file(path)
 
-    def commit_metadata(self, prefix: Optional[str] = None) -> None:
+    def commit_metadata(self, prefix: str | None = None) -> None:
         """
         Commits any pending updates to the metadata provider. No-op if not using a metadata provider.
 
@@ -1045,15 +1049,15 @@ class SingleStorageClient(AbstractStorageClient):
         target_path: str = "",
         delete_unmatched_files: bool = False,
         description: str = "Syncing",
-        num_worker_processes: Optional[int] = None,
+        num_worker_processes: int | None = None,
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
-        patterns: Optional[PatternList] = None,
+        patterns: PatternList | None = None,
         preserve_source_attributes: bool = False,
-        source_files: Optional[list[str]] = None,
+        source_files: list[str] | None = None,
         ignore_hidden: bool = True,
         commit_metadata: bool = True,
         dryrun: bool = False,
-        dryrun_output_path: Optional[str] = None,
+        dryrun_output_path: str | None = None,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> SyncResult:
         """
@@ -1128,12 +1132,12 @@ class SingleStorageClient(AbstractStorageClient):
     def sync_replicas(
         self,
         source_path: str,
-        replica_indices: Optional[list[int]] = None,
+        replica_indices: list[int] | None = None,
         delete_unmatched_files: bool = False,
         description: str = "Syncing replica",
-        num_worker_processes: Optional[int] = None,
+        num_worker_processes: int | None = None,
         execution_mode: ExecutionMode = ExecutionMode.LOCAL,
-        patterns: Optional[PatternList] = None,
+        patterns: PatternList | None = None,
         ignore_hidden: bool = True,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> None:
@@ -1160,7 +1164,7 @@ class SingleStorageClient(AbstractStorageClient):
                 "secondary storage locations for redundancy and performance.",
                 self._config.profile,
             )
-            return None
+            return
 
         if replica_indices:
             try:
@@ -1197,13 +1201,13 @@ class SingleStorageClient(AbstractStorageClient):
     def list(
         self,
         path: str = "",
-        start_after: Optional[str] = None,
-        end_at: Optional[str] = None,
+        start_after: str | None = None,
+        end_at: str | None = None,
         include_directories: bool = False,
         include_url_prefix: bool = False,
-        attribute_filter_expression: Optional[str] = None,
+        attribute_filter_expression: str | None = None,
         show_attributes: bool = False,
-        patterns: Optional[PatternList] = None,
+        patterns: PatternList | None = None,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         """
@@ -1259,8 +1263,8 @@ class SingleStorageClient(AbstractStorageClient):
         path: str,
         *,
         method: str = "GET",
-        signer_type: Optional[SignerType] = None,
-        signer_options: Optional[dict[str, Any]] = None,
+        signer_type: SignerType | None = None,
+        signer_options: dict[str, Any] | None = None,
     ) -> str:
         return self._storage_provider.generate_presigned_url(
             path, method=method, signer_type=signer_type, signer_options=signer_options
