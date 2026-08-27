@@ -523,7 +523,7 @@ Build and test:
 ```bash
 cd multi-storage-file-system/csi
 go build ./... && go vet ./... && go test ./...
-helm lint ../charts/msfs-csi 2>/dev/null || helm lint charts/msfs-csi
+helm lint charts/msfs-csi
 helm template charts/msfs-csi          # render without installing
 
 # image (build context is multi-storage-file-system/, needs the msfs source)
@@ -544,10 +544,12 @@ mounts silently at runtime rather than at build time.
 | `exec format error` in CSI pod | Image built for wrong architecture | Rebuild with `--platform linux/amd64` |
 | `ImagePullBackOff` | Missing imagePullSecret | Check `kubectl get secrets -n msfs` |
 | Mount timeout | msfs failed to start within the 30s publish window (bad config or credentials) | Check CSI driver logs: `kubectl logs -n msfs <csi-pod> -c msfs-csi-driver` |
-| Missing-credentials error although IRSA is configured | Under `authType: static` a complete Secret is required, and the config keeps `${AWS_ACCESS_KEY_ID}` placeholders. A *partial* Secret under `auto` resolves to `irsa` instead and never uses the Secret at all, so credentials silently come from the driver's role rather than the keys you supplied | Set `authType: irsa` explicitly for IRSA, or supply both `access_key_id` and `secret_access_key`. See [Credential resolution](#credential-resolution) |
+| `InvalidArgument: authType=static requires both access_key_id and secret_access_key` | `authType: static` with a Secret missing one of the two keys. The driver rejects the publish before starting MSFS, so the pod never reaches a mount | Add the missing key to the Secret, or drop `authType` to let `auto` decide |
+| Credentials come from the driver's role, not the Secret you attached | `authType: auto` with a Secret missing one of the two keys resolves to `irsa`, not `static` — the partial Secret is ignored entirely rather than reported. It then fails only if the driver's credential chain is also unavailable | Supply both keys, or set `authType: static` to turn the silent fallback into the explicit error above. See [Credential resolution](#credential-resolution) |
 | Every mount uses the same IAM role under per-workload IRSA | `tokenRequests` is absent from the `CSIDriver`, so the driver silently fell back to driver-SA IRSA | Install via the chart with `auth.perWorkloadIrsa.enabled=true`, or uncomment the block in `deploy/csi-driver.yaml` |
 | Mount is read-only unexpectedly | `readonly` defaults to `true`, and a read-only publish is a hard floor a backend cannot override | Set `volumeAttributes.readonly: "false"` **and** ensure the PV has `accessModes: [ReadWriteMany]` rather than `ReadOnlyMany` |
-| Slow first access on a large bucket | `manifestPath` is not persisted, so the manifest regenerates on every remount | Known limitation (NGCDP-9116); omit `manifestPath` if regeneration costs more than it saves |
+| Slow first access on a large **read-only** bucket | `manifestPath` is not persisted, so on remount no manifest exists and a read-only backend regenerates it — the expensive phase — every time | Known limitation (NGCDP-9116); omit `manifestPath` if regeneration costs more than it saves |
+| Manifest acceleration never takes effect on a **writable** backend | MSFS only generates a manifest at mount for read-only backends. A writable one logs `skipping generation` and mounts without manifest metadata, and because CSI does not persist `manifestPath` there is never an existing manifest to reuse | Generate it out of band into a persisted path and mount that path into the DaemonSet, or accept per-directory listing |
 | Throughput collapses on a large bucket | `process_memory_limit` defaults to 4 GiB and cannot be set through CSI | Mount MSFS directly, or reduce the working set. See [Settings that cannot be set through CSI](#settings-that-cannot-be-set-through-csi) |
 | Empty mount in app pod | MSFS started but bucket is empty or prefix wrong | Verify `volumeAttributes` in pod spec |
 | `fusermount: bad mount point` on cleanup | Mount already gone | Safe to ignore; cleanup continues |

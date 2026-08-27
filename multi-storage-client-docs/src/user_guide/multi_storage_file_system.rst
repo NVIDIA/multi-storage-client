@@ -613,7 +613,7 @@ slower on identical work. The remaining rows are smaller and state their size
 and layout in the row itself.
 
 Workload layout is not a detail here. The shared-object rows below write **one**
-1 GiB object from every thread, and at eight threads that reads 502 MiB/s
+1 GiB object from every thread, and at eight threads that writes 502 MiB/s
 against 290 for one object per thread — the same block size and thread count,
 1.7x apart. Reproducing "80 GiB" with a different file count or sharing pattern
 will produce materially different numbers.
