@@ -261,6 +261,7 @@ The Dockerfile is at `multi-storage-file-system/Dockerfile.csi` (build context n
 | `manifestPath` | No | - | Path for manifest generation output |
 | `manifestGenWorkers` | No | - | Number of parallel listing workers |
 | `flatDirConfirmationPages` | No | - | Flat directory confirmation pages |
+| *(tuning keys)* | No | - | Cache sizing, write behaviour, ownership and permissions are listed separately under [Performance tuning reference](#performance-tuning-reference) |
 | `aisEndpoint` | No | `${AIS_ENDPOINT}` | Native AIStore endpoint (`backendType=AIStore`) |
 | `aisProvider` | No | `s3` | AIStore bucket provider (`ais`, `aws`, `gcp`, `azure`, etc.) |
 | `aisAuthnTokenFile` | No | `${AIS_AUTHN_TOKEN_FILE:-${HOME}/.config/ais/cli/auth.token}` | AIStore auth token file read by MSFS at mount setup |
@@ -268,6 +269,100 @@ The Dockerfile is at `multi-storage-file-system/Dockerfile.csi` (build context n
 | `aisSkipTLSCertificateVerify` | No | `false` | Skip AIStore endpoint TLS verification |
 | `aisTimeout` | No | `30000` | AIStore client timeout in milliseconds |
 | `aisManifestGenBackend` | No | - | Existing backend name used by MSFS for AIStore LIST/STAT-DIR delegation |
+
+## Performance tuning reference
+
+The attributes above select *what* to mount. The ones below control *how well*
+it performs, and every one of them is optional. Defaults are MSFS defaults, not
+CSI-specific.
+
+### Mount-wide tuning
+
+These apply to the whole volume rather than to one backend, so they are always
+flat `volumeAttributes` keys even when `backendsJson` is used.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `cacheLineSize` | `10485760` (10 MiB) | Fetch and residency granularity. Larger suits sequential access; smaller suits random access. |
+| `cacheLines` | `128` | Number of cache lines provisioned. **With the defaults this is only ~1.25 GiB of cache.** Size it to your working set. |
+| `cacheLinesToPrefetch` | `4` | Read-ahead depth for sequential reads. |
+| `dirtyCacheLinesFlushTrigger` | `80` | Dirty cache lines that trigger a background flush. |
+| `dirtyCacheLinesMax` | `90` | Hard ceiling on dirty cache lines. |
+| `writeCommitWorkers` | `32` | Small objects committed concurrently. File-level concurrency, separate from `uploadPartConcurrency`. |
+| `writeCommitQueueDepth` | `256` | Detached commits allowed to queue before release applies backpressure. |
+| `writeCachePromotion` | `false` | Admit bytes retained from a successful write into the read cache, with no extra GET. |
+| `allowOther` | - | Set `"true"` to allow users other than the mounting user to access the mount. |
+
+**Cache sizing is the highest-impact knob.** The default of 128 x 10 MiB is
+about 1.25 GiB; the read benchmarks in the
+[MSFS user guide](https://nvidia.github.io/multi-storage-client/user_guide/multi_storage_file_system.html)
+used `cacheLines: 10000`, roughly 100 GiB. Capacity is a hard bound and eviction
+is LRU, so a dataset larger than the cache holds only its active working set.
+The cache lives in the CSI DaemonSet pod, so budget its memory limit
+accordingly — `cacheLineSize x cacheLines` per mounted volume, on every node.
+
+### Per-backend tuning
+
+Valid as flat keys for a single-backend volume, and as fields inside each
+`backendsJson` entry. Numeric values are strings in `backendsJson`
+(e.g. `"uid": "1000"`).
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `uid` / `gid` | mounting user | Owner reported for every file and directory. |
+| `dirPerm` | `555` ro / `777` rw | Directory permission bits, 3-digit octal. |
+| `filePerm` | `444` ro / `666` rw | File permission bits, 3-digit octal. Objects carry no mode, so this is backend-wide policy and `chmod` is accepted but not applied. |
+| `flushOnClose` | `false` | When `"true"`, `close()` waits for the backend commit. When false, the commit is asynchronous and `fsync()` is the durability barrier. |
+| `multipartUploadThresholdBytes` | `67108864` (64 MiB) | Buffered size at which a new object is promoted from a single `PutObject` to a streaming multipart upload. `0` disables deferral. |
+| `multipartCacheLineThreshold` | `512` | Files fitting in this many cache lines upload in a single PUT. |
+| `uploadPartCacheLines` | `32` | Cache lines per multipart part, so part size is this times `cacheLineSize`. |
+| `uploadPartConcurrency` | `32` | Parts uploaded in parallel for one file. |
+| `directoryPageSize` | `0` | Directory entries fetched per page; `0` uses the endpoint default. |
+| `traceLevel` | `0` | `1` traces errors, `2` adds successes, `>2` adds detail. |
+
+Writes require `readonly: "false"`, which is **not** the default. See the write
+durability semantics in
+[`multi-storage-file-system/README.md`](../README.md#write-durability-semantics).
+
+### Settings that cannot be set through CSI
+
+The driver generates `msfs.yaml` from `volumeAttributes` and only emits the keys
+above. These MSFS settings have no `volumeAttributes` equivalent today:
+
+| Setting | Why it matters |
+|---|---|
+| `process_memory_limit` | Go soft-memory limit, **defaults to 4 GiB**. A large manifest ingest needs more, and below its working set the heap sits permanently above the limit and Go garbage-collects continuously, collapsing throughput. This is the most likely one to bite a large deployment. |
+| `fuse_workers`, `fuse_fd_per_worker` | FUSE concurrency. The default worker count is `runtime.NumCPU()`, which is too many on large hosts. |
+| `cache_storage`, `cache_dir_path` | Where cache lines live (`ram`, `mapped-file`, `per-inode-file`) and on which filesystem. Inside a DaemonSet pod this decides whether the cache consumes pod memory or node disk. |
+| `write_deferral_max_bytes` | Global ceiling on memory held by deferred writes across all backends. |
+| `auto_sighup_interval` | Periodic config reload. |
+
+If you need one of these, mount MSFS directly rather than through CSI, or file
+an issue — adding a key is a small, additive change to `writeConfig` in
+`pkg/driver/node.go`.
+
+### Worked example
+
+A writable, cache-heavy mount for a training workload:
+
+```yaml
+    volumeAttributes:
+      authType: irsa
+      bucketName: my-training-data
+      region: us-west-2
+      readonly: "false"
+      # ~40 GiB of cache on each node
+      cacheLineSize: "10485760"
+      cacheLines: "4096"
+      cacheLinesToPrefetch: "4"
+      # write path
+      flushOnClose: "false"
+      multipartUploadThresholdBytes: "67108864"
+      writeCommitWorkers: "32"
+      writeCachePromotion: "true"
+```
+
+Remember to raise the DaemonSet's memory limit to match the cache you asked for.
 
 ## Multiple backends in one volume
 
