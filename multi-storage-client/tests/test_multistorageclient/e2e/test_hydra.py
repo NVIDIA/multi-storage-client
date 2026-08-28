@@ -23,6 +23,12 @@ from omegaconf import DictConfig
 
 from test_multistorageclient.unit.utils import tempdatastore
 
+# https://github.com/hydra-ecosystem/hydra/issues/3121
+pytestmark = pytest.mark.skipif(
+    sys.version_info >= (3, 14),
+    reason="CLI for Hydra 1.3 is broken on Python 3.14+. Re-enable once Hydra 1.4 is stable.",
+)
+
 
 def test_hydra_simple_msc_loading(monkeypatch):
     with tempdatastore.TemporaryPOSIXDirectory() as temp_store:
