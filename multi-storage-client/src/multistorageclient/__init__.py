@@ -15,6 +15,7 @@
 
 import importlib
 from importlib.metadata import version
+from typing import TYPE_CHECKING
 
 from .cache import CacheConfig
 from .client import StorageClient
@@ -89,9 +90,16 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str):
-    if name in ["numpy", "pickle", "os", "async_fs", "torch", "ray", "hydra"]:
-        module = importlib.import_module(f"{__package__}.contrib.{name}")
-        globals()[name] = module  # Cache for subsequent access
-        return module
-    raise AttributeError(f"module {__name__} has no attribute {name}")
+if TYPE_CHECKING:
+    # Declared for type checkers only; imported lazily at runtime by the __getattr__ below. A
+    # module-level __getattr__ that a type checker can see makes every attribute resolve to Any,
+    # which would silently disable type checking for anything reached through this module.
+    from .contrib import async_fs, hydra, numpy, os, pickle, ray, torch  # noqa: F401
+else:
+
+    def __getattr__(name: str):
+        if name in ["numpy", "pickle", "os", "async_fs", "torch", "ray", "hydra"]:
+            module = importlib.import_module(f"{__package__}.contrib.{name}")
+            globals()[name] = module  # Cache for subsequent access
+            return module
+        raise AttributeError(f"module {__name__} has no attribute {name}")

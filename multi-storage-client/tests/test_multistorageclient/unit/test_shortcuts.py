@@ -419,7 +419,9 @@ def verify_shortcuts(profile: str, prefix: str):
         fp.write(arr.tobytes())
     msc.commit_metadata(f"msc://{profile}")
 
-    assert np.array_equal(msc.numpy.load(f"msc://{profile}/{prefix}/folder/arr-01.npy"), arr)
+    loaded = msc.numpy.load(f"msc://{profile}/{prefix}/folder/arr-01.npy")
+    assert isinstance(loaded, np.ndarray)
+    assert np.array_equal(loaded, arr)
     assert np.array_equal(
         msc.numpy.memmap(f"msc://{profile}/{prefix}/folder/arr-01.bin", dtype=np.int32, shape=(5,)),
         arr,

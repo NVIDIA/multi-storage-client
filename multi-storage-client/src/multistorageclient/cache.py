@@ -27,6 +27,7 @@ from typing import Any
 import xattr
 from filelock import BaseFileLock, FileLock, Timeout
 
+from . import _xattr
 from .caching.cache_config import CacheConfig
 from .caching.cache_item import CacheItem
 from .caching.eviction_policy import FIFO, LRU, MRU, NO_EVICTION, RANDOM, EvictionPolicyFactory
@@ -379,7 +380,7 @@ class CacheManager:
 
             # Verify etag matches if checking is enabled
             try:
-                xattr_value = xattr.getxattr(file_path, "user.etag")
+                xattr_value = _xattr.getxattr(file_path, "user.etag")
                 stored_version = xattr_value.decode("utf-8")
                 return stored_version is not None and stored_version == source_version
             except OSError:
@@ -580,8 +581,8 @@ class CacheManager:
 
         try:
             # Validate chunk metadata
-            chunk_etag = xattr.getxattr(chunk_path, "user.etag").decode("utf-8")
-            stored_cache_line_size = int(xattr.getxattr(chunk_path, "user.cache_line_size").decode("utf-8"))
+            chunk_etag = _xattr.getxattr(chunk_path, "user.etag").decode("utf-8")
+            stored_cache_line_size = int(_xattr.getxattr(chunk_path, "user.cache_line_size").decode("utf-8"))
 
             # Check if chunk is invalid
             if (source_version and chunk_etag != source_version) or stored_cache_line_size != cache_line_size:
@@ -755,7 +756,7 @@ class CacheManager:
     def _get_chunk_object_size(self, chunk_path: str) -> int | None:
         """Return the stored object size for a chunk, if available."""
         try:
-            return int(xattr.getxattr(chunk_path, "user.size").decode("utf-8"))
+            return int(_xattr.getxattr(chunk_path, "user.size").decode("utf-8"))
         except (OSError, ValueError):
             return None
 
@@ -930,7 +931,7 @@ class CacheManager:
         if os.path.exists(cache_path):
             try:
                 # Validate the full cached file's etag
-                cached_etag = xattr.getxattr(cache_path, "user.etag").decode("utf-8")
+                cached_etag = _xattr.getxattr(cache_path, "user.etag").decode("utf-8")
                 if cached_etag == source_version or source_version is None:
                     # Full file is cached and valid, read range directly from it
                     with open(cache_path, "rb") as f:

@@ -21,6 +21,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: Implementation :: PyPy",
     "Programming Language :: Rust"
@@ -30,9 +31,9 @@ dependencies = [
     "jmespath>=1.0.1,<2",
     "jsonschema>=4,<5",
     "python-dateutil>=2.9,<3",
-    "pyyaml>=6.0.1,<7",
+    "pyyaml>=6.0.3,<7",
     "opentelemetry-api>=1.24,<2",
-    "xattr>=1.1.4,<2",
+    "xattr>=1.3.0,<2",
     "wcmatch>=10,<11",
     "tqdm>=4.67.1,<5",
     "lark>=1.2.2,<2",
@@ -110,7 +111,10 @@ hydra-core = [
     "hydra-core>=1.3,<2"
 ]
 numpy = [
-    "numpy>=2.1,<3"
+    # 2.3.2 is the first release with Python 3.14 wheels, but every numpy from 2.3.2 on requires
+    # Python 3.11+, so the floor can't be raised unconditionally while we still support 3.10.
+    "numpy>=2.1,<3; python_version<'3.14'",
+    "numpy>=2.3.2,<3; python_version>='3.14'"
 ]
 ray = [
     "ray>=2.56,<3"

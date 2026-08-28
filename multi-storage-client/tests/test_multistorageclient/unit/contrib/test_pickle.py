@@ -77,9 +77,10 @@ def test_pickle_dump(sample_data):
         result = msc.pickle.load(msc.Path(temp.name))
         assert result == sample_data
 
-        # Test dump with msc.open (file-like object)
-        with pytest.raises(NotImplementedError):
-            msc.pickle.dump(sample_data, msc.open(msc_path, "wb"))
+        # Test dump with msc.open (file-like object). The wrong argument type is the point of the
+        # test: dump only accepts a path, and passing a file object must raise.
+        with pytest.raises(NotImplementedError), msc.open(msc_path, "wb") as file:
+            msc.pickle.dump(sample_data, file)  # pyright: ignore[reportArgumentType]
 
 
 @pytest.mark.parametrize(
