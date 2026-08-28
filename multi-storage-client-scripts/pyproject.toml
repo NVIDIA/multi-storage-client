@@ -1,6 +1,6 @@
 [build-system]
 requires = [
-    "uv_build>=0.12.3,<0.13"
+    "uv_build>=0.12.7,<0.13"
 ]
 build-backend = "uv_build"
 
@@ -13,7 +13,7 @@ classifiers = [
 ]
 dependencies = [
     "multi-storage-client",
-    "dulwich>=1.2.12,<2",
+    "dulwich>=1.2.13,<2",
     "githubkit>=0.16.1,<1",
     "httpx-retries>=0.6,<1",
     "packaging>=26.3,<27"
