@@ -86,6 +86,7 @@ class Telemetry:
         LATENCY = "multistorageclient.latency"
         DATA_SIZE = "multistorageclient.data_size"
         DATA_RATE = "multistorageclient.data_rate"
+        FILE_DESCRIPTOR_DURATION = "multistorageclient.file_descriptor.duration"
 
     # https://opentelemetry.io/docs/specs/semconv/general/metrics#units
     _GAUGE_UNIT_MAPPING: ClassVar[dict[GaugeName, str]] = {
@@ -95,6 +96,8 @@ class Telemetry:
         GaugeName.DATA_SIZE: "By",
         # Bytes/second.
         GaugeName.DATA_RATE: "By/s",
+        # Seconds.
+        GaugeName.FILE_DESCRIPTOR_DURATION: "s",
     }
 
     # https://opentelemetry.io/docs/specs/semconv/general/naming#metrics
@@ -113,6 +116,15 @@ class Telemetry:
         CounterName.DATA_SIZE_SUM: "By",
     }
 
+    # https://opentelemetry.io/docs/specs/semconv/general/naming#metrics
+    class UpDownCounterName(enum.Enum):
+        FILE_DESCRIPTOR_OPEN = "multistorageclient.file_descriptor.open"
+
+    # https://opentelemetry.io/docs/specs/semconv/general/metrics#units
+    _UP_DOWN_COUNTER_UNIT_MAPPING: ClassVar[dict[UpDownCounterName, str]] = {
+        UpDownCounterName.FILE_DESCRIPTOR_OPEN: "{file_descriptor}",
+    }
+
     # Map of config as a sorted JSON string (since dictionaries can't be hashed) to meter provider.
     _meter_provider_cache: dict[str, api_metrics.MeterProvider]
     _meter_provider_cache_lock: threading.Lock
@@ -125,6 +137,9 @@ class Telemetry:
     # Map of config as a sorted JSON string (since dictionaries can't be hashed) to counter name to counter.
     _counter_cache: dict[str, dict[CounterName, api_metrics.Counter]]
     _counter_cache_lock: threading.Lock
+    # Map of config as a sorted JSON string (since dictionaries can't be hashed) to up-down counter name to counter.
+    _up_down_counter_cache: dict[str, dict[UpDownCounterName, api_metrics.UpDownCounter]]
+    _up_down_counter_cache_lock: threading.Lock
     # Map of config as a sorted JSON string (since dictionaries can't be hashed) to tracer provider.
     _tracer_provider_cache: dict[str, api_trace.TracerProvider]
     _tracer_provider_cache_lock: threading.Lock
@@ -141,6 +156,8 @@ class Telemetry:
         self._gauge_cache_lock = threading.Lock()
         self._counter_cache = {}
         self._counter_cache_lock = threading.Lock()
+        self._up_down_counter_cache = {}
+        self._up_down_counter_cache_lock = threading.Lock()
         self._tracer_provider_cache = {}
         self._tracer_provider_cache_lock = threading.Lock()
         self._tracer_cache = {}
@@ -157,6 +174,7 @@ class Telemetry:
         self._meter_cache_lock = threading.Lock()
         self._gauge_cache_lock = threading.Lock()
         self._counter_cache_lock = threading.Lock()
+        self._up_down_counter_cache_lock = threading.Lock()
         self._tracer_provider_cache_lock = threading.Lock()
         self._tracer_cache_lock = threading.Lock()
 
@@ -263,6 +281,31 @@ class Telemetry:
                         name,
                         meter.create_counter(name=name.value, unit=Telemetry._COUNTER_UNIT_MAPPING.get(name, "")),
                     )
+
+    def up_down_counter(self, config: dict[str, Any], name: UpDownCounterName) -> api_metrics.UpDownCounter | None:
+        """
+        Create or return an existing :py:class:`api_metrics.UpDownCounter` for a config and counter name.
+
+        :param config: ``.opentelemetry.metrics`` config dict.
+        :param name: Up-down counter name.
+        :return: A :py:class:`api_metrics.UpDownCounter` or ``None`` if no valid exporter is configured.
+        """
+        config_json = json.dumps(config, sort_keys=True)
+        with self._up_down_counter_cache_lock:
+            if config_json in self._up_down_counter_cache and name in self._up_down_counter_cache[config_json]:
+                return self._up_down_counter_cache[config_json][name]
+
+            meter = self.meter(config=config)
+            if meter is None:
+                return None
+
+            return self._up_down_counter_cache.setdefault(config_json, {}).setdefault(
+                name,
+                meter.create_up_down_counter(
+                    name=name.value,
+                    unit=Telemetry._UP_DOWN_COUNTER_UNIT_MAPPING.get(name, ""),
+                ),
+            )
 
     def tracer_provider(self, config: dict[str, Any]) -> api_trace.TracerProvider | None:
         """
@@ -448,10 +491,19 @@ TelemetryManager.register(
     ],
 )
 TelemetryManager.register(
+    typeid=_fully_qualified_name(api_metrics.UpDownCounter),
+    exposed=[
+        name
+        for name, _ in inspect.getmembers(api_metrics.UpDownCounter, predicate=inspect.isfunction)
+        if not name.startswith("_")
+    ],
+)
+TelemetryManager.register(
     typeid=_fully_qualified_name(api_metrics.Meter),
     method_to_typeid={
         api_metrics.Meter.create_gauge.__name__: _fully_qualified_name(api_metrics._Gauge),
         api_metrics.Meter.create_counter.__name__: _fully_qualified_name(api_metrics.Counter),
+        api_metrics.Meter.create_up_down_counter.__name__: _fully_qualified_name(api_metrics.UpDownCounter),
     },
 )
 TelemetryManager.register(
@@ -497,6 +549,7 @@ TelemetryManager.register(
         Telemetry.meter.__name__: _fully_qualified_name(api_metrics.Meter),
         Telemetry.gauge.__name__: _fully_qualified_name(api_metrics._Gauge),
         Telemetry.counter.__name__: _fully_qualified_name(api_metrics.Counter),
+        Telemetry.up_down_counter.__name__: _fully_qualified_name(api_metrics.UpDownCounter),
         Telemetry.tracer_provider.__name__: _fully_qualified_name(api_trace.TracerProvider),
         Telemetry.tracer.__name__: _fully_qualified_name(api_trace.Tracer),
     },

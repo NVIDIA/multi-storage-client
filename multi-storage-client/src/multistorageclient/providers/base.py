@@ -26,6 +26,7 @@ from abc import abstractmethod
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from enum import Enum
+from functools import partial
 from typing import IO, Any, ClassVar, NamedTuple, TypeVar, cast
 
 import opentelemetry.metrics as api_metrics
@@ -182,6 +183,7 @@ class BaseStorageProvider(StorageProvider):
         PROVIDER = "multistorageclient.provider"
         OPERATION = "multistorageclient.operation"
         STATUS = "multistorageclient.status"
+        FILE_MODE = "multistorageclient.file.mode"
 
     class _Operation(Enum):
         READ = "read"
@@ -212,6 +214,7 @@ class BaseStorageProvider(StorageProvider):
     _metric_init_event: threading.Event
     _metric_gauges: dict[Telemetry.GaugeName, api_metrics._Gauge | None]
     _metric_counters: dict[Telemetry.CounterName, api_metrics.Counter | None]
+    _metric_up_down_counters: dict[Telemetry.UpDownCounterName, api_metrics.UpDownCounter | None]
     _metric_attributes_providers: Sequence[AttributesProvider]
     _metric_init_lock: threading.Lock
 
@@ -232,6 +235,7 @@ class BaseStorageProvider(StorageProvider):
         self._metric_init_event = threading.Event()
         self._metric_gauges = {}
         self._metric_counters = {}
+        self._metric_up_down_counters = {}
         self._metric_attributes_providers = ()
         self._metric_init_lock = threading.Lock()
 
@@ -279,6 +283,10 @@ class BaseStorageProvider(StorageProvider):
                                     self._metric_gauges[name] = telemetry.gauge(config=metrics_config, name=name)
                                 for name in Telemetry.CounterName:
                                     self._metric_counters[name] = telemetry.counter(config=metrics_config, name=name)
+                                for name in Telemetry.UpDownCounterName:
+                                    self._metric_up_down_counters[name] = telemetry.up_down_counter(
+                                        config=metrics_config, name=name
+                                    )
 
                                 attributes_provider_configs: list[dict[str, Any]] | None = metrics_config.get(
                                     "attributes"
@@ -406,6 +414,55 @@ class BaseStorageProvider(StorageProvider):
             BaseStorageProvider._AttributeName.PROVIDER.value: self._provider_name,
             BaseStorageProvider._AttributeName.OPERATION.value: operation.value,
         }
+
+    def _record_file_descriptor_open(self, mode: str) -> Callable[[float], None]:
+        """Record a successfully opened POSIX file descriptor without affecting file operations."""
+        attributes: api_types.Attributes = {
+            BaseStorageProvider._AttributeName.VERSION.value: self._VERSION,
+            BaseStorageProvider._AttributeName.PROVIDER.value: self._provider_name,
+            BaseStorageProvider._AttributeName.FILE_MODE.value: mode,
+        }
+        open_counter: api_metrics.UpDownCounter | None = None
+        try:
+            if not self._metric_init_event.is_set():
+                self._init_metrics()
+
+            attributes = {
+                **(collect_attributes(attributes_providers=self._metric_attributes_providers) or {}),
+                **attributes,
+            }
+            metric = self._metric_up_down_counters.get(Telemetry.UpDownCounterName.FILE_DESCRIPTOR_OPEN)
+            if metric is not None:
+                metric.add(1, attributes=attributes)
+                open_counter = metric
+        except Exception as error:
+            logger.warning("Failed to record open file descriptor metric: %s", error, exc_info=True)
+
+        return partial(
+            self._record_file_descriptor_close,
+            attributes=attributes,
+            open_counter=open_counter,
+        )
+
+    def _record_file_descriptor_close(
+        self,
+        duration: float,
+        attributes: api_types.Attributes,
+        open_counter: api_metrics.UpDownCounter | None,
+    ) -> None:
+        """Record a released POSIX file descriptor without affecting file operations."""
+        if open_counter is not None:
+            try:
+                open_counter.add(-1, attributes=attributes)
+            except Exception as error:
+                logger.warning("Failed to record closed file descriptor metric: %s", error, exc_info=True)
+
+        try:
+            metric_duration = self._metric_gauges.get(Telemetry.GaugeName.FILE_DESCRIPTOR_DURATION)
+            if metric_duration is not None:
+                metric_duration.set(duration, attributes=attributes)
+        except Exception as error:
+            logger.warning("Failed to record file descriptor duration metric: %s", error, exc_info=True)
 
     def _build_status_attributes(
         self, base_attributes: api_types.Attributes, error_type: str | None
