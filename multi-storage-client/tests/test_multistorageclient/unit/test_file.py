@@ -16,13 +16,45 @@
 import functools
 import mmap
 import os
+from unittest.mock import Mock, patch
 
 import pytest
 
 from multistorageclient import StorageClient, StorageClientConfig, telemetry
-from multistorageclient.file import PosixFile
+from multistorageclient.file import ObjectFile, PosixFile, RemoteFileReader
+from multistorageclient.providers.base import BaseStorageProvider
 from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
+
+
+def _posix_client_with_file_descriptor_metrics(tmp_path):
+    duration_gauge = Mock()
+    open_counter = Mock()
+    telemetry_provider = Mock(spec=telemetry.Telemetry)
+    telemetry_provider.gauge.side_effect = lambda config, name: (
+        duration_gauge if name is telemetry.Telemetry.GaugeName.FILE_DESCRIPTOR_DURATION else Mock()
+    )
+    telemetry_provider.counter.return_value = Mock()
+    telemetry_provider.up_down_counter.return_value = open_counter
+
+    profile = "data"
+    config = StorageClientConfig.from_dict(
+        config_dict={
+            "profiles": {profile: {"storage_provider": {"type": "file", "options": {"base_path": str(tmp_path)}}}},
+            "opentelemetry": {
+                "metrics": {
+                    "attributes": [
+                        {"type": "host", "options": {"attributes": {"node": "name"}}},
+                        {"type": "process", "options": {"attributes": {"process": "pid"}}},
+                    ],
+                    "exporter": {"type": "console"},
+                }
+            },
+        },
+        profile=profile,
+        telemetry_provider=lambda: telemetry_provider,
+    )
+    return StorageClient(config=config), duration_gauge, open_counter
 
 
 @pytest.mark.parametrize(
@@ -239,3 +271,133 @@ def test_file_read_does_not_create_parent_dirs(temp_data_store_type: type[tempda
             f.read()
 
         assert not os.path.exists(full_dir_path)
+
+
+def test_posix_file_descriptor_metrics_context_manager_and_attributes(tmp_path):
+    storage_client, duration_gauge, open_counter = _posix_client_with_file_descriptor_metrics(tmp_path)
+
+    with storage_client.open("file.txt", "wb") as file:
+        assert isinstance(file, PosixFile)
+        assert [metric_call.args[0] for metric_call in open_counter.add.call_args_list] == [1]
+
+    assert [metric_call.args[0] for metric_call in open_counter.add.call_args_list] == [1, -1]
+    assert sum(metric_call.args[0] for metric_call in open_counter.add.call_args_list) == 0
+    assert duration_gauge.set.call_count == 1
+
+    opened_attributes = open_counter.add.call_args_list[0].kwargs["attributes"]
+    closed_attributes = open_counter.add.call_args_list[1].kwargs["attributes"]
+    duration_attributes = duration_gauge.set.call_args.kwargs["attributes"]
+    assert opened_attributes is closed_attributes
+    assert opened_attributes is duration_attributes
+    assert opened_attributes["multistorageclient.provider"] == "file"
+    assert opened_attributes["multistorageclient.file.mode"] == "wb"
+    assert "multistorageclient.version" in opened_attributes
+    assert "node" in opened_attributes
+    assert "process" in opened_attributes
+    assert all("path" not in key for key in opened_attributes)
+
+
+def test_posix_file_descriptor_metrics_explicit_close_only_records_once(tmp_path):
+    storage_client, duration_gauge, open_counter = _posix_client_with_file_descriptor_metrics(tmp_path)
+
+    file = storage_client.open("file.txt", "wb")
+    file.close()
+    file.close()
+    file.discard()
+
+    assert [metric_call.args[0] for metric_call in open_counter.add.call_args_list] == [1, -1]
+    assert duration_gauge.set.call_count == 1
+
+
+def test_posix_file_descriptor_metrics_discard_only_records_once(tmp_path):
+    storage_client, duration_gauge, open_counter = _posix_client_with_file_descriptor_metrics(tmp_path)
+
+    file = storage_client.open("file.txt", "wb")
+    file.write(b"discarded")
+    file.discard()
+    file.discard()
+    file.close()
+
+    assert [metric_call.args[0] for metric_call in open_counter.add.call_args_list] == [1, -1]
+    assert duration_gauge.set.call_count == 1
+    assert not (tmp_path / "file.txt").exists()
+
+
+def test_posix_file_descriptor_metrics_open_failure_does_not_increment_counter(tmp_path):
+    storage_client, duration_gauge, open_counter = _posix_client_with_file_descriptor_metrics(tmp_path)
+
+    with pytest.raises(FileNotFoundError):
+        storage_client.open("missing.txt", "rb")
+
+    open_counter.add.assert_not_called()
+    duration_gauge.set.assert_not_called()
+
+
+def test_posix_file_descriptor_counter_increment_failure_does_not_decrement(tmp_path):
+    storage_client, duration_gauge, open_counter = _posix_client_with_file_descriptor_metrics(tmp_path)
+    open_counter.add.side_effect = RuntimeError("counter unavailable")
+
+    with storage_client.open("file.txt", "wb") as file:
+        file.write(b"content")
+
+    assert file.closed
+    assert [metric_call.args[0] for metric_call in open_counter.add.call_args_list] == [1]
+    assert duration_gauge.set.call_count == 1
+
+
+def test_posix_file_descriptor_duration_excludes_atomic_rename(tmp_path):
+    storage_client, duration_gauge, _ = _posix_client_with_file_descriptor_metrics(tmp_path)
+    clock = [10.0]
+    real_rename = os.rename
+
+    def delayed_rename(source, destination):
+        clock[0] = 100.0
+        real_rename(source, destination)
+
+    with (
+        patch("multistorageclient.file.time.perf_counter", side_effect=lambda: clock[0]),
+        patch("multistorageclient.file.os.rename", side_effect=delayed_rename),
+    ):
+        file = storage_client.open("file.txt", "wb")
+        clock[0] = 14.0
+        file.close()
+
+    assert duration_gauge.set.call_args.args[0] == 4.0
+    assert clock[0] == 100.0
+
+
+def test_non_posix_files_do_not_record_file_descriptor_metrics():
+    provider = Mock(spec=BaseStorageProvider)
+    storage_client = Mock()
+    storage_client._storage_provider = provider
+    storage_client._cache_manager = None
+
+    object_file = ObjectFile(storage_client=storage_client, remote_path="object", mode="wb")
+    object_file.close()
+
+    remote_file = RemoteFileReader(remote_path="remote", file_size=0, storage_client=storage_client)
+    remote_file.fileno()
+    remote_file.close()
+
+    provider._record_file_descriptor_open.assert_not_called()
+    provider._record_file_descriptor_close.assert_not_called()
+
+
+def test_posix_file_descriptor_telemetry_failures_do_not_affect_file_lifecycle(tmp_path):
+    storage_client, _, _ = _posix_client_with_file_descriptor_metrics(tmp_path)
+    provider = storage_client._storage_provider
+
+    with patch.object(provider, "_record_file_descriptor_open", side_effect=RuntimeError("open telemetry failed")):
+        file = storage_client.open("file.txt", "wb")
+        file.write(b"content")
+        file.close()
+
+    with patch.object(provider, "_record_file_descriptor_close", side_effect=RuntimeError("close telemetry failed")):
+        another_file = storage_client.open("another-file.txt", "wb")
+        another_file.write(b"other content")
+        another_file.close()
+
+    assert file.closed
+    assert another_file.closed
+    assert (tmp_path / "file.txt").read_bytes() == b"content"
+    assert (tmp_path / "another-file.txt").read_bytes() == b"other content"

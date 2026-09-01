@@ -21,8 +21,9 @@ import logging
 import os
 import tempfile
 import threading
+import time
 import types
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from io import BytesIO, IOBase, StringIO
 from typing import IO, TYPE_CHECKING, Any, cast
 
@@ -655,7 +656,6 @@ class PosixFile(IOBase, IO):
         atomic: bool = True,
         attributes: dict[str, Any] | None = None,
     ):
-        # Store storage_client for emitting metrics
         self._storage_client = storage_client
 
         # If metadata provider is enabled, resolve the logical path to physical path.
@@ -668,7 +668,8 @@ class PosixFile(IOBase, IO):
             realpath = path
 
         # Required to get the absolute POSIX path.
-        self._real_path = cast(BaseStorageProvider, storage_client._storage_provider)._prepend_base_path(realpath)
+        storage_provider = cast(BaseStorageProvider, storage_client._storage_provider)
+        self._real_path = storage_provider._prepend_base_path(realpath)
 
         self._path = path
         self._mode = mode
@@ -686,6 +687,13 @@ class PosixFile(IOBase, IO):
             self._file = open(self._temp_path, mode=mode, buffering=buffering, encoding=encoding)  # noqa: SIM115
         else:
             self._file = open(self._real_path, mode=mode, buffering=buffering, encoding=encoding)  # noqa: SIM115
+
+        self._file_descriptor_open_time = time.perf_counter()
+        self._file_descriptor_close_callback: Callable[[float], None] | None = None
+        try:
+            self._file_descriptor_close_callback = storage_provider._record_file_descriptor_open(mode=self._mode)
+        except Exception as error:
+            logger.warning("Failed to initialize file descriptor metrics: %s", error, exc_info=True)
 
         self._attributes = attributes
 
@@ -784,7 +792,11 @@ class PosixFile(IOBase, IO):
         if self.closed:
             return
 
-        self._file.close()
+        try:
+            self._file.close()
+        finally:
+            if self._file.closed:
+                self._record_file_descriptor_release()
 
         if self._atomic and "w" in self._mode:
             # Rename the temporary file to the target file
@@ -813,5 +825,19 @@ class PosixFile(IOBase, IO):
             return
 
         if self._atomic and "w" in self._mode:
-            self._file.close()
+            try:
+                self._file.close()
+            finally:
+                if self._file.closed:
+                    self._record_file_descriptor_release()
             os.unlink(self._temp_path)
+
+    def _record_file_descriptor_release(self) -> None:
+        if self._file_descriptor_close_callback is None:
+            return
+
+        duration = time.perf_counter() - self._file_descriptor_open_time
+        try:
+            self._file_descriptor_close_callback(duration)
+        except Exception as error:
+            logger.warning("Failed to finalize file descriptor metrics: %s", error, exc_info=True)

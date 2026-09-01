@@ -21,7 +21,7 @@ from typing import Any
 import psutil
 import pytest
 from opentelemetry.context import get_current
-from opentelemetry.metrics import Counter, Meter, MeterProvider, _Gauge
+from opentelemetry.metrics import Counter, Meter, MeterProvider, UpDownCounter, _Gauge
 from opentelemetry.trace import Span, Tracer, TracerProvider, use_span
 
 from multistorageclient import telemetry
@@ -41,6 +41,7 @@ def test_telemetry_init_local() -> None:
     meter_str: str | None = None
     gauge_str: str | None = None
     counter_str: str | None = None
+    up_down_counter_str: str | None = None
     tracer_provider_str: str | None = None
     tracer_str: str | None = None
 
@@ -98,6 +99,21 @@ def test_telemetry_init_local() -> None:
             assert counter_str == str(counter)
 
         counter.add(1)
+
+        up_down_counter: UpDownCounter | None = telemetry_resources.up_down_counter(
+            config=opentelemetry_config["metrics"],
+            name=telemetry.Telemetry.UpDownCounterName.FILE_DESCRIPTOR_OPEN,
+        )
+        assert up_down_counter is not None
+        assert not isinstance(up_down_counter, BaseProxy)
+
+        if up_down_counter_str is None:
+            up_down_counter_str = str(up_down_counter)
+        else:
+            assert up_down_counter_str == str(up_down_counter)
+
+        up_down_counter.add(1)
+        up_down_counter.add(-1)
 
         tracer_provider: TracerProvider | None = telemetry_resources.tracer_provider(opentelemetry_config["traces"])
         assert tracer_provider is not None
@@ -321,14 +337,42 @@ def test_metric_instrument_proxies_expose_mutating_methods() -> None:
     registry = telemetry.TelemetryManager._registry  # pyright: ignore [reportAttributeAccessIssue]
     counter_exposed = registry[telemetry._fully_qualified_name(Counter)][1]
     gauge_exposed = registry[telemetry._fully_qualified_name(_Gauge)][1]
+    up_down_counter_exposed = registry[telemetry._fully_qualified_name(UpDownCounter)][1]
 
     assert counter_exposed is not None and "add" in counter_exposed
     assert gauge_exposed is not None and "set" in gauge_exposed
+    assert up_down_counter_exposed is not None and "add" in up_down_counter_exposed
 
     # The constructor must stay unexposed: an exposed ``__init__`` would override
     # ``BaseProxy.__init__`` and break proxy construction.
     assert "__init__" not in counter_exposed
     assert "__init__" not in gauge_exposed
+    assert "__init__" not in up_down_counter_exposed
+
+
+def test_file_descriptor_metric_names_and_units() -> None:
+    duration_name = telemetry.Telemetry.GaugeName.FILE_DESCRIPTOR_DURATION
+    open_name = telemetry.Telemetry.UpDownCounterName.FILE_DESCRIPTOR_OPEN
+
+    assert duration_name.value == "multistorageclient.file_descriptor.duration"
+    assert telemetry.Telemetry._GAUGE_UNIT_MAPPING[duration_name] == "s"
+    assert open_name.value == "multistorageclient.file_descriptor.open"
+    assert telemetry.Telemetry._UP_DOWN_COUNTER_UNIT_MAPPING[open_name] == "{file_descriptor}"
+
+
+def test_up_down_counter_manager_proxy() -> None:
+    opentelemetry_config = {"metrics": {"exporter": {"type": telemetry._fully_qualified_name(InMemoryMetricExporter)}}}
+    telemetry_resources = telemetry.init(mode=telemetry.TelemetryMode.SERVER)
+
+    up_down_counter = telemetry_resources.up_down_counter(
+        config=opentelemetry_config["metrics"],
+        name=telemetry.Telemetry.UpDownCounterName.FILE_DESCRIPTOR_OPEN,
+    )
+
+    assert up_down_counter is not None
+    assert isinstance(up_down_counter, BaseProxy)
+    up_down_counter.add(1)
+    up_down_counter.add(-1)
 
 
 def _test_telemetry_init_automatic() -> None:

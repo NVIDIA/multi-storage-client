@@ -217,6 +217,61 @@ Storage Provider
 
         * Operation End
 
+   ``multistorageclient.file_descriptor.duration``
+      The time a :py:class:`multistorageclient.file.PosixFile` held its underlying file descriptor, from a
+      successful open until the descriptor was released by ``close()`` or ``discard()``. The duration excludes
+      the time spent opening the file and work performed after release, such as atomic rename, extended attribute
+      updates, or temporary-file removal.
+
+      * Operations:
+
+        * POSIX file descriptor release
+
+      * Metric data point:
+
+        * Gauge
+
+      * Unit:
+
+        * Seconds
+
+      * Attributes:
+
+        * ``multistorageclient.version``
+        * ``multistorageclient.provider`` (always ``file``)
+        * ``multistorageclient.file.mode`` (e.g. ``rb``, ``wb``)
+        * Configured metric attributes (e.g. node and process)
+
+      * Timestamp:
+
+        * File Descriptor Release
+
+   ``multistorageclient.file_descriptor.open``
+      The number of currently open file descriptors owned by :py:class:`multistorageclient.file.PosixFile`.
+      A synchronous UpDownCounter adds one after the underlying file is opened successfully and subtracts one
+      after it is released by ``close()`` or ``discard()``.
+
+      * Operations:
+
+        * POSIX file descriptor open and release
+
+      * Metric data point:
+
+        * Non-monotonic Sum (UpDownCounter)
+
+      * Unit:
+
+        * File descriptors (``{file_descriptor}``)
+
+      * Attributes:
+
+        * ``multistorageclient.version``
+        * ``multistorageclient.provider`` (always ``file``)
+        * ``multistorageclient.file.mode`` (e.g. ``rb``, ``wb``)
+        * Configured metric attributes (e.g. node and process)
+
+      The increment and decrement for a file descriptor use identical attributes. File paths are not included.
+
    ``multistorageclient.data_size``
       The data (object/file) size for an operation.
 
