@@ -1326,6 +1326,50 @@ def test_concurrent_chunk_creation_with_locking():
         assert len(chunk_files) == 1, f"Expected 1 chunk0 file, found {len(chunk_files)}"
 
 
+def test_full_file_byte_range_read_is_served_from_cache(tmpdir):
+    """A full-file byte_range read must hit the cache on repeat instead of re-downloading the object."""
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        profile = "data"
+        config_dict = {
+            "profiles": {profile: temp_data_store.profile_config_dict() | {"caching_enabled": True}},
+            "cache": {
+                "size": "50M",
+                "cache_line_size": "1M",
+                "location": str(tmpdir),
+                "check_source_version": True,
+            },
+        }
+        storage_client = SingleStorageClient(config=StorageClientConfig.from_dict(config_dict, profile=profile))
+        provider = storage_client._storage_provider
+        content = b"x" * (3 * 1024 * 1024)
+        storage_client.write("data/x.bin", content)
+
+        # Exercise the remote cache path with a stable source version.
+        storage_client._is_posix_file_storage_provider = lambda: False  # type: ignore
+        original_get_object_metadata = provider.get_object_metadata
+
+        def get_object_metadata_with_etag(path: str, strict: bool = True):
+            metadata = original_get_object_metadata(path, strict=strict)
+            metadata.etag = "etag-1"
+            return metadata
+
+        provider.get_object_metadata = get_object_metadata_with_etag  # type: ignore
+        get_object_calls = 0
+        original_get_object = provider.get_object
+
+        def counting_get_object(path: str, byte_range: Range | None = None):
+            nonlocal get_object_calls
+            get_object_calls += 1
+            return original_get_object(path, byte_range=byte_range)
+
+        provider.get_object = counting_get_object  # type: ignore
+
+        for _ in range(3):
+            assert storage_client.read("data/x.bin", byte_range=Range(offset=0, size=len(content))) == content
+
+        assert get_object_calls == 1
+
+
 @pytest.mark.parametrize(
     argnames=["temp_data_store_type"],
     argvalues=[
