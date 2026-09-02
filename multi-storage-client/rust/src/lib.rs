@@ -884,18 +884,31 @@ impl RustClient {
         let concurrency = max_concurrency.unwrap_or(self.max_concurrency);
 
         future_into_py(py, async move {
-            let (start_offset, end_offset, total_size) = if let Some(byte_range) = range {
+            let (start_offset, total_size) = if let Some(byte_range) = range {
                 // Range read - no HEAD request needed, we know the exact range
-                let start_val = byte_range.offset;
-                let length = byte_range.size;
-                let end_val = start_val + length - 1;
-                (start_val, end_val, length)
+                (byte_range.offset, byte_range.size)
             } else {
                 // Full file download - need HEAD request to get total size for chunking
                 let result = store.head(&remote_path).await.map_err(StorageError::from)?;
-                let file_size = result.size;
-                (0, file_size - 1, file_size)
+                (0, result.size)
             };
+
+            // Zero-byte objects (or empty ranges) have nothing to fetch; return before the
+            // inclusive end offset below would underflow.
+            if total_size == 0 {
+                return Ok(PyBytes::new(bytes::Bytes::new()));
+            }
+            // `offset + size` must stay representable (the exclusive end `end_offset + 1` is used below).
+            let end_offset = start_offset
+                .checked_add(total_size)
+                .filter(|end| *end < u64::MAX)
+                .map(|end| end - 1)
+                .ok_or_else(|| {
+                    StorageError::ObjectStoreError(format!(
+                        "Invalid byte range: offset {} + size {} overflows",
+                        start_offset, total_size
+                    ))
+                })?;
 
             if total_size <= chunksize as u64 {
                 let range = start_offset..end_offset + 1;
