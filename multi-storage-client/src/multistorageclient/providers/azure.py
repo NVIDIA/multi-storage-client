@@ -497,7 +497,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
                         if 200 <= status_code < 300 or status_code == 404:
                             continue
                         raise RuntimeError(
-                            f"Azure batch delete failed with status_code: {status_code}, response: {response.text}"
+                            f"Azure batch delete failed with status_code: {status_code}, response: {response.text()}"
                         )
 
         container_desc = "(" + "|".join(by_container) + ")"
