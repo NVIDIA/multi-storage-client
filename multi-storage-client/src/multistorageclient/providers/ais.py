@@ -123,7 +123,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
         :param ca_cert: Path to a CA certificate file for SSL verification.
         :param timeout: Request timeout in seconds; a single float
             for both connect/read timeouts (e.g., ``5.0``), a tuple for separate connect/read
-            timeouts (e.g., ``(3.0, 10.0)``), or ``None`` to disable timeout.
+            timeouts (e.g., ``(3.0, 10.0)``), or ``None`` (default) to use ``DEFAULT_READ_TIMEOUT`` (60 seconds).
         :param retry: ``urllib3.util.Retry`` parameters. Applied as the ``http_retry`` of the client's
             ``aistore.sdk.RetryConfig`` (the network-level retry defaults are preserved).
         :param base_path: The root prefix path within the bucket where all operations will be scoped.
