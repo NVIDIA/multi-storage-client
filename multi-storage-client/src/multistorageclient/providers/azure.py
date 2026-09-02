@@ -669,8 +669,8 @@ class AzureBlobStorageProvider(BaseStorageProvider):
         :param signer_type: Must be ``None`` or :py:attr:`SignerType.AZURE`.
         :param signer_options: Optional dict; supports ``expires_in`` (int, seconds).
         :return: A fully-qualified SAS URL.
-        :raises ValueError: If *signer_type* is not ``None`` / ``SignerType.AZURE``, or if the
-            configured credential type does not support SAS generation.
+        :raises ValueError: If *signer_type* is not ``None`` / ``SignerType.AZURE``.
+        :raises TypeError: If the configured credential type does not support SAS generation.
         """
         if signer_type is not None and signer_type != SignerType.AZURE:
             raise ValueError(f"Unsupported signer type for Azure provider: {signer_type!r}")
