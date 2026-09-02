@@ -19,7 +19,7 @@ import tempfile
 from collections.abc import Callable, Iterator
 from datetime import datetime, timedelta, timezone
 from typing import IO, Any, TypeVar
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from azure.core import MatchConditions
 from azure.core.exceptions import AzureError, HttpResponseError
@@ -153,7 +153,8 @@ class AzureURLSigner(URLSigner):
             sas_kwargs["user_delegation_key"] = self._user_delegation_key
 
         sas_token = generate_blob_sas(**sas_kwargs)
-        blob_url = f"{self._account_url}/{container_name}/{blob_name}"
+        # Percent-encode the path the same way BlobClient.url does; the SAS itself is signed over the raw names.
+        blob_url = f"{self._account_url}/{quote(container_name)}/{quote(blob_name, safe='~/')}"
         return f"{blob_url}?{sas_token}"
 
 

@@ -435,6 +435,21 @@ class TestAzureURLSigner:
         assert perm.write is False
         assert perm.delete is False
 
+    @patch("multistorageclient.providers.azure.generate_blob_sas", return_value="sv=2021&sig=abc")
+    def test_url_path_is_percent_encoded(self, mock_sas):
+        signer = AzureURLSigner(
+            account_name="myaccount",
+            account_url="https://myaccount.blob.core.windows.net",
+            account_key="mykey==",
+        )
+        url = signer.generate_presigned_url("mycontainer/reports/2024 q1#final+v%2.csv", method="GET")
+
+        assert url == (
+            "https://myaccount.blob.core.windows.net/mycontainer/reports/2024%20q1%23final%2Bv%252.csv?sv=2021&sig=abc"
+        )
+        # The SAS is signed over the raw (unencoded) names.
+        assert mock_sas.call_args.kwargs["blob_name"] == "reports/2024 q1#final+v%2.csv"
+
     @patch("multistorageclient.providers.azure.generate_blob_sas", return_value="sv=2021&sig=xyz")
     def test_put_url(self, mock_sas):
         signer = AzureURLSigner(
