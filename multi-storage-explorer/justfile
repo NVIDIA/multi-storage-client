@@ -11,12 +11,12 @@ help:
 # Prepare the toolchain.
 prepare-toolchain:
     # Install JavaScript dependencies.
-    if [[ -z "${CI:-}" ]]; then bun install; else bun install --frozen-lockfile; fi
+    pnpm install
 
 # Start the frontend server.
 start-frontend: prepare-toolchain
     # Start the frontend server.
-    bun run vite dev
+    pnpm exec vite dev
 
 # Start the backend server.
 start-backend:
@@ -26,21 +26,21 @@ start-backend:
 # Run static analysis (format, lint).
 analyze: prepare-toolchain
     # Format + lint.
-    if [[ -z "${CI:-}" ]]; then bun run eslint --fix; else bun run eslint; fi
+    if [[ -z "${CI:-}" ]]; then pnpm exec eslint --fix; else pnpm exec eslint; fi
 
 # Run unit tests.
 run-unit-tests: prepare-toolchain
     # Remove test artifacts.
     rm -rf .reports/unit
     # Run unit tests.
-    bun run vitest run --coverage
+    pnpm exec vitest run --coverage
 
 # Create frontend bundle.
 bundle: prepare-toolchain
     # Remove frontend bundle.
     rm -rf ../multi-storage-client/src/multistorageclient/explorer/static
     # Create frontend bundle.
-    bun run vite build
+    pnpm exec vite build
 
 # Release build.
 build: analyze run-unit-tests bundle

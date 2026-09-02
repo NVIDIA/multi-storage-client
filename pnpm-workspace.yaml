@@ -1,0 +1,12 @@
+#
+# pnpm configuration.
+#
+# https://pnpm.io/settings
+#
+
+packages:
+  - multi-storage-explorer
+allowBuilds:
+  esbuild: true
+  msw: true
+updateNotifier: false
