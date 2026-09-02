@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import inspect
 import os
 import pickle
@@ -28,6 +29,7 @@ from oci.auth.signers import SecurityTokenSigner
 
 from multistorageclient import StorageClient, StorageClientConfig, telemetry
 from multistorageclient.config import (
+    ImmutableDict,
     SimpleProviderBundle,
     _find_config_file_paths,
     _merge_configs,
@@ -2739,3 +2741,20 @@ def test_config_include_opentelemetry_conflicts():
 
         error_msg = str(exc_info.value)
         assert "opentelemetry config conflict" in error_msg
+
+
+def test_immutable_dict_deepcopy_returns_mutable_lists():
+    """deepcopy must undo the tuple freezing so the result round-trips as plain YAML/JSON."""
+    original = {"profiles": {"p": {"replicas": [{"replica_profile": "r", "read_priority": 1}], "tags": ["a", "b"]}}}
+    frozen = ImmutableDict(original)
+    # Sanity check on the internal representation: lists are stored frozen as tuples.
+    raw_profile = dict.__getitem__(dict.__getitem__(frozen, "profiles"), "p")
+    assert isinstance(dict.__getitem__(raw_profile, "tags"), tuple)
+
+    copied = copy.deepcopy(frozen)
+
+    assert copied == original
+    assert type(copied) is dict
+    assert isinstance(copied["profiles"]["p"]["tags"], list)
+    assert isinstance(copied["profiles"]["p"]["replicas"], list)
+    assert type(copied["profiles"]["p"]["replicas"][0]) is dict

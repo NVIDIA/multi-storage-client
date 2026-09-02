@@ -458,7 +458,8 @@ class ImmutableDict(dict):
         """
         Return a regular mutable dict when deepcopy is called.
         """
-        return copy.deepcopy(dict(self), memo)
+        # dict(self) would keep the frozen tuples; _copy_value converts nested structures back to dicts and lists.
+        return copy.deepcopy(self._copy_value(self), memo)
 
     def __reduce__(self):
         """
