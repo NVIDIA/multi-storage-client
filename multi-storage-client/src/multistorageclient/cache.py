@@ -309,14 +309,18 @@ class CacheManager:
         mode: str = "rb",
         source_version: str | None = None,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
+        encoding: str | None = None,
     ) -> Any | None:
-        """Open a file from the cache and return the file object."""
+        """Open a file from the cache and return the file object.
+
+        :param encoding: Text encoding used for text modes; must be ``None`` for binary modes.
+        """
         try:
             if self.contains(key=key, check_source_version=check_source_version, source_version=source_version):
                 file_path = self._get_cache_file_path(key)
                 # Update access time based on eviction policy
                 self._update_access_time(file_path)
-                return open(file_path, mode)
+                return open(file_path, mode, encoding=encoding)
         except OSError:
             pass
 

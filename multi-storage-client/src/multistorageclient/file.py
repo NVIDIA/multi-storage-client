@@ -275,7 +275,10 @@ class ObjectFile(IOBase, IO):
                 ):
                     # Cache hit with no version check - open directly from cache
                     cached_file = self._cache_manager.open(
-                        self._remote_path, mode="rb", check_source_version=SourceVersionCheckMode.DISABLE
+                        self._remote_path,
+                        mode=self._mode,
+                        check_source_version=SourceVersionCheckMode.DISABLE,
+                        encoding=self._text_encoding(),
                     )
                     if cached_file is not None:
                         self._file = cached_file
@@ -330,6 +333,10 @@ class ObjectFile(IOBase, IO):
 
         self._open_files.append(self._file)
 
+    def _text_encoding(self) -> str | None:
+        # open() rejects a non-None encoding for binary modes.
+        return self._encoding if "b" not in self._mode else None
+
     def _download_file(self) -> None:
         """
         Download the file to the cache directory.
@@ -363,7 +370,11 @@ class ObjectFile(IOBase, IO):
             ):
                 # Read from cache
                 file_object = self._cache_manager.open(
-                    self._remote_path, self._mode, source_version, self._check_source_version
+                    self._remote_path,
+                    self._mode,
+                    source_version,
+                    self._check_source_version,
+                    encoding=self._text_encoding(),
                 )
             else:
                 # Download file and put it into the cache
@@ -380,7 +391,11 @@ class ObjectFile(IOBase, IO):
                         self._cache_manager.set(self._remote_path, temp_file_path, source_version)
 
                 file_object = self._cache_manager.open(
-                    self._remote_path, self._mode, source_version, self._check_source_version
+                    self._remote_path,
+                    self._mode,
+                    source_version,
+                    self._check_source_version,
+                    encoding=self._text_encoding(),
                 )
             if file_object is None:
                 raise FileNotFoundError(f"Unexpected error, file not found at {self._remote_path}")
