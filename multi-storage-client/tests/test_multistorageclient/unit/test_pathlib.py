@@ -129,6 +129,18 @@ def test_path_open(file_storage_config):
             assert f.read() == "1.1.1.1"
 
 
+def test_path_read_text_honors_errors(file_storage_config):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        path = msc.Path(f"{temp_dir}/invalid-utf8.txt")
+        with path.open("wb") as f:
+            f.write(b"abc\xff")
+
+        assert path.read_text(errors="ignore") == "abc"
+        assert path.read_text(errors="replace") == "abc\ufffd"
+        with pytest.raises(UnicodeDecodeError):
+            path.read_text()
+
+
 def test_path_mkdir_rmdir(file_storage_config):
     with tempfile.TemporaryDirectory() as temp_dir:
         path = msc.Path(f"{temp_dir}/dir1/dir2/dir3")
