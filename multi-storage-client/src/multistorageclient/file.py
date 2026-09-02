@@ -782,7 +782,9 @@ class PosixFile(IOBase, IO):
 
     @file_metrics(operation=BaseStorageProvider._Operation.READ)
     def readall(self) -> Any:
-        return self.read(-1)
+        """Read and return all remaining data from the file."""
+        # Call the underlying file directly; going through the decorated read() would emit READ metrics twice.
+        return self._file.read(-1)
 
     def close(self) -> None:
         """
