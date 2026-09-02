@@ -765,19 +765,22 @@ class GoogleStorageProvider(BaseStorageProvider):
                     mode = "wb"
 
                 # transfer manager does not support uploading a file object
-                with tempfile.NamedTemporaryFile(mode=mode, delete=False, prefix=".") as fp:
-                    temp_file_path = fp.name
-                    fp.write(f.read())
+                temp_file_path: str | None = None
+                try:
+                    with tempfile.NamedTemporaryFile(mode=mode, delete=False, prefix=".") as fp:
+                        temp_file_path = fp.name
+                        fp.write(f.read())
 
-                transfer_manager.upload_chunks_concurrently(
-                    temp_file_path,
-                    blob,
-                    chunk_size=self._multipart_chunksize,
-                    max_workers=self._max_concurrency,
-                    worker_type=transfer_manager.THREAD,
-                )
-
-                os.unlink(temp_file_path)
+                    transfer_manager.upload_chunks_concurrently(
+                        temp_file_path,
+                        blob,
+                        chunk_size=self._multipart_chunksize,
+                        max_workers=self._max_concurrency,
+                        worker_type=transfer_manager.THREAD,
+                    )
+                finally:
+                    if temp_file_path and os.path.exists(temp_file_path):
+                        os.unlink(temp_file_path)
 
                 return file_size
 
@@ -799,10 +802,17 @@ class GoogleStorageProvider(BaseStorageProvider):
                 if self._rust_client:
                     run_async_rust_client_method(self._rust_client, "download", key, f)
                 else:
-                    with tempfile.NamedTemporaryFile(mode="wb", delete=False, dir=os.path.dirname(f), prefix=".") as fp:
-                        temp_file_path = fp.name
-                        fp.write(self._get_object(remote_path))
-                    os.rename(src=temp_file_path, dst=f)
+                    temp_file_path: str | None = None
+                    try:
+                        with tempfile.NamedTemporaryFile(
+                            mode="wb", delete=False, dir=os.path.dirname(f), prefix="."
+                        ) as fp:
+                            temp_file_path = fp.name
+                            fp.write(self._get_object(remote_path))
+                        os.rename(src=temp_file_path, dst=f)
+                    finally:
+                        if temp_file_path and os.path.exists(temp_file_path):
+                            os.unlink(temp_file_path)
                 return metadata.content_length
 
             # Download large files using transfer manager
@@ -812,16 +822,23 @@ class GoogleStorageProvider(BaseStorageProvider):
                 if self._rust_client:
                     run_async_rust_client_method(self._rust_client, "download_multipart_to_file", key, f)
                 else:
-                    with tempfile.NamedTemporaryFile(mode="wb", delete=False, dir=os.path.dirname(f), prefix=".") as fp:
-                        temp_file_path = fp.name
-                        transfer_manager.download_chunks_concurrently(
-                            blob,
-                            temp_file_path,
-                            chunk_size=self._io_chunksize,
-                            max_workers=self._max_concurrency,
-                            worker_type=transfer_manager.THREAD,
-                        )
-                    os.rename(src=temp_file_path, dst=f)
+                    temp_file_path: str | None = None
+                    try:
+                        with tempfile.NamedTemporaryFile(
+                            mode="wb", delete=False, dir=os.path.dirname(f), prefix="."
+                        ) as fp:
+                            temp_file_path = fp.name
+                            transfer_manager.download_chunks_concurrently(
+                                blob,
+                                temp_file_path,
+                                chunk_size=self._io_chunksize,
+                                max_workers=self._max_concurrency,
+                                worker_type=transfer_manager.THREAD,
+                            )
+                        os.rename(src=temp_file_path, dst=f)
+                    finally:
+                        if temp_file_path and os.path.exists(temp_file_path):
+                            os.unlink(temp_file_path)
 
                 return metadata.content_length
 
@@ -847,24 +864,27 @@ class GoogleStorageProvider(BaseStorageProvider):
                 blob = bucket_obj.blob(key)
 
                 # transfer manager does not support downloading to a file object
-                with tempfile.NamedTemporaryFile(mode="wb", delete=False, prefix=".") as fp:
-                    temp_file_path = fp.name
-                    transfer_manager.download_chunks_concurrently(
-                        blob,
-                        temp_file_path,
-                        chunk_size=self._io_chunksize,
-                        max_workers=self._max_concurrency,
-                        worker_type=transfer_manager.THREAD,
-                    )
+                temp_file_path: str | None = None
+                try:
+                    with tempfile.NamedTemporaryFile(mode="wb", delete=False, prefix=".") as fp:
+                        temp_file_path = fp.name
+                        transfer_manager.download_chunks_concurrently(
+                            blob,
+                            temp_file_path,
+                            chunk_size=self._io_chunksize,
+                            max_workers=self._max_concurrency,
+                            worker_type=transfer_manager.THREAD,
+                        )
 
-                if isinstance(f, io.StringIO):
-                    with open(temp_file_path, "r") as fp:
-                        f.write(fp.read())
-                else:
-                    with open(temp_file_path, "rb") as fp:
-                        f.write(fp.read())
-
-                os.unlink(temp_file_path)
+                    if isinstance(f, io.StringIO):
+                        with open(temp_file_path, "r") as fp:
+                            f.write(fp.read())
+                    else:
+                        with open(temp_file_path, "rb") as fp:
+                            f.write(fp.read())
+                finally:
+                    if temp_file_path and os.path.exists(temp_file_path):
+                        os.unlink(temp_file_path)
 
                 return metadata.content_length
 
