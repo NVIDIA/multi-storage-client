@@ -18,48 +18,22 @@ from typing import Any
 
 import requests
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
-from multistorageclient.instrumentation.auth import AccessTokenProvider, AzureAccessTokenProvider
+from multistorageclient.instrumentation.auth import AzureAccessTokenProvider
+from multistorageclient.telemetry.metrics.exporters.otlp_msal import _OTLPMSALMetricExporter
 
 logger = logging.getLogger(__name__)
 
 
 class _OTLPMSALSpanExporter(OTLPSpanExporter):
     """
-    OTLP metric exporter with MSAL for auth.
+    OTLP span exporter with MSAL for auth.
     """
 
     _MAX_RETRIES = 5
-    _BACKOFF_FACTOR = 0.5
 
-    class AccessTokenHTTPAdapter(HTTPAdapter):
-        """
-        HTTP adapter for retry and auth.
-        """
-
-        _access_token_provider: AccessTokenProvider
-
-        def __init__(self, access_token_provider: AccessTokenProvider, *args, **kwargs):
-            max_retries = kwargs.get("max_retries", _OTLPMSALSpanExporter._MAX_RETRIES)
-            kwargs["max_retries"] = Retry(
-                total=max_retries,
-                backoff_factor=_OTLPMSALSpanExporter._BACKOFF_FACTOR,
-                connect=max_retries,
-                read=max_retries,
-            )
-            super().__init__(*args, **kwargs)
-            self._access_token_provider = access_token_provider
-
-        def send(self, request: requests.PreparedRequest, *args, **kwargs):
-            if self._access_token_provider:
-                token = self._access_token_provider.get_token()
-                if token:
-                    request.headers["Authorization"] = f"Bearer {token}"
-                else:
-                    logger.warning("Failed to retrieve authentication token! Request might fail.")
-            return super().send(request, *args, **kwargs)
+    # Shared with the metric exporter so both get the same retry policy (POST retries, status forcelist).
+    AccessTokenHTTPAdapter = _OTLPMSALMetricExporter.AccessTokenHTTPAdapter
 
     def __init__(
         self,
@@ -68,7 +42,7 @@ class _OTLPMSALSpanExporter(OTLPSpanExporter):
     ):
         """
         :param auth: MSAL auth config dictionary.
-        :param exporter: OTLP metric exporter config dictionary.
+        :param exporter: OTLP span exporter config dictionary.
         """
 
         session = requests.Session()
