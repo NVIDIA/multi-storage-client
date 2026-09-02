@@ -334,6 +334,41 @@ def _make_add_batch(n: int):
     return OperationBatch(operation=OperationType.ADD, items=items)
 
 
+def _make_delete_handler(target_client, source_path: str, target_path: str) -> sync_worker_module.PosixToPosixHandler:
+    return sync_worker_module.PosixToPosixHandler(
+        source_client=mock.Mock(),
+        source_path=source_path,
+        target_client=target_client,
+        target_path=target_path,
+        preserve_source_attributes=False,
+        result_queue=queue.Queue(),
+        error_queue=queue.Queue(),
+    )
+
+
+def _make_delete_batch(*keys: str) -> OperationBatch:
+    items: list[tuple[ObjectMetadata, ObjectMetadata | None]] = [
+        (ObjectMetadata(key=key, content_length=1, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)), None)
+        for key in keys
+    ]
+    return OperationBatch(operation=OperationType.DELETE, items=items)
+
+
+def test_process_delete_batch_reports_errors():
+    """delete_many failures are reported on the error queue instead of escaping the worker thread."""
+    target_client = mock.Mock()
+    target_client.delete_many.side_effect = RuntimeError("delete failed")
+    handler = _make_delete_handler(target_client, source_path="src", target_path="dst")
+
+    handler.process_delete_batch("w-0", _make_delete_batch("dst/f1.txt", "dst/f2.txt"))
+
+    error = handler.error_queue.get_nowait()
+    assert error.worker_id == "w-0"
+    assert error.file_key == "dst/f1.txt"
+    assert "delete failed" in error.exception_message
+    assert handler.result_queue.empty()
+
+
 def test_filter_with_metadata_provider_mixed_skip_and_transfer():
     handler = _make_handler_with_metadata_provider()
     batch = _make_add_batch(6)
