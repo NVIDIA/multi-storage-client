@@ -836,18 +836,18 @@ class SingleStorageClient(AbstractStorageClient):
                 if end_at and object_metadata.key > end_at:
                     return None, None
                 if include_url_prefix:
-                    self._prepend_url_prefix(object_metadata)
+                    object_metadata = self._with_url_prefix(object_metadata)
                 return object_metadata, path
             except FileNotFoundError:
                 return None, path.rstrip("/") + "/"
         else:
             return None, path.rstrip("/") + "/"
 
-    def _prepend_url_prefix(self, obj: ObjectMetadata) -> None:
+    def _with_url_prefix(self, obj: ObjectMetadata) -> ObjectMetadata:
+        # Return a copy: listed objects may be owned by the metadata provider and must not be mutated.
         if self.is_default_profile():
-            obj.key = str(PurePosixPath("/") / obj.key)
-        else:
-            obj.key = join_paths(f"{MSC_PROTOCOL}{self._config.profile}", obj.key)
+            return obj.replace(key=str(PurePosixPath("/") / obj.key))
+        return obj.replace(key=join_paths(f"{MSC_PROTOCOL}{self._config.profile}", obj.key))
 
     def _filter_and_decorate(
         self,
@@ -859,7 +859,7 @@ class SingleStorageClient(AbstractStorageClient):
             if pattern_matcher and not pattern_matcher.should_include_file(obj.key):
                 continue
             if include_url_prefix:
-                self._prepend_url_prefix(obj)
+                obj = self._with_url_prefix(obj)
             yield obj
 
     def list_recursive(

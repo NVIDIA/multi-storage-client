@@ -463,7 +463,8 @@ class CompositeStorageClient(AbstractStorageClient):
                 continue
 
             if include_url_prefix:
-                obj.key = join_paths(f"{MSC_PROTOCOL}{self._config.profile}", obj.key)
+                # Return a copy: the object is owned by the metadata provider and must not be mutated.
+                obj = obj.replace(key=join_paths(f"{MSC_PROTOCOL}{self._config.profile}", obj.key))
 
             yield obj
 
