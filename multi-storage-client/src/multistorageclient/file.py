@@ -514,15 +514,22 @@ class ObjectFile(IOBase, IO):
         return self._file.isatty()
 
     def fileno(self) -> int:
+        """
+        Return a file descriptor for the underlying file.
+
+        In-memory files (``StringIO``/``BytesIO``) have no descriptor, so a single temporary file is created on
+        first use and its descriptor is returned on every call; it is released by :py:meth:`close`.
+        """
         if self.readable():
             self._download_complete.wait()
 
         if isinstance(self._file, (StringIO, BytesIO)):
             # In-memory file objects (StringIO/BytesIO) don't have real file descriptors.
-            # Create a temporary file and return its file descriptor when needed for operations that require one.
-            fd_holder = tempfile.TemporaryFile()  # noqa: SIM115
-            self._open_files.append(fd_holder)
-            return fd_holder.fileno()
+            # Create a temporary file once and return its file descriptor when needed for operations that require one.
+            if not hasattr(self, "_temp_fd_holder"):
+                self._temp_fd_holder = tempfile.TemporaryFile()  # noqa: SIM115
+                self._open_files.append(self._temp_fd_holder)
+            return self._temp_fd_holder.fileno()
 
         return self._file.fileno()
 
@@ -549,19 +556,27 @@ class ObjectFile(IOBase, IO):
         return self.read(-1)
 
     def close(self) -> None:
+        """
+        Close the file, uploading its content first in write or append mode.
+
+        Local temporary files, including the descriptor placeholder created by :py:meth:`fileno`, are released
+        even if the upload raises.
+        """
         # If the file is already closed, return immediately.
         if self.closed:
             return
 
-        if self.readable():
-            # Ensure the download thread finishes (if it exists)
-            if hasattr(self, "_download_thread") and self._download_thread.is_alive():
-                self._download_thread.join()
-        else:
-            self._upload_file()
-
-        for fp in self._open_files:
-            fp.close()
+        try:
+            if self.readable():
+                # Ensure the download thread finishes (if it exists)
+                if hasattr(self, "_download_thread") and self._download_thread.is_alive():
+                    self._download_thread.join()
+            else:
+                self._upload_file()
+        finally:
+            # Release local files and the fileno() placeholder even when the upload fails.
+            for fp in self._open_files:
+                fp.close()
 
     def _upload_file(self) -> None:
         """
@@ -574,26 +589,30 @@ class ObjectFile(IOBase, IO):
             # The append mode downloads the file first (if applicable), then upload it again with the appended content.
             temp_file_path = self._generate_temp_file_path()
             try:
-                self._storage_client.download_file(self._remote_path, temp_file_path)
-                if os.path.getsize(temp_file_path) > self._memory_load_limit:
-                    logger.warning(
-                        "The append mode ('a' or 'ab') is not suitable for appending to large files. "
-                        "The file at '%s' exceeds the recommended size threshold "
-                        "(%d bytes). This operation will result in poor performance "
-                        "due to the need to download and re-upload the entire file.",
-                        self._remote_path,
-                        self._memory_load_limit,
-                    )
-            except FileNotFoundError:
-                pass
+                try:
+                    self._storage_client.download_file(self._remote_path, temp_file_path)
+                    if os.path.getsize(temp_file_path) > self._memory_load_limit:
+                        logger.warning(
+                            "The append mode ('a' or 'ab') is not suitable for appending to large files. "
+                            "The file at '%s' exceeds the recommended size threshold "
+                            "(%d bytes). This operation will result in poor performance "
+                            "due to the need to download and re-upload the entire file.",
+                            self._remote_path,
+                            self._memory_load_limit,
+                        )
+                except FileNotFoundError:
+                    pass
 
-            # Append the content to the downloaded file
-            with open(temp_file_path, self._mode, encoding=self._encoding) as fp:
-                self._file.seek(0)
-                fp.write(self._file.read())
+                # Append the content to the downloaded file
+                with open(temp_file_path, self._mode, encoding=self._encoding) as fp:
+                    self._file.seek(0)
+                    fp.write(self._file.read())
 
-            self._storage_client.upload_file(self._remote_path, temp_file_path, attributes=self._attributes)
-            os.unlink(temp_file_path)
+                self._storage_client.upload_file(self._remote_path, temp_file_path, attributes=self._attributes)
+            finally:
+                # Remove the staging file even if the download, append or upload failed.
+                if os.path.exists(temp_file_path):
+                    os.unlink(temp_file_path)
 
     def resolve_filesystem_path(self) -> str:
         """
