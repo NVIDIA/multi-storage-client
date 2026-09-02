@@ -2,7 +2,6 @@
   actionlint,
   awscli2,
   azurite,
-  bun,
   coreutils,
   curl,
   dpkg,
@@ -26,9 +25,10 @@
   netcat-gnu,
   nix,
   nixfmt,
-  nodejs-slim,
+  nodejs,
   openbao,
   openssl,
+  pnpm,
   pyright,
   python310,
   pythonInterpreter ? python310,
@@ -71,14 +71,10 @@ mkShell {
     just
     # Treefmt.
     treefmt
-    # Bun.
-    bun
     # Node.js.
-    #
-    # Vitest uses `node:inspector` for coverage which Bun doesn't support yet.
-    #
-    # https://github.com/oven-sh/bun/issues/4145
-    nodejs-slim
+    nodejs
+    # pnpm.
+    pnpm
     # Python.
     #
     # mkShell effectively requires us to only have 1 Python interpreter per shell.
@@ -161,13 +157,6 @@ mkShell {
       # https://openbao.org/docs/commands#environment-variables
       export VAULT_ADDR=https://prod.vault.nvidia.com
       export VAULT_NAMESPACE=ngc-multi-storage-client
-
-      # GitHub CLI.
-      #
-      # https://cli.github.com/manual/gh_help_environment
-      export GH_NO_UPDATE_NOTIFIER=true
-      export GH_NO_EXTENSION_UPDATE_NOTIFIER=true
-      export GH_TELEMETRY=false
 
       echo "⚗️"
     '';

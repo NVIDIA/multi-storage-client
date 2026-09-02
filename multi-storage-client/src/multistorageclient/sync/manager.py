@@ -127,7 +127,7 @@ class SyncManager:
         :param commit_metadata: When True (default), calls :py:meth:`StorageClient.commit_metadata` after sync completes.
             Set to False to skip the commit, allowing batching of multiple sync operations before committing manually.
         :param batch_size: Maximum number of operations to batch together before enqueueing. Must be between ``MIN_BATCH_SIZE`` (10)
-            and ``MAX_BATCH_SIZE`` (500). Default is 100. Actual batch sizes may be smaller when the operation type changes
+            and ``MAX_BATCH_SIZE`` (1000). Default is ``DEFAULT_SYNC_BATCH_SIZE`` (32). Actual batch sizes may be smaller when the operation type changes
             (ADD to DELETE or vice versa), when file size buckets change (to group similar-sized files), or when the producer
             completes iteration. Batching reduces queue overhead, improves load balancing, and enables future bulk transfer
             optimizations.

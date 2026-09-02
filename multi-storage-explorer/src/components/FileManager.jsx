@@ -47,10 +47,10 @@ const FileManager = ({ profiles }) => {
   const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [lastKey, setLastKey] = useState(null);
-  
+
   // Track current loading request to prevent race conditions when switching profiles
   const loadingRef = useRef({ profile: null, path: null });
-  
+
   // Ref for the bottom sentinel element (for infinite scroll)
   const bottomSentinelRef = useRef(null);
 
@@ -83,21 +83,21 @@ const FileManager = ({ profiles }) => {
       const cleanPath = currentPath.startsWith('/') ? currentPath.slice(1) : currentPath;
       const url = `msc://${currentProfile}/${cleanPath}`;
       const options = { limit: 1000 };
-      
+
       // For pagination, use start_after with the last item's key
       if (append && startAfterKey) {
         options.start_after = startAfterKey;
       }
-      
+
       const response = await listFiles(url, options);
-      
+
       // Check if this is still the current profile/path before updating state
-      if (loadingRef.current.profile !== loadingProfile || 
+      if (loadingRef.current.profile !== loadingProfile ||
           loadingRef.current.path !== loadingPath) {
         console.log('Ignoring stale response for', loadingProfile, loadingPath);
         return; // This response is stale, ignore it
       }
-      
+
       const normalizeName = (raw) => (raw || '').replace(/\/+$/, '').replace(/\/+/g, '/');
       const transformedFiles = response.items.map(item => ({
         key: item.key || item.name,
@@ -112,7 +112,7 @@ const FileManager = ({ profiles }) => {
       const receivedCount = response.items.length;
       const mightHaveMore = receivedCount === 1000;
       setHasMore(mightHaveMore);
-      
+
       // Store last key for next page
       if (receivedCount > 0) {
         const lastItem = response.items[receivedCount - 1];
@@ -128,21 +128,20 @@ const FileManager = ({ profiles }) => {
       }
     } catch (err) {
       // Check if this is still the current profile/path before showing error
-      if (loadingRef.current.profile !== loadingProfile || 
+      if (loadingRef.current.profile !== loadingProfile ||
           loadingRef.current.path !== loadingPath) {
         console.log('Ignoring stale error for', loadingProfile, loadingPath);
         return; // This error is stale, ignore it
       }
-      
+
       const errorMsg = err.response?.data?.detail || 'Failed to load files';
       setError(errorMsg);
-      message.error(errorMsg);
       if (!append) {
         setFiles([]);
       }
     } finally {
       // Only clear loading if this is still the current request
-      if (loadingRef.current.profile === loadingProfile && 
+      if (loadingRef.current.profile === loadingProfile &&
           loadingRef.current.path === loadingPath) {
         setLoading(false);
         setLoadingMore(false);
@@ -152,6 +151,7 @@ const FileManager = ({ profiles }) => {
 
   // Load files when profile or path changes
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadFiles(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProfile, currentPath]);
@@ -248,26 +248,26 @@ const FileManager = ({ profiles }) => {
   // Uses local browser timezone
   const formatDateTime = (dateString) => {
     const date = new Date(dateString);
-    
+
     // Format date part: "January 16, 2025"
     const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
       'July', 'August', 'September', 'October', 'November', 'December'];
     const month = monthNames[date.getMonth()];
     const day = date.getDate();
     const year = date.getFullYear();
-    
+
     // Format time part: "16:42:56" (in local browser timezone)
     const hours = String(date.getHours()).padStart(2, '0');
     const minutes = String(date.getMinutes()).padStart(2, '0');
     const seconds = String(date.getSeconds()).padStart(2, '0');
-    
+
     // Format timezone offset: "(UTC-08:00)" - gets local browser timezone
     const offsetMinutes = -date.getTimezoneOffset();
     const offsetHours = Math.floor(Math.abs(offsetMinutes) / 60);
     const offsetMins = Math.abs(offsetMinutes) % 60;
     const offsetSign = offsetMinutes >= 0 ? '+' : '-';
     const timezone = `UTC${offsetSign}${String(offsetHours).padStart(2, '0')}:${String(offsetMins).padStart(2, '0')}`;
-    
+
     return `${month} ${day}, ${year}, ${hours}:${minutes}:${seconds} (${timezone})`;
   };
 
@@ -289,8 +289,8 @@ const FileManager = ({ profiles }) => {
       render: (text, record) => (
         <Space>
           {record.isDir ? (
-            <FolderOutlined style={{ 
-              fontSize: 18, 
+            <FolderOutlined style={{
+              fontSize: 18,
               color: '#faad14'
             }} />
           ) : (
@@ -302,7 +302,7 @@ const FileManager = ({ profiles }) => {
                 handleOpenFolder(record);
               }
             }}
-            style={{ 
+            style={{
               cursor: record.isDir ? 'pointer' : 'default',
               fontWeight: record.isDir ? 600 : 400
             }}
@@ -424,9 +424,9 @@ const FileManager = ({ profiles }) => {
       <Content style={{ padding: '24px' }}>
         <Card>
           {/* Toolbar */}
-          <Space 
-            direction="vertical" 
-            size="middle" 
+          <Space
+            direction="vertical"
+            size="middle"
             style={{ width: '100%', marginBottom: 16 }}
           >
             {/* Profile Selector and Actions Bar */}
