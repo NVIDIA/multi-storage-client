@@ -181,6 +181,11 @@ class SyncManager:
                 # Fork can corrupt shared connection pools and transfer manager state.
                 ctx = multiprocessing.get_context("spawn")
                 file_queue = ctx.Queue()
+                # After a fast-fail the workers stop consuming, leaving the producer's unconsumed batches and the
+                # STOP sentinels in this process's feeder buffer; Queue's exit-time join would then block forever.
+                # cancel_join_thread only affects this process's feeder thread; the workers' copies of the queue
+                # are unaffected (the flag is not pickled).
+                file_queue.cancel_join_thread()
                 result_queue = ctx.Queue()
                 error_queue = ctx.Queue()
                 shutdown_event = ctx.Event()
