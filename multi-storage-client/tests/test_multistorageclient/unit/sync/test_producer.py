@@ -372,6 +372,36 @@ def test_listing_falls_back_to_list_when_attributes_are_requested():
     assert source_list_kwargs["show_attributes"] is True
 
 
+def test_source_files_iterator_is_sorted_and_deduplicated():
+    """source_files are yielded in key order (required by the merge loop) without duplicates."""
+    source_client = MockStorageClient()
+    target_client = MockStorageClient()
+    seen: list[str] = []
+
+    def info(path: str, strict: bool = True) -> ObjectMetadata:
+        seen.append(path)
+        return ObjectMetadata(key=path, content_length=1, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc))
+
+    source_client.info = info  # type: ignore
+
+    producer = ProducerThread(
+        source_client=cast(StorageClient, source_client),
+        source_path="data",
+        target_client=cast(StorageClient, target_client),
+        target_path="backup",
+        progress=ProgressBar(desc="", show_progress=False),
+        file_queue=queue.Queue(),
+        num_workers=1,
+        shutdown_event=threading.Event(),
+        source_files=["b.txt", "/dir/c.txt", "a.txt", "b.txt"],
+    )
+
+    keys = [metadata.key for metadata in producer._create_source_iterator()]
+
+    assert keys == ["data/a.txt", "data/b.txt", "data/dir/c.txt"]
+    assert seen == keys
+
+
 def test_batch_size_validation():
     """Test that batch_size must be between MIN_BATCH_SIZE and MAX_BATCH_SIZE."""
     source_client = MockStorageClient()
