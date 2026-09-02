@@ -401,3 +401,24 @@ def test_posix_file_descriptor_telemetry_failures_do_not_affect_file_lifecycle(t
     assert another_file.closed
     assert (tmp_path / "file.txt").read_bytes() == b"content"
     assert (tmp_path / "another-file.txt").read_bytes() == b"other content"
+
+
+def test_posix_file_readall_emits_read_metrics_once(tmp_path):
+    """readall() is instrumented itself and must not also go through the instrumented read()."""
+    config = StorageClientConfig.from_dict(
+        {"profiles": {"data": {"storage_provider": {"type": "file", "options": {"base_path": str(tmp_path)}}}}},
+        profile="data",
+    )
+    storage_client = StorageClient(config)
+    storage_client.write("file.txt", b"content")
+    provider = storage_client._storage_provider
+    assert isinstance(provider, BaseStorageProvider)
+
+    with (
+        patch.object(provider, "_emit_metrics", wraps=provider._emit_metrics) as emit_metrics,
+        storage_client.open("file.txt", "rb") as f,
+    ):
+        assert isinstance(f, PosixFile)
+        emit_metrics.reset_mock()
+        assert f.readall() == b"content"
+        assert emit_metrics.call_count == 1
