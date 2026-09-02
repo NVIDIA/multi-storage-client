@@ -15,6 +15,7 @@
 
 import asyncio
 import tempfile
+import threading
 import time
 from collections.abc import Iterator
 from datetime import datetime, timezone
@@ -682,6 +683,44 @@ def test_parallel_listing_error_propagation():
     provider = FailFastStorageProvider(base_path="bucket", provider_name="fail-fast")
     with pytest.raises(RuntimeError, match="should fail fast"):
         list(provider.list_objects_recursive(path=""))
+
+
+def test_prefix_expander_does_not_relist_prefixes_fetched_directly():
+    """A prefix fetched via get() while still pending must not be submitted a second time by _fill()."""
+    from multistorageclient.providers.base import _PrefixExpander
+
+    calls: list[str] = []
+    release_b = threading.Event()
+
+    def shallow_list(prefix: str):
+        calls.append(prefix)
+        if prefix == "b/":
+            release_b.wait(timeout=5)
+        return ([], [])
+
+    expander = _PrefixExpander(shallow_list, max_workers=1, look_ahead=1)
+    expander.enqueue(["b/"])  # occupies the single in-flight slot
+    expander.enqueue(["a/"])  # stays pending because the pool is saturated
+
+    # get("a/") submits a/ directly and blocks on its result until the worker frees up, so drive it from a
+    # helper thread and release b/ only once the direct submission has been recorded in _done.
+    results: list = []
+    getter = threading.Thread(target=lambda: results.append(expander.get("a/")))
+    getter.start()
+    for _ in range(500):
+        if "a/" in expander._done:
+            break
+        time.sleep(0.01)
+    assert "a/" in expander._done
+    release_b.set()
+    getter.join(timeout=5)
+    assert results == [([], [])]
+
+    assert expander.get("b/") == ([], [])  # collecting b/ refills from _pending
+    expander._collect()
+    expander._executor.shutdown(wait=True)
+
+    assert sorted(calls) == ["a/", "b/"]
 
 
 class MockParallelListingProvider(MockBaseStorageProvider):
