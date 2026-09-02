@@ -747,6 +747,9 @@ class S3StorageProvider(BaseStorageProvider):
                 page_iterator = paginator.paginate(Bucket=bucket, Prefix=prefix, StartAfter=(start_after or ""))
 
             for page in page_iterator:
+                # A page holds both CommonPrefixes and Contents for the same key window, so a prefix past
+                # end_at must not stop the listing before the page's objects have been processed.
+                past_end_at = False
                 for item in page.get("CommonPrefixes", []):
                     prefix_key = item["Prefix"].rstrip("/")
                     # Filter by start_after and end_at - S3's StartAfter doesn't filter CommonPrefixes
@@ -758,7 +761,8 @@ class S3StorageProvider(BaseStorageProvider):
                             last_modified=AWARE_DATETIME_MIN,
                         )
                     elif end_at is not None and end_at < prefix_key:
-                        return
+                        past_end_at = True
+                        break
 
                 # S3 guarantees lexicographical order for general purpose buckets (for
                 # normal S3) but not directory buckets (for S3 Express One Zone).
@@ -792,6 +796,9 @@ class S3StorageProvider(BaseStorageProvider):
                             )
                     else:
                         return
+
+                if past_end_at:
+                    return
 
         return self._translate_errors(_invoke_api, operation="LIST", bucket=bucket, key=prefix)
 
