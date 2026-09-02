@@ -1,0 +1,1931 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Assembly Module — Implementation Design and Test Plan</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f6f8fb;
+      --surface: #ffffff;
+      --surface-soft: #eef3f7;
+      --text: #172033;
+      --muted: #5f6b7c;
+      --border: #d8e0e8;
+      --accent: #116b5a;
+      --accent-soft: #e1f3ee;
+      --accent-text: #0b5043;
+      --warning: #8a5b00;
+      --warning-soft: #fff4d6;
+      --danger: #9d3038;
+      --danger-soft: #fdebed;
+      --info: #426891;
+      --info-soft: #e8f0f8;
+      --code-bg: #101827;
+      --code-text: #eef4ff;
+      --shadow: 0 8px 28px rgba(25, 38, 57, 0.08);
+      --max: 1480px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d131d;
+        --surface: #141c29;
+        --surface-soft: #1c2635;
+        --text: #e9eef6;
+        --muted: #aab4c4;
+        --border: #2b384a;
+        --accent: #6bd9bd;
+        --accent-soft: #173a34;
+        --accent-text: #acf0df;
+        --warning: #ffd174;
+        --warning-soft: #3d321c;
+        --danger: #ff9fa8;
+        --danger-soft: #442328;
+        --info: #9bc6f1;
+        --info-soft: #1b3047;
+        --code-bg: #080d14;
+        --code-text: #eef4ff;
+        --shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.62;
+    }
+    a { color: var(--accent); text-underline-offset: 0.18em; }
+    code, pre { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+    code {
+      padding: 0.1em 0.28em;
+      border-radius: 0.3rem;
+      background: var(--surface-soft);
+      font-size: 0.92em;
+      overflow-wrap: anywhere;
+    }
+    pre {
+      margin: 1rem 0;
+      padding: 1rem 1.1rem;
+      overflow-x: auto;
+      border-radius: 0.7rem;
+      background: var(--code-bg);
+      color: var(--code-text);
+      line-height: 1.5;
+      font-size: 0.86rem;
+    }
+    pre code { padding: 0; background: transparent; color: inherit; overflow-wrap: normal; }
+    h1, h2, h3, h4 { line-height: 1.24; letter-spacing: -0.015em; }
+    h1 { margin: 0.35rem 0 0.8rem; font-size: clamp(2rem, 4.8vw, 3.5rem); }
+    h2 { margin: 0 0 1rem; font-size: clamp(1.4rem, 2.5vw, 2rem); }
+    h3 { margin: 1.55rem 0 0.65rem; font-size: 1.16rem; }
+    h4 { margin: 1.15rem 0 0.45rem; font-size: 1rem; }
+    p { margin: 0.6rem 0 1rem; }
+    ul, ol { padding-left: 1.35rem; }
+    li + li { margin-top: 0.38rem; }
+
+    .hero {
+      border-bottom: 1px solid var(--border);
+      background:
+        radial-gradient(circle at 82% 10%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 30rem),
+        var(--surface);
+    }
+    .hero-inner { max-width: var(--max); margin: 0 auto; padding: 4rem 2.2rem 3.3rem; }
+    .eyebrow {
+      color: var(--accent);
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-size: 0.8rem;
+    }
+    .subtitle { max-width: 1040px; margin: 0; color: var(--muted); font-size: 1.08rem; }
+    .meta, .doc-links { display: flex; flex-wrap: wrap; gap: 0.6rem 1.1rem; align-items: center; }
+    .meta { margin-top: 1.4rem; color: var(--muted); font-size: 0.9rem; }
+    .doc-links { margin-top: 1.25rem; }
+    .button {
+      display: inline-block;
+      padding: 0.55rem 0.8rem;
+      border: 1px solid var(--border);
+      border-radius: 0.55rem;
+      background: var(--surface);
+      color: var(--text);
+      text-decoration: none;
+      font-weight: 650;
+    }
+    .button.primary { border-color: var(--accent); background: var(--accent); color: var(--bg); }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+      gap: 2rem;
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 2rem 2.2rem 6rem;
+    }
+    .toc {
+      align-self: start;
+      position: sticky;
+      top: 1.2rem;
+      max-height: calc(100vh - 2.4rem);
+      overflow-y: auto;
+      padding: 0.8rem 0;
+      font-size: 0.88rem;
+    }
+    .toc strong { display: block; margin-bottom: 0.55rem; }
+    .toc a {
+      display: block;
+      padding: 0.32rem 0.6rem;
+      border-left: 2px solid transparent;
+      color: var(--muted);
+      text-decoration: none;
+    }
+    .toc a:hover { border-left-color: var(--accent); color: var(--text); background: var(--accent-soft); }
+    main { min-width: 0; }
+    section {
+      margin-bottom: 1.6rem;
+      padding: 1.8rem;
+      border: 1px solid var(--border);
+      border-radius: 0.9rem;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      scroll-margin-top: 1.2rem;
+    }
+    .decision {
+      padding: 1.1rem 1.2rem;
+      border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+      border-radius: 0.7rem;
+      background: var(--accent-soft);
+    }
+    .decision strong { color: var(--accent-text); }
+    .callout {
+      margin: 1rem 0;
+      padding: 0.9rem 1rem;
+      border-left: 4px solid var(--warning);
+      background: var(--warning-soft);
+    }
+    .callout.danger { border-left-color: var(--danger); background: var(--danger-soft); }
+    .callout.info { border-left-color: var(--info); background: var(--info-soft); }
+    .grid-2, .grid-3, .summary-grid {
+      display: grid;
+      gap: 0.9rem;
+      margin: 1rem 0;
+    }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3, .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .card {
+      padding: 1rem;
+      border: 1px solid var(--border);
+      border-radius: 0.7rem;
+      background: var(--surface-soft);
+    }
+    .card h3, .card h4 { margin-top: 0; }
+    .label {
+      display: block;
+      margin-bottom: 0.25rem;
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .value { display: block; font-size: 1.12rem; font-weight: 750; }
+    .small { color: var(--muted); font-size: 0.88rem; }
+    .tag {
+      display: inline-block;
+      margin: 0.15rem 0.25rem 0.15rem 0;
+      padding: 0.2rem 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface-soft);
+      font-size: 0.8rem;
+    }
+    .yes { color: var(--accent-text); font-weight: 700; }
+    .no { color: var(--danger); font-weight: 700; }
+    .maybe { color: var(--warning); font-weight: 700; }
+    .table-wrap { max-width: 100%; overflow-x: auto; margin: 1rem 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { padding: 0.72rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+    th { background: var(--surface-soft); font-size: 0.82rem; letter-spacing: 0.02em; }
+    tr:last-child td { border-bottom: 0; }
+
+    .architecture {
+      display: grid;
+      gap: 0.7rem;
+      margin: 1.1rem 0;
+      padding: 1rem;
+      border: 1px dashed var(--border);
+      border-radius: 0.8rem;
+      background: color-mix(in srgb, var(--surface-soft) 72%, transparent);
+    }
+    .arch-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; align-items: stretch; }
+    .arch-node {
+      padding: 0.8rem;
+      border: 1px solid var(--border);
+      border-radius: 0.6rem;
+      background: var(--surface);
+      text-align: center;
+    }
+    .arch-node.new { border-color: color-mix(in srgb, var(--accent) 65%, var(--border)); background: var(--accent-soft); }
+    .arch-node.user { border-color: color-mix(in srgb, var(--warning) 60%, var(--border)); background: var(--warning-soft); }
+    .arch-arrow { text-align: center; color: var(--muted); font-weight: 700; }
+
+    .sequence { margin: 1rem 0; counter-reset: seq; }
+    .sequence-item {
+      position: relative;
+      margin-left: 1.1rem;
+      padding: 0 0 1rem 1.5rem;
+      border-left: 2px solid var(--border);
+    }
+    .sequence-item::before {
+      counter-increment: seq;
+      content: counter(seq);
+      position: absolute;
+      left: -0.85rem;
+      top: -0.05rem;
+      width: 1.55rem;
+      height: 1.55rem;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--accent);
+      color: var(--bg);
+      font-weight: 700;
+      font-size: 0.78rem;
+    }
+    .sequence-item:last-child { padding-bottom: 0; border-left-color: transparent; }
+    .sequence-item strong { display: block; }
+
+    .formula {
+      padding: 0.85rem 1rem;
+      border-radius: 0.65rem;
+      background: var(--code-bg);
+      color: var(--code-text);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      overflow-x: auto;
+      white-space: nowrap;
+    }
+    .phase {
+      display: grid;
+      grid-template-columns: 7rem minmax(0, 1fr);
+      gap: 0.9rem;
+      margin: 0.85rem 0;
+      padding: 0.9rem;
+      border: 1px solid var(--border);
+      border-radius: 0.65rem;
+      background: var(--surface-soft);
+    }
+    .phase-name { color: var(--accent-text); font-weight: 800; }
+    .checklist { list-style: none; padding-left: 0; }
+    .checklist li { position: relative; padding-left: 1.5rem; }
+    .checklist li::before { content: "□"; position: absolute; left: 0; color: var(--accent); font-weight: 800; }
+
+    @media (max-width: 1000px) {
+      .layout { grid-template-columns: 1fr; padding-top: 1rem; }
+      .toc { position: static; max-height: none; display: flex; flex-wrap: wrap; gap: 0.25rem; border-bottom: 1px solid var(--border); }
+      .toc strong { width: 100%; }
+      .toc a { border-left: 0; border-bottom: 2px solid transparent; }
+      .toc a:hover { border-bottom-color: var(--accent); }
+    }
+    @media (max-width: 760px) {
+      .hero-inner, .layout { padding-left: 1rem; padding-right: 1rem; }
+      section { padding: 1.15rem; }
+      .grid-2, .grid-3, .summary-grid, .arch-row { grid-template-columns: 1fr; }
+      .phase { grid-template-columns: 1fr; }
+      .button { width: 100%; text-align: center; }
+    }
+    @media print {
+      body { background: #fff; color: #111; }
+      .hero { background: #fff; }
+      .toc, .doc-links { display: none; }
+      .layout { display: block; padding: 1rem; }
+      section { box-shadow: none; break-inside: avoid; }
+      a { color: inherit; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-inner">
+      <div class="eyebrow">Implementation Design · Detailed Test Plan</div>
+      <h1>Assembly Module</h1>
+      <p class="subtitle">
+        Concrete implementation boundaries, file changes, execution algorithms, test cases, rollout gates, and definition
+        of done for the additive <code>multistorageclient.assembly</code> module, with optional transport work kept separate.
+      </p>
+      <div class="meta">
+        <span>Spec date: 2026-07-21</span>
+        <span>Last revised: 2026-08-25</span>
+        <span>Status: Proposed</span>
+        <span>Baseline: approved High-Level Design</span>
+        <span>Initial release: Read-only and opt-in</span>
+      </div>
+      <div class="doc-links">
+        <a class="button" href="high-level-design.html">High-Level Design</a>
+        <a class="button" href="assembly-workflow-user-guide.html">Workflow User Guide</a>
+        <a class="button primary" href="implementation-and-test-plan.html">Implementation &amp; Test Plan</a>
+      </div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="toc" aria-label="Table of contents">
+      <strong>Contents</strong>
+      <a href="#stance">1. Implementation stance</a>
+      <a href="#topology">2. Component topology</a>
+      <a href="#runtime">3. Runtime flow</a>
+      <a href="#contracts">4. Contracts and models</a>
+      <a href="#provider">5. Provider adapter</a>
+      <a href="#validation">6. Validation and planning</a>
+      <a href="#sources">7. Object and service bindings</a>
+      <a href="#executor">8. Executor, view, reader</a>
+      <a href="#python-scope">9. Python-only scope</a>
+      <a href="#operations">10. Operational semantics</a>
+      <a href="#files">11. File-level plan</a>
+      <a href="#test-architecture">12. Test architecture</a>
+      <a href="#test-cases">13. Detailed test cases</a>
+      <a href="#performance">14. Performance plan</a>
+      <a href="#rollout">15. Delivery gates</a>
+      <a href="#risks">16. Risks and completion</a>
+      <a href="#commands">17. Commands and references</a>
+    </nav>
+
+    <main>
+      <section id="stance">
+        <h2>1. Implementation stance</h2>
+        <div class="decision">
+          <strong>Implement an independent Python assembly layer and a language-neutral list codec.</strong>
+          The Python layer owns public contracts, expiration, complete-object validation, scheduling, and dispatch. Object
+          segments use an injected existing <code>StorageClient</code>; service segments use a separate
+          <code>ServiceSegmentFetcher</code> SPI implemented by the user. The initial core release requires no built-in HTTP
+          adapter. Existing StorageClient and StorageProvider behavior is not modified.
+        </div>
+
+        <div class="summary-grid">
+          <div class="card">
+            <span class="label">Extension boundary</span>
+            <span class="value">AssemblyPlanProvider</span>
+            <p class="small">Injected Python SPI returns one complete object plan for a fixed descriptor generation; it need not use the portable list artifact.</p>
+          </div>
+          <div class="card">
+            <span class="label">Execution boundary</span>
+            <span class="value">StorageClient + Service Fetcher</span>
+            <p class="small">Object bytes use public MSC APIs; service bytes use an independent fetch SPI.</p>
+          </div>
+          <div class="card">
+            <span class="label">Transport boundary</span>
+            <span class="value">User-owned adapter</span>
+            <p class="small">HTTP, gRPC, an SDK, or a local call remains behind the user implementation of the service SPI.</p>
+          </div>
+        </div>
+
+        <h3>Constraints inherited from the high-level design</h3>
+        <ul>
+          <li>No <code>AssembledStorageProvider</code>, Provider-to-Provider ownership, or access to a client's private provider.</li>
+          <li>No <code>StorageClient</code> subclass and no implicit registration in storage profiles, provider factories, or URI routing.</li>
+          <li>No MSC-defined HTTP/gRPC contract for the plan service; only the in-process provider SPI is standardized.</li>
+          <li>No plan-supplied credentials, unrestricted origins, storage profiles, or arbitrary executable callbacks. Any future opaque service locator remains subject to local fetcher policy.</li>
+          <li>Every descriptor and portable-list batch set has a mandatory expiration. V1 validates expiration and exact lengths; source selectors, validators, revisions, and checksums are deferred.</li>
+          <li>A read, materialization, or open-reader lifetime may cross expiration only if admitted while the descriptor was valid. New operations on that view fail until the caller explicitly resolves a new view.</li>
+          <li>Object, service, and inline segments remain an explicit public discriminated union; service transport adapters remain application-owned behind the public fetcher SPI.</li>
+          <li>The initial public façade is synchronous, read-only, explicit, and importable from <code>multistorageclient.assembly</code>; the execution engine must still overlap independent I/O under bounded concurrency.</li>
+          <li><code>assembly-plan/v1</code> always denotes exact final bytes. Format-specific semantic projection is outside v1 and cannot be activated by an optional annotation.</li>
+        </ul>
+
+        <h3>Requirement alignment and proposal boundaries</h3>
+        <div class="summary-grid">
+          <div class="card">
+            <span class="label">Explicitly required</span>
+            <p class="small">Configured sources and services; direct StorageClient reads for object segments; transport-neutral service segments; optional source versions/validators; bounded execution; and no breaking changes to existing providers.</p>
+          </div>
+          <div class="card">
+            <span class="label">Defensive design, not a requirement</span>
+            <p class="small">Requirements do not explicitly require <code>binding_revision</code> or <code>resource_validator</code>. V1 keeps <code>ObjectSourceBinding</code> client-only, disables logical-byte caching, and adds no public provider-specific resource-policy hook.</p>
+          </div>
+          <div class="card">
+            <span class="label">Explicit non-goals</span>
+            <p class="small">V1 defines no built-in service fetcher, external service API, or format-specific projection handler. Applications supply service integrations behind <code>ServiceSegmentFetcher</code>.</p>
+          </div>
+        </div>
+
+        <div class="callout">
+          This document records the approved v1 architectural direction. Public SPI or schema changes still receive normal API
+          review during implementation, while private safety constants are verified by focused tests and benchmarks.
+          Concrete transport adapters are outside this specification.
+        </div>
+      </section>
+
+      <section id="topology">
+        <h2>2. Component topology and dependency direction</h2>
+        <div class="architecture" role="img" aria-label="The application injects an AssemblyPlanProvider, StorageClient bindings, and ServiceSegmentFetchers into AssemblyClient. Python validates a complete object plan and dispatches its explicit segment union. Existing StorageClients remain owners of their StorageProviders.">
+          <div class="arch-row">
+            <div class="arch-node user"><strong>Plan provider</strong><br><code>AssemblyPlanProvider</code><br><span class="small">logical request → metadata-bearing complete object plan</span></div>
+            <div class="arch-node new"><strong>AssemblyClient / View</strong><br><span class="small">expiration policy and user API</span></div>
+            <div class="arch-node new"><strong>Frozen AssemblyView</strong><br><span class="small">one validated plan and binding snapshot</span></div>
+          </div>
+          <div class="arch-arrow">provider output → validate complete object → intersect caller range → dispatch segment kinds</div>
+          <div class="arch-row">
+            <div class="arch-node new"><strong>PlanValidator</strong><br><span class="small">expiration, union, global length, limits</span></div>
+            <div class="arch-node new"><strong>ReadPlanner / Executor</strong><br><span class="small">range intersection, bounded fan-out, atomic scatter</span></div>
+            <div class="arch-node new"><strong>Binding registries</strong><br><span class="small">StorageClients and service fetchers</span></div>
+          </div>
+          <div class="arch-arrow">object reads · service fetches · inline copies ↓</div>
+          <div class="arch-row">
+            <div class="arch-node"><strong>ObjectSegmentExecutor</strong><br><span class="small">existing public StorageClient.read</span></div>
+            <div class="arch-node user"><strong>ServiceSegmentFetcher</strong><br><span class="small">STABLE_SUBRANGES or WHOLE_RESULT</span></div>
+            <div class="arch-node new"><strong>Inline executor</strong><br><span class="small">bounded literal bytes, no I/O</span></div>
+          </div>
+          <div class="arch-arrow">↓ existing ownership is preserved</div>
+          <div class="arch-row">
+            <div class="arch-node"><strong>StorageClient → StorageProvider</strong></div>
+            <div class="arch-node user"><strong>User HTTP / gRPC / SDK / local adapter</strong></div>
+            <div class="arch-node"><strong>Memory / temp-file staging</strong></div>
+          </div>
+        </div>
+
+        <h3>One-way dependencies</h3>
+        <div class="formula">application → assembly module → public StorageClient API + service fetcher SPI → physical systems</div>
+        <ul>
+          <li>The assembly package defines a frozen <code>ByteRange</code>. It may accept MSC's existing mutable <code>Range</code> only at a convenience edge and immediately copy it.</li>
+          <li>Existing client and provider packages do not import the assembly package.</li>
+          <li>The plan provider does not receive StorageClient objects, service fetchers, credentials, or an executor.</li>
+          <li>A ServiceSegmentFetcher receives one service operation, never a full AssemblyPlan, and never interprets logical ordering.</li>
+          <li>A user service adapter translates one <code>ServiceFetchRequest</code> to its own transport and never receives the complete plan.</li>
+          <li>The language-neutral <code>assembly-list/v1</code> codec is independent of provider and service transport implementations.</li>
+        </ul>
+      </section>
+
+      <section id="runtime">
+        <h2>3. Runtime flow from public entry point to bytes</h2>
+        <p>The complete call path for <code>view = assembly.resolve(reference)</code> followed by <code>view.read(ByteRange(28672, 20480))</code> is:</p>
+
+        <div class="sequence">
+          <div class="sequence-item">
+            <strong>Resolve the reference</strong>
+            <span><code>AssemblyClient.resolve</code> canonicalizes the reference, checks client state, and rejects request limits before any provider, StorageClient, or service-fetcher call.</span>
+          </div>
+          <div class="sequence-item">
+            <strong>Acquire one complete object plan</strong>
+            <span>The client calls <code>AssemblyPlanProvider.get_plan(request)</code> once. The response contains a metadata-only <code>AssemblyDescriptor</code>—reference, generation, size, expiration, and optional descriptive fields—plus all ordered segments for that generation. A provider may page its backend internally, but it cannot substitute the requested reference or return a range-specific fragment. The client rejects a missing, malformed, or expired <code>expires_at</code>. No view is observable yet.</span>
+          </div>
+          <div class="sequence-item">
+            <strong>Validate and publish the view</strong>
+            <span>The validator checks exact v1 result semantics, the segment discriminator, checked global length, hard inline limits, and aliases. It then snapshots JSON inputs and freezes the resolved local source/service objects. Only now does <code>AssemblyClient.resolve</code> return an executable <code>AssemblyView</code> containing the descriptor, validated complete plan, frozen bindings, and lifecycle state. Another resolve call repeats this pipeline and returns another view.</span>
+          </div>
+          <div class="sequence-item">
+            <strong>Intersect the caller range</strong>
+            <span>Only after global validation, the planner intersects the requested range with object and inline segments and chooses subrange or whole-result execution for each service segment.</span>
+          </div>
+          <div class="sequence-item">
+            <strong>Dispatch bounded operations</strong>
+            <span>Object segments call existing StorageClient APIs directly. Range-capable services receive stable subranges. Each touched WHOLE_RESULT segment gets one core fetch call per view operation and is staged under fixed memory/temp-file bounds before slicing. Any private retry remains opaque fetcher behavior.</span>
+          </div>
+          <div class="sequence-item">
+            <strong>Verify every chunk</strong>
+            <span>Object bindings return exact requested ranges through StorageClient. Service fetchers advertise only their supported range modes and must return the exact required length. Stronger source identity and fetcher-internal retry policy remain application concerns.</span>
+          </div>
+          <div class="sequence-item">
+            <strong>Commit atomically</strong>
+            <span>Verified chunks scatter incrementally into a private destination buffer; only after every chunk passes may the execution engine return immutable bytes. V1 publishes no logical-byte cache entry.</span>
+          </div>
+        </div>
+
+        <h3>Failure boundary</h3>
+        <p>
+          A terminal error cancels queued work, signals the shared cancellation token, closes open service result streams, discards
+          every unpublished chunk and staged output, and returns one stable domain exception. The token is internal in v1: MSC
+          signals it after a sibling failure or parent-client close; the synchronous public façade has no caller-supplied
+          cancellation input. The absolute operation deadline strictly bounds admission and MSC-owned waits. A provider or
+          service fetcher receives that deadline and must honor it cooperatively. The current synchronous
+          <code>StorageClient.read</code> accepts neither a deadline nor a cancellation token, so MSC can check the deadline
+          before and after the call but cannot preempt an in-progress read. Applications must configure the StorageClient's
+          underlying transport timeouts and retry envelope accordingly; a late result is discarded after the deadline is
+          observed. A future additive object-binding contract may offer stronger cancellation without changing StorageClient.
+        </p>
+        <div class="callout info">
+          Expiration is an admission check, not an in-flight cancellation deadline. An operation admitted while the descriptor is
+          valid may finish after <code>expires_at</code>. Its result may be published to the caller or atomically materialized,
+          but a new operation cannot start on that view after expiration. A completed materialized file has an independent,
+          application-owned retention lifetime and does not become invalid merely because its source descriptor later expires.
+        </div>
+      </section>
+
+      <section id="contracts">
+        <h2>4. Concrete MVP contracts and models</h2>
+        <p>
+          Public models live in Python and use small frozen slotted dataclasses for their top-level fields. Nested JSON inputs
+          stay ordinary mappings and lists for usability; they are validated and copied into a private immutable execution
+          representation at the trust boundary. <code>assembly-list/v1</code> is a normative, versioned, language-neutral JSON
+          representation, and providers may construct the equivalent public models directly.
+        </p>
+        <div class="callout info">
+          <strong>Descriptor is not view.</strong> <code>AssemblyDescriptor</code> is immutable control-plane metadata and has
+          no byte-I/O methods. <code>AssemblyView</code> is the executable handle created only after MSC retrieves and validates
+          the complete <code>AssemblyPlan</code>, freezes local bindings, and initializes
+          lifecycle state. <code>AssemblyView.metadata</code> returns the exact descriptor captured by that view.
+        </div>
+
+        <div class="callout">
+          <strong>V1 result semantics are exact and permanent.</strong> <code>assembly-plan/v1</code> always describes the
+          caller's complete final logical bytes. Optional application annotations are informational and cannot require a
+          format-specific projection step. Any future carrier-plus-projection contract uses a new plan version and a separate
+          format-aware façade; a v1 client must reject it rather than silently materialize a superset.
+        </div>
+
+        <h3>API and protocol evolution rules</h3>
+        <ul>
+          <li>Unknown list/plan versions, segment kinds, and fields are rejected before binding or byte I/O. Supporting a future version never changes the interpretation of a valid v1 artifact.</li>
+          <li>Published provider and fetcher ABCs never gain a required abstract method within v1. Optional behavior uses a concrete default method or a new versioned SPI.</li>
+          <li>New façade parameters are keyword-only and carry backward-compatible defaults. New serialized model semantics require a new versioned type.</li>
+          <li>A future format-aware projection façade is additive and separate from <code>AssemblyView</code>; existing callers continue to receive the exact bytes defined by v1.</li>
+        </ul>
+
+        <div class="callout info">
+          <strong>MVP configuration rule.</strong> Users configure only concurrency and operation timeout. Size, nesting,
+          inline-data, buffering, and staging safeguards are private module constants. Changing one is an implementation
+          review, not an expansion of the public API.
+        </div>
+
+        <pre><code>JsonScalar: TypeAlias = None | bool | int | float | str
+JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+ASSEMBLY_LIST_SCHEMA_V1: Final = "assembly-list/v1"
+ASSEMBLY_PLAN_SCHEMA_V1: Final = "assembly-plan/v1"
+
+class ServiceRangeMode(Enum):
+    STABLE_SUBRANGES = "stable_subranges"
+    WHOLE_RESULT = "whole_result"
+
+StrPath = str | os.PathLike[str]
+
+# Internal safeguards in multistorageclient.assembly.limits.
+MAX_SEGMENTS_PER_OBJECT: Final = 100_000
+MAX_PLAN_BYTES: Final = 16 * 1024 * 1024
+MAX_READ_BYTES: Final = 512 * 1024 * 1024
+MAX_OBJECT_BYTES: Final = 16 * 1024**4
+OBJECT_READ_CHUNK_BYTES: Final = 64 * 1024 * 1024
+SERVICE_CHUNK_BYTES: Final = 1024 * 1024
+MATERIALIZATION_WINDOW_BYTES: Final = 64 * 1024 * 1024
+MAX_INLINE_SEGMENT_BYTES: Final = 16 * 1024
+MAX_INLINE_BYTES_PER_OBJECT: Final = 64 * 1024
+MAX_WHOLE_RESULT_BYTES: Final = 1024**3
+MAX_BATCH_BYTES: Final = 64 * 1024 * 1024
+MAX_OBJECTS_PER_BATCH: Final = 100_000
+MAX_STATIC_OBJECTS: Final = 1_000_000
+MAX_JSON_DEPTH: Final = 64
+
+@dataclass(frozen=True, slots=True)
+class ByteRange:
+    offset: int
+    size: int
+
+@dataclass(frozen=True, slots=True)
+class AssemblyReference:
+    namespace: str
+    key: str
+    parameters: Mapping[str, JsonScalar] = field(default_factory=dict)
+
+@dataclass(frozen=True, slots=True)
+class ResolveAssemblyRequest:
+    reference: AssemblyReference
+    generation: str | None = None
+    deadline_monotonic: float | None = field(default=None, compare=False, hash=False, repr=False)
+
+@dataclass(frozen=True, slots=True)
+class AssemblyDescriptor:
+    """Control-plane metadata only; never an executable byte handle."""
+    reference: AssemblyReference
+    generation: str
+    size: int
+    expires_at: datetime
+    etag: str | None = None
+    content_type: str | None = None
+    published_at: datetime | None = None
+
+@dataclass(frozen=True, slots=True)
+class ObjectSegment:
+    kind: Literal["object"]
+    source_id: str
+    resource: str
+    byte_range: ByteRange
+    length: int
+
+@dataclass(frozen=True, slots=True)
+class ServiceSegment:
+    kind: Literal["service"]
+    fetcher_id: str
+    operation: str
+    parameters: Mapping[str, JsonValue]
+    length: int
+    range_mode: ServiceRangeMode = ServiceRangeMode.WHOLE_RESULT
+
+@dataclass(frozen=True, slots=True)
+class InlineSegment:
+    kind: Literal["inline"]
+    data: bytes
+    length: int
+
+AssemblySegment: TypeAlias = ObjectSegment | ServiceSegment | InlineSegment
+
+@dataclass(frozen=True, slots=True)
+class AssemblyObjectDefinition:
+    reference: AssemblyReference
+    size: int
+    segments: tuple[AssemblySegment, ...]
+    etag: str | None = None
+    content_type: str | None = None
+    published_at: datetime | None = None
+
+@dataclass(frozen=True, slots=True)
+class AssemblyPlan:
+    schema_version: Literal["assembly-plan/v1"]
+    result_semantics: Literal["exact"]
+    descriptor: AssemblyDescriptor
+    segments: tuple[AssemblySegment, ...]
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        schema_version: Literal["assembly-plan/v1"],
+        result_semantics: Literal["exact"] = "exact",
+        descriptor: AssemblyDescriptor,
+        segments: Sequence[AssemblySegment],
+    ) -> "AssemblyPlan": ...
+
+@dataclass(frozen=True, slots=True)
+class AssemblyListBatch:
+    schema_version: Literal["assembly-list/v1"]
+    list_id: str
+    expires_at: datetime
+    batch_index: int
+    batch_count: int
+    objects: tuple[AssemblyObjectDefinition, ...]  # never split across batches</code></pre>
+
+        <p>
+          <code>JsonValue</code> is only a typing alias for transport-neutral service parameters; it is not a runtime wrapper
+          hierarchy. At <code>resolve()</code>, MSC validates JSON types and nesting, deep-copies parameters and reference
+          scalars, and stores them in a private immutable execution plan. Provider-owned dictionaries can therefore change
+          later without mutating an existing view.
+        </p>
+
+        <pre><code>def decode_assembly_list_batch(
+    data: bytes | bytearray | memoryview | str,
+) -> AssemblyListBatch: ...
+
+def encode_assembly_list_batch(batch: AssemblyListBatch) -> bytes: ...
+
+def iter_decode_assembly_list_batches(
+    stream: BinaryIO,
+) -> Iterator[AssemblyListBatch]: ...
+
+def write_assembly_list_batches(
+    batches: Iterable[AssemblyListBatch],
+    stream: BinaryIO,
+) -> None: ...</code></pre>
+
+        <h3 id="public-facade-reference">Exact public façade reference</h3>
+        <p>
+          The high-level design intentionally shows only the common workflow. This subsection is the normative signature
+          reference for the façade, view, and forward-only reader. Providers
+          return metadata-bearing plans; only the client returns views.
+        </p>
+        <pre><code>RangeLike = ByteRange | multistorageclient.types.Range  # copied immediately to ByteRange
+
+class AssemblyClient:
+    def __init__(
+        self,
+        *,
+        plan_provider: AssemblyPlanProvider,
+        object_sources: Mapping[str, ObjectSourceBinding],
+        service_fetchers: Mapping[str, ServiceSegmentFetcher],
+        max_concurrency: int = 16,
+        timeout_seconds: float = 300.0,
+    ) -> None: ...
+
+    def resolve(
+        self,
+        reference: AssemblyReference | str,
+        *,
+        generation: str | None = None,
+    ) -> AssemblyView:
+        """Return only after descriptor, complete plan, and bindings are valid."""
+        ...
+
+    def close(self) -> None: ...
+    def __enter__(self) -> "AssemblyClient": ...
+    def __exit__(self, *exc: object) -> None: ...
+
+class AssemblyView:
+    @property
+    def metadata(self) -> AssemblyDescriptor:
+        """Return this executable view's immutable control-plane descriptor."""
+        ...
+
+    def read(self, byte_range: RangeLike | None = None) -> bytes: ...
+    def open(self) -> AssemblyReader: ...
+    def materialize(self, destination: StrPath, *, overwrite: bool = False) -> None: ...
+    def close(self) -> None: ...
+    def __enter__(self) -> "AssemblyView": ...
+    def __exit__(self, *exc: object) -> None: ...
+
+class AssemblyReader(io.RawIOBase):
+    @property
+    def metadata(self) -> AssemblyDescriptor: ...
+
+    def readable(self) -> bool: return True
+    def seekable(self) -> bool: return False
+    def writable(self) -> bool: return False
+    def read(self, size: int = -1) -> bytes: ...
+    def readall(self) -> bytes: ...
+    def readinto(self, buffer: bytearray | memoryview) -> int: ...
+    def tell(self) -> int: ...</code></pre>
+
+        <p class="small">
+          The MVP intentionally has no capability objects, browsing methods, or seek contract. Random access is explicit
+          through <code>AssemblyView.read(range)</code>; <code>open()</code> is always forward-only. The two constructor knobs
+          are validated eagerly and govern all client operations.
+        </p>
+
+        <h3>Language-neutral assembly-list batches</h3>
+        <p>
+          An assembly list is one or more ordered <code>AssemblyListBatch</code> values with one <code>list_id</code>, mandatory
+          <code>expires_at</code>, contiguous zero-based indexes, and exactly the declared batch count. An object definition
+          cannot be split between batches. The artifact exists so another process or language can exchange many named object
+          definitions without requiring MSC to define the producer's service API. It is not a pagination, listing, or glob contract.
+        </p>
+        <p>
+          The codec accepts strict UTF-8 JSON, rejects duplicate or unknown fields and non-finite numbers, uses RFC 3339 UTC
+          timestamps, and represents inline bytes as unpadded base64url. Internal constants bound encoded bytes, nesting,
+          object count, and segment count before allocation. No public decode-limit classes or per-call limit arguments are exposed.
+        </p>
+        <pre><code>assembly_reference := {
+  "namespace": string,
+  "key": string,
+  "parameters": { string: json_scalar }
+}</code></pre>
+        <pre><code>{
+  "schema_version": "assembly-list/v1",
+  "list_id": string,
+  "expires_at": utc_rfc3339,
+  "batch_index": integer,
+  "batch_count": integer,
+  "objects": [{
+    "reference": assembly_reference,
+    "size": integer,
+    "etag": string | null,
+    "content_type": string | null,
+    "published_at": utc_rfc3339_microseconds | null,
+    "segments": [
+      {"kind": "object", "source_id": string, "resource": string,
+       "byte_range": {"offset": integer, "size": integer}, "length": integer},
+      {"kind": "service", "fetcher_id": string, "operation": string,
+       "parameters": json_object, "length": integer,
+       "range_mode": "stable_subranges" | "whole_result"},
+      {"kind": "inline", "data_base64": string, "length": integer}
+    ]
+  }]
+}</code></pre>
+        <p class="small">
+          Optional values are explicit JSON <code>null</code>; arrays retain semantic order. Every batch carries expiration so
+          it can be rejected independently. Across one batch set, <code>list_id</code>, <code>expires_at</code>, and
+          <code>batch_count</code> must match. Golden vectors cover each union arm, multi-batch lists,
+          empty objects, Unicode, timestamps, base64, and invalid unknown fields.
+        </p>
+
+        <h3>Invariants not expressed by the type declarations</h3>
+        <ul>
+          <li>Every <code>AssemblyReference</code> is unique within one complete list snapshot, including across batch boundaries.</li>
+          <li>A zero-size object has an empty plan. Otherwise, every segment length is positive and the checked sum of ordered segment lengths equals the descriptor size.</li>
+          <li><code>ObjectSegment.byte_range.size == ObjectSegment.length</code>; <code>InlineSegment.length == len(InlineSegment.data)</code>.</li>
+          <li><code>AssemblyDescriptor.etag</code>, when present, is descriptive metadata supplied by the provider; MSC does not derive or enforce it in v1.</li>
+          <li>Operation deadlines are runtime-only values and never appear in the portable artifact.</li>
+        </ul>
+
+        <h3>Local binding authority and hard inline limits</h3>
+        <p>
+          Object source and service aliases are local. A list cannot choose a profile, client, unrestricted endpoint,
+          credentials, or fetcher implementation. Validation resolves each alias and freezes the concrete local object in the view. An object
+          resource is interpreted only through the bound StorageClient's existing public logical-path semantics; it cannot
+          reconfigure that client or select authority outside it. Applications must therefore bind a least-privilege logical
+          namespace appropriate for every plan they accept. V1 adds no provider-specific narrower-path policy on top of that
+          public StorageClient namespace. Rebinding an alias never mutates an existing view. Inline data is decoded
+          under two immutable v1 upper ceilings: at most <strong>16 KiB per InlineSegment</strong> and
+          <strong>64 KiB total decoded inline bytes per object/plan</strong>. Encoded-size and overall-plan limits apply in
+          addition; inline bytes never become a bulk-data escape hatch.
+        </p>
+
+        <h3>Expiration and MVP consistency policy</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Rule</th><th>V1 behavior</th></tr></thead>
+            <tbody>
+              <tr><td>Mandatory freshness</td><td>Missing, malformed, or expired <code>expires_at</code> raises <code>AssemblyExpiredError</code> before an operation begins.</td></tr>
+              <tr><td>Object identity</td><td>Selectors, validators, and checksums are not part of the v1 model. MSC requires the requested byte count and surfaces StorageClient failures.</td></tr>
+              <tr><td>Service identity</td><td>Operation revisions and checksums are not part of the v1 model. MSC requires the declared result length and validates the fetcher's range protocol.</td></tr>
+              <tr><td>Cross-operation cache</td><td>Disabled in v1. A view retains its own validated plan, but another <code>resolve()</code> calls the provider again and creates a distinct view.</td></tr>
+              <tr><td>Replacement</td><td>There is no public refresh operation. Another <code>resolve(reference)</code> obtains and validates a replacement plan/view with its own <code>generation</code> and <code>expires_at</code>; it never extends or mutates the old view.</td></tr>
+              <tr><td>In-flight expiration</td><td>An operation admitted while valid may finish. A subsequent operation on the old view is rejected.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout danger">
+          <strong>Assembly does not define dataset snapshot semantics.</strong> A fixed plan does not make an unversioned
+          mutable source immutable. Same-length replacement may be undetectable. The application and plan provider own any
+          dataset- or sample-snapshot contract above this byte-assembly layer.
+        </div>
+      </section>
+
+      <section id="provider">
+        <h2>5. AssemblyPlanProvider adapter and conformance boundary</h2>
+        <p>
+          The provider is a narrow in-process SPI. It may internally call any service or local catalog, but MSC never sees
+          its transport. Implementations translate backend responses to canonical models and backend failures to stable
+          assembly exceptions.
+        </p>
+
+<pre><code>class AssemblyPlanProvider(ABC):
+    @abstractmethod
+    def get_plan(
+        self,
+        request: ResolveAssemblyRequest,
+    ) -> AssemblyPlan:
+        """Return descriptor metadata and every ordered segment."""
+
+class StaticAssemblyListProvider(AssemblyPlanProvider):
+    @classmethod
+    def from_batches(
+        cls,
+        batches: Iterable[AssemblyListBatch],
+    ) -> "StaticAssemblyListProvider": ...</code></pre>
+
+        <h3>Contract choices</h3>
+        <ul>
+          <li><code>get_plan(request)</code> is the single required provider call. It returns a metadata-only <code>AssemblyDescriptor</code> inside one complete exact-result plan and never returns an executable object or a range-specific fragment. <code>AssemblyClient.resolve</code> validates the response, freezes local bindings, and returns no <code>AssemblyView</code> until both steps succeed.</li>
+          <li>There is no public provider or client refresh method and no automatic generation fall-forward in v1. Another <code>resolve(reference)</code> repeats the same single-call pipeline and returns a distinct view. A future automatic policy would be additive and must never start work from a hard-expired plan.</li>
+          <li><code>get_plan</code> returns one complete object plan. Backend/list batching is an implementation detail; a partial segment page never enters the validator or executor.</li>
+          <li><code>StaticAssemblyListProvider.from_batches()</code> is the bounded in-memory reference implementation. For each object definition it sets <code>descriptor.generation = list_id</code> and <code>descriptor.expires_at = expires_at</code>; reference, size, ETag, content type, and publication time come from that object definition. It constructs an exact-result <code>assembly-plan/v1</code>. Private hard limits are applied before committing the in-memory index. Deployments requiring disk-backed or remote lookup implement <code>AssemblyPlanProvider</code> directly.</li>
+          <li>Provider authors are not required to make <code>get_plan</code> thread-safe. AssemblyClient serializes calls to the injected provider.</li>
+          <li>The provider, public façade, and <code>ServiceSegmentFetcher.fetch()</code> contracts are synchronous and match the current StorageClient style. Internally, Assembly overlaps independent source/fetcher I/O through bounded concurrency; v1 adds no public async SPI and implies no Rust implementation.</li>
+          <li>Provider retries are internal and bounded. AssemblyClient does not layer general retries around provider calls.</li>
+          <li>Expiration is a hard admission check. A caller obtains a replacement through another resolve call; failure leaves the old view unchanged and an expired or closed view remains unusable.</li>
+        </ul>
+
+        <h3 id="provider-error-contract">Provider error contract</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Exception</th><th>Meaning</th><th>AssemblyClient behavior</th></tr></thead>
+            <tbody>
+              <tr><td><code>AssemblyNotFoundError</code></td><td>Logical key is unknown.</td><td>Do not call sources; surface the typed error.</td></tr>
+              <tr><td><code>AssemblyGenerationUnavailableError</code></td><td>The requested generation cannot be served.</td><td>Never fall forward to latest.</td></tr>
+              <tr><td><code>AssemblyProviderAuthenticationError</code></td><td>The provider backend rejected credentials after its own safe refresh attempt.</td><td>Do not add an authentication retry.</td></tr>
+              <tr><td><code>AssemblyProviderRetryableError</code></td><td>The provider exhausted its bounded retries on a transient failure.</td><td>Do not add an outer retry loop.</td></tr>
+              <tr><td><code>InvalidAssemblyPlanError</code></td><td>The provider returned a structurally or semantically invalid plan.</td><td>Fail before source I/O and record a contract violation.</td></tr>
+              <tr><td><code>AssemblyProviderError</code></td><td>An unexpected provider <code>Exception</code>.</td><td>Expose only a safe cause classification, never the backend message.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="small">
+          Provider errors preserve only documented safe fields. Arbitrary backend arguments, messages, and nested causes do
+          not pass through the provider boundary.
+        </p>
+
+        <h3>MSC-supplied provider conformance suite</h3>
+        <p>
+          <code>multistorageclient.assembly.testing</code> exposes reusable pytest cases/factories. It proves behavior rather
+          than transport shape: mandatory expiration, stable descriptor generation, complete-object coverage, typed errors,
+          limits, and lifecycle. A separate suite covers <code>ServiceSegmentFetcher</code>; neither suite
+          is coupled to HTTP payloads or endpoint names.
+        </p>
+
+        <div class="callout info">
+          Provider implementations own authentication refresh and transport retries. They must not include tokens, full
+          sensitive URLs, or backend response bodies in <code>repr</code>, metrics, or public exceptions.
+        </div>
+      </section>
+
+      <section id="validation">
+        <h2>6. Validation and range planning</h2>
+        <h3>Configuration validation</h3>
+        <p>
+          <code>AssemblyClient</code> validates <code>max_concurrency</code> as a positive non-bool integer and
+          <code>timeout_seconds</code> as a positive finite number before dependency or network I/O. All remaining limits are
+          private constants validated by module tests. Temporary staging uses a private file in the platform temporary
+          directory; v1 exposes no staging-path or memory-budget configuration surface.
+        </p>
+        <h3>Validation order</h3>
+        <ol>
+          <li>Validate reference, schema/list versions, mandatory <code>expires_at</code>, and private hard limits. Require <code>descriptor.reference == request.reference</code> and, when <code>request.generation</code> is non-None, <code>descriptor.generation == request.generation</code>; reject a silent fall-forward before plan/source I/O.</li>
+          <li>At plan or view-operation admission, compare one captured UTC clock value with <code>expires_at</code>; equality is expired. Reject a newly returned plan or existing view before binding or source/service byte I/O. Every explicit later <code>resolve(reference)</code> calls the provider once to obtain a new view, which may represent a replacement generation.</li>
+          <li>Validate that the complete plan echoes the descriptor, then perform cheap structural checks: exact model types, segment count, discriminator, strict integers, text and JSON bounds, and inline decoded limits. Reject immediately on the first violation.</li>
+          <li>Tuple order is logical order. Validate every positive length/object range with checked arithmetic; compute the checked sum of every segment length and require it to equal <code>descriptor.size</code>, including for a partial caller read.</li>
+          <li>Estimate the plan's validated encoded size with a capped serializer. Do not construct a second complete encoding; abort when the private plan-byte limit would be exceeded.</li>
+          <li>Resolve object aliases to existing StorageClients and service aliases to ServiceSegmentFetchers, then freeze those concrete local objects in the returned view.</li>
+          <li>Validate each service segment's requested range mode against its selected fetcher's <code>range_modes</code> and ensure any <code>WHOLE_RESULT</code> stage fits the private hard limit.</li>
+          <li>Normalize and bounds-check the caller's half-open logical range, intersect it with the already validated full plan, then allocate or stage output and begin I/O.</li>
+        </ol>
+
+        <h3>Range arithmetic</h3>
+        <div class="formula">logical interval = [offset, offset + size) &nbsp;·&nbsp; segment-local interval = [intersection start, intersection end)</div>
+        <p>
+          Python checks every canonical integer and addition against the interoperable <code>2**53 - 1</code> ceiling before
+          allocation or dispatch. A zero-length logical read returns <code>b""</code> without segment I/O, but plan validation
+          still occurs when required to prove the descriptor's complete-object definition and global length. A user fetcher
+          owns any conversion to its transport's range convention.
+        </p>
+
+        <h3>ReadOperation</h3>
+        <pre><code>@dataclass(frozen=True, slots=True)
+class ObjectReadOperation:
+    source_id: str
+    resource: str
+    fetch_range: ByteRange
+    destination_offset: int
+
+@dataclass(frozen=True, slots=True)
+class ServiceReadOperation:
+    fetcher_id: str
+    operation: str
+    parameters: Mapping[str, JsonValue]
+    full_result_length: int
+    requested_subrange: ByteRange
+    range_mode: ServiceRangeMode
+    destination_offset: int</code></pre>
+
+        <p class="small">
+          <code>ObjectReadOperation.fetch_range</code> is the exact absolute object range passed to StorageClient. A service
+          operation carries the logical subrange even when the selected mode requires fetching and locally slicing the full result.
+        </p>
+
+        <h3>No cross-segment coalescing in v1</h3>
+        <p>
+          Every intersected object segment remains one independent logical object operation. Within it, MSC issues
+          consecutive public <code>StorageClient.read</code> calls no larger than the private object chunk limit; each segment
+          fetches only the caller intersection and copies that
+          complete fetch. V1 never combines adjacent object segments, even when alias/resource/ranges appear compatible,
+          because ObjectSourceBinding exposes no explicit cross-segment coalescing contract. Inline slices copy directly;
+          STABLE_SUBRANGES receives exact intersections; each WHOLE_RESULT segment is identified by its ordinal in the current
+          view and is staged once per admitted operation. Repeated intersections with one ordinal reuse that stage, while
+          equal-valued segments at different ordinals never deduplicate. A future additive binding
+          contract may enable coalescing with its own conformance tests.
+        </p>
+      </section>
+
+      <section id="sources">
+        <h2>7. Object bindings and ServiceSegmentFetcher SPI</h2>
+
+        <p>
+          The complete v1 public object-binding surface is <code>ObjectSourceBinding(client=storage_client)</code>. The binding
+          selects an already configured public StorageClient logical namespace; it adds no profile, endpoint, credential,
+          provider, ownership, or provider-specific path-policy controls.
+        </p>
+        <p>
+          The complete service SPI is <code>range_modes</code> plus <code>fetch</code>. Assembly captures the immutable range-mode
+          set during construction and serializes calls to each fetcher instance. Fetchers and their lifecycle remain application-owned.
+        </p>
+
+        <pre><code>class CancellationToken(Protocol):
+    @property
+    def cancelled(self) -> bool: ...
+
+    def raise_if_cancelled(self) -> None: ...
+
+@dataclass(frozen=True, slots=True)
+class SourceReadContext:
+    deadline_monotonic: float | None = field(compare=False, hash=False, repr=False)
+    cancellation: CancellationToken = field(compare=False, hash=False, repr=False)
+    max_chunk_bytes: int = field(compare=False, hash=False, repr=False)
+
+@dataclass(frozen=True, slots=True)
+class ObjectSourceBinding:
+    client: StorageClient = field(repr=False, compare=False, hash=False)
+
+@dataclass(frozen=True, slots=True)
+class ServiceFetchRequest:
+    segment: ServiceSegment
+    requested_range: ByteRange | None  # non-None only for STABLE_SUBRANGES
+
+class ServiceResultStream(Iterator[bytes], Protocol):
+    def close(self) -> None: ...
+
+class ServiceSegmentFetcher(ABC):
+    @property
+    @abstractmethod
+    def range_modes(self) -> frozenset[ServiceRangeMode]: ...
+
+    @abstractmethod
+    def fetch(
+        self,
+        request: ServiceFetchRequest,
+        *,
+        context: SourceReadContext,
+    ) -> ServiceResultStream:
+        """Return a stream for the exact requested subrange or complete result."""</code></pre>
+
+        <div class="callout info">
+          The core release expects a user-owned implementation such as <code>MyServiceFetcher</code>. It translates one
+          <code>ServiceFetchRequest</code> into the user's HTTP, gRPC, SDK, or local-service call. It never receives an
+          <code>AssemblyPlan</code>, never decides segment ordering, and returns only the byte stream for one service segment
+          while honoring declared length/range mode, the shared deadline, and cooperative cancellation. MSC standardizes
+          this in-process SPI, not the user's external wire contract.
+        </div>
+
+        <div class="callout">
+          <strong>One request means one independently executable segment.</strong> V1 has no multi-range service batch call
+          and assumes no sticky session or hidden ordering state. The client overlaps independent fetches under bounded
+          concurrency and relies on the application transport for connection pooling or multiplexing. The service
+          <code>operation</code> and <code>parameters</code> are interpreted and confined by the locally selected fetcher;
+          plans never supply credentials. Any future locator requires a separate versioned design and the same local-policy boundary.
+        </div>
+
+        <h3>Frozen binding registries</h3>
+        <ul>
+          <li>AssemblyClient defensively copies separate <code>object_sources: Mapping[str, ObjectSourceBinding]</code> and <code>service_fetchers: Mapping[str, ServiceSegmentFetcher]</code>; malformed or duplicate aliases fail construction. Either mapping may be empty when the resolved plan uses none of that segment kind.</li>
+          <li>Plans select only aliases. They cannot construct a client/fetcher or mutate endpoint, profile, prefix, credentials, or retry policy.</li>
+          <li>The complete public object binding is <code>ObjectSourceBinding(client=storage_client)</code>. MSC freezes that concrete association in each view. The plan's <code>resource</code> is a logical path inside that client's already configured public namespace; it cannot reconfigure or expand the client authority. Applications bind a least-privilege namespace suitable for every accepted plan. V1 adds no provider-specific narrower path policy.</li>
+          <li>StorageClients are always borrowed and never closed by AssemblyClient. Independent object reads may overlap under the client-wide concurrency and byte budgets; Assembly adds no per-StorageClient serialization policy.</li>
+          <li><code>range_modes</code> is immutable for the injected fetcher's lifetime. Calls to the same fetcher object are always serialized across aliases and views; different fetchers may overlap under the client-wide concurrency limit.</li>
+          <li>The same client or fetcher may appear under multiple aliases; alias reuse does not change dependency ownership.</li>
+          <li>The plan provider, service fetchers, and StorageClients are borrowed. The application creates, owns, and closes them through their own public APIs.</li>
+          <li>On failure AssemblyClient signals the shared cancellation token, cancels queued work, closes service streams, and attempts cleanup of every MSC-owned private stage. A user fetcher observes that token through <code>SourceReadContext</code>; custom blocking I/O remains cooperative and must obey the context deadline.</li>
+          <li>Every yielded item is non-empty <code>bytes</code> no larger than <code>SourceReadContext.max_chunk_bytes</code>, which comes from a private module constant. Wrong type, empty, or oversized chunks attempt stream close and raise <code>ServiceProtocolError</code> before copy or staging.</li>
+          <li>Documented service-domain errors preserve their stable type and safe fields. Other fetcher exceptions become a redacted <code>ServiceFetchError</code> containing only a validated cause classification; private exception messages and transport details are never exposed.</li>
+          <li>A primary execution error takes precedence over cleanup failures. If execution otherwise succeeds but required stream or stage cleanup fails, discard the private output and raise the appropriate redacted service or staging error.</li>
+        </ul>
+
+        <h3>Core segment dispatch</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Segment</th><th>Implementation</th><th>Required behavior</th><th>Primary purpose</th></tr></thead>
+            <tbody>
+              <tr><td><code>ObjectSegment</code></td><td>Python dispatcher → existing <code>StorageClient.read</code></td><td>Exact public range read; short reads fail.</td><td>Bulk bytes travel directly from configured storage to MSC.</td></tr>
+              <tr><td><code>ServiceSegment</code></td><td>User <code>ServiceSegmentFetcher</code></td><td>Advertise supported range modes and return the exact required length.</td><td>Transport-neutral synthesized bytes.</td></tr>
+              <tr><td><code>InlineSegment</code></td><td>Python memory copy</td><td>Decode/validate before I/O; enforce 16 KiB segment and 64 KiB object aggregate ceilings.</td><td>Small constants only.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Object read semantics</h3>
+        <p>
+          Each ObjectSegment is read directly through one or more bounded
+          <code>StorageClient.read(resource, Range(offset, size))</code> calls. MSC requires exactly the requested number of
+          bytes and never touches <code>_storage_provider</code>. V1 does not perform <code>info → read → info</code>, enforce a
+          source version, or verify a checksum; stronger identity belongs inside the application-owned binding.
+        </p>
+        <p>
+          A plan chooses only a local source alias and a logical <code>resource</code> interpreted by that alias's already-bound
+          StorageClient. It cannot choose a different client, profile, endpoint, credential, or provider, and Assembly never
+          broadens the StorageClient's public logical namespace. The application must configure that client with the
+          least-privilege namespace appropriate for accepted plans. V1 deliberately adds no provider-specific narrower path
+          policy; applications needing a narrower boundary create a correspondingly restricted StorageClient binding.
+        </p>
+
+        <h3>Exact object-read error normalization</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Public StorageClient outcome</th><th>Required assembly exception</th></tr></thead>
+            <tbody>
+              <tr><td><code>FileNotFoundError</code></td><td><code>SourceNotFoundError</code></td></tr>
+              <tr><td><code>PermissionError</code></td><td><code>SourceAuthorizationError</code></td></tr>
+              <tr><td><code>RetryableError</code> after StorageClient exhaustion</td><td><code>SourceRetryableError</code>; no AssemblyClient retry</td></tr>
+              <tr><td><code>TimeoutError</code> / <code>ConnectionError</code> while the global deadline remains</td><td><code>SourceTransportError</code></td></tr>
+              <tr><td>Any other <code>Exception</code></td><td><code>SourceReadError</code> with a safe cause classification</td></tr>
+              <tr><td>Non-<code>bytes</code> / oversized result</td><td><code>SourceProtocolError</code></td></tr>
+              <tr><td>Short result</td><td><code>ShortSourceReadError</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Error normalization retains only the documented safe classification and never exposes the original backend
+          message, logical resource, credentials, or nested SDK details. Cancellation and deadline checks keep their stable
+          <code>AssemblyCancelledError</code> and <code>AssemblyTimeoutError</code> outcomes, and <code>BaseException</code> is not wrapped.
+        </p>
+
+        <h3>Service range, staging, and stability</h3>
+        <ul>
+          <li><code>STABLE_SUBRANGES</code> is allowed only when both the segment and fetcher explicitly support it. Every requested subrange must belong to one stable logical byte string for the duration of the operation.</li>
+          <li><code>WHOLE_RESULT</code> is the default. Within one view operation, MSC makes one core <code>fetch()</code> call for each touched segment ordinal, stages the full declared result, checks its length, and slices locally. Different ordinals remain distinct.</li>
+          <li>A WHOLE_RESULT declaration above the private per-result hard cap fails before I/O. Smaller results stage in bounded memory or a private temporary file and are never reused across view operations.</li>
+          <li>Exact-length mismatch raises <code>ServiceLengthMismatchError</code>. The current call publishes nothing and attempts cleanup of every MSC-owned stage resource.</li>
+          <li>Private-stage allocation, I/O, or cleanup failures use a redacted <code>AssemblyStagingError</code>. A primary execution error takes precedence; if execution otherwise succeeds but required cleanup fails, discard private output and report the staging error. The contract requires complete cleanup attempts but does not expose their internal ordering.</li>
+          <li>Destination failures use the redacted <code>AssemblyMaterializationError(phase=..., cause_type=..., committed=...)</code> contract. Before the atomic commit point <code>committed=False</code> and the prior or concurrently created destination is preserved; cleanup failure after publication reports <code>committed=True</code> and never falsely claims rollback.</li>
+          <li>Assembly adds no outer retry. Any retry hidden inside a user fetcher remains that implementation's responsibility and must stay within the supplied deadline.</li>
+        </ul>
+      </section>
+
+      <section id="executor">
+        <h2>8. Executor, AssemblyView, forward reader, and materialization</h2>
+        <h3>Client-wide admission</h3>
+        <ul>
+          <li>One client-wide semaphore with <code>max_concurrency</code> permits bounds active object and service calls across every view and reader.</li>
+          <li>Every top-level operation receives one absolute deadline derived from <code>timeout_seconds</code>; provider and service adapters receive the remaining budget.</li>
+          <li>Calls to the provider and to each individual fetcher instance are serialized internally. Different StorageClients and different fetchers may overlap under the global semaphore.</li>
+          <li>Private hard limits reject an oversized read, plan, inline payload, batch, or WHOLE_RESULT stage before its large allocation or I/O begins.</li>
+        </ul>
+        <h3>Executor algorithm</h3>
+        <ol>
+          <li>Receive one fully validated complete object plan plus the caller's requested range; expiration has already passed the operation-admission check.</li>
+          <li>Create one SourceReadContext with the operation's absolute monotonic deadline and thread-safe internal cancellation token. MSC signals that token after a sibling failure or parent close; v1 has no caller-supplied cancellation input.</li>
+          <li>Allocate one private pre-sized output buffer after all size/coverage limits pass.</li>
+          <li>Intersect the range with the three segment kinds; group object operations by StorageClient binding, service operations by fetcher, and copy inline slices locally.</li>
+          <li>Acquire a client-wide concurrency budget shared across concurrent views and reads.</li>
+          <li>Object operations use exact StorageClient ranges and private chunking. Stable-subrange services receive the exact requested subrange; whole-result services stage once for the touched segment ordinal and slice locally.</li>
+          <li>Verify every object result, service stream, and assembled destination slice against its declared length before publication.</li>
+          <li>On first terminal error, stop scheduling, signal cancellation, close open service streams, clean private stages, discard the private output, and preserve the original typed error.</li>
+          <li>After every destination slice succeeds, freeze to <code>bytes</code> and return; v1 commits no logical-byte cache entry.</li>
+        </ol>
+
+        <p>
+          The AssemblyClient semaphore is client-wide and bounds active StorageClient and service executions; a streaming
+          service result retains its permit and any per-fetcher lock until staging completes or closes. Creating a per-read pool would allow
+          <code>concurrent callers × max_concurrency</code> active executions. A user-owned fetcher may impose a stricter
+          transport-specific limit, but that implementation detail neither replaces nor multiplies the AssemblyClient budget.
+        </p>
+
+        <h3>AssemblyView and reader state</h3>
+        <ul>
+          <li>An AssemblyView is the executable handle. It retains one metadata-only <code>AssemblyDescriptor</code>, the complete exact-result validated <code>AssemblyPlan</code>, frozen concrete source/service bindings, mandatory expiration, and lifecycle state. <code>AssemblyView.metadata</code> returns that exact descriptor. None of this executable state is exposed before <code>get_plan(request)</code> returns and complete-plan validation succeeds.</li>
+          <li>It never mutates or replaces its own generation. Another <code>AssemblyClient.resolve(reference)</code> returns a distinct view with its own generation and expiration. V1 performs no automatic re-resolution; an expired view rejects new work before I/O.</li>
+          <li>Each public <code>read</code>, <code>materialize</code>, and <code>open</code> admission captures the clock once and rejects an expired view before range planning or source/service work. Once admitted, that operation may finish after expiration.</li>
+          <li>Concurrent <code>view.read</code> calls are supported; an individual forward reader is not thread-safe.</li>
+          <li>An AssemblyReader is one admitted operation from successful <code>open</code> until <code>close</code>. It owns the fixed descriptor/validated plan, SourceReadContext, operation-local complete-segment stage registry, cursor, and closed state.</li>
+          <li>Closing the originating AssemblyView rejects new work through that view but does not cancel an already opened reader. The reader survives independently until its own close or parent-client close.</li>
+          <li>Reader <code>read</code> calls do not recheck descriptor expiration or resolve another generation. A reader opened while valid may continue after expiration; a new <code>open</code> on that view fails.</li>
+          <li>The reader is always forward-only: <code>seekable()</code> returns <code>False</code>, <code>seek()</code> is unsupported by <code>RawIOBase</code>, and <code>tell()</code> reports only the current forward cursor. Use <code>view.read(range)</code> for random access.</li>
+          <li>A WHOLE_RESULT stage is created at most once while the reader traverses that segment, then released after the cursor passes it. V1 retains no stage for backward replay.</li>
+          <li>Using a view or reader after parent close raises <code>AssemblyClosedError</code>.</li>
+          <li>After non-negative checked validation, explicit ByteRange reads clamp at EOF: zero size or offset at/past EOF returns empty, and a crossing range ends at object size. Negative or overflowing input raises <code>InvalidAssemblyRangeError</code>. The clamped output length must not exceed the private read limit.</li>
+          <li>Atomicity is per reader call, not the reader lifetime. <code>read/readinto</code> stages the current call privately; terminal execution failure publishes nothing for that call, leaves cursor and destination buffer unchanged, closes the reader, and raises the typed error. Prior successful calls remain an observable prefix.</li>
+          <li>Override <code>RawIOBase.read(size=-1)</code> and <code>readall()</code>; compute the full clamped public-call length first, reject it above the private read limit, and advance the cursor exactly once after complete success.</li>
+        </ul>
+
+        <h3>Materialization</h3>
+        <pre><code>view.materialize(
+    destination: str | os.PathLike[str],
+    *,
+    overwrite: bool = False,
+) -> None</code></pre>
+        <p>
+          For a filesystem path, write and close a unique temporary file in the destination directory and validate the entire
+          assembled output. Create every private materialization or complete-segment stage file exclusively, use no-follow
+          creation where the platform supports it, and use POSIX mode <code>0600</code>. Never reuse or follow an existing path.
+          Publication retains the temporary inode's effective mode. The commit point is one
+          atomic filesystem operation: <code>os.replace</code> when <code>overwrite=True</code>; when false, create the destination
+          with an atomic same-filesystem no-replace primitive (initially hard-link the closed staging inode, then unlink its
+          temporary name). A precheck is only an optimization and never supplies race safety. If no atomic no-replace primitive
+          is supported, fail with
+          <code>AssemblyMaterializationError(phase="commit", cause_type="OSError", committed=False)</code> without changing
+          the destination. A destination created concurrently wins and is preserved.
+          An arbitrary binary stream cannot provide atomic replace;
+          v1 should therefore keep path materialization as the guaranteed API and direct stream users to <code>open()</code>.
+          If materialization began before descriptor expiration it may complete afterward. Before the atomic commit point, any error
+          has <code>committed=False</code>, removes the staging name best-effort, and preserves the previous destination. After
+          commit, the new destination is already visible; any cleanup failure is reported with
+          <code>phase="cleanup"</code> and <code>committed=True</code>, so MSC never falsely claims rollback. Once commit succeeds,
+          the file's retention and deletion are application policy: later descriptor expiration neither deletes nor invalidates completed bytes.
+          All windows of one materialization share one operation context and complete-segment stage registry, so a WHOLE_RESULT
+          service segment ordinal is not re-executed. Every operation-local private stage is cleaned successfully before the destination commit;
+          a cleanup failure therefore prevents publication. Each logical window is exactly <code>min(MATERIALIZATION_WINDOW_BYTES, remaining_bytes)</code>;
+          the last may be shorter, and the window size is a private module constant.
+        </p>
+
+        <h3>Memory policy</h3>
+        <ul>
+          <li><code>read</code> is bounded by a private hard limit. The initial Python implementation may hold its mutable private output and immutable returned <code>bytes</code> simultaneously.</li>
+          <li><code>materialize</code> uses windowed reads and a staging file so object size is not duplicated in memory.</li>
+          <li>Complete plans are bounded by segment count and encoded size before range intersection or read scheduling.</li>
+          <li>WHOLE_RESULT service stages have a private per-result hard cap and use bounded memory or a private temporary file; each segment ordinal is staged at most once per top-level operation.</li>
+          <li>Inline data has hard decoded upper ceilings of 16 KiB per segment and 64 KiB per complete object.</li>
+          <li>Every user-owned service stream is measured against declared length and client staging ceilings; transport metadata is never trusted as a substitute.</li>
+        </ul>
+      </section>
+
+      <section id="python-scope">
+        <h2>9. Python-only implementation scope</h2>
+        <div class="decision">
+          <strong>All initial Assembly implementation work is in Python.</strong>
+          Public models, the list codec, provider and service SPIs, expiration, exact-length semantics, plan validation, range
+          mapping, bounded execution, staging, views, readers, and materialization remain in the
+          <code>multistorageclient.assembly</code> Python package.
+        </div>
+        <p>
+          The Rust extension layer has no changes and no Assembly implementation is proposed there. StorageClient continues
+          to use its existing implementation exactly as it does outside the Assembly module.
+        </p>
+      </section>
+
+      <section id="operations">
+        <h2>10. Retry, lifecycle, telemetry, and security</h2>
+
+        <h3>State retention</h3>
+        <ul>
+          <li>V1 has no cross-<code>resolve()</code> descriptor, plan, or logical-byte cache. Every resolve calls the provider once and returns a distinct view.</li>
+          <li>Each view retains only its own validated plan and frozen bindings until the view and its readers are closed.</li>
+          <li>WHOLE_RESULT staging is private to one view operation or reader and is released when that owner closes.</li>
+          <li>A completed materialized file is application-owned and remains independent of descriptor expiration.</li>
+        </ul>
+        <h3>Retry ownership</h3>
+        <ul>
+          <li>Provider adapter retries its own transport without changing the exact request.</li>
+          <li>StorageClient retains its documented retry behavior; AssemblyClient adds no outer object-read retry. Because the current read API accepts no deadline, applications configure its underlying transport timeout and retry envelope with the Assembly operation budget in mind.</li>
+          <li>The assembly executor never retries an object or service submission. It owns concurrency, internal cancellation, staging cleanup, atomic publication, and deadline enforcement for admission and MSC-owned waits.</li>
+          <li>A user fetcher may retry internally as an opaque implementation detail, but MSC invokes its core <code>fetch()</code> method once and passes one absolute deadline.</li>
+          <li>No layer retries invalid or expired plans, binding mismatches, unknown kinds, length mismatches, or protocol violations.</li>
+          <li><code>AssemblyTimeoutError</code> (also <code>TimeoutError</code>) is the sole public outcome once the shared absolute deadline is observed exhausted at provider, scheduling, object, service, or staging boundaries. The deadline hard-bounds admission, MSC-owned waits, and cooperative provider/service work. An in-progress synchronous StorageClient call cannot be preempted and may return after that instant; MSC checks immediately afterward, discards late bytes/errors, and then raises <code>AssemblyTimeoutError</code>. While budget remains, a provider-local transient timeout maps to <code>AssemblyProviderRetryableError</code>, and object/service local timeouts map to their transport classes. The v1 façade has no caller-cancellation argument: its internal token is signaled by sibling failure or parent close, and cooperative code checks it between attempts or chunks.</li>
+        </ul>
+
+        <h3 id="exceptions">Public exception hierarchy</h3>
+        <pre><code>AssemblyError
+├── AssemblyClosedError
+├── AssemblyCancelledError
+├── AssemblyTimeoutError                    # also a TimeoutError
+├── AssemblyExpiredError
+├── AssemblyStagingError
+├── AssemblyMaterializationError
+├── AssemblyNotFoundError                   # also a FileNotFoundError
+├── AssemblyGenerationUnavailableError
+├── AssemblyConfigurationError              # also a ValueError
+├── AssemblyLimitExceededError              # also a ValueError
+├── InvalidAssemblyRangeError                # also a ValueError
+├── AssemblyProviderError
+│   ├── AssemblyProviderAuthenticationError
+│   └── AssemblyProviderRetryableError
+├── InvalidAssemblyPlanError
+│   └── UnsupportedAssemblySchemaError
+├── UnknownObjectSourceError
+├── UnknownServiceFetcherError
+├── ServiceSegmentError
+│   ├── ServiceFetchError
+│   ├── ServiceAuthenticationError
+│   ├── ServiceAuthorizationError
+│   ├── ServiceNotFoundError
+│   ├── ServiceRangeNotSatisfiableError
+│   ├── ServiceLengthMismatchError
+│   ├── ServiceProtocolError
+│   └── ServiceTransportError
+└── ObjectSourceError
+    ├── SourceReadError                     # unclassified public StorageClient failure
+    ├── SourceAuthorizationError
+    ├── SourceNotFoundError
+    ├── SourceRetryableError                # StorageClient exhausted its own retries
+    ├── ShortSourceReadError
+    ├── SourceProtocolError
+    └── SourceTransportError</code></pre>
+        <p class="small">
+          Provider and source adapters expose only a bounded, sanitized cause classification. Public errors never expose
+          backend messages or private provider state.
+        </p>
+        <pre><code>class ServiceTransportError(ServiceSegmentError):
+    retryable: bool          # classification only; not permission for an outer retry
+
+    def __init__(self, *, retryable: bool) -> None: ...
+
+class SourceReadError(ObjectSourceError):
+    cause_type: str
+
+    def __init__(self, *, cause_type: str) -> None: ...
+
+class ServiceFetchError(ServiceSegmentError):
+    cause_type: str
+
+    def __init__(self, *, cause_type: str) -> None: ...
+
+class AssemblyLimitExceededError(AssemblyError, ValueError):
+    limit_name: str
+    limit_value: int
+    observed: int
+
+    def __init__(self, *, limit_name: str, limit_value: int, observed: int) -> None: ...
+
+class InvalidAssemblyRangeError(AssemblyError, ValueError):
+    pass
+
+class AssemblyStagingError(AssemblyError):
+    cause_type: str
+
+    def __init__(self, *, cause_type: str) -> None: ...
+
+MaterializationPhase: TypeAlias = Literal[
+    "precondition", "create", "write", "commit", "cleanup"
+]
+
+class AssemblyMaterializationError(AssemblyError):
+    phase: MaterializationPhase
+    cause_type: str
+    committed: bool
+
+    def __init__(self, *, phase: MaterializationPhase, cause_type: str, committed: bool) -> None: ...</code></pre>
+        <p>
+          The hierarchy and structured safe fields are normative; the internal exception-copying mechanism is not. Public
+          exceptions never include arbitrary backend messages, logical keys, resources, URLs, parameters, credentials, or
+          response bodies. Unknown provider, StorageClient, or fetcher exceptions map to the generic error for that boundary
+          with only a validated cause-type classification. <code>BaseException</code> control-flow signals are not wrapped.
+        </p>
+        <p class="small">
+          Structured fields are closed and bounded: booleans are exact booleans, limit values are strict non-negative
+          JSON-safe integers, and phases are documented literals. <code>AssemblyTimeoutError</code> normalizes exhaustion of
+          the shared deadline and remains distinct from MSC's internal sibling-failure or parent-close cancellation; v1
+          exposes no caller-supplied cancellation input.
+        </p>
+
+        <h3>Lifecycle and ownership</h3>
+        <ul>
+          <li>AssemblyClient borrows the plan provider, service fetchers, and StorageClients. The application remains responsible for closing those dependencies through their own public APIs.</li>
+          <li>Client close rejects new work, cancels queued operations, signals active cooperative work, closes MSC-owned readers, streams, and private stages, and waits for already-running synchronous StorageClient calls under their configured transport timeouts.</li>
+          <li>Close is idempotent. MSC attempts cleanup of every resource it owns; a cleanup failure uses the relevant redacted service or staging error and does not transfer ownership of application-supplied dependencies.</li>
+          <li>Live clients/views/readers are non-pickleable by default; only explicit configuration/factory wrappers may reconstruct them.</li>
+          <li>Expiration does not close an in-flight operation or a successfully materialized file. It rejects subsequent operations on that view.</li>
+        </ul>
+
+        <h3>Telemetry</h3>
+        <ul>
+          <li>Spans: <code>assembly.resolve</code>, <code>assembly.plan</code>, <code>assembly.read</code>, <code>assembly.object.read</code>, <code>assembly.service.fetch</code>, and <code>assembly.materialize</code>.</li>
+          <li>Metrics: plan segments by kind, object/service bytes, service-fetcher submissions, WHOLE_RESULT staging bytes, expiration rejection, and failure class.</li>
+          <li>Low-cardinality labels only: segment kind, configured alias, range mode, result class, and staging backend.</li>
+          <li>Fetcher-internal retries and transport-specific telemetry remain owned by the user implementation because the core SPI does not expose them.</li>
+          <li>No logical keys, resources, credentials, or ETags as metric labels. Trace attributes are redacted and bounded.</li>
+        </ul>
+
+        <h3>Security controls</h3>
+        <ul>
+          <li>Treat provider output as untrusted and validate before allocation or I/O.</li>
+          <li>Limit list batch/object count, logical object size, one read, segment count, encoded bytes, decoded inline bytes, resource/parameter length, WHOLE_RESULT staging bytes, concurrency, and time.</li>
+          <li>Use separate local object/service aliases and frozen local binding objects; cross-operation logical-byte caching is disabled in v1.</li>
+          <li>Interpret object resources only through each least-privilege bound StorageClient's public logical namespace. Service fetchers confine operations to their locally configured authority; transport-specific controls belong to that implementation.</li>
+          <li>Create every MSC-owned private stage/materialization file exclusively, use no-follow creation where supported, and use POSIX mode <code>0600</code>; publication retains that inode's effective mode.</li>
+          <li>Make all errors/reprs safe by construction and test redaction with canary secrets.</li>
+        </ul>
+      </section>
+
+      <section id="files">
+        <h2>11. File-by-file implementation plan</h2>
+        <h3>Python package</h3>
+        <pre><code>multi-storage-client/src/multistorageclient/assembly/
+├── __init__.py              # intentional public re-exports only
+├── client.py                # AssemblyClient façade and lifecycle
+├── view.py                  # immutable generation/expiration-bound AssemblyView
+├── reader.py                # read-only forward RawIOBase implementation
+├── models.py                # list/plan/segment-union public models
+├── provider.py              # AssemblyPlanProvider + StaticAssemblyListProvider
+├── service.py               # ServiceSegmentFetcher and requests
+├── bindings.py              # immutable StorageClient/service alias bindings
+├── limits.py                # internal MVP safety constants
+├── errors.py                # stable public exception hierarchy
+├── testing.py               # provider/service-fetcher conformance helpers
+├── list_codec.py            # public bounded assembly-list/v1 encode/decode/streaming API
+├── validator.py             # expiration, union, global coverage, aliases, and limits
+├── planner.py               # caller-range intersection and operation-local stage reuse
+├── executor.py              # bounded scheduling and atomic result assembly
+└── staging.py               # bounded memory/temp-file complete-segment staging</code></pre>
+
+        <div class="callout info">
+          Package files use ordinary submodule names; leading underscores are not used as an architectural boundary. The
+          supported public API is defined by explicit re-exports from <code>multistorageclient.assembly.__init__</code> and by
+          the API documentation. Non-exported implementation submodules may evolve without expanding the compatibility surface.
+        </div>
+
+        <h3>Tests and docs</h3>
+        <pre><code>multi-storage-client/tests/test_multistorageclient/unit/assembly/
+├── conftest.py
+├── conformance.py
+├── test_list_codec.py
+├── test_models.py
+├── test_provider_conformance.py
+├── test_static_list_provider.py
+├── test_service_fetcher_conformance.py
+├── test_expiration.py
+├── test_validation.py
+├── test_planning.py
+├── test_planning_properties.py
+├── test_bindings.py
+├── test_executor.py
+├── test_client.py
+├── test_view.py
+├── test_reader.py
+├── test_materialize.py
+├── test_storage_client_object.py
+├── test_service_staging.py
+└── test_acceptance.py
+
+multi-storage-client/tests/test_multistorageclient/benchmark/
+└── evaluate_assembly.py
+
+multi-storage-client-docs/src/user_guide/
+└── assembly.rst
+
+multi-storage-client-docs/src/references/
+└── assembly.rst
+
+multi-storage-client-docs/examples/
+└── quickstart.ipynb                    # explicit assembly construction/read example</code></pre>
+
+        <h3>Test-to-file routing</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Concern</th><th>Primary file</th></tr></thead>
+            <tbody>
+              <tr><td>Portable codec, public models, and private hard limits</td><td><code>test_list_codec.py</code>, <code>test_models.py</code>, <code>test_validation.py</code></td></tr>
+              <tr><td>Reusable adopter contracts</td><td><code>test_provider_conformance.py</code>, <code>test_service_fetcher_conformance.py</code></td></tr>
+              <tr><td>MSC-supplied static provider and bindings</td><td><code>test_static_list_provider.py</code>, <code>test_bindings.py</code>, <code>test_storage_client_object.py</code></td></tr>
+              <tr><td>Planning and MSC execution internals</td><td><code>test_planning.py</code>, <code>test_planning_properties.py</code>, <code>test_executor.py</code>, <code>test_service_staging.py</code></td></tr>
+              <tr><td>Public client, view, reader, and lifecycle</td><td><code>test_client.py</code>, <code>test_view.py</code>, <code>test_reader.py</code>, <code>test_expiration.py</code></td></tr>
+              <tr><td>Materialization and in-process acceptance</td><td><code>test_materialize.py</code>, <code>test_acceptance.py</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Files deliberately unchanged in v1</h3>
+        <ul>
+          <li>StorageProvider ABC, provider enum/mapping, and provider factory.</li>
+          <li>StorageClient constructor, read signature, composite routing, and existing profile schema.</li>
+          <li>Top-level <code>multistorageclient.__init__</code> exports; consumers opt in through the subpackage.</li>
+          <li>FUSE/Go, fsspec, pathlib, CLI, sync, and existing URI routing. Go receives no assembly-list codec or runtime integration in the initial release.</li>
+        </ul>
+      </section>
+
+      <section id="test-architecture">
+        <h2>12. Test architecture, fixtures, and quality gates</h2>
+        <h3>Test pyramid</h3>
+        <div class="grid-3">
+          <div class="card">
+            <h4>Pure unit/property</h4>
+            <p>List codec, segment union, expiration, range intersection, global-length validation, no-cross-segment behavior, and error mapping. No threads or sockets where unnecessary.</p>
+          </div>
+          <div class="card">
+            <h4>Component/conformance</h4>
+            <p>Plan providers, StaticAssemblyListProvider, StorageClient bindings, user-defined ServiceSegmentFetchers, bounded staging, and lifecycle.</p>
+          </div>
+          <div class="card">
+            <h4>Local integration</h4>
+            <p>In-process user service adapter, mixed object/service/inline objects, expiration/replacement resolution, materialization, and existing suite compatibility.</p>
+          </div>
+        </div>
+
+        <h3>Core fixtures</h3>
+        <ul>
+          <li><code>logical_payload</code>: deterministic bytes with recognizable boundaries.</li>
+          <li><code>fake_utc_clock</code>: advances exactly across expiration boundaries without sleeps.</li>
+          <li><code>valid_list_batch_factory</code>, <code>valid_descriptor</code>, and <code>valid_plan_factory</code>: complete canonical object definitions for all three union arms.</li>
+          <li><code>recording_provider</code>: records each <code>get_plan(request)</code> call and can issue a replacement generation/expiration on a later resolution.</li>
+          <li><code>recording_storage_client</code>: records public range reads and can mutate same-length bytes.</li>
+          <li><code>recording_service_fetcher</code>: records the exact request, context, advertised range modes, active count, yielded chunks, stream close, and cancellation.</li>
+          <li><code>whole_result_stream</code>: configurable length/failure/replay behavior with memory/temp staging observation.</li>
+          <li><code>minimal_user_fetcher</code>: a test-only implementation of only <code>range_modes</code> and <code>fetch</code>, proving that no optional hook or concrete MSC fetcher is required.</li>
+          <li><code>canary_secret</code>: deliberately placed in fetcher state and rejected resource text to verify redaction.</li>
+        </ul>
+
+        <p>
+          Core tests use only application-supplied in-process providers and fetchers. Concrete transport adapters and their
+          wire-level behavior are outside this test plan and cannot block or substitute for core acceptance.
+        </p>
+
+        <div class="callout info">
+          Reusable conformance tests exercise only behavior an adopter can observe through the provider or fetcher SPI.
+          Intentionally malformed doubles, stream cleanup, error normalization, staging, scheduling, and redaction remain MSC
+          unit tests; they are not obligations imposed by the reusable conformance harness.
+        </div>
+
+        <h3>Property-test dependency</h3>
+        <p>
+          Add Hypothesis to the Python development dependency group through ordinary dependency review. CI uses <code>max_examples=200</code> and
+          <code>deadline=None</code>, while preserving minimized failing examples. If the dependency is declined, use seeded
+          deterministic generated partitions, but record the reduced malformed-input coverage as a test-plan exception.
+        </p>
+      </section>
+
+      <section id="test-cases">
+        <h2>13. Detailed test cases and assertions</h2>
+
+        <h3>13.1 Language-neutral list codec, models, and expiration</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Test</th><th>Primary assertion</th></tr></thead>
+            <tbody>
+              <tr><td><code>test_decode_minimal_batch_returns_one_complete_object_definition</code></td><td>Independent JSON input produces one complete <code>AssemblyObjectDefinition</code>; decoding alone does not create an executable <code>AssemblyPlan</code>.</td></tr>
+              <tr><td><code>test_public_batch_encode_decode_round_trip</code></td><td>The simplified v1 fields round-trip without producer-specific data.</td></tr>
+              <tr><td><code>test_reference_parameters_are_scalar_only</code></td><td>Nested reference values fail while nested service parameters remain injective.</td></tr>
+              <tr><td><code>test_schema_integer_fields_reject_bool_and_integral_float</code></td><td>Ranges, sizes, lengths, indexes, and constructor concurrency accept strict integers only.</td></tr>
+              <tr><td><code>test_streaming_codec_reads_and_writes_bounded_json_batches</code></td><td>One bounded document per line; the iterator never accumulates the whole batch set.</td></tr>
+              <tr><td><code>test_streaming_codec_rejects_oversized_line_before_parse</code></td><td>The private encoded-batch limit applies while buffering.</td></tr>
+              <tr><td><code>test_assembly_list_v1_matches_published_language_neutral_golden_vectors</code></td><td>Python encoding and decoding match shared JSON values for all segment kinds, Unicode, timestamps, and base64.</td></tr>
+              <tr><td><code>test_multi_batch_list_requires_shared_metadata_count_and_contiguous_indexes</code></td><td>Mixed list IDs, expirations, counts, gaps, duplicates, missing batches, and out-of-range indexes fail closed.</td></tr>
+              <tr><td><code>test_multi_batch_list_rejects_duplicate_reference_across_batches</code></td><td>One canonical <code>AssemblyReference</code> identifies at most one complete object definition in the validated snapshot.</td></tr>
+              <tr><td><code>test_v1_portable_list_omits_replacement_locator</code></td><td>Replacement transport remains provider-owned and uses another <code>get_plan(request)</code> rather than a dead portable field.</td></tr>
+              <tr><td><code>test_batch_never_splits_one_object_definition</code></td><td>A partial/carry-over object is not representable or executable.</td></tr>
+              <tr><td><code>test_rejects_missing_expires_at</code>, <code>test_rejects_malformed_expires_at</code></td><td>Both canonical decoder and direct model construction reject before provider/executor I/O.</td></tr>
+              <tr><td><code>test_expires_at_requires_timezone_and_canonicalizes_to_utc</code></td><td>Equivalent instants have one representation and equality with the clock is expired.</td></tr>
+              <tr><td><code>test_static_provider_rejects_expired_list_at_admission</code></td><td>Raises <code>AssemblyExpiredError</code> before plan exposure with zero object/service calls.</td></tr>
+              <tr><td><code>test_byte_range_is_frozen_hashable_and_bounded</code></td><td>Canonical range cannot mutate and rejects negative/overflow arithmetic.</td></tr>
+              <tr><td><code>test_existing_msc_range_is_copied_at_api_boundary</code></td><td>Later mutation of the caller's Range cannot alter view/request identity.</td></tr>
+              <tr><td><code>test_plan_json_inputs_are_defensively_copied_at_resolve</code></td><td>Mutating provider-owned parameter dictionaries cannot change an existing view.</td></tr>
+              <tr><td><code>test_json_parameters_reject_nonfinite_or_non_json_values</code></td><td>NaN, infinities, bytes, and arbitrary Python objects never enter a validated plan.</td></tr>
+              <tr><td><code>test_rejects_unknown_list_or_plan_schema_version</code></td><td>Fails closed with <code>UnsupportedAssemblySchemaError</code>.</td></tr>
+              <tr><td><code>test_v1_plan_requires_exact_result_semantics</code></td><td>Missing or non-<code>exact</code> semantics fails before binding or byte I/O; informational annotations cannot request projection.</td></tr>
+              <tr><td><code>test_future_projection_plan_requires_new_version</code></td><td>A v1 client rejects carrier-plus-projection semantics instead of silently materializing a semantic superset.</td></tr>
+              <tr><td><code>test_supporting_future_plan_version_does_not_change_v1_exact_interpretation</code></td><td>The same valid v1 golden vector continues to produce identical final bytes after a newer decoder is introduced.</td></tr>
+              <tr><td><code>test_v1_provider_and_fetcher_spis_gain_no_required_abstract_members</code></td><td>The minimal v1 adopter implementations remain constructible as the package evolves.</td></tr>
+              <tr><td><code>test_additive_public_parameters_are_keyword_only_with_defaults</code></td><td>Existing façade calls retain their behavior when optional parameters are added.</td></tr>
+              <tr><td><code>test_rejects_unknown_fields_or_segment_kind</code></td><td>Forward-incompatible input is not silently ignored or reinterpreted.</td></tr>
+              <tr><td><code>test_decodes_object_service_and_inline_discriminated_union</code></td><td>Each kind has its exact fields and cannot borrow fields from another kind.</td></tr>
+              <tr><td><code>test_rejects_inline_segment_over_16_kib</code>, <code>test_rejects_inline_total_over_64_kib</code></td><td>Decoded-byte hard limits apply before allocation/scheduling, independent of base64 size.</td></tr>
+              <tr><td><code>test_zero_length_object_accepts_only_empty_plan</code></td><td>No source call and no non-empty segment.</td></tr>
+              <tr><td><code>test_assembly_plan_create_accepts_direct_public_models</code></td><td>Provider authors do not need portable-list encoding or special JSON wrapper classes.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>13.2 Provider contract, replacement resolution, and static-provider behavior</h3>
+        <p>
+          Metadata-bearing complete-plan, deadline, and public-error cases form the reusable provider suite.
+          Expiration and replacement cases are MSC client tests, while static-provider cases target the MSC-supplied implementation.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Test</th><th>Primary assertion</th></tr></thead>
+            <tbody>
+              <tr><td><code>test_provider_get_plan_returns_metadata_and_complete_exact_plan</code></td><td>One call returns an <code>AssemblyPlan</code> with an embedded metadata-only descriptor, mandatory future expiration, exact v1 result semantics, and no executable byte methods.</td></tr>
+              <tr><td><code>test_provider_get_plan_must_echo_exact_reference_and_requested_generation</code></td><td>A substituted reference or silent requested-generation fall-forward is rejected before source calls; latest is allowed only when generation was None.</td></tr>
+              <tr><td><code>test_resolve_invokes_get_plan_once_and_no_descriptor_spi</code></td><td>The public provider contract has one resolution method and never performs a preliminary metadata lookup.</td></tr>
+              <tr><td><code>test_provider_plan_is_complete_object_not_transport_page</code></td><td>Segments globally cover <code>[0, descriptor.size)</code> even when caller later reads a small range.</td></tr>
+              <tr><td><code>test_expired_view_does_not_fall_forward_or_auto_resolve</code></td><td>Raises <code>AssemblyExpiredError</code>; under the v1 policy the provider is not asked for latest implicitly.</td></tr>
+              <tr><td><code>test_second_resolve_returns_distinct_view_for_replacement_generation</code></td><td>The returned view has the later plan's generation and expiration; the old view retains its descriptor, validated plan, and frozen routing.</td></tr>
+              <tr><td><code>test_replacement_resolve_failure_never_mutates_or_revives_old_view</code></td><td>Failure never extends expiration, changes routing, or reopens closed state; an independently still-valid old view remains usable.</td></tr>
+              <tr><td><code>test_client_serializes_calls_to_provider</code></td><td>Provider authors have no hidden concurrency requirement; concurrent client operations do not overlap calls to one provider instance.</td></tr>
+              <tr><td><code>test_provider_honors_expired_monotonic_deadline_without_backend_call</code></td><td>Retries cannot outlive the AssemblyClient operation budget.</td></tr>
+              <tr><td><code>test_provider_exact_public_exception_contract</code></td><td>Not-found, unavailable generation, auth, exhausted retryable backend, malformed output, unexpected exception, and deadline each map to the stable hierarchy with no fallback.</td></tr>
+              <tr><td><code>test_provider_unexpected_error_is_redacted</code></td><td>The public error contains only a safe cause classification and exposes no backend message, reference, or credential.</td></tr>
+              <tr><td><code>test_static_provider_decodes_batches_and_exact_lookup</code></td><td>Static provider resolves exact references from the complete validated batch set.</td></tr>
+              <tr><td><code>test_static_provider_maps_list_id_to_generation_and_preserves_expiration</code></td><td>Every exact lookup from one batch set uses its <code>list_id</code> as <code>generation</code> and its exact <code>expires_at</code>.</td></tr>
+              <tr><td><code>test_static_from_batches_stops_at_private_aggregate_limit</code></td><td>A one-shot iterator cannot exceed private object, segment, or encoded-byte safeguards.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>13.3 Validation and limits</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Tests</th><th>Required assertion</th></tr></thead>
+            <tbody>
+              <tr><td><code>test_accepts_exact_full_object_partition</code></td><td>Valid plan reaches planning unchanged.</td></tr>
+              <tr><td><code>test_partial_read_still_validates_complete_object_global_length</code></td><td>Executor intersects only after validating the checked sum of the full ordered concatenation.</td></tr>
+              <tr><td><code>test_tuple_order_is_the_only_logical_order</code>, <code>test_rejects_unknown_segment_kind</code></td><td>No ambiguous secondary ordering field; zero source calls for unknown kinds.</td></tr>
+              <tr><td><code>test_rejects_global_segment_length_sum_mismatch</code></td><td>Checked sum must equal descriptor size even if requested range lies before the malformed tail.</td></tr>
+              <tr><td><code>test_rejects_object_segment_range_size_length_mismatch</code></td><td><code>ObjectSegment.byte_range.size</code> must equal its declared <code>length</code>; rejection occurs before binding or byte I/O even when the global sum still matches.</td></tr>
+              <tr><td><code>test_rejects_inline_segment_length_data_mismatch</code>, <code>test_nonempty_object_rejects_zero_length_segment</code></td><td>Inline length equals decoded byte length and every segment of a non-empty object is positive; neither invariant can be hidden by a valid global sum.</td></tr>
+              <tr><td><code>test_rejects_negative_numbers</code>, <code>test_rejects_json_safe_integer_overflow</code>, <code>test_rejects_object_byte_range_overflow</code></td><td>No cross-language rounding, OverflowError/MemoryError leakage, or allocation before rejection.</td></tr>
+              <tr><td><code>test_rejects_descriptor_echo_mismatch</code>, <code>test_rejects_generation_or_expiration_echo_mismatch</code></td><td>Provider contract violation before binding lookup.</td></tr>
+              <tr><td><code>test_rejects_unknown_object_or_service_alias</code>, <code>test_freezes_local_binding_objects_before_io</code></td><td>Plan cannot construct an authority; the view keeps the exact locally supplied objects even if the caller later mutates the input mappings.</td></tr>
+              <tr><td><code>test_enforces_max_segments</code>, <code>test_enforces_max_plan_bytes</code>, <code>test_enforces_max_logical_size</code>, <code>test_enforces_max_read_bytes</code>, <code>test_enforces_inline_hard_limits</code></td><td>Correct limit name/value and zero downstream calls.</td></tr>
+              <tr><td><code>test_plan_size_counter_accepts_exact_private_limit_and_aborts_at_one_over</code></td><td>No second complete plan encoding or large allocation is constructed.</td></tr>
+              <tr><td><code>test_constructor_validates_only_concurrency_and_timeout</code></td><td>Invalid values fail before dependency I/O and no public config or limit object is required.</td></tr>
+              <tr><td><code>test_plan_rejects_individually_unstageable_full_result_before_execution</code></td><td>A stage above its per-result or aggregate client cap yields a typed limit error with no service/object call; a user fetcher may enforce an additional private cap.</td></tr>
+              <tr><td><code>test_client_resolve_exposes_no_view_before_complete_plan_validation</code></td><td><code>AssemblyClient.resolve</code> performs one <code>get_plan(request)</code>, exact-generation/global validation, and binding freeze before exposing a view; failure returns no partial view and performs no byte I/O.</td></tr>
+              <tr><td><code>test_plan_validation_failure_performs_no_byte_io</code></td><td>Malformed global length, alias, or range mode fails before any StorageClient or ServiceSegmentFetcher byte call.</td></tr>
+              <tr><td><code>test_rejects_resource_or_reference_over_length_limit</code></td><td>No unbounded logging or downstream request creation.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>13.4 Planner and property tests</h3>
+        <ul>
+          <li><code>test_plans_range_inside_one_segment</code></li>
+          <li><code>test_plans_range_across_multiple_segments</code></li>
+          <li><code>test_maps_first_and_last_partial_segments</code></li>
+          <li><code>test_handles_exact_segment_boundaries_last_byte_and_eof</code></li>
+          <li><code>test_intersects_object_inline_and_stable_service_segments</code></li>
+          <li><code>test_preserves_destination_offsets</code></li>
+          <li><code>test_object_operation_fetches_only_selected_source_intersection</code></li>
+          <li><code>test_adjacent_object_segments_remain_distinct_public_reads</code></li>
+          <li><code>test_whole_result_same_ordinal_has_one_logical_submission_per_operation</code></li>
+          <li><code>test_two_equal_valued_whole_result_segments_at_distinct_ordinals_are_not_deduplicated</code></li>
+          <li><code>test_same_whole_result_ordinal_reuses_stage_within_materialization</code></li>
+          <li><code>test_valid_partition_reconstructs_reference_slice</code> — random payload, valid partition, and read range equal direct slicing.</li>
+          <li><code>test_planned_output_is_covered_exactly_once</code> — no destination gap or overlap.</li>
+          <li><code>test_split_read_equals_unsplit_read</code> — <code>read(a,n) == read(a,k) + read(a+k,n-k)</code>.</li>
+          <li><code>test_single_length_or_destination_mapping_mutation_is_rejected</code>.</li>
+          <li><code>test_destination_mapping_is_idempotent</code>.</li>
+          <li><code>test_malformed_numeric_input_always_raises_domain_error</code>.</li>
+        </ul>
+
+        <h3>13.5 Bindings, direct object reads, and the service-fetcher boundary</h3>
+        <p>
+          Binding tests use only the existing public <code>StorageClient</code> contract. All injected dependencies are borrowed
+          and remain application-owned.
+        </p>
+        <ul>
+          <li><code>test_binding_registries_copy_mappings_and_reject_late_mutation</code></li>
+          <li><code>test_binding_registries_reject_empty_or_malformed_alias_names</code></li>
+          <li><code>test_plan_schema_has_no_unrestricted_endpoint_profile_credentials_or_fetcher_implementation_fields</code></li>
+          <li><code>test_object_source_binding_minimum_constructor_requires_only_client</code></li>
+          <li><code>test_client_close_never_closes_injected_provider_fetchers_or_storage_clients</code></li>
+          <li><code>test_independent_storage_client_reads_may_overlap_within_global_budgets</code></li>
+          <li><code>test_service_fetcher_calls_are_always_serialized_per_instance</code></li>
+          <li><code>test_object_segment_uses_only_public_storage_client_contract</code></li>
+          <li><code>test_client_only_binding_uses_exact_configured_storage_client_authority</code> — a plan selects a local alias and resource only; it cannot replace the bound client, endpoint, profile, credentials, root, or provider.</li>
+          <li><code>test_plan_resource_is_sent_only_to_selected_binding</code> — only the client selected by <code>source_id</code> receives the resource and all other clients record zero calls.</li>
+          <li><code>test_object_chunks_map_exact_source_offsets_and_sizes_without_gap_or_overlap</code></li>
+          <li><code>test_object_interval_below_at_and_above_chunk_limit_uses_exact_consecutive_public_reads</code></li>
+          <li><code>test_object_chunks_never_cross_segment_boundaries_and_request_count_matches_formula</code></li>
+          <li><code>test_object_read_maps_typed_storage_failures_to_source_errors</code></li>
+          <li><code>test_object_read_unexpected_error_is_redacted</code></li>
+          <li><code>test_object_read_does_not_wrap_base_exception</code></li>
+          <li><code>test_object_read_errors_redact_resource_backend_message_and_secret</code></li>
+          <li><code>test_object_read_rejects_non_bytes_short_and_oversized_results_with_exact_classes</code></li>
+          <li><code>test_object_read_checks_deadline_and_internal_cancellation_before_and_after_sync_call</code> — Assembly does not claim to preempt a synchronous <code>StorageClient.read</code>; a late result is discarded and the typed deadline/cancellation outcome takes precedence over result validation.</li>
+          <li><code>test_object_read_does_not_require_metadata_lookup</code></li>
+          <li><code>test_private_storage_provider_is_never_accessed</code></li>
+        </ul>
+
+        <p>The reusable <code>ServiceSegmentFetcher</code> conformance suite contains only adopter-observable SPI behavior:</p>
+        <ul>
+          <li><code>test_minimal_fetcher_implements_only_range_modes_and_fetch</code> — a class overriding only those two abstract members is constructible and completes the acceptance read.</li>
+          <li><code>test_assembly_package_exports_no_concrete_service_fetcher</code></li>
+          <li><code>test_service_fetcher_receives_one_segment_request_not_complete_plan_or_ordering</code></li>
+          <li><code>test_service_fetch_request_is_independently_executable_without_sticky_state</code></li>
+          <li><code>test_v1_core_never_batches_multiple_service_segments_into_one_fetch</code></li>
+          <li><code>test_fetcher_confines_operation_and_parameters_under_local_policy</code></li>
+          <li><code>test_fetcher_receives_exact_deadline_cancellation_and_chunk_limit_context</code></li>
+          <li><code>test_fetcher_range_modes_are_exact_immutable_and_captured_before_view_exposure</code></li>
+          <li><code>test_service_fetcher_declared_range_modes_match_observed_behavior</code></li>
+          <li><code>test_stable_subranges_returns_exact_first_middle_and_last_ranges</code></li>
+          <li><code>test_stable_subranges_denotes_one_stable_logical_string_per_operation</code></li>
+          <li><code>test_whole_result_fetcher_receives_no_requested_range</code></li>
+          <li><code>test_fetcher_result_must_be_closeable_before_publish</code> — a non-closeable result raises <code>ServiceProtocolError</code> and publishes no bytes.</li>
+          <li><code>test_whole_result_length_mismatch_fails_before_slice_publish</code></li>
+          <li><code>test_core_invokes_fetch_once_on_pre_response_or_partial_stream_failure</code> — MSC adds no outer retry and publishes no bytes from the failed call.</li>
+        </ul>
+
+        <p>MSC execution-engine boundary tests, which are not part of the reusable adopter suite, include:</p>
+        <ul>
+          <li><code>test_stream_cleanup_attempts_all_resources_and_primary_execution_error_wins</code></li>
+          <li><code>test_sole_stream_close_failure_becomes_sanitized_service_fetch_error_and_discards_output</code></li>
+          <li><code>test_stream_and_stage_cleanup_failure_discards_private_output</code></li>
+          <li><code>test_custom_stream_rejects_nonbytes_empty_and_over_context_chunk_limit_before_copy_or_stage</code></li>
+          <li><code>test_service_errors_and_repr_redact_parameters_and_credentials</code></li>
+          <li><code>test_public_errors_expose_only_documented_safe_fields</code></li>
+          <li><code>test_unexpected_custom_fetcher_exception_maps_to_redacted_service_fetch_error</code></li>
+          <li><code>test_service_deadline_internal_cancellation_and_base_exception_are_not_wrapped</code></li>
+        </ul>
+
+        <h3>13.6 Executor, client, view, and reader</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Area</th><th>Tests and key assertions</th></tr></thead>
+            <tbody>
+              <tr><td>Ordering</td><td><code>test_reassembles_out_of_order_completions_in_logical_order</code>; result equals reference bytes.</td></tr>
+              <tr><td>Concurrency</td><td><code>test_never_exceeds_client_wide_concurrency_across_callers</code>; <code>test_independent_fetchers_may_overlap</code>; <code>test_same_fetcher_instance_is_serialized</code>.</td></tr>
+              <tr><td>Atomicity</td><td><code>test_short_or_long_result_returns_no_bytes_from_current_call</code>; <code>test_reader_read_all_late_segment_failure_returns_nothing_and_commits_cursor_once</code>; cursor/readinto buffer is unchanged for the failed public call.</td></tr>
+              <tr><td>Cancellation</td><td><code>test_first_terminal_error_signals_shared_token_attempts_every_cleanup_and_cancels_queued_reads</code>; private output is discarded and cooperative user calls observe the operation deadline.</td></tr>
+              <tr><td>Retry</td><td><code>test_assembly_executor_never_retries_object_or_service_call</code>; the fetcher observes exactly one core invocation. Work internal to the user implementation is out of scope.</td></tr>
+              <tr><td>Composition</td><td><code>test_object_inline_plan_accepts_empty_service_fetcher_registry</code>; <code>test_inline_only_plan_accepts_empty_object_and_service_registries</code>; <code>test_service_only_plan_accepts_empty_object_source_registry</code>; only aliases actually referenced by the complete plan are required.</td></tr>
+              <tr><td>Resolution</td><td><code>test_resolve_calls_get_plan_once</code>; <code>test_second_resolve_calls_provider_again</code>; <code>test_view_operations_reuse_frozen_plan_without_provider_calls</code>; <code>test_open_keeps_one_generation_across_reads</code>.</td></tr>
+              <tr><td>Segment-free I/O</td><td><code>test_inline_segment_emits_exact_bytes_without_object_or_service_io</code>; <code>test_zero_length_read_validates_complete_plan_then_performs_no_segment_io</code>.</td></tr>
+              <tr><td>Reader expiration</td><td><code>test_reader_opened_while_valid_reads_forward_after_expiration_until_close</code>; <code>test_new_open_after_expiration_fails_before_byte_io</code>.</td></tr>
+              <tr><td>View/reader close</td><td><code>test_reader_survives_originating_view_close_until_reader_or_parent_close</code>; the view rejects new work, cleanup is attempted, and parent close cancels both.</td></tr>
+              <tr><td>Reader service stage</td><td><code>test_forward_reader_reuses_one_whole_result_stage_while_crossing_segment</code>; <code>test_forward_reader_releases_stage_after_segment</code>; stage and context close exactly once.</td></tr>
+              <tr><td>Expiration</td><td><code>test_operation_rejects_when_clock_equals_expiration</code>; <code>test_operation_started_valid_may_finish_after_expiration</code>; the next operation fails with <code>AssemblyExpiredError</code>.</td></tr>
+              <tr><td>Replacement resolution</td><td><code>test_second_resolve_returns_new_view_and_never_mutates_old_view</code>; <code>test_replacement_plan_has_its_own_generation_and_expiration</code>; <code>test_public_client_and_provider_have_no_refresh_method</code>.</td></tr>
+              <tr><td>Reference shorthand</td><td><code>test_string_reference_normalizes_to_empty_namespace_key</code>; parameters remain explicit-only.</td></tr>
+              <tr><td>Views</td><td><code>test_assembly_view_metadata_returns_exact_resolved_descriptor</code>; <code>test_existing_view_never_switches_generation</code>; <code>test_closing_one_view_rejects_that_view_and_leaves_sibling_view_usable</code>; metadata remains control-plane-only and only a newly resolved view may observe a replacement generation.</td></tr>
+              <tr><td>Read-only façade</td><td><code>test_assembly_view_exposes_no_write_delete_copy_sync_or_presign_operations</code>; reader writes and truncate raise <code>UnsupportedOperation</code>.</td></tr>
+              <tr><td>Identity truthfulness</td><td><code>test_unversioned_same_length_source_mutation_may_change_bytes_without_snapshot_claim</code>; two admitted operations may differ, no dataset snapshot is claimed, and stale mutable bytes are not reused.</td></tr>
+              <tr><td>Reader</td><td><code>test_reader_is_forward_only_and_supports_tell_readinto_and_eof</code>; <code>test_reader_seekable_is_false_and_seek_is_unsupported</code>; <code>test_reader_overrides_read_and_readall</code>.</td></tr>
+              <tr><td>Lifecycle</td><td><code>test_client_close_is_idempotent_rejects_new_work_and_cleans_owned_resources</code>; <code>test_client_close_does_not_close_injected_dependencies</code>; <code>test_view_close_is_idempotent_and_does_not_close_parent_or_siblings</code>.</td></tr>
+              <tr><td>Timeout</td><td><code>test_global_deadline_normalizes_provider_queue_object_service_and_staging_exhaustion</code>; while the global budget remains, an already typed provider/source/service domain error is preserved and internal cancellation remains distinct. The object-source case verifies pre/post-call checks and late-result discard, but does not assert a hard latency bound for an already-running synchronous <code>StorageClient.read</code>.</td></tr>
+              <tr><td>Whole-result staging</td><td><code>test_whole_result_one_core_submission_serves_requested_slice</code>; <code>test_small_result_stages_in_memory</code>; <code>test_large_result_stages_to_temp_file</code>; <code>test_private_stage_limit_fails_before_fetch</code>; <code>test_stage_resources_release_on_success_failure_and_close</code>.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>13.7 Materialization</h3>
+        <ul>
+          <li><code>test_materialize_uses_exact_private_bounded_windows</code></li>
+          <li><code>test_materialize_atomically_replaces_destination_when_allowed</code></li>
+          <li><code>test_materialize_refuses_existing_destination_by_default</code></li>
+          <li><code>test_materialize_no_replace_loses_concurrent_destination_race_without_overwriting_winner</code></li>
+          <li><code>test_materialize_unsupported_atomic_no_replace_fails_precommit_and_preserves_destination</code></li>
+          <li><code>test_materialize_failure_preserves_existing_destination</code></li>
+          <li><code>test_materialize_failure_removes_staging_file</code></li>
+          <li><code>test_postcommit_staging_unlink_failure_reports_cleanup_committed_true_and_destination_visible</code></li>
+          <li><code>test_precommit_create_write_or_commit_failure_reports_committed_false</code></li>
+          <li><code>test_materialize_private_file_is_exclusive_no_follow_and_mode_0600</code></li>
+          <li><code>test_materialize_published_inode_retains_effective_mode_0600</code></li>
+          <li><code>test_materialization_started_valid_may_commit_after_descriptor_expiration</code></li>
+          <li><code>test_completed_materialization_lifetime_is_independent_of_instruction_expiration</code></li>
+          <li><code>test_new_materialization_after_expiration_is_rejected_before_staging</code></li>
+        </ul>
+
+        <div class="callout info">
+          Concrete transport-adapter behavior is outside the Assembly core test plan. Core acceptance proves the public SPI
+          with the minimal application-supplied in-process fetcher and contains no tests for hypothetical adapter modules.
+        </div>
+
+        <h3>13.8 In-process acceptance and compatibility</h3>
+        <p>
+          The format-shaped fixtures below are non-blocking examples. The blocking core acceptance gate is the
+          format-neutral mixed-union reconstruction and routing behavior; MSC does not parse or interpret those formats.
+        </p>
+        <ul>
+          <li><code>test_external_jsonl_fixture_uses_only_direct_object_segment_and_matches_golden_bytes</code></li>
+          <li><code>test_external_mp4_fixture_mixes_synthesized_structure_and_gop_aligned_object_ranges</code></li>
+          <li><code>test_external_page_aligned_parquet_fixture_reuses_object_pages_with_synthesized_structure</code></li>
+          <li><code>test_external_through_page_parquet_fixture_is_entirely_service_produced</code></li>
+          <li>Those fixture providers/services live outside format-neutral MSC execution code; tests assert byte composition and call routing, never MSC format parsing.</li>
+          <li><code>test_object_service_and_inline_segments_reconstruct_complete_object</code></li>
+          <li><code>test_partial_range_touching_all_three_segment_kinds_returns_exact_slice</code></li>
+          <li><code>test_range_capable_and_whole_result_services_both_pass_acceptance_flow</code></li>
+          <li><code>test_existing_open_handle_stays_on_original_generation_and_continues_after_expiration_until_close</code></li>
+          <li><code>test_second_resolve_after_expiration_creates_replacement_generation_and_new_bytes</code></li>
+          <li><code>test_plan_cannot_select_fetcher_implementation_endpoint_or_credentials</code></li>
+          <li><code>test_in_process_acceptance_uses_minimal_application_fetcher</code></li>
+          <li><code>test_assembly_import_is_opt_in_and_does_not_change_storage_client</code></li>
+          <li><code>test_assembly_is_not_registered_in_storage_provider_enum_or_factory</code></li>
+        </ul>
+
+        <h4>Repository-level verification gates (not new pytest cases)</h4>
+        <ul>
+          <li>The existing StorageClient and StorageProvider unit suites pass without modifying their expected behavior.</li>
+          <li>The reviewed change set contains no Assembly runtime or configuration changes in Rust, Go, or FUSE.</li>
+        </ul>
+      </section>
+
+      <section id="performance">
+        <h2>14. Performance and benchmark plan</h2>
+        <h3>Scenario matrix</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Dimension</th><th>Values</th></tr></thead>
+            <tbody>
+              <tr><td>Objects per batch set</td><td>1, 1K, and the private hard boundary</td></tr>
+              <tr><td>Segments / encoded plan</td><td>1, 8, 64, 512, and the private hard boundaries</td></tr>
+              <tr><td>Segment kind</td><td>object-only, service-only, inline-heavy at legal limit, mixed union</td></tr>
+              <tr><td>Logical read</td><td>4 KiB, 1 MiB, 64 MiB</td></tr>
+              <tr><td>Binding</td><td>StorageClient local, stable-subrange service, whole-result service, mixed</td></tr>
+              <tr><td>Service staging</td><td>small in-memory result, large temp-file result, and hard-limit rejection</td></tr>
+              <tr><td>Concurrency</td><td>1, 4, 16, 64 and multiple concurrent callers</td></tr>
+              <tr><td>Segment adjacency / object chunking</td><td>same binding, different binding, mixed, and intervals below/at/above the private object chunk size; v1 never crosses a segment boundary</td></tr>
+              <tr><td>Batch workload</td><td>decode, exact-reference hit/miss, sequential and random lookup</td></tr>
+              <tr><td>Service scheduling</td><td>single request and 8, 64, or 512 independently ready segment requests dispatched through the single-request SPI</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Recorded measurements</h3>
+        <ul>
+          <li>Planner median/p95 and microseconds per segment.</li>
+          <li>List decode/traversal objects per second, exact-name lookup median/p95, time to first object, encoded bytes, and index build time.</li>
+          <li>Peak RSS for streaming codec traversal and the bounded static provider as object count grows.</li>
+          <li>End-to-end median/p95, throughput, time to first internal chunk, and completion latency.</li>
+          <li>Core calls to <code>ServiceSegmentFetcher.fetch</code>, result bytes, and source-byte amplification; fetcher-internal retries and transport metrics are fetcher-owned.</li>
+          <li>Peak RSS, output size, and maximum in-flight response bytes.</li>
+          <li>Complete-segment peak memory/temp-file bytes, stage count, core fetch submissions, and read amplification.</li>
+          <li>Cancellation latency and active tasks/connections after failure.</li>
+        </ul>
+
+        <h3>Initial performance checks</h3>
+        <ul>
+          <li><code>test_large_batch_set_records_decode_latency_and_peak_rss</code> records a reproducible baseline below the private hard boundary.</li>
+          <li><code>test_static_provider_exact_lookup_hit_and_miss_record_latency</code> exercises the bounded in-memory static provider.</li>
+          <li><code>test_private_segment_and_plan_limits_reject_one_over</code> proves internal safeguards fail before I/O.</li>
+          <li>The benchmark records planner growth between representative <code>N</code> and <code>2N</code> segment cases so regressions can be reviewed without a product-level approval threshold.</li>
+          <li>Observed concurrent source reads never exceed the configured client-wide ceiling.</li>
+          <li>Object request count matches private chunking of each caller-selected intersection; v1 never coalesces across segment boundaries.</li>
+          <li>Peak Python read memory is bounded by the clamped returned length plus bounded chunks and WHOLE_RESULT staging, not all unexecuted bytes.</li>
+          <li>WHOLE_RESULT core submission count is exactly one <code>fetch</code> call per touched segment ordinal per view operation. Cleanup failures never convert private output into success.</li>
+          <li>Failure cancellation closes/drains queued work, internal waits, and cooperative service streams within the remaining operation deadline. A synchronous <code>StorageClient.read</code> already in progress is measured separately and is not claimed to be preemptible by Assembly.</li>
+        </ul>
+        <p>
+          Local benchmark throughput absolute numbers are recorded but do not block early pull requests because shared CI is noisy.
+          The repository may establish a same-machine regression threshold from repeated baseline runs; nightly measurements
+          beyond that threshold trigger investigation rather than an automatic functional failure.
+        </p>
+      </section>
+
+      <section id="rollout">
+        <h2>15. Incremental delivery plan</h2>
+
+        <div class="phase">
+          <div class="phase-name">Stage 0<br><span class="small">Contract baseline</span></div>
+          <div><strong>Record the MVP contracts and private safeguards.</strong> Freeze <code>assembly-list/v1</code>, exact-result semantics, expiration/re-resolution behavior, union kinds, complete-plan/global-length invariant, service range rules, 16/64 KiB inline ceilings, WHOLE_RESULT hard limit, exception taxonomy, and borrowed dependency ownership. Record that revision/checksum enforcement, browse, seek, and public limit objects are out of scope. Add golden fixtures; no runtime integration yet.</div>
+        </div>
+        <div class="phase">
+          <div class="phase-name">Stage 1<br><span class="small">Resolve and view</span></div>
+          <div><strong>Implement the metadata-to-executable pipeline.</strong> List codec/batches, public models, the single <code>get_plan(request)</code> provider call, validation, frozen binding registries, and <code>AssemblyView.metadata</code>. No view is exposed and no byte I/O occurs before the returned complete plan passes validation.</div>
+        </div>
+        <div class="phase">
+          <div class="phase-name">Stage 2<br><span class="small">Core execution</span></div>
+          <div><strong>Implement the complete Python execution path.</strong> Direct StorageClient reads, user-defined ServiceSegmentFetcher wiring, inline bytes, bounded staging, range planning, client/view/reader, lifecycle, and atomic materialization. Core E2E uses only an application-supplied in-process fetcher.</div>
+        </div>
+        <div class="phase">
+          <div class="phase-name">Stage 3<br><span class="small">Integration</span></div>
+          <div><strong>Exercise the complete union and third-party conformance.</strong> Range/whole-result user services, multiple StorageClients, inline limits, expiration/re-resolution, staging, lifecycle, redaction, failure injection, and unchanged existing MSC tests.</div>
+        </div>
+        <div class="phase">
+          <div class="phase-name">Stage 4<br><span class="small">Release</span></div>
+          <div><strong>Complete docs, benchmarks, and packaging.</strong> User guide, API reference, quickstart notebook, benchmark baseline, full build, and opt-in release note.</div>
+        </div>
+
+        <h3>Feature rollout</h3>
+        <ul>
+          <li>Ship only from the explicit <code>multistorageclient.assembly</code> namespace.</li>
+          <li>Keep cross-operation descriptor, plan, and logical-output caching disabled throughout v1.</li>
+          <li>Document that v1 enforces expiration and lengths, while same-length source mutation may be undetectable.</li>
+          <li>Do not automatically expose assembly through FUSE, fsspec, pathlib, CLI, sync, or <code>msc://</code>.</li>
+          <li>Collect protocol and performance evidence before considering a stable-v1 designation.</li>
+        </ul>
+      </section>
+
+      <section id="risks">
+        <h2>16. Risk register and definition of done</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Risk</th><th>Mitigation / gate</th></tr></thead>
+            <tbody>
+              <tr><td>Expiration omitted or parsed differently.</td><td>Mandatory canonical UTC field on batches/descriptors, one admission clock, and missing/malformed/boundary tests.</td></tr>
+              <tr><td>V1 is mistaken for a dataset snapshot guarantee.</td><td>Document that v1 validates expiration and lengths only; same-length mutation may be undetectable and stronger identity remains application-owned.</td></tr>
+              <tr><td>Whole service result exhausts memory or disk.</td><td>Reject declarations above the private hard cap, stage smaller results in bounded memory or a private file, and verify exact length before publication.</td></tr>
+              <tr><td>Inline becomes a bulk-data path.</td><td>Hard 16 KiB per-segment and 64 KiB aggregate upper ceilings plus the encoded-plan limit.</td></tr>
+              <tr><td>Large batch sets make memory unusable.</td><td>Versioned batches, bounded codec, bounded in-memory static provider, and custom <code>AssemblyPlanProvider</code> implementations for larger catalogs.</td></tr>
+              <tr><td>Provider returns huge or malicious plans.</td><td>Bounded decoding and semantic validation before allocation or I/O.</td></tr>
+              <tr><td>Remote plans drive authority or credential escape.</td><td>Separate immutable object/service registries, least-privilege bound StorageClient namespaces, no plan-controlled client configuration, and fetcher-owned operation confinement.</td></tr>
+              <tr><td>Nested retries multiply attempts.</td><td>Assembly performs no outer object or service retry; any user-fetcher retry remains opaque and bounded by the supplied deadline.</td></tr>
+              <tr><td>Python sync calls cannot be forcibly cancelled.</td><td>The deadline hard-bounds admission, internal waits, and cooperative provider/service work. Current StorageClient reads are checked before/after, use application-configured underlying timeouts, and may outlive the Assembly deadline; MSC makes no preemption claim.</td></tr>
+              <tr><td>Scope expands back into StorageClient/provider hierarchy.</td><td>Import-boundary and private-provider regression tests; no factory/config changes in v1.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Definition of done</h3>
+        <ul class="checklist">
+          <li>The approved lean MVP API and SPI are represented consistently across all three documents.</li>
+          <li>All new public types have complete docstrings and Sphinx reference entries.</li>
+          <li>The versioned language-neutral list codec publishes golden vectors for batches and every explicit segment kind.</li>
+          <li>Provider and ServiceSegmentFetcher conformance suites are reusable outside the MSC repository.</li>
+          <li><code>AssemblyPlanProvider.get_plan(request)</code> returns descriptor metadata and a complete exact-result plan in one call; <code>AssemblyClient.resolve</code> exposes an executable view only after validation and binding freeze.</li>
+          <li><code>AssemblyView.metadata</code> returns the exact descriptor used to create that view.</li>
+          <li>Validation proves checked global logical length and rejects expired/malformed plans before object/service I/O.</li>
+          <li>A mixed object/service/inline plan passes full, partial-range, forward-reader, and materialization E2E cases through a user-defined in-process service fetcher.</li>
+          <li>Mandatory expiration, exact-length enforcement, same-length mutation risk, and replacement resolution are tested and documented.</li>
+          <li>Stable-subrange and whole-result services pass range stability, one-core-call, bounded staging, and cleanup tests.</li>
+          <li>Deadline documentation and tests distinguish hard-bounded MSC/cooperative waits from non-preemptible synchronous StorageClient calls, and v1 makes no public caller-cancellation claim.</li>
+          <li>Private stage and materialization files use exclusive no-follow creation where supported and POSIX mode <code>0600</code>; published files retain the effective mode.</li>
+          <li>Every failed view read or current reader call publishes no bytes from that call; a reader may already have returned a successful prefix in earlier calls, and v1 creates no logical-byte cache entry on either path.</li>
+          <li>No existing StorageClient/StorageProvider/config behavior changes.</li>
+          <li>Go/FUSE remains unchanged in the initial release; any future cross-language runtime consumes the normative list schema.</li>
+          <li>Focused Python tests, analyzer, existing unit suites, documentation build, and final repository build pass.</li>
+          <li>Batch decoding, exact-lookup, and memory benchmarks are attached below the private hard limits.</li>
+        </ul>
+      </section>
+
+      <section id="commands">
+        <h2>17. Verification commands and references</h2>
+        <h3>Focused development commands</h3>
+        <pre><code># Prepare the project environment
+just multi-storage-client/prepare-toolchain
+
+# Pure Python assembly suite
+cd multi-storage-client
+uv run pytest tests/test_multistorageclient/unit/assembly -q
+
+# Reproducible benchmark artifact using the MVP boundaries
+uv run python tests/test_multistorageclient/benchmark/evaluate_assembly.py \
+  --output artifacts/assembly-benchmark.json
+
+# Return to repository root for project gates
+cd ..
+just multi-storage-client/analyze
+just multi-storage-client/run-unit-tests
+just multi-storage-client-docs/build
+just build</code></pre>
+
+        <h3>Current-code checks that informed this plan</h3>
+        <ul>
+          <li><code>client/client.py</code>: StorageClient currently delegates to Single or Composite clients.</li>
+          <li><code>client/types.py</code>: the public StorageClient contract has neither <code>close()</code> nor a per-read deadline/cancellation parameter; v1 therefore borrows clients and cannot preempt an in-progress synchronous read.</li>
+          <li><code>client/composite.py</code>: Composite routes a path to one child client; it is not a byte-assembly graph.</li>
+          <li><code>types.py</code>: StorageProvider is a broad mutable physical-backend contract.</li>
+          <li><code>client/single.py</code>: source version checks protect cache validation but do not supply an expected version to GET.</li>
+          <li><code>file.py</code>: the existing remote reader issues ordinary independent StorageClient range reads.</li>
+        </ul>
+
+        <h3>Core normative reference</h3>
+        <ul>
+          <li><a href="https://www.rfc-editor.org/rfc/rfc8259.html">RFC 8259 — The JavaScript Object Notation (JSON) Data Interchange Format</a></li>
+          <li><a href="https://www.rfc-editor.org/rfc/rfc3339.html">RFC 3339 — Date and Time on the Internet</a></li>
+        </ul>
+
+        <p class="small">
+          Architectural rationale and the high-level public contract are in
+          <a href="high-level-design.html">Assembly Module — High-Level Design</a>. Adopter-facing
+          interface implementation and composition are in the
+          <a href="assembly-workflow-user-guide.html">Workflow User Guide</a>.
+        </p>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
