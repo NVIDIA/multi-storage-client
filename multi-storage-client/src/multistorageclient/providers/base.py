@@ -723,11 +723,11 @@ class BaseStorageProvider(StorageProvider):
         path: str,
         _depth: int = 0,
         _visited: set[str] | None = None,
-    ) -> str:
-        """Resolve a path through any symlink chain, returning the final physical path."""
+    ) -> tuple[str, ObjectMetadata]:
+        """Resolve a path through any symlink chain, returning the final physical path and its metadata."""
         metadata = self._get_object_metadata(path)
         if not metadata.symlink_target:
-            return path
+            return path, metadata
 
         if _visited is None:
             _visited = set()
@@ -1101,7 +1101,9 @@ class BaseStorageProvider(StorageProvider):
     def download_file(self, remote_path: str, f: str | IO, metadata: ObjectMetadata | None = None) -> None:
         remote_path = self._prepend_base_path(remote_path)
         if metadata is None or metadata.symlink_target is not None:
-            remote_path = self._resolve_symlink_path(remote_path)
+            # Use the resolved target's metadata: the caller's metadata describes the symlink marker
+            # (content_length=0), and providers size their download strategy and metrics from it.
+            remote_path, metadata = self._resolve_symlink_path(remote_path)
         self._emit_metrics(
             operation=BaseStorageProvider._Operation.READ,
             f=lambda: self._download_file(remote_path, f, metadata),

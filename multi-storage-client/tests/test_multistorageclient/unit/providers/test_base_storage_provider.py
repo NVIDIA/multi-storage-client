@@ -1212,6 +1212,55 @@ def test_get_object_empty_file_not_symlink():
     assert provider.get_object("empty.txt") == b""
 
 
+class RecordingSymlinkMockProvider(SymlinkMockProvider):
+    """Records the arguments each internal call receives."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.download_calls: list[tuple[str, ObjectMetadata | None]] = []
+        self.metadata_calls: list[str] = []
+
+    def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
+        self.metadata_calls.append(path)
+        return super()._get_object_metadata(path, strict=strict)
+
+    def _download_file(self, remote_path: str, f, metadata=None) -> int:
+        self.download_calls.append((remote_path, metadata))
+        return super()._download_file(remote_path, f, metadata)
+
+
+def test_download_file_passes_resolved_target_metadata():
+    """The provider download must receive the target's metadata, not the symlink marker's."""
+    now = datetime.now(tz=timezone.utc)
+    objects = {"target.txt": b"real content"}
+    metadata = {
+        "link.txt": ObjectMetadata(key="link.txt", content_length=0, last_modified=now, symlink_target="target.txt"),
+        "target.txt": ObjectMetadata(key="target.txt", content_length=12, last_modified=now),
+    }
+    provider = RecordingSymlinkMockProvider(objects=objects, metadata=metadata)
+
+    provider.download_file("link.txt", MagicMock(), metadata=metadata["link.txt"])
+
+    assert len(provider.download_calls) == 1
+    resolved_path, resolved_metadata = provider.download_calls[0]
+    assert resolved_path == "target.txt"
+    assert resolved_metadata is not None
+    assert resolved_metadata.key == "target.txt"
+    assert resolved_metadata.content_length == 12
+
+
+def test_download_file_without_metadata_issues_single_head():
+    """Resolving symlinks already fetches the metadata; it must be reused instead of HEAD-ing twice."""
+    now = datetime.now(tz=timezone.utc)
+    metadata = {"plain.txt": ObjectMetadata(key="plain.txt", content_length=5, last_modified=now)}
+    provider = RecordingSymlinkMockProvider(objects={"plain.txt": b"hello"}, metadata=metadata)
+
+    provider.download_file("plain.txt", MagicMock())
+
+    assert provider.metadata_calls == ["plain.txt"]
+    assert provider.download_calls == [("plain.txt", metadata["plain.txt"])]
+
+
 def test_download_file_follows_symlink():
     now = datetime.now(tz=timezone.utc)
     objects = {"target.txt": b"real content"}
