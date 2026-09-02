@@ -73,8 +73,11 @@ class SyncManager:
         if not same_client and hasattr(source_client, "profile") and hasattr(target_client, "profile"):
             same_client = source_client.profile == target_client.profile
 
-        # Check for overlapping paths on same storage backend
-        if same_client and (source_path.startswith(target_path) or target_path.startswith(source_path)):
+        # Check for overlapping paths on same storage backend. Plain string-prefix overlap is intentional:
+        # object-store listing is a string-prefix match, so listing "data" also enumerates "data2/...".
+        if same_client and (
+            self.source_path.startswith(self.target_path) or self.target_path.startswith(self.source_path)
+        ):
             raise ValueError("Source and target paths cannot overlap on same StorageClient.")
 
     def sync_objects(
