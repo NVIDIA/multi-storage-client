@@ -180,7 +180,7 @@ class LsAction(Action):
             metadata.last_modified.strftime("%Y-%m-%d %H:%M:%S") if metadata.last_modified > AWARE_DATETIME_MIN else ""
         )
 
-        if date_str == "":
+        if metadata.type == "directory":
             size_str = ""
         else:
             size_str = (
