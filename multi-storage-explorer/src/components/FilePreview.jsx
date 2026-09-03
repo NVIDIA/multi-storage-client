@@ -23,10 +23,10 @@ import { getFileInfo, downloadFile } from '../services/api';
 
 const { Paragraph } = Typography;
 
-const FilePreview = ({ 
-  visible, 
-  fileUrl, 
-  fileName, 
+const FilePreview = ({
+  visible,
+  fileUrl,
+  fileName,
   onClose
 }) => {
   const [loading, setLoading] = useState(false);
@@ -36,6 +36,7 @@ const FilePreview = ({
 
   useEffect(() => {
     if (!visible || !fileUrl) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setPreviewData(null);
       setError(null);
       setActiveTab('properties');
@@ -73,7 +74,7 @@ const FilePreview = ({
 
   const handleDownload = async () => {
     onClose();
-    
+
     const hideMessage = message.loading(`Downloading ${fileName}...`, 0);
     try {
       await downloadFile(fileUrl);
@@ -98,28 +99,28 @@ const FilePreview = ({
   // Uses local browser timezone
   const formatDate = (isoString) => {
     if (!isoString) return 'N/A';
-    
+
     const date = new Date(isoString);
-    
+
     // Format date part: "January 16, 2025"
     const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
       'July', 'August', 'September', 'October', 'November', 'December'];
     const month = monthNames[date.getMonth()];
     const day = date.getDate();
     const year = date.getFullYear();
-    
+
     // Format time part: "16:42:56" (in local browser timezone)
     const hours = String(date.getHours()).padStart(2, '0');
     const minutes = String(date.getMinutes()).padStart(2, '0');
     const seconds = String(date.getSeconds()).padStart(2, '0');
-    
+
     // Format timezone offset: "(UTC-08:00)" - gets local browser timezone
     const offsetMinutes = -date.getTimezoneOffset();
     const offsetHours = Math.floor(Math.abs(offsetMinutes) / 60);
     const offsetMins = Math.abs(offsetMinutes) % 60;
     const offsetSign = offsetMinutes >= 0 ? '+' : '-';
     const timezone = `UTC${offsetSign}${String(offsetHours).padStart(2, '0')}:${String(offsetMins).padStart(2, '0')}`;
-    
+
     return `${month} ${day}, ${year}, ${hours}:${minutes}:${seconds} (${timezone})`;
   };
 
@@ -151,9 +152,9 @@ const FilePreview = ({
     const { file_info } = previewData;
 
     return (
-      <Descriptions 
-        bordered 
-        column={1} 
+      <Descriptions
+        bordered
+        column={1}
         size="small"
         styles={{ label: { whiteSpace: 'nowrap' } }}
       >
@@ -178,8 +179,8 @@ const FilePreview = ({
           </Descriptions.Item>
         )}
         <Descriptions.Item label="MSC URL">
-          <Paragraph 
-            copyable 
+          <Paragraph
+            copyable
             style={{ margin: 0, fontSize: '12px', wordBreak: 'break-all' }}
           >
             {fileUrl}
@@ -212,10 +213,10 @@ const FilePreview = ({
 
     if (!previewData || !previewData.custom_metadata || Object.keys(previewData.custom_metadata).length === 0) {
       return (
-        <Alert 
-          message="No custom metadata" 
+        <Alert
+          message="No custom metadata"
           description="This file does not have any custom metadata associated with it."
-          type="info" 
+          type="info"
           showIcon
         />
       );
@@ -224,16 +225,16 @@ const FilePreview = ({
     const { custom_metadata } = previewData;
 
     return (
-      <Descriptions 
-        bordered 
-        column={1} 
+      <Descriptions
+        bordered
+        column={1}
         size="small"
         styles={{ label: { whiteSpace: 'nowrap' } }}
       >
         {Object.entries(custom_metadata).map(([key, value]) => (
           <Descriptions.Item key={key} label={key}>
-            <Paragraph 
-              copyable 
+            <Paragraph
+              copyable
               style={{ margin: 0, fontSize: '12px', wordBreak: 'break-all' }}
             >
               {typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)}
@@ -257,14 +258,14 @@ const FilePreview = ({
       width={800}
       footer={
         <Space>
-          <Button 
-            icon={<DownloadOutlined />} 
+          <Button
+            icon={<DownloadOutlined />}
             onClick={handleDownload}
           >
             Download
           </Button>
-          <Button 
-            icon={<CloseOutlined />} 
+          <Button
+            icon={<CloseOutlined />}
             onClick={onClose}
           >
             Close
@@ -272,8 +273,8 @@ const FilePreview = ({
         </Space>
       }
     >
-      <Tabs 
-        activeKey={activeTab} 
+      <Tabs
+        activeKey={activeTab}
         onChange={setActiveTab}
         items={[
           {

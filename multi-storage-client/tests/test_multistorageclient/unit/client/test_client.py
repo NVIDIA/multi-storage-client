@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import inspect
+import os
 import pickle
 import threading
 from datetime import datetime, timezone
@@ -1006,3 +1007,24 @@ def test_composite_make_symlink_raises(multi_backend_config):
 
     with pytest.raises(NotImplementedError):
         client.make_symlink("link.txt", "target.txt")
+
+
+def test_single_info_root_reports_base_path_mtime(tmp_path, monkeypatch):
+    """info("") on a POSIX profile must report the base_path mtime, not the process CWD."""
+    base_path = tmp_path / "base"
+    base_path.mkdir()
+    os.utime(base_path, (0, 0))
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+
+    config = StorageClientConfig.from_dict(
+        {"profiles": {"data": {"storage_provider": {"type": "file", "options": {"base_path": str(base_path)}}}}},
+        profile="data",
+    )
+    client = SingleStorageClient(config)
+
+    for path in ("", "."):
+        metadata = client.info(path)
+        assert metadata.type == "directory"
+        assert metadata.last_modified.timestamp() == 0.0

@@ -1002,8 +1002,11 @@ impl RustClient {
 
             while !dirs_to_visit.is_empty() || !join_set.is_empty() {
                 if !join_set.is_empty() {
-                    let result: Result<(Vec<ObjectMeta>, Vec<Path>, usize), StorageError> =
-                        join_set.join_next().await.unwrap().unwrap();
+                    let result: Result<(Vec<ObjectMeta>, Vec<Path>, usize), StorageError> = join_set
+                        .join_next()
+                        .await
+                        .unwrap()
+                        .map_err(|e| StorageError::ObjectStoreError(format!("Failed to join list task: {:?}", e)))?;
                     let (objects, directories, depth) = result?;
 
                     for directory in &directories {
