@@ -62,7 +62,9 @@ class FileBasedCredentialsProvider(CredentialsProvider):
 
         :param credential_file_path: The path to the JSON file containing credentials.
         :raises FileNotFoundError: If the credential file does not exist.
-        :raises ValueError: If the file is not valid JSON or does not match the expected schema.
+        :raises ValueError: If the file is not valid JSON, is missing a required field, or has an unsupported version.
+        :raises TypeError: If the file's top-level value is not a JSON object, or if ``AccessKeyId``, ``SecretAccessKey``,
+            ``SessionToken`` or ``Expiration`` has the wrong type.
         """
         self._credential_file_path = Path(credential_file_path)
         self._cached_credentials = None
@@ -77,7 +79,9 @@ class FileBasedCredentialsProvider(CredentialsProvider):
         Validates that the credential file exists and contains valid JSON with the expected schema.
 
         :raises FileNotFoundError: If the credential file does not exist.
-        :raises ValueError: If the file is not valid JSON or does not match the expected schema.
+        :raises ValueError: If the file is not valid JSON, is missing a required field, or has an unsupported version.
+        :raises TypeError: If the file's top-level value is not a JSON object, or if ``AccessKeyId``, ``SecretAccessKey``,
+            ``SessionToken`` or ``Expiration`` has the wrong type.
         """
         if not self._credential_file_path.exists():
             raise FileNotFoundError(f"Credential file not found: {self._credential_file_path}")
@@ -98,7 +102,9 @@ class FileBasedCredentialsProvider(CredentialsProvider):
         Validates that the credential data matches the expected AWS external process schema.
 
         :param data: The parsed JSON data from the credential file.
-        :raises ValueError: If the schema is invalid.
+        :raises ValueError: If a required field is missing or the version is unsupported.
+        :raises TypeError: If ``data`` is not a JSON object, or if ``AccessKeyId``, ``SecretAccessKey``, ``SessionToken``
+            or ``Expiration`` has the wrong type.
         """
         if not isinstance(data, dict):
             raise TypeError("Credential file must contain a JSON object")
@@ -133,7 +139,9 @@ class FileBasedCredentialsProvider(CredentialsProvider):
 
         :return: The credentials loaded from the file.
         :raises FileNotFoundError: If the credential file does not exist.
-        :raises ValueError: If the file is not valid JSON or does not match the expected schema.
+        :raises ValueError: If the file is not valid JSON, is missing a required field, or has an unsupported version.
+        :raises TypeError: If the file's top-level value is not a JSON object, or if ``AccessKeyId``, ``SecretAccessKey``,
+            ``SessionToken`` or ``Expiration`` has the wrong type.
         """
         try:
             # Ensure file modification time is at least 1 second ago

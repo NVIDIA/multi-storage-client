@@ -29,7 +29,7 @@ import yaml
 
 import multistorageclient as msc
 from multistorageclient.commands.cli.actions.ls import LsAction
-from multistorageclient.types import ObjectMetadata
+from multistorageclient.types import AWARE_DATETIME_MIN, ObjectMetadata
 
 
 def create_test_files_with_random_structure(
@@ -547,7 +547,9 @@ def test_rm_command_with_progress(run_cli):
 def test_config_validate_command(run_cli):
     """Test config validate command with YAML output."""
     test_config = {
-        "profiles": {"test-profile": {"storage_provider": {"type": "file", "options": {"base_path": "/tmp/test"}}}}
+        "profiles": {"test-profile": {"storage_provider": {"type": "file", "options": {"base_path": "/tmp/test"}}}},
+        # A list-valued key must round-trip as a YAML sequence, not a Python tuple tag.
+        "opentelemetry": {"metrics": {"attributes": [{"type": "static", "options": {"attributes": {"a": "b"}}}]}},
     }
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml") as f:
@@ -559,6 +561,7 @@ def test_config_validate_command(run_cli):
         assert "profiles" in config
         assert "test-profile" in config["profiles"]
         assert config["profiles"]["test-profile"] == test_config["profiles"]["test-profile"]
+        assert config["opentelemetry"] == test_config["opentelemetry"]
 
 
 def test_config_validate_command_json_format(run_cli):
@@ -576,6 +579,25 @@ def test_config_validate_command_json_format(run_cli):
         assert "profiles" in config
         assert "json-test" in config["profiles"]
         assert config["profiles"]["json-test"] == test_config["profiles"]["json-test"]
+
+
+def test_ls_format_listing_shows_size_for_files_without_timestamp():
+    """Providers such as HuggingFace or AIStore report the epoch sentinel for files; size must still be shown."""
+    action = LsAction()
+
+    file_row = action._format_listing(
+        "dir", ObjectMetadata(key="dir/file.bin", type="file", last_modified=AWARE_DATETIME_MIN, content_length=123)
+    )
+    assert file_row[0] == ""
+    assert file_row[1] == "123"
+    assert file_row[2] == "file.bin"
+
+    directory_row = action._format_listing(
+        "dir", ObjectMetadata(key="dir/sub", type="directory", last_modified=AWARE_DATETIME_MIN, content_length=0)
+    )
+    assert directory_row[0] == ""
+    assert directory_row[1] == ""
+    assert directory_row[2] == "sub/"
 
 
 def test_ls_command_with_path_prefix():
