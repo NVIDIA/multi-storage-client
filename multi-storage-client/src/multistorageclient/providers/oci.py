@@ -389,6 +389,12 @@ class OracleStorageProvider(BaseStorageProvider):
         bucket, prefix = split_path(path)
         self._refresh_oci_client_if_needed()
 
+        # Get the prefix of the start_after and end_at paths relative to the bucket.
+        if start_after:
+            _, start_after = split_path(start_after)
+        if end_at:
+            _, end_at = split_path(end_at)
+
         def _invoke_api() -> Iterator[ObjectMetadata]:
             # ListObjects only includes object names by default.
             #
