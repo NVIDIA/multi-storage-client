@@ -366,6 +366,61 @@ def test_posix_file_descriptor_duration_excludes_atomic_rename(tmp_path):
     assert clock[0] == 100.0
 
 
+def test_object_file_fileno_is_stable_for_in_memory_files():
+    """fileno() on an in-memory ObjectFile must reuse one temporary descriptor instead of leaking one per call."""
+    storage_client = Mock()
+    storage_client._storage_provider = Mock(spec=BaseStorageProvider)
+    storage_client._cache_manager = None
+
+    object_file = ObjectFile(storage_client=storage_client, remote_path="object", mode="wb")
+    open_files_before = len(object_file._open_files)
+
+    descriptors = {object_file.fileno() for _ in range(5)}
+
+    assert len(descriptors) == 1
+    assert len(object_file._open_files) == open_files_before + 1
+    object_file.close()
+
+
+def test_object_file_close_releases_descriptors_when_upload_fails():
+    """A failed upload must not leak the fileno() placeholder or other tracked local files."""
+    storage_client = Mock()
+    storage_client._storage_provider = Mock(spec=BaseStorageProvider)
+    storage_client._cache_manager = None
+    storage_client.upload_file.side_effect = RuntimeError("upload failed")
+
+    object_file = ObjectFile(storage_client=storage_client, remote_path="object", mode="wb")
+    object_file.write(b"payload")
+    object_file.fileno()
+    tracked = list(object_file._open_files)
+    assert tracked
+
+    with pytest.raises(RuntimeError, match="upload failed"):
+        object_file.close()
+
+    assert all(fp.closed for fp in tracked)
+
+
+def test_object_file_append_removes_staging_file_when_upload_fails(tmp_path):
+    """Append mode stages the merged content in a temp file; it must be removed when the upload raises."""
+    storage_client = Mock()
+    storage_client._storage_provider = Mock(spec=BaseStorageProvider)
+    storage_client._cache_manager = None
+    storage_client.download_file.side_effect = FileNotFoundError("no existing object")
+    storage_client.upload_file.side_effect = RuntimeError("upload failed")
+    staging_path = tmp_path / "staging.bin"
+
+    object_file = ObjectFile(storage_client=storage_client, remote_path="object", mode="ab")
+    object_file._generate_temp_file_path = lambda: str(staging_path)  # type: ignore
+    object_file.write(b"appended")
+
+    with pytest.raises(RuntimeError, match="upload failed"):
+        object_file.close()
+
+    storage_client.upload_file.assert_called_once()
+    assert not staging_path.exists()
+
+
 def test_non_posix_files_do_not_record_file_descriptor_metrics():
     provider = Mock(spec=BaseStorageProvider)
     storage_client = Mock()
