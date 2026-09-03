@@ -223,8 +223,9 @@ class ProducerThread(threading.Thread):
     def _create_source_iterator(self):
         """Create source iterator and enforce preserve_source_attributes policy."""
         if self.source_files is not None:
-            for rel_file_path in self.source_files:
-                rel_file_path = rel_file_path.lstrip("/")
+            # The merge loop in run() requires both iterators to be sorted by key, so the
+            # caller-supplied list must be sorted (and de-duplicated) before being resolved.
+            for rel_file_path in sorted({p.lstrip("/") for p in self.source_files}):
                 source_file_path = os.path.join(self.source_path, rel_file_path).lstrip("/")
                 try:
                     source_metadata = self.source_client.info(
