@@ -490,7 +490,8 @@ class SingleStorageClient(AbstractStorageClient):
         """
         if not path or path == ".":  # empty path or '.' provided by the user
             if self._is_posix_file_storage_provider():
-                last_modified = datetime.fromtimestamp(os.path.getmtime("."), tz=timezone.utc)
+                root = cast(PosixFileStorageProvider, self._storage_provider)._prepend_base_path("")
+                last_modified = datetime.fromtimestamp(os.path.getmtime(root), tz=timezone.utc)
             else:
                 last_modified = AWARE_DATETIME_MIN
             return ObjectMetadata(key="", type="directory", content_length=0, last_modified=last_modified)
