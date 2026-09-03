@@ -881,7 +881,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
                         with tempfile.NamedTemporaryFile(mode="wb", delete=False, prefix=".") as tmp:
                             temp_file_path = tmp.name
                             stream.readinto(tmp)
-                        with open(temp_file_path, "r") as tmp_read:
+                        with open(temp_file_path, "r", encoding="utf-8") as tmp_read:
                             f.write(tmp_read.read())
                     finally:
                         if temp_file_path and os.path.exists(temp_file_path):
