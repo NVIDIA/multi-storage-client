@@ -451,11 +451,13 @@ class ObjectFile(IOBase, IO):
 
     @property
     def closed(self) -> bool:
+        """Return whether the local file is unavailable or closed."""
         if self.readable() and hasattr(self, "_download_thread") and self._download_thread.is_alive():
             self._download_complete.wait()
         return not hasattr(self, "_file") or self._file.closed
 
     def read(self, size: int = -1) -> Any:
+        """Read and return up to ``size`` bytes or characters."""
         if self.readable():
             self._wait_for_download()
         return self._file.read(size)
@@ -467,26 +469,31 @@ class ObjectFile(IOBase, IO):
         return self._mode in ("w", "wb", "a", "ab")
 
     def seekable(self) -> bool:
+        """Return whether the underlying file supports seeking."""
         if self.readable():
             self._wait_for_download()
         return self._file.seekable()
 
     def seek(self, position: int, whence: int = 0) -> int:
+        """Change the stream position and return the new position."""
         if self.readable():
             self._wait_for_download()
         return self._file.seek(position, whence)
 
     def tell(self) -> int:
+        """Return the current stream position."""
         if self.readable():
             self._wait_for_download()
         return self._file.tell()
 
     def readline(self, size: int = -1) -> Any:
+        """Read and return one line, limited to ``size`` when non-negative."""
         if self.readable():
             self._wait_for_download()
         return self._file.readline(size)
 
     def readlines(self, hint: int = -1) -> list[Any]:
+        """Read and return all remaining lines."""
         if self.readable():
             self._wait_for_download()
         return self._file.readlines()
@@ -515,6 +522,7 @@ class ObjectFile(IOBase, IO):
         return self._file.mode
 
     def isatty(self) -> bool:
+        """Return whether the underlying file is connected to a terminal."""
         if self.readable():
             self._wait_for_download()
         return self._file.isatty()
@@ -552,6 +560,7 @@ class ObjectFile(IOBase, IO):
         pass
 
     def readinto(self, b: Any) -> int:
+        """Read bytes into ``b`` and return the number of bytes read."""
         if self.readable():
             self._wait_for_download()
         if hasattr(self._file, "readinto"):
