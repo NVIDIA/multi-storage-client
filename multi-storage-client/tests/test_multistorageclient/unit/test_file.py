@@ -401,6 +401,55 @@ def test_object_file_close_releases_descriptors_when_upload_fails():
     assert all(fp.closed for fp in tracked)
 
 
+def test_object_file_missing_cached_object_does_not_wait_during_cleanup():
+    storage_client = Mock()
+    storage_client._cache_manager = Mock()
+    storage_client._cache_manager.prefetch_file.return_value = True
+    storage_client._cache_manager.check_source_version.return_value = True
+    storage_client.info.side_effect = FileNotFoundError("missing object")
+    download_complete = Mock()
+    object_file = ObjectFile.__new__(ObjectFile)
+
+    with (
+        patch("multistorageclient.file.threading.Event", return_value=download_complete),
+        pytest.raises(FileNotFoundError, match="missing object"),
+    ):
+        object_file.__init__(storage_client=storage_client, remote_path="missing", mode="rb")
+
+    object_file.close()
+    assert object_file.closed
+    download_complete.wait.assert_not_called()
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize("cache_enabled", [False, True])
+def test_object_file_large_text_read_propagates_background_error(cache_enabled):
+    storage_client = Mock()
+    cache_manager = Mock() if cache_enabled else None
+    storage_client._cache_manager = cache_manager
+    storage_client.info.return_value = Mock(content_length=2)
+    if cache_manager:
+        cache_manager.prefetch_file.return_value = True
+        cache_manager.check_source_version.return_value = True
+        cache_manager.get_max_cache_size.return_value = 1
+
+    object_file = ObjectFile(
+        storage_client=storage_client,
+        remote_path="large.txt",
+        mode="r",
+        memory_load_limit=1,
+    )
+
+    with pytest.raises(OSError, match="Failed to download file large.txt") as exc_info:
+        object_file.read()
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert object_file._download_complete.is_set()
+    object_file._download_thread.join(timeout=1)
+    assert not object_file._download_thread.is_alive()
+    object_file.close()
+
+
 def test_object_file_append_removes_staging_file_when_upload_fails(tmp_path):
     """Append mode stages the merged content in a temp file; it must be removed when the upload raises."""
     storage_client = Mock()

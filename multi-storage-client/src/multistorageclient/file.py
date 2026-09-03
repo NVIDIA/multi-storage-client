@@ -245,6 +245,7 @@ class ObjectFile(IOBase, IO):
         self._cache_manager = storage_client._cache_manager
         self._memory_load_limit = memory_load_limit
         self._open_files = []
+        self._download_error: Exception | None = None
         self._check_source_version = check_source_version
 
         if disable_read_cache:
@@ -333,20 +334,20 @@ class ObjectFile(IOBase, IO):
         """
         Download the file to the cache directory.
         """
-        if not self._cache_manager:
-            raise ValueError(f"Cannot download file {self._remote_path}, cache is not configured.")
-
-        # Check if the file can be put into the cache
-        if self._object_metadata.content_length >= self._cache_manager.get_max_cache_size():
-            logger.warning(
-                f'The object "{self._remote_path}" is not cached because the file size ({self._object_metadata.content_length}) '
-                f"exceeds the cache size ({self._cache_manager.get_max_cache_size()}). Please increase the cache size "
-                f"in the config file to cache the file."
-            )
-
-            return self._open_large_file()
-
         try:
+            if not self._cache_manager:
+                raise ValueError(f"Cannot download file {self._remote_path}, cache is not configured.")
+
+            # Check if the file can be put into the cache
+            if self._object_metadata.content_length >= self._cache_manager.get_max_cache_size():
+                logger.warning(
+                    f'The object "{self._remote_path}" is not cached because the file size ({self._object_metadata.content_length}) '
+                    f"exceeds the cache size ({self._cache_manager.get_max_cache_size()}). Please increase the cache size "
+                    f"in the config file to cache the file."
+                )
+
+                return self._open_large_file()
+
             if self._check_source_version == SourceVersionCheckMode.INHERIT:
                 if self._cache_manager.check_source_version():
                     source_version = self._object_metadata.etag
@@ -386,8 +387,8 @@ class ObjectFile(IOBase, IO):
 
             self._file = file_object
             self._open_files.append(self._file)
-        except Exception as e:
-            raise OSError(f"Failed to download file {self._remote_path}") from e
+        except Exception as error:
+            self._download_error = error
         finally:
             self._download_complete.set()
 
@@ -405,17 +406,17 @@ class ObjectFile(IOBase, IO):
         """
         Download the file to a file-like object.
         """
-        file_size = self._object_metadata.content_length
-
-        if file_size > self._memory_load_limit:
-            return self._open_large_file()
-
         try:
+            file_size = self._object_metadata.content_length
+
+            if file_size > self._memory_load_limit:
+                return self._open_large_file()
+
             self._create_fileobj()
             self._storage_client.download_file(self._remote_path, self._file)
             self._file.seek(0)
-        except Exception as e:
-            raise OSError(f"Failed to download file {self._remote_path}") from e
+        except Exception as error:
+            self._download_error = error
         finally:
             self._download_complete.set()
 
@@ -443,15 +444,22 @@ class ObjectFile(IOBase, IO):
     def name(self) -> str:
         return self._remote_path
 
+    def _wait_for_download(self) -> None:
+        self._download_complete.wait()
+        if self._download_error is not None:
+            raise OSError(f"Failed to download file {self._remote_path}") from self._download_error
+
     @property
     def closed(self) -> bool:
-        if self.readable():
+        """Return whether the local file is unavailable or closed."""
+        if self.readable() and hasattr(self, "_download_thread") and self._download_thread.is_alive():
             self._download_complete.wait()
-        return self._file.closed
+        return not hasattr(self, "_file") or self._file.closed
 
     def read(self, size: int = -1) -> Any:
+        """Read and return up to ``size`` bytes or characters."""
         if self.readable():
-            self._download_complete.wait()
+            self._wait_for_download()
         return self._file.read(size)
 
     def readable(self) -> bool:
@@ -461,28 +469,33 @@ class ObjectFile(IOBase, IO):
         return self._mode in ("w", "wb", "a", "ab")
 
     def seekable(self) -> bool:
+        """Return whether the underlying file supports seeking."""
         if self.readable():
-            self._download_complete.wait()
+            self._wait_for_download()
         return self._file.seekable()
 
     def seek(self, position: int, whence: int = 0) -> int:
+        """Change the stream position and return the new position."""
         if self.readable():
-            self._download_complete.wait()
+            self._wait_for_download()
         return self._file.seek(position, whence)
 
     def tell(self) -> int:
+        """Return the current stream position."""
         if self.readable():
-            self._download_complete.wait()
+            self._wait_for_download()
         return self._file.tell()
 
     def readline(self, size: int = -1) -> Any:
+        """Read and return one line, limited to ``size`` when non-negative."""
         if self.readable():
-            self._download_complete.wait()
+            self._wait_for_download()
         return self._file.readline(size)
 
     def readlines(self, hint: int = -1) -> list[Any]:
+        """Read and return all remaining lines."""
         if self.readable():
-            self._download_complete.wait()
+            self._wait_for_download()
         return self._file.readlines()
 
     def __iter__(self) -> Iterator[Any]:
@@ -490,7 +503,7 @@ class ObjectFile(IOBase, IO):
 
     def __next__(self) -> Any:
         if self.readable():
-            self._download_complete.wait()
+            self._wait_for_download()
         return next(self._file)
 
     def __enter__(self) -> ObjectFile:  # noqa: PYI034
@@ -509,8 +522,9 @@ class ObjectFile(IOBase, IO):
         return self._file.mode
 
     def isatty(self) -> bool:
+        """Return whether the underlying file is connected to a terminal."""
         if self.readable():
-            self._download_complete.wait()
+            self._wait_for_download()
         return self._file.isatty()
 
     def fileno(self) -> int:
@@ -521,7 +535,7 @@ class ObjectFile(IOBase, IO):
         first use and its descriptor is returned on every call; it is released by :py:meth:`close`.
         """
         if self.readable():
-            self._download_complete.wait()
+            self._wait_for_download()
 
         if isinstance(self._file, (StringIO, BytesIO)):
             # In-memory file objects (StringIO/BytesIO) don't have real file descriptors.
@@ -546,8 +560,9 @@ class ObjectFile(IOBase, IO):
         pass
 
     def readinto(self, b: Any) -> int:
+        """Read bytes into ``b`` and return the number of bytes read."""
         if self.readable():
-            self._download_complete.wait()
+            self._wait_for_download()
         if hasattr(self._file, "readinto"):
             return self._file.readinto(b)  # type: ignore
         raise io.UnsupportedOperation(f"readinto operation is not supported on file {self._remote_path}")
@@ -624,7 +639,7 @@ class ObjectFile(IOBase, IO):
         :return: Path to local file in read mode, raises a ValueError in write mode
         """
         if self.readable():
-            self._download_complete.wait()
+            self._wait_for_download()
             if self._cache_manager:
                 # Get the cached path of the file
                 return self._file.name
