@@ -597,8 +597,8 @@ class MultiStoragePath:
         """
         result = self._storage_client.read(str(self._internal_path))
         if not hasattr(result, "decode"):  # Rust's PyBytes does not implement decode
-            return codecs.decode(memoryview(result), encoding)
-        return result.decode(encoding)
+            return codecs.decode(memoryview(result), encoding, errors)
+        return result.decode(encoding, errors)
 
     def write_bytes(self, data: bytes) -> None:
         """
