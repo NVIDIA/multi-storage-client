@@ -547,7 +547,9 @@ def test_rm_command_with_progress(run_cli):
 def test_config_validate_command(run_cli):
     """Test config validate command with YAML output."""
     test_config = {
-        "profiles": {"test-profile": {"storage_provider": {"type": "file", "options": {"base_path": "/tmp/test"}}}}
+        "profiles": {"test-profile": {"storage_provider": {"type": "file", "options": {"base_path": "/tmp/test"}}}},
+        # A list-valued key must round-trip as a YAML sequence, not a Python tuple tag.
+        "opentelemetry": {"metrics": {"attributes": [{"type": "static", "options": {"attributes": {"a": "b"}}}]}},
     }
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml") as f:
@@ -559,6 +561,7 @@ def test_config_validate_command(run_cli):
         assert "profiles" in config
         assert "test-profile" in config["profiles"]
         assert config["profiles"]["test-profile"] == test_config["profiles"]["test-profile"]
+        assert config["opentelemetry"] == test_config["opentelemetry"]
 
 
 def test_config_validate_command_json_format(run_cli):
