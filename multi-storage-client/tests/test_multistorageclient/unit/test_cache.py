@@ -31,6 +31,7 @@ from multistorageclient.caching.cache_config import (
     CacheConfig,
     EvictionPolicyConfig,
 )
+from multistorageclient.client.single import SingleStorageClient
 from multistorageclient.config import StorageClientConfig
 from multistorageclient.types import Range, SourceVersionCheckMode
 from test_multistorageclient.unit.utils import tempdatastore
@@ -1404,3 +1405,59 @@ def test_cache_first_no_head_request_on_hit(temp_data_store_type, tmpdir):
         assert head_call_count == 1, (
             f"No additional HEAD requests should be made for cache-first reads; expected 1 total, got {head_call_count}"
         )
+
+
+def test_cache_first_open_honors_text_mode(tmpdir):
+    """Opening a cached object in text mode must return str on a cache hit, not bytes."""
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        profile = "data"
+        config_dict = {
+            "profiles": {profile: temp_data_store.profile_config_dict() | {"caching_enabled": True}},
+            "cache": {
+                "size": "10M",
+                "cache_line_size": "1M",
+                "location": str(tmpdir),
+                "check_source_version": False,
+            },
+        }
+        storage_client = SingleStorageClient(config=StorageClientConfig.from_dict(config_dict, profile=profile))
+        storage_client.write("text.txt", b"hello\nworld\n")
+        # Exercise the ObjectFile cache path rather than the POSIX passthrough.
+        storage_client._is_posix_file_storage_provider = lambda: False  # type: ignore
+
+        # First open populates the cache, the second one takes the cache-first fast path.
+        for _ in range(2):
+            with storage_client.open("text.txt", mode="r") as f:
+                content = f.read()
+                assert isinstance(content, str)
+                assert content == "hello\nworld\n"
+            with storage_client.open("text.txt", mode="rb") as f:
+                assert f.read() == b"hello\nworld\n"
+
+        assert storage_client._cache_manager is not None
+        assert storage_client._cache_manager.contains("text.txt", check_source_version=SourceVersionCheckMode.DISABLE)
+
+
+def test_cached_text_open_honors_encoding(tmpdir):
+    """Cached opens in text mode must decode with the requested encoding on both cache miss and cache hit."""
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        profile = "data"
+        config_dict = {
+            "profiles": {profile: temp_data_store.profile_config_dict() | {"caching_enabled": True}},
+            "cache": {
+                "size": "10M",
+                "cache_line_size": "1M",
+                "location": str(tmpdir),
+                "check_source_version": False,
+            },
+        }
+        storage_client = SingleStorageClient(config=StorageClientConfig.from_dict(config_dict, profile=profile))
+        text = "h\u00e9llo w\u00f6rld\n"
+        storage_client.write("latin1.txt", text.encode("latin-1"))
+        # Exercise the ObjectFile cache path rather than the POSIX passthrough.
+        storage_client._is_posix_file_storage_provider = lambda: False  # type: ignore
+
+        # First open is a cache miss, the second one takes the cache-first fast path.
+        for _ in range(2):
+            with storage_client.open("latin1.txt", mode="r", encoding="latin-1") as f:
+                assert f.read() == text
