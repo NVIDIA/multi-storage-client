@@ -30,6 +30,7 @@ from multistorageclient.config import StorageClientConfig
 from multistorageclient.constants import MEMORY_LOAD_LIMIT
 from multistorageclient.providers.base import BaseStorageProvider
 from multistorageclient.providers.manifest_metadata import DEFAULT_MANIFEST_BASE_DIR
+from multistorageclient.sync import manager as sync_manager
 from multistorageclient.types import ExecutionMode, ObjectMetadata, PatternType, SymlinkHandling, SyncError
 from test_multistorageclient.unit.utils import config, tempdatastore
 
@@ -1439,3 +1440,80 @@ def test_sync_uses_strict_false_for_get_object_metadata(
             msc.sync(source_url=source_url, target_url=target_url)
 
         verify_sync_and_contents(target_url, test_files)
+
+
+@pytest.mark.parametrize(
+    argnames=["source_subdir", "target_subdir"],
+    argvalues=[
+        # len(source_path) < len(target key): the old code sliced the target key mid-string.
+        ["a", "deeper/out"],
+        # len(source_path) >= len(target key): the old code collapsed the key to its basename.
+        ["a/very/long/source/prefix", "o"],
+    ],
+)
+@pytest.mark.parametrize(
+    argnames="worker_processes_and_threads",
+    argvalues=[(1, 4), (2, 2)],
+    ids=["threads", "processes"],
+)
+def test_sync_delete_unmatched_files_in_subdirectory_with_manifest(
+    source_subdir: str, target_subdir: str, worker_processes_and_threads: tuple[int, int]
+):
+    """``delete_unmatched_files`` must report the *target* key of each pruned object to the result monitor.
+
+    Regression test: the DELETE path used to map the target key through ``build_target_file_path``
+    (which strips ``source_path``), producing a corrupted key whenever the source and target prefixes
+    differed in length. The monitor's ``remove_file`` replay then failed, the sync raised ``SyncError``,
+    and in multi-process mode the manifest was committed with entries for objects that no longer existed.
+    """
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as source_store,
+        tempdatastore.TemporaryPOSIXDirectory() as target_store,
+    ):
+        config.setup_msc_config(
+            config_dict={
+                "profiles": {
+                    "source": source_store.profile_config_dict(),
+                    "target": target_store.profile_config_dict()
+                    | {
+                        "metadata_provider": {
+                            "type": "manifest",
+                            "options": {"manifest_path": DEFAULT_MANIFEST_BASE_DIR, "writable": True},
+                        }
+                    },
+                }
+            }
+        )
+        source_url = f"msc://source/{source_subdir}"
+        target_url = f"msc://target/{target_subdir}"
+
+        for key in ["dir1/a.txt", "dir1/sub/b.txt", "top.txt"]:
+            msc.write(f"{source_url}/{key}", b"x" * 10)
+
+        # POSIX-to-POSIX syncs normally run in a single process; force the requested layout so the
+        # multi-process path (pickled metadata provider copy in the worker) is exercised too.
+        with mock.patch.object(
+            sync_manager, "calculate_worker_processes_and_threads", return_value=worker_processes_and_threads
+        ):
+            result = msc.sync(source_url, target_url)
+            assert result.total_files_added == 3
+
+            msc.delete(f"{source_url}/dir1/a.txt")
+            msc.delete(f"{source_url}/dir1/sub/b.txt")
+            result = msc.sync(source_url, target_url, delete_unmatched_files=True)
+
+        assert result.total_files_added == 0
+        assert result.total_files_deleted == 2
+        assert result.total_bytes_deleted == 20
+
+        # The live client and a fresh client (which reloads the committed manifest) must agree that
+        # only ``top.txt`` remains, and the physical files must be gone.
+        assert sorted(f.key for f in msc.list(target_url)) == [f"{target_url}/top.txt"]
+        msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+        assert sorted(f.key for f in msc.list(target_url)) == [f"{target_url}/top.txt"]
+        target_root = os.path.join(target_store._directory.name, target_subdir)
+        assert not os.path.exists(os.path.join(target_root, "dir1/a.txt"))
+        assert not os.path.exists(os.path.join(target_root, "dir1/sub/b.txt"))
+        assert os.path.exists(os.path.join(target_root, "top.txt"))
