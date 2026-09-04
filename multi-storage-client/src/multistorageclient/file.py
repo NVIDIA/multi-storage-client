@@ -334,7 +334,12 @@ class ObjectFile(IOBase, IO):
         self._open_files.append(self._file)
 
     def _text_encoding(self) -> str | None:
-        # open() rejects a non-None encoding for binary modes.
+        """
+        Return the encoding to pass to the builtin ``open`` for the file's mode.
+
+        :return: The configured encoding for text modes, or ``None`` for binary modes
+            (``open`` rejects a non-``None`` encoding for binary modes).
+        """
         return self._encoding if "b" not in self._mode else None
 
     def _download_file(self) -> None:
