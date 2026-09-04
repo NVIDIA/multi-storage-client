@@ -435,8 +435,10 @@ class SingleStorageClient(AbstractStorageClient):
                     # Only apply this optimization when metadata is already available (i.e., when version checking is enabled),
                     # to respect the user's choice to disable version checking and avoid extra HEAD requests.
                     if byte_range.offset == 0 and metadata and byte_range.size >= metadata.content_length:
-                        full_file_data = self._storage_provider.get_object(path)
-                        self._cache_manager.set(path, full_file_data, source_version)
+                        full_file_data = self._cache_manager.read(path, source_version)
+                        if full_file_data is None:
+                            full_file_data = self._storage_provider.get_object(path)
+                            self._cache_manager.set(path, full_file_data, source_version)
                         return full_file_data[: metadata.content_length]
 
                     # Use chunk-based caching for partial reads or when optimization doesn't apply
