@@ -268,8 +268,9 @@ class BatchSyncHandler(ABC):
         """Process a DELETE batch."""
         self.target_client.delete_many([file_metadata.key for file_metadata, _ in batch.items])
         for file_metadata, _ in batch.items:
-            target_file_path = build_target_file_path(self.source_path, self.target_path, file_metadata)
-            self.result_queue.put((OperationType.DELETE, target_file_path, file_metadata))
+            # DELETE items come from the *target* listing, so the key is already the
+            # target logical path; do not map it through build_target_file_path.
+            self.result_queue.put((OperationType.DELETE, file_metadata.key, file_metadata))
 
     def process_symlink_batch(self, worker_id: str, batch: OperationBatch) -> None:
         """Process a SYMLINK batch: recreate each symlink on the target via ``make_symlink``.
