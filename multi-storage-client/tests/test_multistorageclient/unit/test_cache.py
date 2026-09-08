@@ -15,6 +15,7 @@
 
 import os
 import shutil
+import stat
 import tempfile
 import threading
 import time
@@ -36,6 +37,79 @@ from multistorageclient.config import StorageClientConfig
 from multistorageclient.types import Range, SourceVersionCheckMode
 from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.unit.utils.tempdatastore import create_test_data
+
+
+def _cache_manager(tmpdir) -> CacheManager:
+    return CacheManager(
+        profile="data",
+        cache_config=CacheConfig(location=str(tmpdir), size="10M", cache_line_size="1M", check_source_version=False),
+    )
+
+
+def test_update_access_time_tolerates_permission_error_on_restore(tmpdir):
+    """A cached file owned by another user: the atime update may fail and the read-only restore must not raise."""
+    cache_manager = _cache_manager(tmpdir)
+    file_path = os.path.join(str(tmpdir), "shared.bin")
+    with open(file_path, "wb") as f:
+        f.write(b"data")
+    os.utime(file_path, (0, 0))  # atime far in the past so the update is observable
+    readonly_calls: list[int] = []
+
+    def make_readonly_denied(fd: int) -> None:
+        readonly_calls.append(fd)
+        raise PermissionError("Operation not permitted")
+
+    cache_manager._make_readonly = make_readonly_denied  # type: ignore
+    cache_manager._update_access_time(file_path)
+
+    # The atime update ran (so _make_writable succeeded) and the failing restore was attempted exactly once.
+    assert os.stat(file_path).st_atime > 0
+    assert len(readonly_calls) == 1
+
+
+def test_update_access_time_tolerates_missing_file(tmpdir):
+    """_update_access_time must swallow errors from a concurrently evicted file."""
+    cache_manager = _cache_manager(tmpdir)
+    cache_manager._update_access_time(os.path.join(str(tmpdir), "does-not-exist"))
+
+
+def test_update_access_time_does_not_touch_a_replacement_file(tmpdir):
+    """Eviction + recreation of the same path mid-update must not chmod the replacement to read-only."""
+    cache_manager = _cache_manager(tmpdir)
+    file_path = os.path.join(str(tmpdir), "file.bin")
+    with open(file_path, "wb") as f:
+        f.write(b"original")
+    cache_manager._make_readonly(file_path)
+    original_make_writable = cache_manager._make_writable
+
+    def make_writable_then_replace(fd: int) -> None:
+        original_make_writable(fd)
+        # Another process evicts the file and recreates the same path with a new inode.
+        os.unlink(file_path)
+        with open(file_path, "wb") as f:
+            f.write(b"replacement")
+        os.chmod(file_path, 0o644)
+
+    cache_manager._make_writable = make_writable_then_replace  # type: ignore
+    cache_manager._update_access_time(file_path)
+
+    assert stat.S_IMODE(os.stat(file_path).st_mode) == 0o644
+    with open(file_path, "rb") as f:
+        assert f.read() == b"replacement"
+
+
+def test_cache_set_tolerates_concurrent_eviction_during_access_time_update(tmpdir):
+    """set() must not raise when another process removes the file between the rename and the atime update."""
+    cache_manager = _cache_manager(tmpdir)
+    original_make_writable = cache_manager._make_writable
+
+    def make_writable_then_evict(fd: int) -> None:
+        original_make_writable(fd)
+        os.unlink(cache_manager._get_cache_file_path("file.bin"))
+
+    cache_manager._make_writable = make_writable_then_evict  # type: ignore
+    cache_manager.set("file.bin", b"data")
+    assert cache_manager.read("file.bin") is None
 
 
 class RangeAwareStorageProvider:
