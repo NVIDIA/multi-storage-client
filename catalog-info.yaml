@@ -27,7 +27,6 @@ metadata:
   tags:
     - python
     - rust
-    - go
     - storage
     - cloud-storage
   links:
@@ -36,33 +35,6 @@ metadata:
       icon: docs
       type: docs
     - url: https://github.com/NVIDIA/multi-storage-client
-      title: Source
-      icon: github
-      type: source
-spec:
-  type: library
-  lifecycle: experimental
-  owner: nv-dataset-owners
-  system: multi-storage-client
----
-apiVersion: backstage.io/v1alpha1
-kind: Component
-metadata:
-  name: multi-storage-file-system
-  title: Multi-Storage File System
-  description: Go FUSE filesystem that exposes object storage through POSIX-style file access.
-  annotations:
-    github.com/project-slug: NVIDIA/multi-storage-client
-    backstage.io/source-location: url:https://github.com/NVIDIA/multi-storage-client/tree/main/multi-storage-file-system/
-    nvidia.com/nspect-id: NSPECT-XYXH-7R42
-  tags:
-    - go
-    - fuse
-    - filesystem
-    - storage
-    - cloud-storage
-  links:
-    - url: https://github.com/NVIDIA/multi-storage-client/tree/main/multi-storage-file-system
       title: Source
       icon: github
       type: source

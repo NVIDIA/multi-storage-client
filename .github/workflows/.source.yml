@@ -182,45 +182,6 @@ jobs:
         working-directory: multi-storage-client-scripts
         run: |
           just build
-  multi-storage-file-system:
-    name: multi-storage-file-system
-    permissions:
-      contents: read
-    runs-on: linux-amd64-cpu16
-    steps:
-      # Checkout.
-      - uses: actions/checkout@v6
-      # Build cache.
-      - id: build-cache
-        uses: actions/cache@v5
-        with:
-          key: multi-storage-file-system-${{ hashFiles('flake.lock', 'flake.nix', 'nix/**/*', 'multi-storage-file-system/**/*') }}
-          path: |
-            -
-            multi-storage-file-system/build/debian/archives/*.deb
-            multi-storage-file-system/build/rpm/RPMS/*/*.rpm
-            multi-storage-file-system/build/tar/*.tar.*
-            multi-storage-file-system/build/zip/*.zip
-      # Install Nix.
-      - if: ${{ steps.build-cache.outputs.cache-hit != 'true' }}
-        uses: DeterminateSystems/determinate-nix-action@v3
-        with:
-          summarize: false
-      # Main.
-      - if: ${{ steps.build-cache.outputs.cache-hit != 'true' }}
-        working-directory: multi-storage-file-system
-        run: |
-          just build
-      - uses: actions/upload-artifact@v7
-        with:
-          if-no-files-found: error
-          name: ${{ github.job }}
-          path: |
-            -
-            multi-storage-file-system/build/debian/archives/*.deb
-            multi-storage-file-system/build/rpm/RPMS/*/*.rpm
-            multi-storage-file-system/build/tar/*.tar.*
-            multi-storage-file-system/build/zip/*.zip
   check-publish-release-inputs:
     name: Check Publish Release Inputs
     needs:
@@ -229,7 +190,6 @@ jobs:
       - multi-storage-client
       - multi-storage-client-docs
       - multi-storage-client-scripts
-      - multi-storage-file-system
     permissions:
       contents: read
     runs-on: linux-amd64-cpu16
