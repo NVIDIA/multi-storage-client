@@ -2,7 +2,7 @@
 name: generate-test-plan
 description: >-
   Produce a test plan with specific test names, assertions, and coverage across
-  Python, Rust, and Go. Use when planning tests for a feature, after generating
+  Python and Rust. Use when planning tests for a feature, after generating
   a spec, or the user asks for a test plan.
 invocable: auto
 ---
@@ -22,7 +22,7 @@ Produce a concrete test plan with specific file paths, test names, and assertion
 ### 1. Identify scope
 
 From the feature spec (or user description), determine:
-- Which language layers need tests (Python, Rust, Go)?
+- Which language layers need tests (Python, Rust)?
 - What behaviors need to be verified?
 - Are integration tests needed (cross-provider, cross-layer)?
 
@@ -48,13 +48,6 @@ File: `rust/src/<module>.rs` (inline `#[cfg(test)]`)
 |-----------|-----------------|
 | `test_<name>` | <specific assertion> |
 
-### Go Tests (if applicable)
-File: `posix/fuse/mscp/<module>_test.go`
-
-| Test Name | What It Verifies |
-|-----------|-----------------|
-| `Test<Name>` | <specific assertion> |
-
 ### Integration Tests (if applicable)
 File: `tests/integration/test_<scenario>.py`
 
@@ -69,7 +62,6 @@ File: `tests/integration/test_<scenario>.py`
 ### Run Commands
 - Python: `just multi-storage-client/run-unit-tests`
 - Rust: `cd multi-storage-client/rust && cargo test`
-- Go: `cd multi-storage-file-system && go test ./...`
 ```
 
 ### 3. Get approval

@@ -132,35 +132,6 @@ Merge Rules
 * **Path Mapping**: Entries are merged. Identical entries are allowed. Conflicting entries raise an error.
 * **Cache / POSIX**: Must be identical across all files or defined in only one file.
 
-*****
-POSIX
-*****
-
-The top-level ``posix`` section configures POSIX filesystem mounts when MSFS reads an MSC-compatible configuration file.
-
-.. list-table::
-   :header-rows: 1
-
-   * - Option
-     - Default
-     - Description
-   * - ``mountname``
-     - ``msfs``
-     - FUSE mount name that appears in commands such as ``mount`` and ``df``.
-   * - ``mountpoint``
-     - ``${MSFS_MOUNTPOINT:-/mnt}``
-     - Filesystem path where the FUSE mount is created.
-   * - ``allow_other``
-     - ``true``
-     - Allows users other than the one launching the tool to see the mountpoint.
-   * - ``auto_sighup_interval``
-     - ``0``
-     - Time in seconds between config re-reads. ``0`` requires an explicit ``SIGHUP``.
-
-.. note::
-
-   These defaults reflect MSFS runtime behavior after translating the MSC-compatible ``posix`` section into MSFS mount settings.
-
 *******
 Profile
 *******

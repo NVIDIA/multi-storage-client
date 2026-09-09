@@ -1,6 +1,0 @@
-[default]
-use_https   = False
-host_base   = garage:3900
-host_bucket = placeholder
-access_key  = GK123456789012345678901234
-secret_key  = 1234567890123456789012345678901234567890123456789012345678901234
