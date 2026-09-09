@@ -37,8 +37,9 @@ class QueueBackedMetadataProvider(MetadataProvider):
 
     ``remove_file`` is intentionally NOT queued here because it does not
     carry :py:class:`ObjectMetadata` (needed by the monitor for byte
-    counting).  DELETE propagation is handled by the sync worker which
-    constructs the metadata and queues the result directly.
+    counting).  DELETE propagation is handled by the sync worker, which
+    queues the pruned object's *target* key and its :py:class:`ObjectMetadata`
+    (taken from the target listing) directly.
     """
 
     def __init__(self, delegate: MetadataProvider, result_queue: QueueLike):
