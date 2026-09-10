@@ -425,6 +425,9 @@ class OracleStorageProvider(BaseStorageProvider):
                 if not response:
                     return []
 
+                # A response holds both prefixes and objects for the same key window, so a prefix past
+                # end_at must not stop the listing before the response's objects have been processed.
+                past_end_at = False
                 if include_directories:
                     for directory in response.data.prefixes:
                         prefix_key = directory.rstrip("/")
@@ -439,7 +442,8 @@ class OracleStorageProvider(BaseStorageProvider):
                                 last_modified=AWARE_DATETIME_MIN,
                             )
                         elif end_at is not None and end_at < prefix_key:
-                            return
+                            past_end_at = True
+                            break
 
                 # OCI guarantees lexicographical order.
                 for response_object in response.data.objects:  # pyright: ignore [reportOptionalMemberAccess]
@@ -471,6 +475,8 @@ class OracleStorageProvider(BaseStorageProvider):
                             )
                     elif start_after != key:
                         return
+                if past_end_at:
+                    return
                 next_start_with = response.data.next_start_with  # pyright: ignore [reportOptionalMemberAccess]
                 if next_start_with is None or (end_at is not None and end_at < next_start_with):
                     return
