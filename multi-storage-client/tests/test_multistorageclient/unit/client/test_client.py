@@ -1028,3 +1028,13 @@ def test_single_info_root_reports_base_path_mtime(tmp_path, monkeypatch):
         metadata = client.info(path)
         assert metadata.type == "directory"
         assert metadata.last_modified.timestamp() == 0.0
+
+
+def test_composite_client_list_with_url_prefix_does_not_mutate_metadata_provider_objects(multi_backend_config):
+    """CompositeStorageClient.list(include_url_prefix=True) must return copies, not rewrite the provider's objects."""
+    client = StorageClient(multi_backend_config)
+    expected = [f"msc://{multi_backend_config.profile}/webdataset-0000{i}.tar" for i in (1, 2)]
+
+    assert sorted(obj.key for obj in client.list(include_url_prefix=True)) == expected
+    assert sorted(obj.key for obj in client.list(include_url_prefix=True)) == expected
+    assert sorted(client._metadata_provider._files) == ["webdataset-00001.tar", "webdataset-00002.tar"]  # type: ignore[union-attr]

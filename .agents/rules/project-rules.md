@@ -20,7 +20,6 @@ Read `AGENTS.md` at the repo root for project structure, architecture, conventio
 - Map the request to the architecture:
   - **Python-only change:** Update `src/multistorageclient/` + tests + docs.
   - **Performance-critical change:** Consider Rust implementation in `rust/src/`.
-  - **POSIX/filesystem change:** Update Go code in `posix/fuse/mscp/`.
   - **Cross-language change:** Coordinate Python ↔ Rust bindings via maturin. Check sync points in `AGENTS.md`.
 - Identify **user-facing** behavior vs **internal** refactor.
 
@@ -47,12 +46,10 @@ Read `AGENTS.md` at the repo root for project structure, architecture, conventio
    - Update `src/multistorageclient/…` for core functionality.
    - Maintain backward compatibility unless explicitly versioning a breaking change.
    - Update credential management, storage providers, iterators as needed.
-3. **Go POSIX/FUSE Layer** (if applicable)
-   - Edit `posix/fuse/mscp/*.go` for filesystem operations.
-4. **Docs & Examples**
+3. **Docs & Examples**
    - Update `docs/src/…` (Sphinx rst files).
    - Update `examples/…` and `examples/quickstart.ipynb` to reflect changes.
-5. **Configuration**
+4. **Configuration**
    - Update `pyproject.toml` if dependencies change.
    - Update `rust/Cargo.toml` if Rust dependencies change.
 
@@ -76,7 +73,7 @@ Read `AGENTS.md` at the repo root for project structure, architecture, conventio
 
 - Produce:
   - **Implementation Plan** (final version with any deltas).
-  - **Code diffs** across layers (Rust(if applicable) ➜ Python ➜ Go(if applicable)).
+  - **Code diffs** across layers (Rust(if applicable) ➜ Python).
   - **Tests** (unit + integration) and their outcomes.
   - **Docs updated** (list specific files under `docs/src/…` and examples).
   - **Build verification** (maturin build succeeds, imports work).

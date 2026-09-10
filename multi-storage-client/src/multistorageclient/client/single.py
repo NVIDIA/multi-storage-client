@@ -435,8 +435,13 @@ class SingleStorageClient(AbstractStorageClient):
                     # Only apply this optimization when metadata is already available (i.e., when version checking is enabled),
                     # to respect the user's choice to disable version checking and avoid extra HEAD requests.
                     if byte_range.offset == 0 and metadata and byte_range.size >= metadata.content_length:
-                        full_file_data = self._storage_provider.get_object(path)
-                        self._cache_manager.set(path, full_file_data, source_version)
+                        full_file_data = self._cache_manager.read(path, source_version)
+                        if full_file_data is None:
+                            if self._replica_manager:
+                                full_file_data = self._read_from_replica_or_primary(path)
+                            else:
+                                full_file_data = self._storage_provider.get_object(path)
+                            self._cache_manager.set(path, full_file_data, source_version)
                         return full_file_data[: metadata.content_length]
 
                     # Use chunk-based caching for partial reads or when optimization doesn't apply
@@ -836,18 +841,18 @@ class SingleStorageClient(AbstractStorageClient):
                 if end_at and object_metadata.key > end_at:
                     return None, None
                 if include_url_prefix:
-                    self._prepend_url_prefix(object_metadata)
+                    object_metadata = self._with_url_prefix(object_metadata)
                 return object_metadata, path
             except FileNotFoundError:
                 return None, path.rstrip("/") + "/"
         else:
             return None, path.rstrip("/") + "/"
 
-    def _prepend_url_prefix(self, obj: ObjectMetadata) -> None:
+    def _with_url_prefix(self, obj: ObjectMetadata) -> ObjectMetadata:
+        # Return a copy: listed objects may be owned by the metadata provider and must not be mutated.
         if self.is_default_profile():
-            obj.key = str(PurePosixPath("/") / obj.key)
-        else:
-            obj.key = join_paths(f"{MSC_PROTOCOL}{self._config.profile}", obj.key)
+            return obj.replace(key=str(PurePosixPath("/") / obj.key))
+        return obj.replace(key=join_paths(f"{MSC_PROTOCOL}{self._config.profile}", obj.key))
 
     def _filter_and_decorate(
         self,
@@ -859,7 +864,7 @@ class SingleStorageClient(AbstractStorageClient):
             if pattern_matcher and not pattern_matcher.should_include_file(obj.key):
                 continue
             if include_url_prefix:
-                self._prepend_url_prefix(obj)
+                obj = self._with_url_prefix(obj)
             yield obj
 
     def list_recursive(

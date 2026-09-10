@@ -24,7 +24,7 @@ Research the problem space before designing or implementing a feature to avoid r
 
 Confirm with the user:
 - What problem are we solving?
-- Which language layers are involved (Python, Rust, Go)?
+- Which language layers are involved (Python, Rust)?
 - Any known constraints or preferences?
 
 ### 2. Research comparable solutions
@@ -34,7 +34,6 @@ Search for:
 - Best practices for the relevant cloud SDKs (AWS S3, GCS, Azure, OCI).
 - Known pitfalls or breaking changes in upstream dependencies.
 - PyO3/maturin patterns (if Rust bindings are involved).
-- FUSE implementation patterns (if Go layer is involved).
 
 ### 3. Check upstream
 

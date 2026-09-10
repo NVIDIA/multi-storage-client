@@ -516,7 +516,11 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         :param item: The RepoFile or RepoFolder item from HuggingFace API.
         :return: ObjectMetadata representing the item.
         """
+        # expand=True populates last_commit; fall back to the epoch sentinel when it is absent.
         last_modified = AWARE_DATETIME_MIN
+        last_commit = getattr(item, "last_commit", None)
+        if last_commit is not None and getattr(last_commit, "date", None):
+            last_modified = last_commit.date
 
         if isinstance(item, RepoFile):
             etag = item.blob_id
