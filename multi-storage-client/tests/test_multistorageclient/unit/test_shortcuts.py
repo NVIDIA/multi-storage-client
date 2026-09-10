@@ -1625,3 +1625,36 @@ def test_fork_safety_multiple_forks(file_storage_config):
 
     # Verify parent cache is still intact
     assert len(msc.shortcuts._STORAGE_CLIENT_CACHE) == 1
+
+
+def test_list_with_url_prefix_does_not_mutate_metadata_provider_objects():
+    """msc.list() must not rewrite the keys of objects owned by the metadata provider."""
+    msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        profile = "manifest-list"
+        config.setup_msc_config(
+            config_dict={
+                "profiles": {
+                    profile: temp_data_store.profile_config_dict()
+                    | {
+                        "metadata_provider": {
+                            "type": "manifest",
+                            "options": {"manifest_path": DEFAULT_MANIFEST_BASE_DIR, "writable": True},
+                        }
+                    }
+                }
+            }
+        )
+        msc.write(f"{MSC_PROTOCOL}{profile}/backup/data/f1.txt", b"hello")
+        msc.commit_metadata(f"{MSC_PROTOCOL}{profile}")
+
+        expected = [f"{MSC_PROTOCOL}{profile}/backup/data/f1.txt"]
+        # Directory listing and the single-file listing path each go through the prefixing code twice.
+        assert [obj.key for obj in msc.list(f"{MSC_PROTOCOL}{profile}/backup/data")] == expected
+        assert [obj.key for obj in msc.list(f"{MSC_PROTOCOL}{profile}/backup/data")] == expected
+        assert [obj.key for obj in msc.list(f"{MSC_PROTOCOL}{profile}/backup/data/f1.txt")] == expected
+        assert [obj.key for obj in msc.list(f"{MSC_PROTOCOL}{profile}/backup/data/f1.txt")] == expected
+
+        client, _ = msc.resolve_storage_client(f"{MSC_PROTOCOL}{profile}")
+        assert [obj.key for obj in client.list("backup/data")] == ["backup/data/f1.txt"]
+        assert client.info("backup/data/f1.txt").key == "backup/data/f1.txt"
