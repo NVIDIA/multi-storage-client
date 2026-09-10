@@ -15,6 +15,7 @@
 
 import os
 import shutil
+import stat
 import tempfile
 import threading
 import time
@@ -36,6 +37,79 @@ from multistorageclient.config import StorageClientConfig
 from multistorageclient.types import Range, SourceVersionCheckMode
 from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.unit.utils.tempdatastore import create_test_data
+
+
+def _cache_manager(tmpdir) -> CacheManager:
+    return CacheManager(
+        profile="data",
+        cache_config=CacheConfig(location=str(tmpdir), size="10M", cache_line_size="1M", check_source_version=False),
+    )
+
+
+def test_update_access_time_tolerates_permission_error_on_restore(tmpdir):
+    """A cached file owned by another user: the atime update may fail and the read-only restore must not raise."""
+    cache_manager = _cache_manager(tmpdir)
+    file_path = os.path.join(str(tmpdir), "shared.bin")
+    with open(file_path, "wb") as f:
+        f.write(b"data")
+    os.utime(file_path, (0, 0))  # atime far in the past so the update is observable
+    readonly_calls: list[int] = []
+
+    def make_readonly_denied(fd: int) -> None:
+        readonly_calls.append(fd)
+        raise PermissionError("Operation not permitted")
+
+    cache_manager._make_readonly = make_readonly_denied  # type: ignore
+    cache_manager._update_access_time(file_path)
+
+    # The atime update ran (so _make_writable succeeded) and the failing restore was attempted exactly once.
+    assert os.stat(file_path).st_atime > 0
+    assert len(readonly_calls) == 1
+
+
+def test_update_access_time_tolerates_missing_file(tmpdir):
+    """_update_access_time must swallow errors from a concurrently evicted file."""
+    cache_manager = _cache_manager(tmpdir)
+    cache_manager._update_access_time(os.path.join(str(tmpdir), "does-not-exist"))
+
+
+def test_update_access_time_does_not_touch_a_replacement_file(tmpdir):
+    """Eviction + recreation of the same path mid-update must not chmod the replacement to read-only."""
+    cache_manager = _cache_manager(tmpdir)
+    file_path = os.path.join(str(tmpdir), "file.bin")
+    with open(file_path, "wb") as f:
+        f.write(b"original")
+    cache_manager._make_readonly(file_path)
+    original_make_writable = cache_manager._make_writable
+
+    def make_writable_then_replace(fd: int) -> None:
+        original_make_writable(fd)
+        # Another process evicts the file and recreates the same path with a new inode.
+        os.unlink(file_path)
+        with open(file_path, "wb") as f:
+            f.write(b"replacement")
+        os.chmod(file_path, 0o644)
+
+    cache_manager._make_writable = make_writable_then_replace  # type: ignore
+    cache_manager._update_access_time(file_path)
+
+    assert stat.S_IMODE(os.stat(file_path).st_mode) == 0o644
+    with open(file_path, "rb") as f:
+        assert f.read() == b"replacement"
+
+
+def test_cache_set_tolerates_concurrent_eviction_during_access_time_update(tmpdir):
+    """set() must not raise when another process removes the file between the rename and the atime update."""
+    cache_manager = _cache_manager(tmpdir)
+    original_make_writable = cache_manager._make_writable
+
+    def make_writable_then_evict(fd: int) -> None:
+        original_make_writable(fd)
+        os.unlink(cache_manager._get_cache_file_path("file.bin"))
+
+    cache_manager._make_writable = make_writable_then_evict  # type: ignore
+    cache_manager.set("file.bin", b"data")
+    assert cache_manager.read("file.bin") is None
 
 
 class RangeAwareStorageProvider:
@@ -1324,6 +1398,63 @@ def test_concurrent_chunk_creation_with_locking():
             f for f in os.listdir(file_dir) if f.startswith(f".{base_name}#chunk0") and not f.endswith(".lock")
         ]
         assert len(chunk_files) == 1, f"Expected 1 chunk0 file, found {len(chunk_files)}"
+
+
+def test_full_file_byte_range_read_is_served_from_cache(tmpdir):
+    """A full-file byte_range read must hit the cache on repeat instead of re-downloading the object."""
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        profile = "data"
+        config_dict = {
+            "profiles": {profile: temp_data_store.profile_config_dict() | {"caching_enabled": True}},
+            "cache": {
+                "size": "50M",
+                "cache_line_size": "1M",
+                "location": str(tmpdir),
+                "check_source_version": True,
+            },
+        }
+        storage_client = SingleStorageClient(config=StorageClientConfig.from_dict(config_dict, profile=profile))
+        provider = storage_client._storage_provider
+        content = b"x" * (3 * 1024 * 1024)
+        storage_client.write("data/x.bin", content)
+
+        # Exercise the remote cache path with a stable source version.
+        storage_client._is_posix_file_storage_provider = lambda: False  # type: ignore
+        original_get_object_metadata = provider.get_object_metadata
+
+        def get_object_metadata_with_etag(path: str, strict: bool = True):
+            metadata = original_get_object_metadata(path, strict=strict)
+            metadata.etag = "etag-1"
+            return metadata
+
+        provider.get_object_metadata = get_object_metadata_with_etag  # type: ignore
+        get_object_calls = 0
+        original_get_object = provider.get_object
+
+        def counting_get_object(path: str, byte_range: Range | None = None):
+            nonlocal get_object_calls
+            get_object_calls += 1
+            return original_get_object(path, byte_range=byte_range)
+
+        provider.get_object = counting_get_object  # type: ignore
+        cache_manager = storage_client._cache_manager
+        assert cache_manager is not None
+        cache_set_calls = 0
+        original_cache_set = cache_manager.set
+
+        def counting_cache_set(*args, **kwargs):
+            nonlocal cache_set_calls
+            cache_set_calls += 1
+            return original_cache_set(*args, **kwargs)
+
+        cache_manager.set = counting_cache_set  # type: ignore
+
+        for _ in range(3):
+            assert storage_client.read("data/x.bin", byte_range=Range(offset=0, size=len(content))) == content
+
+        # One download and one cache write on the miss; the two repeats are served from the cache.
+        assert get_object_calls == 1
+        assert cache_set_calls == 1
 
 
 @pytest.mark.parametrize(

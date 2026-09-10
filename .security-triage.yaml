@@ -11,7 +11,7 @@ repository_exposure_classification:
 service_exposure_classification:
   tier: "External / Regulated"
   confidence: "high"
-  basis: "External (Open Source) SDK and CLI with FUSE and Kubernetes CSI deployment modes that handle storage credentials and data paths."
+  basis: "External (Open Source) SDK and CLI that handle storage credentials and data paths."
   confirmed_by: "shunjiad"
   date: "2026-07-27"
 

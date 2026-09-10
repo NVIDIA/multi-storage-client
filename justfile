@@ -31,12 +31,8 @@ multi-storage-client-docs: multi-storage-client
 multi-storage-client-scripts:
     just python-binary={{python-binary}} multi-storage-client-scripts/build
 
-# Build multi-storage-file-system.
-multi-storage-file-system:
-    just multi-storage-file-system/build
-
 # Release build.
-build: nix multi-storage-explorer multi-storage-client multi-storage-client-docs multi-storage-client-scripts multi-storage-file-system
+build: nix multi-storage-explorer multi-storage-client multi-storage-client-docs multi-storage-client-scripts
 
 # Generate tool-specific rules and MCP config from .agents/ (canonical source).
 # Skills in .agents/skills/ are discovered natively by most tools (Cursor,

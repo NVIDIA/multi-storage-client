@@ -16,7 +16,7 @@ Produce a detailed feature specification before implementation begins. The spec 
 
 - Designing a new feature or significant enhancement.
 - Making changes that affect the public API.
-- Cross-language changes (Python + Rust + Go).
+- Cross-language changes (Python + Rust).
 - User asks to spec out, design, or plan a feature.
 
 ## Workflow
@@ -60,7 +60,6 @@ Use this template:
 |-------|-----------------|
 | Python | … |
 | Rust | … |
-| Go (FUSE) | … |
 | .pyi stubs | … |
 
 ### File-Level Change Plan

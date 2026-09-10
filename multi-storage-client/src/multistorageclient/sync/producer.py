@@ -304,12 +304,13 @@ class ProducerThread(threading.Thread):
                             # Check if file should be included based on patterns
                             if not self.pattern_matcher or self.pattern_matcher.should_include_file(source_key):
                                 self._enqueue_operation(OperationType.ADD, source_file, target_file)
+                                self.total_work_units += 1
                         else:
                             self.progress.update_progress()
+                            self.total_work_units += 1
 
                         source_file = next(source_iter, None)
                         target_file = next(target_iter, None)
-                        self.total_work_units += 1
                 elif source_file:
                     source_key = source_file.key[len(self.source_path) :].lstrip("/")
 

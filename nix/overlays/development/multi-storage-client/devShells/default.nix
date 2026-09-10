@@ -4,16 +4,12 @@
   azurite,
   coreutils,
   curl,
-  dpkg,
   fake-gcs-server,
   gettext,
   git,
   git-lfs,
   gnused,
-  gnutar,
-  go_1_26,
   google-cloud-sdk,
-  golangci-lint,
   grafana,
   jq,
   just,
@@ -32,7 +28,6 @@
   pyright,
   python310,
   pythonInterpreter ? python310,
-  rpm,
   ruff,
   rustup,
   stdenv,
@@ -42,7 +37,6 @@
   util-linux,
   uv,
   versitygw,
-  zip,
   zlib,
 }:
 # https://nixos.org/manual/nixpkgs/unstable#sec-pkgs-mkShell
@@ -95,10 +89,6 @@ mkShell {
     ruff
     # Pyright.
     pyright
-    # Go.
-    go_1_26
-    # golangci-lint.
-    golangci-lint
     # Storage systems.
     multi-storage-client.packages.aistore
     azurite
@@ -108,11 +98,6 @@ mkShell {
     grafana
     mimir
     tempo
-    # Packaging.
-    dpkg
-    gnutar
-    rpm
-    zip
     # OpenBao.
     openbao
     # Teleport.
@@ -158,6 +143,6 @@ mkShell {
       export VAULT_ADDR=https://prod.vault.nvidia.com
       export VAULT_NAMESPACE=ngc-multi-storage-client
 
-      echo "⚗️"
+      echo "❄️"
     '';
 }

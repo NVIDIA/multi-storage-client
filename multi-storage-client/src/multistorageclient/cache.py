@@ -442,23 +442,23 @@ class CacheManager:
         lock_file = os.path.join(file_dir, lock_name)
         return FileLock(lock_file, timeout=self.DEFAULT_FILE_LOCK_TIMEOUT)
 
-    def _make_writable(self, file_path: str) -> None:
+    def _make_writable(self, file: str | int) -> None:
         """Make file writable by owner while keeping it readable by all.
 
         Changes permissions to 644 (rw-r--r--).
 
-        :param file_path: Path to the file to make writable.
+        :param file: Path or open file descriptor of the file to make writable.
         """
-        os.chmod(file_path, mode=stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+        os.chmod(file, mode=stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
 
-    def _make_readonly(self, file_path: str) -> None:
+    def _make_readonly(self, file: str | int) -> None:
         """Make file read-only for all users.
 
         Changes permissions to 444 (r--r--r--).
 
-        :param file_path: Path to the file to make read-only.
+        :param file: Path or open file descriptor of the file to make read-only.
         """
-        os.chmod(file_path, mode=stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+        os.chmod(file, mode=stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
 
     def _update_access_time(self, file_path: str) -> None:
         """Update access time to current time for LRU policy.
@@ -466,22 +466,35 @@ class CacheManager:
         Only updates atime, preserving mtime for FIFO ordering.
         This is used to track when files are accessed for LRU eviction.
 
+        All operations go through one open file descriptor so they apply to the same inode: another process may
+        evict and recreate the same cache path concurrently, and a path-based restore would chmod the replacement.
+
         :param file_path: Path to the file to update access time.
         """
         current_time = time.time()
         try:
-            # Make file writable to update timestamps
-            self._make_writable(file_path)
-            # Only update atime, preserve mtime for FIFO ordering
-            stat = os.stat(file_path)
-            os.utime(file_path, (current_time, stat.st_mtime))
-        except (OSError, FileNotFoundError):
-            # File might be deleted by another process or have permission issues
-            # Just continue without updating the access time
-            pass
+            fd = os.open(file_path, os.O_RDONLY)
+        except OSError:
+            # File might be deleted by another process; nothing to update
+            return
+        try:
+            try:
+                # Make file writable to update timestamps
+                self._make_writable(fd)
+                # Only update atime, preserve mtime for FIFO ordering
+                stat = os.fstat(fd)
+                os.utime(fd, (current_time, stat.st_mtime))
+            except OSError:
+                # The file may be owned by another user; just continue without updating the access time
+                pass
+            finally:
+                # Restore read-only permissions on the same inode
+                try:
+                    self._make_readonly(fd)
+                except OSError:
+                    pass
         finally:
-            # Restore read-only permissions
-            self._make_readonly(file_path)
+            os.close(fd)
 
     def _should_refresh_cache(self) -> bool:
         """Check if enough time has passed since the last refresh."""

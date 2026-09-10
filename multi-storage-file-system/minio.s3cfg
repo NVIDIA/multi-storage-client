@@ -1,6 +1,0 @@
-[default]
-use_https   = False
-host_base   = minio:9000
-host_bucket = placeholder
-access_key  = minioadmin
-secret_key  = minioadmin

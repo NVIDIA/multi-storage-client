@@ -13,9 +13,6 @@ trim_trailing_whitespace = true
 insert_final_newline = true
 max_line_length = off
 
-[*.go]
-indent_style = tab
-
 [*.{md,nix,yaml,yml}]
 indent_style = space
 indent_size = 2

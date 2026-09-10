@@ -2,7 +2,7 @@
 name: fix-cve
 description: >-
   Fix CVE vulnerabilities by upgrading affected dependencies across Python (uv),
-  Go, and Rust layers. Use when the user mentions CVE numbers, asks to fix
+  and Rust layers. Use when the user mentions CVE numbers, asks to fix
   security vulnerabilities, or asks to patch dependencies for CVEs.
 ---
 
@@ -48,8 +48,6 @@ Search the repo for each affected package across all layers:
 |-------|---------------|
 | Python direct | `multi-storage-client/pyproject.toml` `[project.dependencies]` and `[project.optional-dependencies]` |
 | Python transitive | `uv.lock` — grep for the package name |
-| Go direct | `multi-storage-file-system/go.mod` `require` blocks |
-| Go transitive | `multi-storage-file-system/go.sum` |
 | Rust | `rust/Cargo.toml` and `rust/Cargo.lock` |
 
 If a package is not found anywhere, tell the user and skip it.
@@ -83,13 +81,6 @@ and an override is required.
 
 Both live in the workspace-root `pyproject.toml` under `[tool.uv]`.
 
-#### Go dependency
-```bash
-cd multi-storage-file-system
-go get <module>@<fixed-version>
-go mod tidy
-```
-
 #### Rust dependency
 Edit `rust/Cargo.toml` version requirement, then `cargo update -p <crate>`.
 
@@ -112,7 +103,6 @@ grep -A2 'name = "<package>"' uv.lock
 
 | Layer | Verification command |
 |-------|---------------------|
-| Go | `cd multi-storage-file-system && go build ./...` |
 | Python | `just multi-storage-client/run-unit-tests` (or `cd multi-storage-client && uv run pytest`) |
 | Rust | `cd rust && cargo test` |
 
@@ -131,7 +121,7 @@ fix: upgrade <packages> for <CVE list>
 Example:
 
 ```
-fix: upgrade grpc-go, pyOpenSSL, and authlib for CVE-2026-33186, CVE-2026-27459, CVE-2026-27962
+fix: upgrade pyOpenSSL and authlib for CVE-2026-27459, CVE-2026-27962
 ```
 
 #### PR description format
@@ -149,7 +139,6 @@ insufficient (which upstream package blocks the fixed version and what its
 upper bound is). If no overrides, omit this section.>
 
 ## Test plan
-- [ ] Go module builds: `cd multi-storage-file-system && go build ./...`
 - [ ] Python unit tests pass
 - [ ] Lock file contains expected versions
 - [ ] No new linter errors

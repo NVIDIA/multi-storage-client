@@ -31,8 +31,8 @@ from multistorageclient.sync.producer import (
 )
 from multistorageclient.sync.progress_bar import ProgressBar
 from multistorageclient.sync.types import OperationType
-from multistorageclient.types import ObjectMetadata
-from multistorageclient.utils import NullStorageClient
+from multistorageclient.types import ObjectMetadata, PatternType
+from multistorageclient.utils import NullStorageClient, PatternMatcher
 from test_multistorageclient.unit.utils import config
 
 
@@ -610,6 +610,58 @@ def test_progress_bar_update_in_producer_thread_with_deletion():
     assert progress.pbar is not None
     assert progress.pbar.total == len(target_files)
     assert progress.pbar.n == 0
+
+
+def test_progress_total_excludes_pattern_excluded_files_present_on_both_sides():
+    """A changed file that the pattern excludes is neither enqueued nor counted as a work unit."""
+    source_client = MockStorageClient()
+    target_client = MockStorageClient()
+    old = datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    new = datetime(2025, 1, 2, 0, 0, 0, tzinfo=timezone.utc)
+
+    source_files = [
+        ObjectMetadata(key="changed.log", content_length=100, last_modified=new),
+        ObjectMetadata(key="changed.txt", content_length=100, last_modified=new),
+        ObjectMetadata(key="same.log", content_length=100, last_modified=old),
+    ]
+    target_files = [
+        ObjectMetadata(key="changed.log", content_length=100, last_modified=old),
+        ObjectMetadata(key="changed.txt", content_length=100, last_modified=old),
+        ObjectMetadata(key="same.log", content_length=100, last_modified=old),
+    ]
+    source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
+    target_client.list = lambda **kwargs: iter(target_files)  # type: ignore
+
+    progress = ProgressBar(desc="Syncing", show_progress=True)
+    file_queue: queue.Queue = queue.Queue()
+    producer_thread = ProducerThread(
+        source_client=cast(StorageClient, source_client),
+        source_path="",
+        target_client=cast(StorageClient, target_client),
+        target_path="",
+        progress=progress,
+        file_queue=file_queue,
+        num_workers=1,
+        shutdown_event=threading.Event(),
+        pattern_matcher=PatternMatcher([(PatternType.EXCLUDE, "*.log")]),
+    )
+
+    producer_thread.start()
+    producer_thread.join()
+
+    assert producer_thread.error is None
+    enqueued = []
+    while True:
+        batch = file_queue.get_nowait()
+        if batch.operation == OperationType.STOP:
+            break
+        enqueued.extend(file_metadata.key for file_metadata, _ in batch.items)
+    assert enqueued == ["changed.txt"]
+    # One ADD plus one unchanged file that was marked complete immediately; the excluded changed file is not work.
+    assert producer_thread.total_work_units == 2
+    assert progress.pbar is not None
+    assert progress.pbar.total == 2
+    assert progress.pbar.n == 1
 
 
 def test_batch_flushing_on_operation_type_change():
