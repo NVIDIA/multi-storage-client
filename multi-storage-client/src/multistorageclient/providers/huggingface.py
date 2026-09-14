@@ -643,50 +643,49 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         def _invoke_api():
             dir_path = path.rstrip("/")
 
-            repo_items = self._hf_client.list_repo_tree(
-                repo_id=self._repository_id,
-                path_in_repo=dir_path + "/" if dir_path else None,
-                repo_type=self._repo_type,
-                revision=self._repo_revision,
-                expand=True,
-                recursive=not include_directories,
-            )
+            try:
+                repo_items = self._hf_client.list_repo_tree(
+                    repo_id=self._repository_id,
+                    path_in_repo=dir_path + "/" if dir_path else None,
+                    repo_type=self._repo_type,
+                    revision=self._repo_revision,
+                    expand=True,
+                    recursive=not include_directories,
+                )
+                return list(repo_items)
+            except EntryNotFoundError:
+                # Directory doesn't exist - return empty (matches POSIX behavior). A missing repository or
+                # revision is translated to FileNotFoundError by _translate_errors and propagates.
+                return []
 
-            return list(repo_items)
+        items = self._translate_errors(_invoke_api, "LIST", self._repository_id, path)
 
-        try:
-            items = self._translate_errors(_invoke_api, "LIST", self._repository_id, path)
+        # Use cursor-based pagination because HuggingFace returns items with
+        # directory-first ordering (not pure lexicographical).
+        seen_start = start_after is None
+        seen_end = False
 
-            # Use cursor-based pagination because HuggingFace returns items with
-            # directory-first ordering (not pure lexicographical).
-            seen_start = start_after is None
-            seen_end = False
+        for item in items:
+            if seen_end:
+                break
 
-            for item in items:
-                if seen_end:
-                    break
+            metadata = self._item_to_metadata(item)
+            key = metadata.key
 
-                metadata = self._item_to_metadata(item)
-                key = metadata.key
+            if not seen_start:
+                if key == start_after:
+                    seen_start = True
+                continue
 
-                if not seen_start:
-                    if key == start_after:
-                        seen_start = True
-                    continue
+            should_yield = False
+            if include_directories and isinstance(item, RepoFolder) or isinstance(item, RepoFile):
+                should_yield = True
 
-                should_yield = False
-                if include_directories and isinstance(item, RepoFolder) or isinstance(item, RepoFile):
-                    should_yield = True
+            if should_yield:
+                yield metadata
 
-                if should_yield:
-                    yield metadata
-
-                if end_at is not None and key == end_at:
-                    seen_end = True
-
-        except FileNotFoundError:
-            # Directory doesn't exist - return empty (matches POSIX behavior)
-            pass
+            if end_at is not None and key == end_at:
+                seen_end = True
 
     def _upload_file(self, remote_path: str, f: str | IO, attributes: dict[str, str] | None = None) -> int:
         """
