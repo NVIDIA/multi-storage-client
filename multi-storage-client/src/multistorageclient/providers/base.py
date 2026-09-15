@@ -97,7 +97,7 @@ class _PrefixExpander:
         get()      — retrieve a result, blocking if still in-flight
     """
 
-    __slots__ = ("_executor", "_fn", "_inflight", "_max_inflight", "_pending", "_ready")
+    __slots__ = ("_done", "_executor", "_fn", "_inflight", "_max_inflight", "_pending", "_ready")
 
     def __init__(
         self,
@@ -111,6 +111,8 @@ class _PrefixExpander:
         self._pending: list[str] = []
         self._inflight: dict[str, Future[_ShallowListResult]] = {}
         self._ready: dict[str, _ShallowListResult] = {}
+        # Prefixes submitted directly by get() while still sitting in _pending; _fill() must skip them.
+        self._done: set[str] = set()
 
     def enqueue(self, prefixes: list[str]) -> None:
         """Register prefixes for background expansion."""
@@ -129,6 +131,7 @@ class _PrefixExpander:
         if prefix in self._ready:
             return self._ready.pop(prefix)
         if prefix not in self._inflight:
+            self._done.add(prefix)
             self._inflight[prefix] = self._executor.submit(self._fn, prefix)
         return self._inflight.pop(prefix).result()
 
@@ -136,6 +139,9 @@ class _PrefixExpander:
         """Submit pending prefixes up to the inflight capacity."""
         while self._pending and len(self._inflight) < self._max_inflight:
             p = heapq.heappop(self._pending)
+            if p in self._done:
+                self._done.discard(p)
+                continue
             if p not in self._inflight and p not in self._ready:
                 self._inflight[p] = self._executor.submit(self._fn, p)
 
