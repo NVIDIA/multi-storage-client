@@ -264,9 +264,14 @@ class BatchSyncHandler(ABC):
 
         return transfer_items
 
-    def process_delete_batch(self, batch: OperationBatch) -> None:
+    def process_delete_batch(self, worker_id: str, batch: OperationBatch) -> None:
         """Process a DELETE batch."""
-        self.target_client.delete_many([file_metadata.key for file_metadata, _ in batch.items])
+        keys = [file_metadata.key for file_metadata, _ in batch.items]
+        try:
+            self.target_client.delete_many(keys)
+        except Exception as e:
+            self._report_error(worker_id, e, keys[0], batch.operation)
+            return
         for file_metadata, _ in batch.items:
             # DELETE items come from the *target* listing, so the key is already the
             # target logical path; do not map it through build_target_file_path.
@@ -556,7 +561,7 @@ def sync_worker_process(
                     break
 
                 if batch.operation == OperationType.DELETE:
-                    handler.process_delete_batch(batch)
+                    handler.process_delete_batch(thread_id, batch)
                 elif batch.operation == OperationType.ADD:
                     handler.process_add_batch(thread_id, batch)
                 elif batch.operation == OperationType.SYMLINK:
