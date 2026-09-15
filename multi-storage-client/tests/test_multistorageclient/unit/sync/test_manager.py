@@ -58,6 +58,39 @@ def test_sync_function_return_producer_error():
         manager.sync_objects()
 
 
+@pytest.mark.parametrize(
+    argnames=["source_path", "target_path", "overlaps"],
+    argvalues=[
+        ("data", "data/sub", True),
+        ("/data", "data/sub", True),
+        ("data/sub", "/data", True),
+        ("data", "data/", True),
+        ("", "data", True),
+        ("data", "", True),
+        ("", "", True),
+        ("data", "data2", True),
+        ("data2", "data", True),
+        ("data/a", "data/b", False),
+    ],
+)
+def test_sync_manager_rejects_overlapping_paths_on_same_client(source_path: str, target_path: str, overlaps: bool):
+    client = cast(StorageClient, MockStorageClient())
+
+    def make_manager() -> SyncManager:
+        return SyncManager(
+            source_client=client,
+            source_path=source_path,
+            target_client=client,
+            target_path=target_path,
+        )
+
+    if overlaps:
+        with pytest.raises(ValueError, match="cannot overlap"):
+            make_manager()
+    else:
+        make_manager()
+
+
 def test_sync_objects_commits_metadata_by_default():
     """Test that sync_objects calls commit_metadata when commit_metadata is True (default)."""
     source_client = MockStorageClient()
