@@ -272,9 +272,13 @@ class MultiStoragePath:
 
     def is_relative_to(self, other: "MultiStoragePath") -> bool:
         """
-        Return True if the path is relative to another path or False.
+        Return True if the path is relative to another path in the same storage profile, or False otherwise.
         """
-        return isinstance(other, MultiStoragePath) and self._internal_path.is_relative_to(other._internal_path)
+        return (
+            isinstance(other, MultiStoragePath)
+            and self._storage_client.profile == other._storage_client.profile
+            and self._internal_path.is_relative_to(other._internal_path)
+        )
 
     def is_reserved(self) -> bool:
         if self._storage_client.is_default_profile():
