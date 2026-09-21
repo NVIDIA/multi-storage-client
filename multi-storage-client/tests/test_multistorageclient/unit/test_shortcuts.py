@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
 import mmap
 import os
 import tempfile
@@ -1658,3 +1659,25 @@ def test_list_with_url_prefix_does_not_mutate_metadata_provider_objects():
         client, _ = msc.resolve_storage_client(f"{MSC_PROTOCOL}{profile}")
         assert [obj.key for obj in client.list("backup/data")] == ["backup/data/f1.txt"]
         assert client.info("backup/data/f1.txt").key == "backup/data/f1.txt"
+
+
+def test_download_file_to_file_object(file_storage_config):
+    body = b"A" * 1024
+    with tempfile.TemporaryDirectory() as tempdir:
+        remote_file_path = f"{MSC_PROTOCOL}__filesystem__{tempdir}/testfile.bin"
+        with msc.open(remote_file_path, "wb") as fp:
+            fp.write(body)
+
+        buffer = io.BytesIO()
+        msc.download_file(url=remote_file_path, local_path=buffer)
+        assert buffer.getvalue() == body
+
+
+def test_upload_file_from_file_object(file_storage_config):
+    body = b"B" * 1024
+    with tempfile.TemporaryDirectory() as tempdir:
+        remote_file_path = f"{MSC_PROTOCOL}__filesystem__{tempdir}/testfile.bin"
+        msc.upload_file(url=remote_file_path, local_path=io.BytesIO(body))
+
+        with msc.open(remote_file_path, "rb") as fp:
+            assert fp.read() == body

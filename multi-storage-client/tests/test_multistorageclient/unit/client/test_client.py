@@ -16,6 +16,7 @@
 import inspect
 import os
 import pickle
+import tempfile
 import threading
 from datetime import datetime, timezone
 from unittest.mock import ANY, MagicMock
@@ -1038,3 +1039,38 @@ def test_composite_client_list_with_url_prefix_does_not_mutate_metadata_provider
     assert sorted(obj.key for obj in client.list(include_url_prefix=True)) == expected
     assert sorted(obj.key for obj in client.list(include_url_prefix=True)) == expected
     assert sorted(client._metadata_provider._files) == ["webdataset-00001.tar", "webdataset-00002.tar"]  # type: ignore[union-attr]
+
+
+def test_batch_methods_accept_non_list_sequences():
+    """upload_files, download_files, and delete_many accept any Sequence, not just list."""
+    with tempfile.TemporaryDirectory() as tempdir:
+        config = StorageClientConfig.from_yaml(
+            f"""
+            profiles:
+              test-seq:
+                storage_provider:
+                  type: file
+                  options:
+                    base_path: {tempdir}
+            """,
+            profile="test-seq",
+        )
+        client = StorageClient(config)
+
+        with tempfile.TemporaryDirectory() as local_dir:
+            sources = (os.path.join(local_dir, "a.bin"), os.path.join(local_dir, "b.bin"))
+            for path, body in zip(sources, (b"aaa", b"bbb")):
+                with open(path, "wb") as fp:
+                    fp.write(body)
+
+            client.upload_files(remote_paths=("a.bin", "b.bin"), local_paths=sources)
+            assert client.is_file("a.bin") and client.is_file("b.bin")
+
+            targets = (os.path.join(local_dir, "a.copy"), os.path.join(local_dir, "b.copy"))
+            client.download_files(remote_paths=("a.bin", "b.bin"), local_paths=targets)
+            for target, body in zip(targets, (b"aaa", b"bbb")):
+                with open(target, "rb") as fp:
+                    assert fp.read() == body
+
+            client.delete_many(("a.bin", "b.bin"))
+            assert not client.is_file("a.bin") and not client.is_file("b.bin")

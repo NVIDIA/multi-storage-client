@@ -360,7 +360,7 @@ def _load_and_merge_includes(
     return merged_config
 
 
-def _find_config_file_paths() -> tuple[str]:
+def _find_config_file_paths() -> tuple[str, ...]:
     """
     Get configuration file search paths.
 

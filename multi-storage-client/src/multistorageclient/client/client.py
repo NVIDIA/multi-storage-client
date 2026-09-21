@@ -272,8 +272,8 @@ class StorageClient(AbstractStorageClient):
 
     def download_files(
         self,
-        remote_paths: list[str],
-        local_paths: list[str],
+        remote_paths: Sequence[str],
+        local_paths: Sequence[str],
         metadata: Sequence[ObjectMetadata | None] | None = None,
         max_workers: int = 16,
     ) -> None:
@@ -398,7 +398,7 @@ class StorageClient(AbstractStorageClient):
         """
         return self._delegate.delete(path, recursive)
 
-    def delete_many(self, paths: list[str]) -> None:
+    def delete_many(self, paths: Sequence[str]) -> None:
         """
         Delete multiple files at the specified paths. Only files are supported; directories are not deleted.
         Paths that do not exist are treated as successful no-ops.
@@ -452,8 +452,8 @@ class StorageClient(AbstractStorageClient):
 
     def upload_files(
         self,
-        remote_paths: list[str],
-        local_paths: list[str],
+        remote_paths: Sequence[str],
+        local_paths: Sequence[str],
         attributes: Sequence[dict[str, Any] | None] | None = None,
         max_workers: int = 16,
     ) -> None:
@@ -555,7 +555,7 @@ class StorageClient(AbstractStorageClient):
     def sync_replicas(
         self,
         source_path: str,
-        replica_indices: list[int] | None = None,
+        replica_indices: Sequence[int] | None = None,
         delete_unmatched_files: bool = False,
         description: str = "Syncing replica",
         num_worker_processes: int | None = None,

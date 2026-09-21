@@ -18,8 +18,8 @@ import logging
 import os
 import re
 import threading
-from collections.abc import Callable, Iterator
-from typing import Any
+from collections.abc import Callable, Iterator, Sequence
+from typing import IO, Any
 from urllib.parse import ParseResult, urlparse
 
 from .client import StorageClient
@@ -317,7 +317,7 @@ def glob(pattern: str, attribute_filter_expression: str | None = None) -> builti
         return client.glob(path, include_url_prefix=True, attribute_filter_expression=attribute_filter_expression)
 
 
-def upload_file(url: str, local_path: str, attributes: dict[str, Any] | None = None) -> None:
+def upload_file(url: str, local_path: str | IO, attributes: dict[str, Any] | None = None) -> None:
     """
     Upload a file to the given URL from a local path.
 
@@ -326,7 +326,7 @@ def upload_file(url: str, local_path: str, attributes: dict[str, Any] | None = N
     is retrieved or built.
 
     :param url: The URL of the file. (example: ``msc://profile/prefix/dataset.tar``)
-    :param local_path: The local path of the file.
+    :param local_path: The local path or file-like object to read from.
 
     :raises ValueError: If the URL's protocol does not match the expected protocol ``msc``.
     """
@@ -334,7 +334,7 @@ def upload_file(url: str, local_path: str, attributes: dict[str, Any] | None = N
     return client.upload_file(remote_path=path, local_path=local_path, attributes=attributes)
 
 
-def download_file(url: str, local_path: str) -> None:
+def download_file(url: str, local_path: str | IO) -> None:
     """
     Download a file in a given remote_path to a local path
 
@@ -343,7 +343,7 @@ def download_file(url: str, local_path: str) -> None:
     is retrieved or built.
 
     :param url: The URL of the file to download. (example: ``msc://profile/prefix/dataset.tar``)
-    :param local_path: The local path where the file should be downloaded.
+    :param local_path: The local path or file-like object to write to.
 
     :raises ValueError: If the URL's protocol does not match the expected protocol ``msc``.
     """
@@ -436,7 +436,7 @@ def sync(
 
 def sync_replicas(
     source_url: str,
-    replica_indices: builtins.list[int] | None = None,
+    replica_indices: Sequence[int] | None = None,
     delete_unmatched_files: bool = False,
     execution_mode: ExecutionMode = ExecutionMode.LOCAL,
     patterns: PatternList | None = None,

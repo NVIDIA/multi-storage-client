@@ -247,8 +247,8 @@ class CompositeStorageClient(AbstractStorageClient):
 
     def download_files(
         self,
-        remote_paths: list[str],
-        local_paths: list[str],
+        remote_paths: Sequence[str],
+        local_paths: Sequence[str],
         metadata: Sequence[ObjectMetadata | None] | None = None,
         max_workers: int = 16,
     ) -> None:
@@ -353,7 +353,7 @@ class CompositeStorageClient(AbstractStorageClient):
             "CompositeStorageClient is read-only. Delete operations are not implemented for multi-location datasets."
         )
 
-    def delete_many(self, paths: list[str]) -> None:
+    def delete_many(self, paths: Sequence[str]) -> None:
         """Delete operations not supported in read-only mode."""
         raise NotImplementedError(
             "CompositeStorageClient is read-only. Delete operations are not implemented for multi-location datasets."
@@ -384,8 +384,8 @@ class CompositeStorageClient(AbstractStorageClient):
 
     def upload_files(
         self,
-        remote_paths: list[str],
-        local_paths: list[str],
+        remote_paths: Sequence[str],
+        local_paths: Sequence[str],
         attributes: Sequence[dict[str, Any] | None] | None = None,
         max_workers: int = 16,
     ) -> None:
@@ -423,7 +423,7 @@ class CompositeStorageClient(AbstractStorageClient):
     def sync_replicas(
         self,
         source_path: str,
-        replica_indices: list[int] | None = None,
+        replica_indices: Sequence[int] | None = None,
         delete_unmatched_files: bool = False,
         description: str = "Syncing replica",
         num_worker_processes: int | None = None,
