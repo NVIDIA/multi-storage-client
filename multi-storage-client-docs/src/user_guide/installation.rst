@@ -72,3 +72,6 @@ MSC also provides an optional Model Context Protocol (MCP) server that enables c
 .. note::
 
    The MCP Server requires Python 3.10 or higher. For complete MCP Server documentation, see :doc:`/user_guide/mcp_server`.
+
+MSC ships inline type annotations with a :pep:`561` ``py.typed`` marker, so type checkers like mypy and
+Pyright check code using MSC against its annotations without any extra configuration or stub packages.
