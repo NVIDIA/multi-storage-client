@@ -191,6 +191,39 @@ def test_relative_path():
     assert path.as_posix() == os.path.realpath("./workspace/datasets/file.txt")
 
 
+@pytest.mark.parametrize(
+    ("path", "other", "expected"),
+    [
+        ("msc://a/data/file.txt", "msc://a/data", True),
+        ("msc://a/data", "msc://a/data", True),
+        ("msc://a/data", "msc://a/data/file.txt", False),
+        ("msc://a/datasets/file.txt", "msc://a/data", False),
+        ("msc://a/data/file.txt", "msc://b/data", False),
+        ("msc://a/data", "msc://b/data", False),
+        ("/data/file.txt", "msc://__filesystem__/data", True),
+        ("msc://__filesystem__/data/file.txt", "/data", True),
+    ],
+)
+def test_is_relative_to(path: str, other: str, expected: bool, tmp_path):
+    """Containment uses both the resolved profile and the path components."""
+    config.setup_msc_config(
+        config_dict={
+            "profiles": {
+                profile: {"storage_provider": {"type": "file", "options": {"base_path": str(tmp_path)}}}
+                for profile in ("a", "b")
+            }
+        }
+    )
+
+    assert msc.Path(path).is_relative_to(msc.Path(other)) is expected
+
+
+@pytest.mark.parametrize("other", ["/data", Path("/data"), None])
+def test_is_relative_to_unsupported_type(other):
+    """An unsupported base still returns False without raising an exception."""
+    assert msc.Path("/data/file.txt").is_relative_to(other) is False
+
+
 def test_relative_to():
     """Test the relative_to method of MultiStoragePath."""
     # Test 1: Basic cases - multi-level and single-level paths

@@ -205,4 +205,9 @@ This module provides the ``Path`` class for working with paths in a way similar 
    # Sort paths for deterministic processing
    paths = sorted(msc.Path("msc://data-s3-iad/data").glob("*.txt"))
 
+``path.is_relative_to(other)`` checks whether ``path`` equals ``other`` or is below it
+within the same resolved storage profile. Paths from different profiles return
+``False``, even when their internal paths match. Local paths and equivalent
+``msc://__filesystem__/`` paths use the same profile.
+
 .. note:: The ``Path`` class implements much of the same interface as ``pathlib.Path``, making it familiar to use while working with remote storage.
