@@ -44,7 +44,7 @@ def memmap(*args: Any, **kwargs: Any) -> _np.memmap:
     return _np.memmap(*args, **kwargs)  # pyright: ignore [reportArgumentType, reportCallIssue]
 
 
-def load(*args: Any, **kwargs: Any) -> _np.ndarray | dict[str, _np.ndarray] | _np.lib.npyio.NpzFile:
+def load(*args: Any, **kwargs: Any) -> Any:
     """
     Adapt ``numpy.load``.
     """

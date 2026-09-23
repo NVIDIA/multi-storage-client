@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import pickle as _pickle
 from collections.abc import Callable, Iterable
 from typing import IO, Any
@@ -23,7 +22,7 @@ from ..shortcuts import open as msc_open
 
 
 def load(
-    file: str | os.PathLike[str] | IO[bytes],
+    file: str | MultiStoragePath | IO[bytes],
     *,
     fix_imports: bool = True,
     encoding: str = "ASCII",
@@ -65,11 +64,11 @@ def load(
 
 def dump(
     obj: Any,
-    file_path: str | os.PathLike[str],
+    file_path: str | MultiStoragePath,
     protocol: int | None = None,
     *,
     fix_imports: bool = True,
-    buffer_callback: Callable[[Any], None] | None = None,
+    buffer_callback: Callable[[Any], Any] | None = None,
     attributes: dict[str, Any] | None = None,
 ) -> None:
     """

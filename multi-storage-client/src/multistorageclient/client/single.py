@@ -336,7 +336,7 @@ class SingleStorageClient(AbstractStorageClient):
         self,
         indices: list[int],
         remote_paths: Sequence[str],
-        local_paths: list[str],
+        local_paths: Sequence[str],
         metadata: Sequence[ObjectMetadata | None] | None,
         max_workers: int,
     ) -> None:
@@ -367,7 +367,7 @@ class SingleStorageClient(AbstractStorageClient):
     def _upload_files_batch(
         self,
         indices: list[int],
-        local_paths: list[str],
+        local_paths: Sequence[str],
         remote_paths: Sequence[str],
         attributes: Sequence[dict[str, Any] | None] | None,
         max_workers: int,
@@ -526,8 +526,8 @@ class SingleStorageClient(AbstractStorageClient):
 
     def download_files(
         self,
-        remote_paths: list[str],
-        local_paths: list[str],
+        remote_paths: Sequence[str],
+        local_paths: Sequence[str],
         metadata: Sequence[ObjectMetadata | None] | None = None,
         max_workers: int = 16,
     ) -> None:
@@ -579,8 +579,8 @@ class SingleStorageClient(AbstractStorageClient):
 
     def upload_files(
         self,
-        remote_paths: list[str],
-        local_paths: list[str],
+        remote_paths: Sequence[str],
+        local_paths: Sequence[str],
         attributes: Sequence[dict[str, Any] | None] | None = None,
         max_workers: int = 16,
     ) -> None:
@@ -740,7 +740,7 @@ class SingleStorageClient(AbstractStorageClient):
                 raise FileNotFoundError(f"The file at '{path}' was not found.")
 
     @retry
-    def delete_many(self, paths: list[str]) -> None:
+    def delete_many(self, paths: Sequence[str]) -> None:
         """
         Delete multiple files at the specified paths. Only files are supported; directories are not deleted.
 
@@ -1138,7 +1138,7 @@ class SingleStorageClient(AbstractStorageClient):
     def sync_replicas(
         self,
         source_path: str,
-        replica_indices: list[int] | None = None,
+        replica_indices: Sequence[int] | None = None,
         delete_unmatched_files: bool = False,
         description: str = "Syncing replica",
         num_worker_processes: int | None = None,

@@ -311,7 +311,7 @@ class StorageProvider(ABC):
         """
 
     @abstractmethod
-    def delete_objects(self, paths: list[str]) -> None:
+    def delete_objects(self, paths: Sequence[str]) -> None:
         """
         Deletes multiple objects from the storage provider.
 
@@ -415,8 +415,8 @@ class StorageProvider(ABC):
     @abstractmethod
     def download_files(
         self,
-        remote_paths: list[str],
-        local_paths: list[str],
+        remote_paths: Sequence[str],
+        local_paths: Sequence[str],
         metadata: Sequence[ObjectMetadata | None] | None = None,
         max_workers: int = 16,
     ) -> None:
@@ -433,8 +433,8 @@ class StorageProvider(ABC):
     @abstractmethod
     def upload_files(
         self,
-        local_paths: list[str],
-        remote_paths: list[str],
+        local_paths: Sequence[str],
+        remote_paths: Sequence[str],
         attributes: Sequence[dict[str, Any] | None] | None = None,
         max_workers: int = 16,
     ) -> None:
