@@ -124,6 +124,7 @@ class SingleStorageClient(AbstractStorageClient):
         sorted_replicas = sorted(replicas, key=lambda r: r.read_priority)
 
         replica_clients = []
+        writable_replica_clients = []
         for replica in sorted_replicas:
             if self._config._config_dict is None:
                 raise ValueError(f"Cannot initialize replica '{replica.replica_profile}' without a config")
@@ -133,8 +134,11 @@ class SingleStorageClient(AbstractStorageClient):
 
             storage_client = StorageClientFacade(config=replica_config)
             replica_clients.append(storage_client)
+            if not replica.read_only:
+                writable_replica_clients.append(storage_client)
 
         self._replicas = replica_clients
+        self._writable_replicas = writable_replica_clients
         self._replica_manager = ReplicaManager(self) if len(self._replicas) > 0 else None
 
     def _committer_thread(self, commit_interval_minutes: float, stop_event: threading.Event):
@@ -206,6 +210,8 @@ class SingleStorageClient(AbstractStorageClient):
 
         if "_replicas" in state:
             del state["_replicas"]
+        if "_writable_replicas" in state:
+            del state["_writable_replicas"]
 
         # Replica manager could be disabled if it's set to None in the state.
         if "_replica_manager" in state and state["_replica_manager"] is not None:
@@ -245,6 +251,11 @@ class SingleStorageClient(AbstractStorageClient):
         :return: List of replica storage clients, sorted by read priority.
         """
         return self._replicas
+
+    @property
+    def writable_replicas(self) -> list[AbstractStorageClient]:
+        """:return: Writable replica storage clients, sorted by read priority."""
+        return self._writable_replicas
 
     # -- Metadata resolution helpers --
 
@@ -1151,7 +1162,8 @@ class SingleStorageClient(AbstractStorageClient):
         Sync files from this client to its replica storage clients.
 
         :param source_path: The logical path to sync from.
-        :param replica_indices: Specific replica indices to sync to (0-indexed). If None, syncs to all replicas.
+        :param replica_indices: Specific replica indices to sync to (0-indexed). If None, syncs to all writable replicas.
+            Read-only replicas are skipped by default; explicitly selecting one raises ``ValueError``.
         :param delete_unmatched_files: When set to ``True``, delete files in replicas that don't exist in source.
         :param description: Description of sync process for logging purposes.
         :param num_worker_processes: Number of worker processes for parallel sync.
@@ -1177,8 +1189,15 @@ class SingleStorageClient(AbstractStorageClient):
                 replicas = [self._replicas[i] for i in replica_indices]
             except IndexError as e:
                 raise ValueError(f"Replica index out of range: {replica_indices}") from e
+            for index, replica in zip(replica_indices, replicas):
+                if replica not in self._writable_replicas:
+                    raise ValueError(f"Replica index {index} ('{replica.profile}') is read-only and cannot be synced")
         else:
-            replicas = self._replicas
+            replicas = self._writable_replicas
+
+        if not replicas:
+            logger.warning("No writable replicas configured for profile '%s'; sync skipped", self._config.profile)
+            return
 
         # Disable the replica manager during sync
         if self._replica_manager:

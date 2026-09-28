@@ -556,3 +556,150 @@ def test_storage_client_delete_with_multiple_replicas() -> None:
         assert not origin_client.is_file(test_file_path), f"File {test_file_path} should be deleted from origin"
         assert not replica1_client.is_file(test_file_path), f"File {test_file_path} should be deleted from replica1"
         assert not replica2_client.is_file(test_file_path), f"File {test_file_path} should be deleted from replica2"
+
+
+def test_read_only_replica_serves_reads_without_upload_or_delete(caplog: pytest.LogCaptureFixture) -> None:
+    """Read from a read-only replica without uploading to or deleting from it."""
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as origin_store,
+        tempdatastore.TemporaryPOSIXDirectory() as replica_store,
+    ):
+        config = create_basic_replica_config(origin_store, replica_store)
+        config["profiles"]["origin_with_replica"]["replicas"][0]["read_only"] = True
+        origin_client, replica_aware_client = create_test_clients(config)
+        replica_client = replica_aware_client.replicas[0]
+
+        assert replica_aware_client._replica_manager is not None
+        assert replica_aware_client._delegate._config.replicas[0].read_only is True
+
+        replica_client.write("present", b"replica content")
+        origin_client.write("present", b"source content")
+        assert replica_aware_client.read("present") == b"replica content"
+
+        origin_client.write("missing", b"source only")
+        with patch("multistorageclient.replica_manager._REPLICA_THREAD_POOL.submit") as submit:
+            assert replica_aware_client.read("missing") == b"source only"
+            submit.assert_not_called()
+        assert not replica_client.is_file("missing")
+
+        replica_aware_client.delete("present")
+        assert not origin_client.is_file("present")
+        assert replica_client.read("present") == b"replica content"
+        assert replica_aware_client.read("present") == b"replica content"
+
+        replica_aware_client.sync_replicas("")
+        assert "No writable replicas configured" in caplog.text
+
+
+def test_read_only_replica_does_not_block_writable_replica_backfill() -> None:
+    """Backfill a writable replica after missing a read-only replica."""
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as origin_store,
+        tempdatastore.TemporaryPOSIXDirectory() as read_only_store,
+        tempdatastore.TemporaryPOSIXDirectory() as writable_store,
+    ):
+        config = create_multiple_replica_config(origin_store, read_only_store, writable_store)
+        config["profiles"]["origin_with_replicas"]["replicas"][0]["read_only"] = True
+        origin_client, replica_aware_client = create_test_clients(
+            config, origin_with_replica_profile="origin_with_replicas"
+        )
+        origin_client.write("missing", b"source content")
+
+        assert replica_aware_client.read("missing") == b"source content"
+        writable_replica = replica_aware_client.replicas[1]
+        wait(waitable=lambda: writable_replica.is_file("missing"), should_wait=lambda exists: not exists)
+        assert writable_replica.read("missing") == b"source content"
+        assert not replica_aware_client.replicas[0].is_file("missing")
+
+
+def test_deleted_source_is_not_backfilled_from_read_only_replica() -> None:
+    """A stale read-only copy must not restore a deleted file on a writable replica."""
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as origin_store,
+        tempdatastore.TemporaryPOSIXDirectory() as writable_store,
+        tempdatastore.TemporaryPOSIXDirectory() as read_only_store,
+    ):
+        config = create_multiple_replica_config(origin_store, writable_store, read_only_store)
+        config["profiles"]["origin_with_replicas"]["replicas"][1]["read_only"] = True
+        origin_client, replica_aware_client = create_test_clients(
+            config, origin_with_replica_profile="origin_with_replicas"
+        )
+        writable_replica, read_only_replica = replica_aware_client.replicas
+
+        origin_client.write("file", b"source content")
+        writable_replica.write("file", b"writable content")
+        read_only_replica.write("file", b"read-only content")
+        replica_aware_client.delete("file")
+
+        assert not origin_client.is_file("file")
+        assert not writable_replica.is_file("file")
+        with patch("multistorageclient.replica_manager._REPLICA_THREAD_POOL.submit") as submit:
+            assert replica_aware_client.read("file") == b"read-only content"
+            submit.assert_not_called()
+        assert not writable_replica.is_file("file")
+
+
+def test_existing_source_is_backfilled_from_read_only_replica() -> None:
+    """A read-only copy may populate an earlier writable replica while the source exists."""
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as origin_store,
+        tempdatastore.TemporaryPOSIXDirectory() as writable_store,
+        tempdatastore.TemporaryPOSIXDirectory() as read_only_store,
+    ):
+        config = create_multiple_replica_config(origin_store, writable_store, read_only_store)
+        config["profiles"]["origin_with_replicas"]["replicas"][1]["read_only"] = True
+        origin_client, replica_aware_client = create_test_clients(
+            config, origin_with_replica_profile="origin_with_replicas"
+        )
+        writable_replica, read_only_replica = replica_aware_client.replicas
+
+        origin_client.write("file", b"source content")
+        read_only_replica.write("file", b"read-only content")
+
+        assert replica_aware_client.read("file") == b"read-only content"
+        wait(waitable=lambda: writable_replica.is_file("file"), should_wait=lambda exists: not exists)
+        assert writable_replica.read("file") == b"read-only content"
+
+
+def test_sync_skips_read_only_replicas_and_rejects_explicit_target() -> None:
+    """Skip read-only replicas by default and reject explicitly syncing one."""
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as origin_store,
+        tempdatastore.TemporaryPOSIXDirectory() as read_only_store,
+        tempdatastore.TemporaryPOSIXDirectory() as writable_store,
+    ):
+        config = create_multiple_replica_config(origin_store, read_only_store, writable_store)
+        config["profiles"]["origin_with_replicas"]["replicas"][0]["read_only"] = True
+        origin_client, replica_aware_client = create_test_clients(
+            config, origin_with_replica_profile="origin_with_replicas"
+        )
+        origin_client.write("file", b"content")
+        replica_aware_client.replicas[0].write("orphan", b"read-only content")
+        replica_aware_client.replicas[1].write("orphan", b"writable content")
+
+        replica_aware_client.sync_replicas("", delete_unmatched_files=True)
+        assert not replica_aware_client.replicas[0].is_file("file")
+        assert replica_aware_client.replicas[1].read("file") == b"content"
+        assert replica_aware_client.replicas[0].read("orphan") == b"read-only content"
+        assert not replica_aware_client.replicas[1].is_file("orphan")
+
+        origin_client.write("not_synced", b"content")
+        with pytest.raises(ValueError, match="index 0.*replica1.*read-only"):
+            replica_aware_client.sync_replicas("", replica_indices=[1, 0])
+        assert not replica_aware_client.replicas[0].is_file("not_synced")
+        assert not replica_aware_client.replicas[1].is_file("not_synced")
+
+
+def test_read_only_replica_config_defaults_to_writable_and_requires_boolean() -> None:
+    """Default replicas to writable and reject non-boolean read-only values."""
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as origin_store,
+        tempdatastore.TemporaryPOSIXDirectory() as replica_store,
+    ):
+        config = create_basic_replica_config(origin_store, replica_store)
+        parsed = StorageClientConfig.from_dict(config, profile="origin_with_replica")
+        assert parsed.replicas[0].read_only is False
+
+        config["profiles"]["origin_with_replica"]["replicas"][0]["read_only"] = "true"
+        with pytest.raises(RuntimeError, match="Failed to validate the config file"):
+            StorageClientConfig.from_dict(config, profile="origin_with_replica")

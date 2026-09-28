@@ -21,6 +21,11 @@ Client Implementations
    :members:
    :undoc-members:
    :show-inheritance:
+   :exclude-members: writable_replicas
+
+.. py:attribute:: multistorageclient.client.single.SingleStorageClient.writable_replicas
+
+   Writable replica storage clients, sorted by read priority.
 
 .. autoclass:: multistorageclient.client.composite.CompositeStorageClient
    :members:

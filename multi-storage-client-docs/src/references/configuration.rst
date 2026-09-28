@@ -157,7 +157,8 @@ Each profile in the configuration defines how to interact with storage services 
 * ``replicas``
 
   * Configure one or more *replica profiles* that the current profile can
-    read from and write to opportunistically (see :doc:`/user_guide/replicas`).
+    read from and write to opportunistically. Set ``read_only: true`` on a replica to disable writes to it
+    from the source profile (see :doc:`/user_guide/replicas`).
 
 * ``retry``
 
@@ -207,6 +208,7 @@ Each profile in the configuration defines how to interact with storage services 
    replicas:
      - replica_profile: <string>   # Name of another profile acting as replica
        read_priority: <int>        # Required. Lower = preferred (1 = highest)
+       read_only: <boolean>        # Optional. Disable writes from source (default: false)
 
    # Optional. Retry configuration
    retry:

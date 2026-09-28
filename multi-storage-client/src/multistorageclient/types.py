@@ -851,11 +851,12 @@ class SourceVersionCheckMode(Enum):
 @dataclass
 class Replica:
     """
-    A tier of storage that can be used to store data.
+    A storage tier that can serve reads and optionally receive writes.
     """
 
     replica_profile: str
     read_priority: int
+    read_only: bool = False
 
 
 class AutoCommitConfig:

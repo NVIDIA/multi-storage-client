@@ -790,6 +790,7 @@ class StorageClientConfigLoader:
                     Replica(
                         replica_profile=replica_dict["replica_profile"],
                         read_priority=replica_dict["read_priority"],
+                        read_only=replica_dict.get("read_only", False),
                     )
                 )
 

@@ -59,6 +59,7 @@ class ReplicaManager:
         :param storage_provider: storage provider to use if the file is not found in the replicas
         """
         file_exists = False
+        read_from_read_only_replica = False
         replicas_that_need_updates = []
 
         for replica_client in self._storage_client.replicas:
@@ -66,8 +67,10 @@ class ReplicaManager:
                 if replica_client.is_file(remote_path):
                     replica_client.download_file(remote_path, file)
                     file_exists = True
+                    read_from_read_only_replica = replica_client not in self._storage_client.writable_replicas
                     break
-                replicas_that_need_updates.append(replica_client)
+                if replica_client in self._storage_client.writable_replicas:
+                    replicas_that_need_updates.append(replica_client)
             except FileNotFoundError:
                 logger.error(f"File not found in replica: {remote_path}")
                 continue
@@ -80,6 +83,17 @@ class ReplicaManager:
 
         if hasattr(file, "seek"):
             file.seek(0)  # type: ignore
+
+        if replicas_that_need_updates and read_from_read_only_replica:
+            try:
+                if not storage_provider.is_file(remote_path):
+                    logger.debug(f"Skipping replica backfill for {remote_path}: source file no longer exists")
+                    return
+            except Exception:
+                logger.warning(
+                    f"Skipping replica backfill for {remote_path}: could not verify source file", exc_info=True
+                )
+                return
 
         if replicas_that_need_updates:
             # Atomic check-and-add operation to prevent duplicate uploads
@@ -171,6 +185,8 @@ class ReplicaManager:
         :param path: path to the file to delete
         """
         for replica_client in self._storage_client.replicas:
+            if replica_client not in self._storage_client.writable_replicas:
+                continue
             try:
                 replica_client.delete(path)
             except Exception as e:
