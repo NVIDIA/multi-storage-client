@@ -231,6 +231,18 @@ class ProducerThread(threading.Thread):
                     source_metadata = self.source_client.info(
                         source_file_path, strict=False
                     )  # don't check if the path is a directory
+                    if (
+                        source_metadata.symlink_target is not None
+                        and self.source_client._is_posix_file_storage_provider()
+                    ):
+                        # POSIX listing owns symlink validation and dereferencing; info() reports the link itself.
+                        link_metadata = next(
+                            self.source_client.list(path=source_file_path, symlink_handling=self.symlink_handling),
+                            None,
+                        )
+                        if link_metadata is None:
+                            continue
+                        source_metadata = link_metadata.replace(metadata=source_metadata.metadata)
                     if not self.preserve_source_attributes:
                         source_metadata.metadata = None
                     yield source_metadata
