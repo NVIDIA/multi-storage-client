@@ -22,6 +22,7 @@ from typing import IO, Any, TypeVar
 
 import boto3
 import botocore
+from boto3.exceptions import S3UploadFailedError
 from boto3.s3.transfer import TransferConfig
 from botocore.credentials import RefreshableCredentials
 from botocore.exceptions import ClientError, IncompleteReadError, ReadTimeoutError, ResponseStreamingError
@@ -446,6 +447,10 @@ class S3StorageProvider(BaseStorageProvider):
                     error_message = error.response["Error"]["Message"]
                     raise RetryableError(f"Multipart upload failed for {bucket}/{key}: {error_message}") from error
                 raise FileNotFoundError(f"Object {bucket}/{key} does not exist. {error_info}")  # pylint: disable=raise-missing-from
+            elif status_code == 403:
+                raise PermissionError(
+                    f"Permission denied to {operation} object(s) at {bucket}/{key}. {error_info}"
+                ) from error
             elif status_code == 412:  # Precondition Failed
                 raise PreconditionFailedError(
                     f"ETag mismatch for {operation} operation on {bucket}/{key}. {error_info}"
@@ -496,6 +501,14 @@ class S3StorageProvider(BaseStorageProvider):
                 f"error_type: {type(error).__name__}"
             ) from error
         except Exception as error:
+            if (
+                isinstance(error, S3UploadFailedError)
+                and isinstance(error.__context__, ClientError)
+                and error.__context__.response["ResponseMetadata"]["HTTPStatusCode"] == 403
+            ):
+                raise PermissionError(
+                    f"Permission denied to {operation} object(s) at {bucket}/{key}. {error}"
+                ) from error
             raise RuntimeError(
                 f"Failed to {operation} object(s) at {bucket}/{key}, error type: {type(error).__name__}, error: {error}"
             ) from error
@@ -916,7 +929,12 @@ class S3StorageProvider(BaseStorageProvider):
             # Upload small files
             if file_size <= self._multipart_threshold:
                 if self._rust_client and not attributes and not content_type:
-                    run_async_rust_client_method(self._rust_client, "upload", f, key)
+                    self._translate_errors(
+                        lambda: run_async_rust_client_method(self._rust_client, "upload", f, key),
+                        operation="PUT",
+                        bucket=bucket,
+                        key=key,
+                    )
                 else:
                     with open(f, "rb") as fp:
                         self._put_object(remote_path, fp.read(), attributes=attributes, content_type=content_type)
