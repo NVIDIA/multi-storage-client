@@ -14,12 +14,17 @@
 # limitations under the License.
 
 import io
+from pathlib import Path
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from boto3.exceptions import S3UploadFailedError
+from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ClientError, IncompleteReadError, ReadTimeoutError, ResponseStreamingError
+from botocore.stub import Stubber
 
+from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.providers.s3 import S3StorageProvider, StaticS3CredentialsProvider
 from multistorageclient.types import PreconditionFailedError, RetryableError
 from multistorageclient_rust import RustClient, RustClientError, RustRetryableError
@@ -131,6 +136,105 @@ def test_translate_errors_client_error_412_precondition_failed():
 
     assert "ETag mismatch" in str(exc_info.value)
     assert "test-bucket/test-key" in str(exc_info.value)
+
+
+def test_translate_errors_client_error_403() -> None:
+    provider = _create_s3_provider()
+    error = _create_client_error(403, "AccessDenied")
+
+    def failing_func() -> None:
+        raise error
+
+    with pytest.raises(PermissionError, match="Permission denied to PUT") as exc_info:
+        provider._translate_errors(failing_func, operation="PUT", bucket="test-bucket", key="test-key")
+
+    assert "test-bucket/test-key" in str(exc_info.value)
+    assert "test-request-id" in str(exc_info.value)
+    assert "test-host-id" in str(exc_info.value)
+    assert "status_code: 403" in str(exc_info.value)
+    assert exc_info.value.__cause__ is error
+
+
+@pytest.mark.parametrize("use_rust", [False, True], ids=["boto", "rust"])
+@pytest.mark.parametrize("operation", ["upload_file", "write", "wb", "ab", "copy"])
+def test_storage_client_write_denied(tmp_path: Path, use_rust: bool, operation: str) -> None:
+    provider = _create_s3_provider()
+    boto_error = _create_client_error(403, "AccessDenied")
+    boto_client = MagicMock()
+    boto_client.put_object.side_effect = boto_error
+    boto_client.copy.side_effect = boto_error
+    boto_client.head_object.return_value = {"ContentLength": len(b"existing")}
+    boto_client.get_object.return_value = {"Body": io.BytesIO(b"existing")}
+    provider._s3_client = boto_client
+    provider._rust_client = None
+    error = boto_error
+    denied_call = boto_client.copy if operation == "copy" else boto_client.put_object
+
+    if use_rust:
+        rust_error = RustClientError("Access denied", 403)
+        rust_client = MagicMock(spec=RustClient)
+        rust_client.put = AsyncMock(side_effect=rust_error)
+        rust_client.upload = AsyncMock(side_effect=rust_error)
+
+        async def download(key: str, local_path: str) -> None:
+            Path(local_path).write_bytes(b"existing")
+
+        rust_client.download = AsyncMock(side_effect=download)
+        provider._rust_client = rust_client
+        if operation != "copy":
+            error = rust_error
+            denied_call = rust_client.upload if operation in ("upload_file", "ab") else rust_client.put
+
+    client = StorageClient(StorageClientConfig(profile="test", storage_provider=provider))
+    remote_path = "test-bucket/test-key"
+    local_path = tmp_path / "upload.bin"
+    local_path.write_bytes(b"new content")
+
+    with pytest.raises(PermissionError, match="Permission denied") as exc_info:
+        if operation == "upload_file":
+            client.upload_file(remote_path, str(local_path))
+        elif operation == "write":
+            client.write(remote_path, b"new content")
+        elif operation == "copy":
+            client.copy("test-bucket/source-key", remote_path)
+        else:
+            with client.open(remote_path, operation) as file:
+                file.write(b"new content")
+
+    assert "test-bucket/test-key" in str(exc_info.value)
+    assert exc_info.value.__cause__ is error
+    denied_call.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("status_code", "error_code", "expected_error"),
+    [(403, "AccessDenied", PermissionError), (500, "InternalError", RuntimeError)],
+)
+def test_multipart_upload_error_translation(
+    tmp_path: Path, status_code: int, error_code: str, expected_error: type[Exception]
+) -> None:
+    provider = _create_s3_provider()
+    provider._multipart_threshold = 1
+    provider._transfer_config = TransferConfig(
+        multipart_threshold=1, use_threads=False, preferred_transfer_client="classic"
+    )
+    client = StorageClient(StorageClientConfig(profile="test", storage_provider=provider))
+    local_path = tmp_path / "upload.bin"
+    local_path.write_bytes(b"new content")
+
+    with Stubber(provider._s3_client) as stubber:
+        stubber.add_client_error(
+            "create_multipart_upload",
+            service_error_code=error_code,
+            http_status_code=status_code,
+        )
+        with pytest.raises(expected_error) as exc_info:
+            client.upload_file("test-bucket/test-key", str(local_path))
+        assert "test-bucket/test-key" in str(exc_info.value)
+        assert isinstance(exc_info.value.__cause__, S3UploadFailedError)
+        assert isinstance(exc_info.value.__cause__.__context__, ClientError)
+        assert exc_info.value.__cause__.__context__.response["ResponseMetadata"]["HTTPStatusCode"] == status_code
+        stubber.assert_no_pending_responses()
 
 
 def test_translate_errors_client_error_429_too_many_requests():
