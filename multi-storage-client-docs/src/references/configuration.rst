@@ -583,8 +583,9 @@ When the Rust client is enabled, it will replace Python implementations for the 
 * :py:class:`multistorageclient.types.StorageProvider.upload_file`
 * :py:class:`multistorageclient.types.StorageProvider.download_file`
 
-.. note::
-   For `put_object()` and `upload_file()`, if `attributes` is provided, the Rust client will not be used.
+For ``put_object()`` and ``upload_file()``, user-defined ``attributes`` are uploaded by the Rust client
+as object metadata when the Rust path is otherwise supported. Conditional writes and custom
+``Content-Type`` values still use the Python implementation.
 
 Other storage provider operations continue to use the Python implementation:
 

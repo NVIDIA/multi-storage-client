@@ -192,6 +192,76 @@ async def test_rustclient_basic_operations(temp_data_store_type: type[tempdatast
 
 
 @pytest.mark.parametrize(
+    "temp_data_store_type",
+    [tempdatastore.TemporaryAWSS3Bucket, tempdatastore.TemporaryGoogleCloudStorageS3Bucket],
+)
+@pytest.mark.asyncio
+async def test_rustclient_upload_attributes_s3_api(tmp_path, temp_data_store_type):
+    with temp_data_store_type() as temp_data_store:
+        config = temp_data_store.profile_config_dict()
+        provider = config["storage_provider"]["type"]
+        bucket = config["storage_provider"]["options"]["base_path"]
+        endpoint = config["storage_provider"]["options"]["endpoint_url"]
+        credentials = config["credentials_provider"]["options"]
+        rust_client = RustClient(
+            provider=provider,
+            configs={"bucket": bucket, "endpoint_url": endpoint, "region_name": "us-east-1", "allow_http": True},
+            credentials_provider=StaticS3CredentialsProvider(
+                access_key=credentials["access_key"], secret_key=credentials["secret_key"]
+            ),
+        )
+        attributes = {"test-key": "test-value"}
+        small_file = tmp_path / "small.bin"
+        small_file.write_bytes(b"file")
+        multipart_data = b"x" * (5 * 1024 * 1024 + 1)
+        large_file = tmp_path / "large.bin"
+        large_file.write_bytes(multipart_data)
+
+        assert await rust_client.put("attributes/put", b"put", attributes=attributes) == 3
+        assert await rust_client.upload(str(small_file), "attributes/upload", attributes=attributes) == 4
+        assert (
+            await rust_client.upload_multipart_from_bytes(
+                "attributes/bytes-small", b"small", multipart_chunksize=5 * 1024 * 1024, attributes=attributes
+            )
+            == 5
+        )
+        assert await rust_client.upload_multipart_from_bytes(
+            "attributes/bytes-large", multipart_data, multipart_chunksize=5 * 1024 * 1024, attributes=attributes
+        ) == len(multipart_data)
+        assert await rust_client.upload_multipart_from_file(
+            str(large_file), "attributes/file-large", multipart_chunksize=5 * 1024 * 1024, attributes=attributes
+        ) == len(multipart_data)
+
+        for key, size in (
+            ("attributes/put", 3),
+            ("attributes/upload", 4),
+            ("attributes/bytes-small", 5),
+            ("attributes/bytes-large", len(multipart_data)),
+            ("attributes/file-large", len(multipart_data)),
+        ):
+            result = temp_data_store._client.head_object(Bucket=bucket, Key=key)
+            assert result["ContentLength"] == size
+            assert result["Metadata"] == attributes
+
+        for invalid_attributes, error in (
+            ({"my key": "value"}, "Invalid metadata key"),
+            ({"key": "line\nfeed"}, "Invalid metadata value"),
+        ):
+            with pytest.raises(ValueError, match=error):
+                await rust_client.put("attributes/invalid-put", b"put", attributes=invalid_attributes)
+            with pytest.raises(ValueError, match=error):
+                await rust_client.upload(str(small_file), "attributes/invalid-upload", attributes=invalid_attributes)
+            with pytest.raises(ValueError, match=error):
+                await rust_client.upload_multipart_from_bytes(
+                    "attributes/invalid-bytes", b"bytes", attributes=invalid_attributes
+                )
+            with pytest.raises(ValueError, match=error):
+                await rust_client.upload_multipart_from_file(
+                    str(large_file), "attributes/invalid-file", attributes=invalid_attributes
+                )
+
+
+@pytest.mark.parametrize(
     argnames=["temp_data_store_type"],
     argvalues=[
         [tempdatastore.TemporaryAWSS3Bucket],

@@ -18,7 +18,10 @@ use object_store::aws::{AmazonS3Builder, Checksum};
 use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::RetryConfig;
 use object_store::BackoffConfig;
-use object_store::{path::Path, ObjectMeta, ObjectStore, PutPayload, WriteMultipart};
+use object_store::{
+    path::Path, Attribute, AttributeValue, Attributes, ObjectMeta, ObjectStore, ObjectStoreExt,
+    PutPayload, WriteMultipart,
+};
 use object_store::ClientOptions;
 use object_store::limit::LimitStore;
 use pyo3::prelude::*;
@@ -39,6 +42,7 @@ use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
+use http::header::{HeaderName, HeaderValue};
 use http::StatusCode;
 use aws_smithy_http_client::{tls, Builder};
 use aws_config::BehaviorVersion;
@@ -333,6 +337,23 @@ fn parse_path(path: &str) -> Result<Path, StorageError> {
     Path::parse(path).map_err(|e| StorageError::InvalidPathError(format!("Failed to parse path '{}': {:?}", path, e)))
 }
 
+fn upload_attributes(attributes: Option<HashMap<String, String>>) -> Result<Attributes, StorageError> {
+    attributes
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(key, value)| {
+            HeaderName::from_bytes(format!("x-amz-meta-{key}").as_bytes())
+                .map_err(|_| StorageError::ConfigError(format!("Invalid metadata key: {key:?}")))?;
+            if HeaderValue::from_str(&value).is_err() {
+                return Err(StorageError::ConfigError(format!(
+                    "Invalid metadata value for key {key:?}: cannot be used as an HTTP header"
+                )));
+            }
+            Ok((Attribute::Metadata(key.into()), AttributeValue::from(value)))
+        })
+        .collect()
+}
+
 fn build_s3_store<'a>(
     configs: Option<&'a HashMap<String, ConfigValue>>,
     py_credentials_provider: Option<Py<PyAny>>,
@@ -604,17 +625,24 @@ impl RustClient {
         })
     }
 
-    #[pyo3(signature = (path, data))]
-    fn put<'p>(&self, py: Python<'p>, path: &str, data: PyBytes) -> PyResult<Bound<'p, PyAny>> {
+    #[pyo3(signature = (path, data, attributes=None))]
+    fn put<'p>(
+        &self,
+        py: Python<'p>,
+        path: &str,
+        data: PyBytes,
+        attributes: Option<HashMap<String, String>>,
+    ) -> PyResult<Bound<'p, PyAny>> {
         let store = Arc::clone(&self.store);
         let path = parse_path(path)?;
         let data_bytes = data.into_inner();
         let bytes_written = data_bytes.len() as u64;
         let payload = PutPayload::from_bytes(data_bytes);
+        let attributes = upload_attributes(attributes)?;
 
         future_into_py(py, async move {
             store
-                .put(&path, payload)
+                .put_opts(&path, payload, attributes.into())
                 .await
                 .map_err(StorageError::from)?;
             Ok(bytes_written)
@@ -650,22 +678,24 @@ impl RustClient {
         }
     }
 
-    #[pyo3(signature = (local_path, remote_path))]
+    #[pyo3(signature = (local_path, remote_path, attributes=None))]
     fn upload<'p>(
         &self,
         py: Python<'p>,
         local_path: &str,
         remote_path: &str,
+        attributes: Option<HashMap<String, String>>,
     ) -> PyResult<Bound<'p, PyAny>> {
         let store = Arc::clone(&self.store);
         let local_path = local_path.to_string();
         let remote_path = parse_path(remote_path)?;
+        let attributes = upload_attributes(attributes)?;
 
         future_into_py(py, async move {
             let data = fs::read(local_path).await.map_err(StorageError::from)?;
             let bytes_uploaded = data.len() as u64;
             store
-                .put(&remote_path, data.into())
+                .put_opts(&remote_path, data.into(), attributes.into())
                 .await
                 .map_err(StorageError::from)?;
             Ok(bytes_uploaded)
@@ -694,7 +724,7 @@ impl RustClient {
         })
     }
 
-    #[pyo3(signature = (local_path, remote_path, multipart_chunksize=None, max_concurrency=None))]
+    #[pyo3(signature = (local_path, remote_path, multipart_chunksize=None, max_concurrency=None, attributes=None))]
     fn upload_multipart_from_file<'p>(
         &self,
         py: Python<'p>,
@@ -702,18 +732,23 @@ impl RustClient {
         remote_path: &str,
         multipart_chunksize: Option<usize>,
         max_concurrency: Option<usize>,
+        attributes: Option<HashMap<String, String>>,
     ) -> PyResult<Bound<'p, PyAny>> {
         let store = Arc::clone(&self.store);
         let local_path = local_path.to_string();
         let remote_path = parse_path(remote_path)?;
         let chunksize = multipart_chunksize.unwrap_or(self.multipart_chunksize);
         let concurrency = max_concurrency.unwrap_or(self.max_concurrency);
+        let attributes = upload_attributes(attributes)?;
 
         future_into_py(py, async move {
             let mut file = tokio::fs::File::open(local_path).await.map_err(StorageError::from)?;
             let file_size = file.metadata().await.map_err(StorageError::from)?.len();
             let chunksize = multipart_safe_chunk_size(file_size, chunksize)?;
-            let upload = store.put_multipart(&remote_path).await.map_err(StorageError::from)?;
+            let upload = store
+                .put_multipart_opts(&remote_path, attributes.into())
+                .await
+                .map_err(StorageError::from)?;
             let mut writer = WriteMultipart::new_with_chunk_size(upload, chunksize);
 
             let mut buffer = vec![0u8; chunksize];
@@ -732,7 +767,7 @@ impl RustClient {
         })
     }
 
-    #[pyo3(signature = (remote_path, data, multipart_chunksize=None, max_concurrency=None))]
+    #[pyo3(signature = (remote_path, data, multipart_chunksize=None, max_concurrency=None, attributes=None))]
     fn upload_multipart_from_bytes<'p>(
         &self,
         py: Python<'p>,
@@ -740,6 +775,7 @@ impl RustClient {
         data: PyBytes,
         multipart_chunksize: Option<usize>,
         max_concurrency: Option<usize>,
+        attributes: Option<HashMap<String, String>>,
     ) -> PyResult<Bound<'p, PyAny>> {
         let store = Arc::clone(&self.store);
         let remote_path = parse_path(remote_path)?;
@@ -747,19 +783,23 @@ impl RustClient {
         let bytes_uploaded = data_bytes.len() as u64;
         let chunksize = multipart_chunksize.unwrap_or(self.multipart_chunksize);
         let concurrency = max_concurrency.unwrap_or(self.max_concurrency);
+        let attributes = upload_attributes(attributes)?;
 
         future_into_py(py, async move {
             if data_bytes.len() <= chunksize {
                 let payload = PutPayload::from_bytes(data_bytes);
                 store
-                    .put(&remote_path, payload)
+                    .put_opts(&remote_path, payload, attributes.into())
                     .await
                     .map_err(StorageError::from)?;
                 return Ok(bytes_uploaded);
             }
 
             let chunksize = multipart_safe_chunk_size(data_bytes.len() as u64, chunksize)?;
-            let upload = store.put_multipart(&remote_path).await.map_err(StorageError::from)?;
+            let upload = store
+                .put_multipart_opts(&remote_path, attributes.into())
+                .await
+                .map_err(StorageError::from)?;
             let mut writer = WriteMultipart::new_with_chunk_size(upload, chunksize);
 
             let mut offset = 0;
@@ -1110,6 +1150,54 @@ fn multistorageclient_rust(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()>
 mod tests {
     use super::*;
     use std::io;
+
+    #[test]
+    fn test_upload_attributes_are_user_metadata() {
+        let attributes = upload_attributes(Some(HashMap::from([
+            ("project".to_string(), "msc".to_string()),
+            ("Content-Type".to_string(), "text/plain".to_string()),
+            ("unicode".to_string(), "café".to_string()),
+            ("empty".to_string(), String::new()),
+        ]))).unwrap();
+
+        assert_eq!(attributes.len(), 4);
+        assert_eq!(
+            attributes.get(&Attribute::Metadata("project".into())).unwrap().as_ref(),
+            "msc"
+        );
+        assert_eq!(
+            attributes.get(&Attribute::Metadata("Content-Type".into())).unwrap().as_ref(),
+            "text/plain"
+        );
+        assert_eq!(
+            attributes.get(&Attribute::Metadata("unicode".into())).unwrap().as_ref(),
+            "café"
+        );
+        assert_eq!(attributes.get(&Attribute::Metadata("empty".into())).unwrap().as_ref(), "");
+        assert!(attributes.get(&Attribute::ContentType).is_none());
+        assert!(upload_attributes(None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_upload_attributes_reject_invalid_headers() {
+        for key in ["my key", "a:b", "a/b", "Owner😀"] {
+            let error = upload_attributes(Some(HashMap::from([(
+                key.to_string(),
+                "value".to_string(),
+            )])))
+            .unwrap_err();
+            assert!(matches!(error, StorageError::ConfigError(_)));
+        }
+
+        for value in ["line\nfeed", "carriage\rreturn"] {
+            let error = upload_attributes(Some(HashMap::from([(
+                "key".to_string(),
+                value.to_string(),
+            )])))
+            .unwrap_err();
+            assert!(matches!(error, StorageError::ConfigError(_)));
+        }
+    }
 
     #[test]
     fn test_error_chain_with_connection_reset() {

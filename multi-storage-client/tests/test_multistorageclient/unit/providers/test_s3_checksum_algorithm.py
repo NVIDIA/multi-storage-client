@@ -183,6 +183,58 @@ def test_rust_path_still_taken_when_only_checksum_is_set(rust_client_cls: MagicM
 
 
 @patch("multistorageclient.providers.s3.RustClient")
+def test_rust_uploads_receive_attributes(rust_client_cls: MagicMock, tmp_path):
+    rust_client = rust_client_cls.return_value
+    provider = _make_provider(rust_client={})
+    provider._s3_client = MagicMock()
+    attributes = {"source": "rust"}
+    local_file = tmp_path / "data.bin"
+    local_file.write_bytes(b"payload")
+
+    with patch("multistorageclient.providers.s3.run_async_rust_client_method") as run_rust:
+        provider._put_object("test-bucket/put", b"payload", attributes=attributes)
+        run_rust.assert_called_once_with(rust_client, "put", "put", b"payload", attributes=attributes)
+        provider._s3_client.put_object.assert_not_called()
+
+        run_rust.reset_mock()
+        provider._upload_file("test-bucket/small", str(local_file), attributes=attributes)
+        run_rust.assert_called_once_with(rust_client, "upload", str(local_file), "small", attributes=attributes)
+        provider._s3_client.upload_file.assert_not_called()
+
+        provider._multipart_threshold = 1
+        run_rust.reset_mock()
+        provider._upload_file("test-bucket/file", str(local_file), attributes=attributes)
+        run_rust.assert_called_once_with(
+            rust_client, "upload_multipart_from_file", str(local_file), "file", attributes=attributes
+        )
+        provider._s3_client.upload_file.assert_not_called()
+
+        run_rust.reset_mock()
+        provider._upload_file("test-bucket/bytes", io.BytesIO(b"payload"), attributes=attributes)
+        assert run_rust.call_args.args[:3] == (rust_client, "upload_multipart_from_bytes", "bytes")
+        assert run_rust.call_args.kwargs == {"attributes": attributes}
+        provider._s3_client.upload_fileobj.assert_not_called()
+
+
+@patch("multistorageclient.providers.s3.RustClient")
+def test_rust_invalid_metadata_reports_context(rust_client_cls: MagicMock):
+    rust_client_cls.return_value = MagicMock()
+    provider = _make_provider(rust_client={})
+    provider._s3_client = MagicMock()
+
+    with (
+        patch(
+            "multistorageclient.providers.s3.run_async_rust_client_method",
+            side_effect=ValueError("Invalid metadata key: 'my key'"),
+        ),
+        pytest.raises(RuntimeError, match="Invalid metadata key"),
+    ):
+        provider._put_object("test-bucket/key", b"payload", attributes={"my key": "value"})
+
+    provider._s3_client.put_object.assert_not_called()
+
+
+@patch("multistorageclient.providers.s3.RustClient")
 def test_python_fallback_with_if_match_threads_checksum(rust_client_cls: MagicMock):
     """``_put_object`` with ``if_match`` falls back to boto3 and still threads ChecksumAlgorithm."""
     rust_client_cls.return_value = MagicMock()
