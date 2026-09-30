@@ -19,6 +19,10 @@ unfixable = []
 python-downloads = "never"
 python-preference = "only-system"
 resolution = "lowest-direct"
+constraint-dependencies = [
+    "pyjwt>=2.14.0",
+    "urllib3>=2.8.0"
+]
 override-dependencies = [
     "protobuf>=7.35.1"
 ]
