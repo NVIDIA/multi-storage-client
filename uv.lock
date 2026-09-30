@@ -2370,6 +2370,7 @@ aistore = [
     { name = "aistore" },
 ]
 azure-storage-blob = [
+    { name = "azure-core" },
     { name = "azure-identity" },
     { name = "azure-storage-blob" },
 ]
@@ -2450,6 +2451,7 @@ requires-dist = [
     { name = "aiofiles", marker = "extra == 'explorer'", specifier = ">=23.2.1" },
     { name = "aistore", marker = "extra == 'aistore'", specifier = ">=1.23,<2" },
     { name = "awscrt", marker = "extra == 'boto3'", specifier = ">=0.32.1,<1" },
+    { name = "azure-core", marker = "extra == 'azure-storage-blob'", specifier = ">=1.38.0,<2" },
     { name = "azure-identity", marker = "extra == 'azure-storage-blob'", specifier = ">=1.25,<2" },
     { name = "azure-storage-blob", marker = "extra == 'azure-storage-blob'", specifier = ">=12.28.0,<13" },
     { name = "boto3", marker = "extra == 'boto3'", specifier = ">=1.36,<2" },
