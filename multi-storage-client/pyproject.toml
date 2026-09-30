@@ -81,6 +81,7 @@ aistore = [
     "aistore>=1.23,<2"
 ]
 azure-storage-blob = [
+    "azure-core>=1.38.0,<2",
     "azure-storage-blob>=12.28.0,<13",
     "azure-identity>=1.25,<2"
 ]
