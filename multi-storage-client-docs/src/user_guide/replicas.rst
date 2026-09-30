@@ -29,6 +29,7 @@ and a required ``read_priority`` (lower numbers = higher priority).
            read_priority: 1   # First choice
          - replica_profile: my-dataset-lustre
            read_priority: 2   # Second choice and so on...
+           read_only: true    # Read from this replica without writing back
 
      my-dataset-s3-express:
        storage_provider:
@@ -51,6 +52,17 @@ fall back and read from the source profile ``my-dataset``.
 
   The ``read_priority`` is **required** and must be a positive integer (``1`` = highest priority), with replicas of the 
   same priority being tried in the order they are listed in the configuration.
+
+Set ``read_only: true`` for a replica that is populated separately, such as a manually managed subset on Lustre.
+MSC still searches that replica in priority order and falls back to the next replica or source when an object is missing.
+The setting defaults to ``false`` for existing configurations.
+
+.. note::
+
+   Deleting an object from the source does not delete it from a read-only replica. If that replica still holds the
+   object, subsequent reads through the source profile can return the replica's copy. MSC does not copy that stale
+   object back into writable replicas when it is absent from the source. Keep read-only replicas in sync with source
+   deletions as part of their manual management.
 
 .. _mirror-data-to-replicas:
 
@@ -80,8 +92,10 @@ To populate replicas from the source using Python, you can use the :py:meth:`mul
    # Mirror data from source to replica
    client.sync_replicas(source_path="", num_worker_processes=8)
 
-The ``sync_replicas`` will spawn a number of worker processes to copy data from the source to the replicas. By default, it uses the local mode 
-that runs the worker processes on the same machine as the client. You can also use the Ray mode to run the worker processes on a Ray cluster to 
+The ``sync_replicas`` will spawn a number of worker processes to copy data from the source to the writable replicas.
+Read-only replicas are skipped by default; selecting one with ``replica_indices`` raises ``ValueError``.
+By default, sync uses the local mode, which runs worker processes on the same machine as the client.
+You can also use the Ray mode to run the worker processes on a Ray cluster to
 take advantage of the distributed computing capabilities of Ray.
 
 .. code-block:: python
@@ -140,8 +154,9 @@ doesn't contain the requested data, MSC will automatically try the next replica 
 all replicas fail, it will ultimately read from the source profile.
 
 Additionally, MSC implements an **async upload-on-miss** strategy. When a read operation misses on any 
-replica, MSC automatically uploads the object to replicas that are missing the data. This happens in 
-background threads, so the caller doesn't block.
+replica, MSC automatically uploads the object to writable replicas that are missing the data. Uploads happen in
+background threads, so the caller doesn't block. Read-only replicas are never uploaded to or deleted from by the
+source profile.
 
 This provides a robust, fault-tolerant system where your applications can continue operating normally 
 regardless of the replica population status, while keeping replicas up-to-date opportunistically.

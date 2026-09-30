@@ -146,6 +146,7 @@ PROFILE_SCHEMA = {
                     "properties": {
                         "replica_profile": {"type": "string"},
                         "read_priority": {"type": "integer", "minimum": 1},
+                        "read_only": {"type": "boolean"},
                     },
                     "required": ["replica_profile", "read_priority"],
                 },
