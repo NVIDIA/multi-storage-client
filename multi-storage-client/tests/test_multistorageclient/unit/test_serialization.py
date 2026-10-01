@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 import pickle
 
 import pytest
@@ -26,7 +27,8 @@ from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemory
     argnames=["temp_data_store_type"],
     argvalues=[[tempdatastore.TemporaryPOSIXDirectory], [tempdatastore.TemporaryAWSS3Bucket]],
 )
-def test_pickle_file_open(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+def test_pickle_file_open(temp_data_store_type: type[tempdatastore.TemporaryDataStore], telemetry_server):
+    _, telemetry_address = telemetry_server
     with temp_data_store_type() as temp_data_store:
         profile = "data"
         storage_client = StorageClient(
@@ -43,7 +45,9 @@ def test_pickle_file_open(temp_data_store_type: type[tempdatastore.TemporaryData
                     },
                 },
                 profile=profile,
-                telemetry_provider=telemetry.init,
+                telemetry_provider=functools.partial(
+                    telemetry.init, mode=telemetry.TelemetryMode.CLIENT, address=telemetry_address
+                ),
             )
         )
 

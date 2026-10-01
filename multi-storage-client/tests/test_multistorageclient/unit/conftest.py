@@ -17,7 +17,10 @@
 #
 # https://docs.pytest.org/en/stable/reference/fixtures.html#conftest-py-sharing-fixtures-across-multiple-files
 
+import atexit
+import errno
 import os
+import socket
 import tempfile
 import uuid
 
@@ -132,3 +135,26 @@ def reset_globals():
         os.environ["MSC_MAX_WORKERS"] = msc_max_workers
 
     yield
+
+
+@pytest.fixture
+def telemetry_server(monkeypatch):
+    """Use an OS-assigned TCP port while deliberately occupying the default port."""
+    from multistorageclient import telemetry
+
+    monkeypatch.setattr(telemetry, "_TELEMETRY_PROXIES", {})
+    with socket.socket() as occupied_port:
+        try:
+            occupied_port.bind(("127.0.0.1", telemetry._telemetry_manager_server_port(os.getpid())))
+            occupied_port.listen()
+        except OSError as error:
+            if error.errno != errno.EADDRINUSE:
+                raise
+
+        resources = telemetry.init(mode=telemetry.TelemetryMode.SERVER, address=("127.0.0.1", 0))
+        manager = resources._manager  # pyright: ignore [reportAttributeAccessIssue]
+        try:
+            yield resources, manager.address
+        finally:
+            manager.shutdown()
+            atexit.unregister(manager.shutdown)
