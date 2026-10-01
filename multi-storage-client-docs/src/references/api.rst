@@ -102,6 +102,10 @@ Providers
    :members:
    :undoc-members:
 
+.. automodule:: multistorageclient.providers.s3_cuobject
+   :members:
+   :undoc-members:
+
 .. automodule:: multistorageclient.providers.s8k
    :members:
    :undoc-members:

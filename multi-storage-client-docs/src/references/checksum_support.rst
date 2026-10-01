@@ -27,6 +27,10 @@ Summary
      - Yes
      - Yes
      - Default upload algorithm is ``CRC32``. Full GETs validate when the server returns a checksum; ranged GETs are not validated.
+   * - ``s3_cuobject``
+     - Yes
+     - No
+     - Every upload and multipart part sends a ``CRC64NVME`` checksum of the RDMA payload, which the server validates. ``checksum_algorithm`` is not supported. RDMA GETs are not checksum-validated.
    * - ``s8k``
      - Yes
      - No

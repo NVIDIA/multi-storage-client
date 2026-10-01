@@ -26,12 +26,16 @@ import base64
 import io
 import struct
 from array import array
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
+from unittest.mock import call as mock_call
 
 import pytest
+from botocore.exceptions import ClientError
 
+import multistorageclient.providers._cuobj as cuobj
 from multistorageclient.providers._cuobj import CuObjEngine as _RealCuObjEngine
+from multistorageclient.providers._cuobj import CuObjError, parse_rdma_reply
 from multistorageclient.providers.s3 import StaticS3CredentialsProvider
 from multistorageclient.providers.s3_cuobject import (
     RDMA_SINGLE_SHOT_THRESHOLD,
@@ -40,6 +44,21 @@ from multistorageclient.providers.s3_cuobject import (
 from multistorageclient.types import Range
 
 _FAKE_CHECKSUM = "ZmFrZWNyYzY0"
+
+
+def _response(status: int = 200, etag: str = '"etag"', **headers: str) -> dict:
+    return {
+        "ETag": etag,
+        "Body": io.BytesIO(b""),
+        "ResponseMetadata": {"HTTPStatusCode": status, "HTTPHeaders": headers},
+    }
+
+
+def _get_response(status: int, reply: str, transferred: Any = None) -> dict:
+    headers = {"x-amz-rdma-reply": reply}
+    if transferred is not None:
+        headers["x-amz-rdma-bytes-transferred"] = str(transferred)
+    return _response(status, **headers)
 
 
 def _make_rdma_provider(engine_cls: MagicMock, **extra: Any) -> S3CuObjectStorageProvider:
@@ -101,7 +120,7 @@ def test_rdma_put_sends_empty_body_checksum_and_registers_buffer(engine_cls: Mag
     # Precomputed CRC64NVME sent so a non-RDMA endpoint rejects the empty body
     # instead of storing a 0-byte object.
     assert put_kwargs["ChecksumCRC64NVME"] == _FAKE_CHECKSUM
-    engine.check_reply.assert_called_once()
+    engine.check_reply.assert_called_once_with(provider._s3_client.put_object.return_value, is_put=True)
 
 
 @patch.object(S3CuObjectStorageProvider, "_rdma_checksum", staticmethod(lambda buffer: _FAKE_CHECKSUM))
@@ -151,6 +170,7 @@ def test_rdma_put_empty_payload_skips_rdma(engine_cls: MagicMock):
 def test_rdma_get_byte_range_sizes_buffer_and_passes_range(engine_cls: MagicMock):
     provider = _make_rdma_provider(engine_cls)
     provider._s3_client = MagicMock()
+    provider._s3_client.get_object.return_value = _get_response(206, "206", 32)
     engine = engine_cls.return_value
 
     result = provider._get_object(path="test-bucket/key.bin", byte_range=Range(offset=10, size=32))
@@ -166,6 +186,7 @@ def test_rdma_get_byte_range_sizes_buffer_and_passes_range(engine_cls: MagicMock
 def test_rdma_get_full_object_heads_for_size(engine_cls: MagicMock):
     provider = _make_rdma_provider(engine_cls)
     provider._s3_client = MagicMock()
+    provider._s3_client.get_object.return_value = _get_response(200, "200", 128)
     engine = engine_cls.return_value
 
     metadata = MagicMock()
@@ -253,8 +274,6 @@ def test_install_hooks_registers_token_for_put_get_and_upload_part():
 
 
 def test_transfer_registers_full_nbytes_for_multibyte_memoryview():
-    import multistorageclient.providers._cuobj as cuobj
-
     engine = object.__new__(_RealCuObjEngine)
     buffer = memoryview(array("H", [0x1111, 0x2222, 0x3333, 0x4444]))  # 4 items, 8 bytes
     assert len(buffer) == 4 and buffer.nbytes == 8
@@ -266,7 +285,7 @@ def test_transfer_registers_full_nbytes_for_multibyte_memoryview():
         patch.object(cuobj, "deregister_buffer"),
         engine.transfer(buffer, is_put=False),
     ):
-        pass
+        _RealCuObjEngine._inject_token(MagicMock(headers={}))
 
     assert register.call_args.args[1] == 8  # nbytes, not len() == 4
     assert get_token.call_args.args[1] == 8
@@ -276,6 +295,7 @@ def test_transfer_registers_full_nbytes_for_multibyte_memoryview():
 def test_rdma_get_full_object_binds_ifmatch_to_head_version(engine_cls: MagicMock):
     provider = _make_rdma_provider(engine_cls)
     provider._s3_client = MagicMock()
+    provider._s3_client.get_object.return_value = _get_response(200, "200", 64)
 
     metadata = MagicMock()
     metadata.content_length = 64
@@ -287,8 +307,9 @@ def test_rdma_get_full_object_binds_ifmatch_to_head_version(engine_cls: MagicMoc
     assert get_kwargs["IfMatch"] == '"abc123"'
 
 
+@pytest.mark.parametrize("chunksize", [0, cuobj.RDMA_MAX_MEMORY_REG_SIZE + 1])
 @patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
-def test_rdma_multipart_chunksize_must_be_positive(engine_cls: MagicMock):
+def test_rdma_multipart_chunksize_must_fit_token_window(engine_cls: MagicMock, chunksize: int):
     engine_cls.client_config_overrides.return_value = _RealCuObjEngine.client_config_overrides()
     with pytest.raises(ValueError, match="multipart_chunksize"):
         S3CuObjectStorageProvider(
@@ -296,7 +317,7 @@ def test_rdma_multipart_chunksize_must_be_positive(engine_cls: MagicMock):
             endpoint_url="https://s3.example.com",
             base_path="test-bucket",
             credentials_provider=StaticS3CredentialsProvider(access_key="a", secret_key="b"),
-            rdma={"multipart_chunksize": 0},
+            rdma={"multipart_chunksize": chunksize},
         )
 
 
@@ -307,11 +328,337 @@ def test_rdma_upload_text_stream_uses_single_shot(engine_cls: MagicMock):
     provider._s3_client = MagicMock()
     provider._rdma_multipart_chunksize = 16
 
-    # A text-mode stream larger than the part size (and not a StringIO) must not
-    # take the multipart path -- its chunks are str and would crash the raw
-    # bytearray reader -- so it falls through to the single-shot encode path.
+    # A text-mode stream must not be read by the raw multipart stream reader --
+    # its chunks are str and would crash it -- so it is encoded first and then
+    # split as an in-memory body.
     text_stream = io.TextIOWrapper(io.BytesIO(b"a" * 40))
-    provider._upload_file(remote_path="test-bucket/text.bin", f=text_stream)
+    written = provider._upload_file(remote_path="test-bucket/text.bin", f=text_stream)
 
-    provider._s3_client.create_multipart_upload.assert_not_called()
-    provider._s3_client.put_object.assert_called_once()
+    assert written == 40
+    assert provider._s3_client.upload_part.call_count == 3
+    provider._s3_client.put_object.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        ("200", 200),
+        ("204", 204),
+        ("206", 206),
+        ("500", 500),
+        ("501", 501),
+        ("", 501),
+        (None, 501),
+        ("not-a-number", None),
+        ("200xyz", None),
+        ("200 ", None),
+        (" 200", None),
+        ("+200", None),
+        ("2_00", None),
+        ("0x200", None),
+        ("\u0662\u0660\u0660", None),
+        ("-2", None),
+        ("99", None),
+        ("600", None),
+        ("501x", None),
+    ],
+)
+def test_parse_rdma_reply(reply, expected):
+    assert parse_rdma_reply(reply) == expected
+
+
+@pytest.mark.parametrize("reply", [None, "200", "204"])
+def test_check_reply_accepts_put(reply):
+    headers = {} if reply is None else {"x-amz-rdma-reply": reply}
+    _RealCuObjEngine.check_reply(_response(200, **headers), is_put=True)
+
+
+@pytest.mark.parametrize(
+    ("response", "match"),
+    [
+        (_response(200, **{"x-amz-rdma-reply": "501"}), "declined"),
+        (_response(200, **{"x-amz-rdma-reply": "200xyz"}), "failed"),
+        (_response(200, **{"x-amz-rdma-reply": "500"}), "failed"),
+        (_response(200, **{"x-amz-rdma-reply": "206"}), "failed"),
+        (_response(500, **{"x-amz-rdma-reply": "200"}), "failed"),
+        (_response(200, etag=""), "failed"),
+        (_response(200, etag="", **{"x-amz-rdma-reply": "200"}), "failed"),
+    ],
+)
+def test_check_reply_rejects_put(response, match):
+    with pytest.raises(CuObjError, match=match):
+        _RealCuObjEngine.check_reply(response, is_put=True)
+
+
+@pytest.mark.parametrize(("status", "reply"), [(200, "200"), (206, "206")])
+def test_check_reply_accepts_matched_get(status, reply):
+    _RealCuObjEngine.check_reply(_get_response(status, reply), is_put=False)
+
+
+@pytest.mark.parametrize(("status", "reply"), [(200, "206"), (206, "200"), (200, "204"), (404, "200")])
+def test_check_reply_rejects_mismatched_get(status, reply):
+    with pytest.raises(CuObjError, match="failed"):
+        _RealCuObjEngine.check_reply(_get_response(status, reply), is_put=False)
+
+
+def test_check_reply_get_declined_without_header():
+    with pytest.raises(CuObjError, match="declined"):
+        _RealCuObjEngine.check_reply(_response(200), is_put=False)
+
+
+@pytest.mark.parametrize(("transferred", "expected"), [(None, 0), (0, 0), (10, 10), (16, 16)])
+def test_parse_rdma_bytes_transferred(transferred, expected):
+    assert cuobj.parse_rdma_bytes_transferred(_get_response(206, "206", transferred), 16) == expected
+
+
+@pytest.mark.parametrize("transferred", [17, "1x", "-1", " 5"])
+def test_parse_rdma_bytes_transferred_rejects(transferred):
+    with pytest.raises(CuObjError):
+        cuobj.parse_rdma_bytes_transferred(_get_response(206, "206", transferred), 16)
+
+
+@pytest.mark.parametrize("transferred", [None, 63])
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
+def test_rdma_get_full_object_rejects_short_transfer(engine_cls: MagicMock, transferred):
+    provider = _make_rdma_provider(engine_cls)
+    provider._s3_client = MagicMock()
+    provider._s3_client.get_object.return_value = _get_response(200, "200", transferred)
+
+    metadata = MagicMock()
+    metadata.content_length = 64
+    with (
+        patch.object(provider, "_get_object_metadata", return_value=metadata),
+        pytest.raises(RuntimeError, match="delivered"),
+    ):
+        provider._get_object(path="test-bucket/key.bin")
+
+
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
+def test_rdma_get_truncates_to_bytes_transferred(engine_cls: MagicMock):
+    provider = _make_rdma_provider(engine_cls)
+    provider._s3_client = MagicMock()
+    provider._s3_client.get_object.return_value = _get_response(206, "206", 5)
+
+    result = provider._get_object(path="test-bucket/key.bin", byte_range=Range(offset=95, size=32))
+
+    assert len(result) == 5
+
+
+def test_transfer_mints_fresh_verbatim_token_per_signing_attempt():
+    engine = object.__new__(_RealCuObjEngine)
+    first, retry = MagicMock(headers={}), MagicMock(headers={})
+
+    with (
+        patch.object(cuobj, "register_buffer"),
+        patch.object(cuobj, "get_rdma_token", side_effect=["descriptor-1", "descriptor-2"]) as get_token,
+        patch.object(cuobj, "put_rdma_token") as put_token,
+        patch.object(cuobj, "deregister_buffer") as deregister,
+        engine.transfer(bytearray(8), is_put=True),
+    ):
+        _RealCuObjEngine._inject_token(first)
+        _RealCuObjEngine._inject_token(retry)
+        assert put_token.call_args_list == [mock_call("descriptor-1")]
+
+    assert first.headers == {"x-amz-rdma-token": "descriptor-1"}
+    assert retry.headers == {"x-amz-rdma-token": "descriptor-2"}
+    assert get_token.call_count == 2
+    assert put_token.call_args_list == [mock_call("descriptor-1"), mock_call("descriptor-2")]
+    deregister.assert_called_once()
+
+
+def test_inject_token_is_noop_outside_transfer():
+    request = MagicMock(headers={})
+    with patch.object(cuobj, "get_rdma_token") as get_token:
+        _RealCuObjEngine._inject_token(request)
+    get_token.assert_not_called()
+    assert request.headers == {}
+
+
+def test_transfer_rejects_buffer_over_token_window():
+    engine = object.__new__(_RealCuObjEngine)
+    view = MagicMock()
+    view.nbytes = cuobj.RDMA_MAX_MEMORY_REG_SIZE + 1
+
+    with (
+        patch.object(cuobj, "memoryview", return_value=view, create=True),
+        patch.object(cuobj, "register_buffer") as register,
+        pytest.raises(CuObjError, match="exceeds"),
+        engine.transfer(bytearray(1), is_put=True),
+    ):
+        pass
+
+    register.assert_not_called()
+
+
+def _client_error(status: int, reply: Any = None) -> ClientError:
+    headers = {} if reply is None else {"x-amz-rdma-reply": reply}
+    return ClientError(
+        {"Error": {"Code": "Declined"}, "ResponseMetadata": {"HTTPStatusCode": status, "HTTPHeaders": headers}},
+        "GetObject",
+    )
+
+
+@pytest.mark.parametrize("status", [501, 503])
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
+def test_rdma_get_surfaces_decline_from_client_error(engine_cls: MagicMock, status: int):
+    provider = _make_rdma_provider(engine_cls)
+    provider._s3_client = MagicMock()
+    provider._s3_client.get_object.side_effect = _client_error(status, "501")
+
+    with pytest.raises(RuntimeError, match="declined RDMA") as excinfo:
+        provider._get_object(path="test-bucket/key.bin", byte_range=Range(offset=0, size=8))
+    assert isinstance(excinfo.value.__cause__, CuObjError)
+
+
+@patch.object(S3CuObjectStorageProvider, "_rdma_checksum", staticmethod(lambda buffer: _FAKE_CHECKSUM))
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
+def test_rdma_put_surfaces_decline_from_client_error(engine_cls: MagicMock):
+    provider = _make_rdma_provider(engine_cls)
+    provider._s3_client = MagicMock()
+    provider._s3_client.put_object.side_effect = _client_error(501, "501")
+
+    with pytest.raises(RuntimeError, match="declined RDMA"):
+        provider._put_object(path="test-bucket/key.bin", body=b"payload")
+
+
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
+def test_rdma_get_client_error_without_decline_is_translated(engine_cls: MagicMock):
+    provider = _make_rdma_provider(engine_cls)
+    provider._s3_client = MagicMock()
+    provider._s3_client.get_object.side_effect = _client_error(404)
+
+    with pytest.raises(FileNotFoundError):
+        provider._get_object(path="test-bucket/key.bin", byte_range=Range(offset=0, size=8))
+
+
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
+def test_rdma_get_full_object_splits_into_ranged_parts(engine_cls: MagicMock):
+    provider = _make_rdma_provider(engine_cls)
+    provider._s3_client = MagicMock()
+    provider._rdma_multipart_chunksize = 16
+    provider._s3_client.get_object.side_effect = [
+        _get_response(206, "206", 16),
+        _get_response(206, "206", 16),
+        _get_response(206, "206", 8),
+    ]
+    registered: list[int] = []
+    engine_cls.return_value.transfer.side_effect = lambda view, is_put: registered.append(view.nbytes) or MagicMock()
+
+    metadata = MagicMock()
+    metadata.content_length = 40
+    metadata.etag = '"v1"'
+    with patch.object(provider, "_get_object_metadata", return_value=metadata):
+        result = provider._get_object(path="test-bucket/key.bin")
+
+    assert len(result) == 40
+    calls = provider._s3_client.get_object.call_args_list
+    assert [c.kwargs["Range"] for c in calls] == ["bytes=0-15", "bytes=16-31", "bytes=32-39"]
+    assert all(c.kwargs["IfMatch"] == '"v1"' for c in calls)
+    assert registered == [16, 16, 8]
+
+
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
+def test_rdma_ranged_get_stops_at_end_of_object(engine_cls: MagicMock):
+    provider = _make_rdma_provider(engine_cls)
+    provider._s3_client = MagicMock()
+    provider._rdma_multipart_chunksize = 16
+    first = _get_response(206, "206", 16)
+    first["ETag"] = '"v1"'
+    provider._s3_client.get_object.side_effect = [first, _get_response(206, "206", 4)]
+
+    result = provider._get_object(path="test-bucket/key.bin", byte_range=Range(offset=100, size=48))
+
+    assert len(result) == 20
+    calls = provider._s3_client.get_object.call_args_list
+    assert len(calls) == 2
+    assert "IfMatch" not in calls[0].kwargs
+    assert calls[1].kwargs["IfMatch"] == '"v1"'
+
+
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
+def test_rdma_ranged_get_ending_on_part_boundary_stops_at_416(engine_cls: MagicMock):
+    provider = _make_rdma_provider(engine_cls)
+    provider._s3_client = MagicMock()
+    provider._rdma_multipart_chunksize = 16
+    provider._s3_client.get_object.side_effect = [_get_response(206, "206", 16), _client_error(416)]
+
+    result = provider._get_object(path="test-bucket/key.bin", byte_range=Range(offset=0, size=32))
+
+    assert len(result) == 16
+
+
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
+def test_rdma_ranged_get_first_part_416_is_raised(engine_cls: MagicMock):
+    provider = _make_rdma_provider(engine_cls)
+    provider._s3_client = MagicMock()
+    provider._rdma_multipart_chunksize = 16
+    provider._s3_client.get_object.side_effect = [_client_error(416)]
+
+    with pytest.raises(RuntimeError, match="status_code: 416"):
+        provider._get_object(path="test-bucket/key.bin", byte_range=Range(offset=64, size=32))
+
+
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
+def test_rdma_get_split_full_object_rejects_short_part(engine_cls: MagicMock):
+    provider = _make_rdma_provider(engine_cls)
+    provider._s3_client = MagicMock()
+    provider._rdma_multipart_chunksize = 16
+    provider._s3_client.get_object.side_effect = [_get_response(206, "206", 10)]
+
+    metadata = MagicMock()
+    metadata.content_length = 40
+    with (
+        patch.object(provider, "_get_object_metadata", return_value=metadata),
+        pytest.raises(RuntimeError, match="delivered 10 of 40"),
+    ):
+        provider._get_object(path="test-bucket/key.bin")
+
+
+@patch.object(S3CuObjectStorageProvider, "_rdma_checksum", staticmethod(lambda buffer: _FAKE_CHECKSUM))
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
+def test_rdma_put_object_over_part_size_uses_multipart(engine_cls: MagicMock):
+    provider = _make_rdma_provider(engine_cls)
+    provider._s3_client = MagicMock()
+    provider._rdma_multipart_chunksize = 16
+    provider._s3_client.create_multipart_upload.return_value = {"UploadId": "uid"}
+    engine = engine_cls.return_value
+    body = bytearray(b"b" * 40)
+
+    written = provider._put_object(
+        path="test-bucket/big.bin",
+        body=cast(bytes, body),
+        if_none_match="*",
+        attributes={"k": "v"},
+        content_type="text/plain",
+    )
+
+    assert written == 40
+    provider._s3_client.put_object.assert_not_called()
+    _, create_kwargs = provider._s3_client.create_multipart_upload.call_args
+    assert create_kwargs["ContentType"] == "text/plain"
+    assert create_kwargs["Metadata"] == {"k": "v"}
+    assert provider._s3_client.upload_part.call_count == 3
+    # Writable bodies are registered in place as zero-copy slices.
+    parts = [c.args[0] for c in engine.transfer.call_args_list]
+    assert [memoryview(p).nbytes for p in parts] == [16, 16, 8]
+    assert all(isinstance(p, memoryview) for p in parts)
+    _, complete_kwargs = provider._s3_client.complete_multipart_upload.call_args
+    assert complete_kwargs["IfNoneMatch"] == "*"
+    assert "IfMatch" not in complete_kwargs
+
+
+@patch.object(S3CuObjectStorageProvider, "_rdma_checksum", staticmethod(lambda buffer: _FAKE_CHECKSUM))
+@patch("multistorageclient.providers.s3_cuobject.CuObjEngine")
+def test_rdma_put_object_multipart_copies_readonly_parts(engine_cls: MagicMock):
+    provider = _make_rdma_provider(engine_cls)
+    provider._s3_client = MagicMock()
+    provider._rdma_multipart_chunksize = 16
+    provider._s3_client.create_multipart_upload.return_value = {"UploadId": "uid"}
+    engine = engine_cls.return_value
+
+    provider._put_object(path="test-bucket/big.bin", body=b"c" * 40, if_match='"v1"')
+
+    parts = [c.args[0] for c in engine.transfer.call_args_list]
+    assert all(isinstance(p, bytearray) for p in parts)
+    assert b"".join(bytes(p) for p in parts) == b"c" * 40
+    assert provider._s3_client.complete_multipart_upload.call_args.kwargs["IfMatch"] == '"v1"'
