@@ -19,6 +19,7 @@ import sys
 import tempfile
 import threading
 import time
+from pathlib import Path
 from typing import cast
 from unittest import mock
 
@@ -832,6 +833,52 @@ def test_sync_from_with_source_files(temp_data_store_type: type[tempdatastore.Te
         target_client.sync_from(source_client, source_path, target_path, source_files=files_with_missing)
         # Should not raise error, only existing files synced (dir1/file0.txt already exists)
         verify_sync_and_contents(target_url=target_msc_url, expected_files=expected_files)
+
+
+@pytest.mark.parametrize("symlink_handling", [None, *SymlinkHandling])
+@pytest.mark.parametrize("absolute_target", [False, True])
+def test_sync_source_files_symlink_handling(
+    tmp_path: Path, symlink_handling: SymlinkHandling | None, absolute_target: bool
+):
+    """Explicit file selection must honor symlink handling even when the target is not selected."""
+    source_dir = tmp_path / "source"
+    target_dir = tmp_path / "target"
+    source_dir.mkdir()
+    target_dir.mkdir()
+    config_dict = {
+        "profiles": {
+            name: {"storage_provider": {"type": "file", "options": {"base_path": str(path)}}}
+            for name, path in (("source", source_dir), ("target", target_dir))
+        }
+    }
+    source_client = StorageClient(StorageClientConfig.from_dict(config_dict, profile="source"))
+    target_client = StorageClient(StorageClientConfig.from_dict(config_dict, profile="target"))
+    source_client.write("src/target.txt", b"target contents")
+    source_client.write("src/plain.txt", b"plain")
+    source_client.write("src/unselected.txt", b"unselected")
+    (source_dir / "src" / "link.txt").symlink_to(source_dir / "src" / "target.txt" if absolute_target else "target.txt")
+    source_files = ["plain.txt", "link.txt"]
+    if symlink_handling in (SymlinkHandling.PRESERVE, SymlinkHandling.PRESERVE_STRICT):
+        source_files.append("target.txt")
+
+    if symlink_handling is None:
+        result = target_client.sync_from(source_client, "src/", "backup/", source_files=source_files)
+    else:
+        result = target_client.sync_from(
+            source_client, "src/", "backup/", source_files=source_files, symlink_handling=symlink_handling
+        )
+
+    assert (target_dir / "backup" / "plain.txt").read_bytes() == b"plain"
+    link = target_dir / "backup" / "link.txt"
+    if symlink_handling == SymlinkHandling.SKIP:
+        assert not link.exists()
+        assert not link.is_symlink()
+        assert result.total_files_added == 1
+    else:
+        assert link.read_bytes() == b"target contents"
+        assert link.is_symlink() == (symlink_handling in (SymlinkHandling.PRESERVE, SymlinkHandling.PRESERVE_STRICT))
+    expected_files = set(source_files) - ({"link.txt"} if symlink_handling == SymlinkHandling.SKIP else set())
+    assert {path.name for path in (target_dir / "backup").iterdir()} == expected_files
 
 
 @pytest.mark.serial

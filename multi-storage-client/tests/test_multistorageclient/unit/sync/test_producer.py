@@ -17,12 +17,14 @@ import queue
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import cast
 
 import pytest
 
 import multistorageclient as msc
 from multistorageclient.client import StorageClient
+from multistorageclient.config import StorageClientConfig
 from multistorageclient.sync.producer import (
     MAX_BATCH_SIZE,
     MIN_BATCH_SIZE,
@@ -31,7 +33,7 @@ from multistorageclient.sync.producer import (
 )
 from multistorageclient.sync.progress_bar import ProgressBar
 from multistorageclient.sync.types import OperationType
-from multistorageclient.types import ObjectMetadata, PatternType
+from multistorageclient.types import ObjectMetadata, PatternType, SymlinkHandling
 from multistorageclient.utils import NullStorageClient, PatternMatcher
 from test_multistorageclient.unit.utils import config
 
@@ -400,6 +402,116 @@ def test_source_files_iterator_is_sorted_and_deduplicated():
 
     assert keys == ["data/a.txt", "data/b.txt", "data/dir/c.txt"]
     assert seen == keys
+
+
+@pytest.mark.parametrize("symlink_handling", list(SymlinkHandling))
+@pytest.mark.parametrize("preserve_source_attributes", [False, True])
+def test_source_files_symlink_handling(
+    tmp_path: Path, symlink_handling: SymlinkHandling, preserve_source_attributes: bool
+):
+    source_client = StorageClient(
+        StorageClientConfig.from_dict(
+            {"profiles": {"source": {"storage_provider": {"type": "file", "options": {"base_path": str(tmp_path)}}}}},
+            profile="source",
+        )
+    )
+    source_client.write("src/target.txt", b"target contents", attributes={"label": "target"})
+    source_client.write("src/plain.txt", b"plain")
+    (tmp_path / "src" / "alias.txt").symlink_to("target.txt")
+    (tmp_path / "src" / "link.txt").symlink_to("alias.txt")
+    producer = ProducerThread(
+        source_client=source_client,
+        source_path="src",
+        target_client=cast(StorageClient, MockStorageClient()),
+        target_path="backup",
+        progress=ProgressBar(desc="", show_progress=False),
+        file_queue=queue.Queue(),
+        num_workers=1,
+        shutdown_event=threading.Event(),
+        source_files=["plain.txt", "link.txt", "link.txt"],
+        symlink_handling=symlink_handling,
+        preserve_source_attributes=preserve_source_attributes,
+    )
+
+    entries = list(producer._create_source_iterator())
+
+    if symlink_handling == SymlinkHandling.SKIP:
+        assert [entry.key for entry in entries] == ["src/plain.txt"]
+    else:
+        assert [entry.key for entry in entries] == ["src/link.txt", "src/plain.txt"]
+        link = entries[0]
+        assert link.metadata == ({"label": "target"} if preserve_source_attributes else None)
+        if symlink_handling in (SymlinkHandling.FOLLOW, SymlinkHandling.FOLLOW_STRICT):
+            assert link.symlink_target is None
+            assert link.content_length == len(b"target contents")
+            assert link.last_modified == source_client.info("src/target.txt").last_modified
+        else:
+            assert link.symlink_target == "alias.txt"
+
+
+@pytest.mark.parametrize("symlink_handling", list(SymlinkHandling))
+def test_source_files_external_symlink_handling(tmp_path: Path, symlink_handling: SymlinkHandling):
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (tmp_path / "external.txt").write_bytes(b"external contents")
+    (source_dir / "link.txt").symlink_to(tmp_path / "external.txt")
+    source_client = StorageClient(
+        StorageClientConfig.from_dict(
+            {"profiles": {"source": {"storage_provider": {"type": "file", "options": {"base_path": str(source_dir)}}}}},
+            profile="source",
+        )
+    )
+    producer = ProducerThread(
+        source_client=source_client,
+        source_path="",
+        target_client=cast(StorageClient, MockStorageClient()),
+        target_path="",
+        progress=ProgressBar(desc="", show_progress=False),
+        file_queue=queue.Queue(),
+        num_workers=1,
+        shutdown_event=threading.Event(),
+        source_files=["link.txt"],
+        symlink_handling=symlink_handling,
+    )
+
+    if symlink_handling in (SymlinkHandling.FOLLOW_STRICT, SymlinkHandling.PRESERVE_STRICT):
+        with pytest.raises(ValueError, match="outside the base directory"):
+            list(producer._create_source_iterator())
+    else:
+        assert list(producer._create_source_iterator()) == []
+
+
+@pytest.mark.parametrize("symlink_handling", list(SymlinkHandling))
+def test_source_files_non_posix_symlinks_are_preserved(symlink_handling: SymlinkHandling):
+    source_client = MockStorageClient()
+
+    def info(path: str, strict: bool = True) -> ObjectMetadata:
+        return ObjectMetadata(
+            key=path,
+            content_length=0,
+            last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            symlink_target="target.txt",
+        )
+
+    source_client.info = info  # type: ignore
+    producer = ProducerThread(
+        source_client=cast(StorageClient, source_client),
+        source_path="",
+        target_client=cast(StorageClient, MockStorageClient()),
+        target_path="",
+        progress=ProgressBar(desc="", show_progress=False),
+        file_queue=queue.Queue(),
+        num_workers=1,
+        shutdown_event=threading.Event(),
+        source_files=["link.txt"],
+        symlink_handling=symlink_handling,
+    )
+
+    entries = list(producer._create_source_iterator())
+
+    assert len(entries) == 1
+    assert entries[0].key == "link.txt"
+    assert entries[0].symlink_target == "target.txt"
 
 
 def test_batch_size_validation():
