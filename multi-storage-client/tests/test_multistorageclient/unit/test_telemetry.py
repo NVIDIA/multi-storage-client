@@ -13,10 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from multiprocessing import get_context
+import atexit
+from multiprocessing import current_process, get_all_start_methods, get_context
 from multiprocessing.managers import BaseProxy
 from multiprocessing.pool import Pool
 from typing import Any
+from unittest.mock import Mock, call
 
 import psutil
 import pytest
@@ -147,9 +149,44 @@ def test_telemetry_manager_server_port() -> None:
     assert port < 2**16
 
 
+@pytest.mark.parametrize("address", [None, ("127.0.0.1", 12345)])
+def test_telemetry_server_address_selection(address: tuple[str, int] | None, monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = Mock()
+    manager_factory = Mock(return_value=manager)
+    monkeypatch.setattr(telemetry, "TelemetryManager", manager_factory)
+    monkeypatch.setattr(telemetry, "_TELEMETRY_PROXIES", {})
+    monkeypatch.setattr(atexit, "register", Mock())
+
+    resources = telemetry.init(mode=telemetry.TelemetryMode.SERVER, address=address)
+    expected_address = address or ("127.0.0.1", telemetry._telemetry_manager_server_port(psutil.Process().pid))
+    manager_factory.assert_called_once_with(address=expected_address, ctx=get_context("spawn"))
+    assert resources is manager.Telemetry.return_value
+    assert telemetry.init(mode=telemetry.TelemetryMode.SERVER, address=address) is resources
+    manager.start.assert_called_once_with()
+
+
+def test_telemetry_client_default_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    process = Mock(pid=100)
+    process.parents.return_value = [Mock(pid=200), Mock(pid=300)]
+    managers = [Mock(), Mock(), Mock()]
+    managers[0].connect.side_effect = ConnectionRefusedError
+    managers[1].connect.side_effect = ConnectionRefusedError
+    manager_factory = Mock(side_effect=managers)
+    monkeypatch.setattr(psutil, "Process", Mock(return_value=process))
+    monkeypatch.setattr(telemetry, "TelemetryManager", manager_factory)
+    monkeypatch.setattr(telemetry, "_TELEMETRY_PROXIES", {})
+
+    resources = telemetry.init(mode=telemetry.TelemetryMode.CLIENT)
+    assert resources is managers[2].Telemetry.return_value
+    assert manager_factory.call_args_list == [
+        call(address=("127.0.0.1", telemetry._telemetry_manager_server_port(pid))) for pid in (100, 200, 300)
+    ]
+
+
 # Invoke in a separate process.
 def _test_telemetry_init_client(
     opentelemetry_config: dict[str, Any],
+    address: tuple[str, int],
     # Make sure caching works across processes.
     #
     # BaseProxy.__str__ returns the __str__ of the referent.
@@ -171,8 +208,9 @@ def _test_telemetry_init_client(
     tracer_referent_str: str,
     tracer_proxy_repr: str,
 ) -> None:
-    telemetry_resources: telemetry.Telemetry = telemetry.init(mode=telemetry.TelemetryMode.CLIENT)
+    telemetry_resources: telemetry.Telemetry = telemetry.init(mode=telemetry.TelemetryMode.CLIENT, address=address)
     assert isinstance(telemetry_resources, BaseProxy)
+    assert telemetry.init(mode=telemetry.TelemetryMode.CLIENT, address=address) is telemetry_resources
 
     assert telemetry_resources_referent_str == str(telemetry_resources)
     assert telemetry_resources_proxy_repr != repr(telemetry_resources)
@@ -235,8 +273,10 @@ def _test_telemetry_init_client(
         active_span.add_event("event")
 
 
-@pytest.mark.parametrize(argnames=["process_start_method"], argvalues=[["fork"], ["spawn"]])
-def test_telemetry_init_server_client(process_start_method: str) -> None:
+@pytest.mark.parametrize("process_start_method", get_all_start_methods())
+def test_telemetry_init_server_client(
+    process_start_method: str, telemetry_server: tuple[telemetry.Telemetry, tuple[str, int]]
+) -> None:
     opentelemetry_config = {
         "metrics": {"exporter": {"type": telemetry._fully_qualified_name(InMemoryMetricExporter)}},
         "traces": {"exporter": {"type": telemetry._fully_qualified_name(InMemorySpanExporter)}},
@@ -251,8 +291,11 @@ def test_telemetry_init_server_client(process_start_method: str) -> None:
     #
     # --------------------------------------------------------------------------------
 
-    telemetry_resources: telemetry.Telemetry = telemetry.init(mode=telemetry.TelemetryMode.SERVER)
+    telemetry_resources, address = telemetry_server
     assert isinstance(telemetry_resources, BaseProxy)
+    assert address[0] == "127.0.0.1"
+    assert address[1] != 0
+    assert telemetry.init(mode=telemetry.TelemetryMode.SERVER, address=("127.0.0.1", 0)) is telemetry_resources
 
     meter_provider: MeterProvider | None = telemetry_resources.meter_provider(opentelemetry_config["metrics"])
     assert meter_provider is not None
@@ -299,28 +342,28 @@ def test_telemetry_init_server_client(process_start_method: str) -> None:
     #
     # --------------------------------------------------------------------------------
 
-    pool = Pool(context=get_context(method=process_start_method))
-
-    pool.apply(
-        _test_telemetry_init_client,
-        kwds={
-            "opentelemetry_config": opentelemetry_config,
-            "telemetry_resources_referent_str": str(telemetry_resources),
-            "telemetry_resources_proxy_repr": repr(telemetry_resources),
-            "meter_provider_referent_str": str(meter_provider),
-            "meter_provider_proxy_repr": repr(meter_provider),
-            "meter_referent_str": str(meter),
-            "meter_proxy_repr": repr(meter),
-            "gauge_referent_str": str(gauge),
-            "gauge_proxy_repr": repr(gauge),
-            "counter_referent_str": str(counter),
-            "counter_proxy_repr": repr(counter),
-            "tracer_provider_referent_str": str(tracer_provider),
-            "tracer_provider_proxy_repr": repr(tracer_provider),
-            "tracer_referent_str": str(tracer),
-            "tracer_proxy_repr": repr(tracer),
-        },
-    )
+    with Pool(processes=1, context=get_context(method=process_start_method)) as pool:
+        pool.apply(
+            _test_telemetry_init_client,
+            kwds={
+                "opentelemetry_config": opentelemetry_config,
+                "address": address,
+                "telemetry_resources_referent_str": str(telemetry_resources),
+                "telemetry_resources_proxy_repr": repr(telemetry_resources),
+                "meter_provider_referent_str": str(meter_provider),
+                "meter_provider_proxy_repr": repr(meter_provider),
+                "meter_referent_str": str(meter),
+                "meter_proxy_repr": repr(meter),
+                "gauge_referent_str": str(gauge),
+                "gauge_proxy_repr": repr(gauge),
+                "counter_referent_str": str(counter),
+                "counter_proxy_repr": repr(counter),
+                "tracer_provider_referent_str": str(tracer_provider),
+                "tracer_provider_proxy_repr": repr(tracer_provider),
+                "tracer_referent_str": str(tracer),
+                "tracer_proxy_repr": repr(tracer),
+            },
+        )
 
 
 def test_metric_instrument_proxies_expose_mutating_methods() -> None:
@@ -360,9 +403,9 @@ def test_file_descriptor_metric_names_and_units() -> None:
     assert telemetry.Telemetry._UP_DOWN_COUNTER_UNIT_MAPPING[open_name] == "{file_descriptor}"
 
 
-def test_up_down_counter_manager_proxy() -> None:
+def test_up_down_counter_manager_proxy(telemetry_server: tuple[telemetry.Telemetry, tuple[str, int]]) -> None:
     opentelemetry_config = {"metrics": {"exporter": {"type": telemetry._fully_qualified_name(InMemoryMetricExporter)}}}
-    telemetry_resources = telemetry.init(mode=telemetry.TelemetryMode.SERVER)
+    telemetry_resources, _ = telemetry_server
 
     up_down_counter = telemetry_resources.up_down_counter(
         config=opentelemetry_config["metrics"],
@@ -376,18 +419,27 @@ def test_up_down_counter_manager_proxy() -> None:
 
 
 def _test_telemetry_init_automatic() -> None:
-    telemetry.init()
+    resources = telemetry.init(address=("127.0.0.1", 0))
+    assert isinstance(resources, BaseProxy) is not current_process().daemon
 
 
-def test_telemetry_init_automatic_main() -> None:
+def test_telemetry_init_automatic_main(telemetry_server: tuple[telemetry.Telemetry, tuple[str, int]]) -> None:
     _test_telemetry_init_automatic()
+    resources, _ = telemetry_server
+    assert telemetry.init(address=("127.0.0.1", 0)) is resources
 
 
 def _test_telemetry_init_automatic_child_parent(daemon: bool) -> None:
     context = get_context(method="spawn")
     process = context.Process(target=_test_telemetry_init_automatic, daemon=daemon)
-    process.start()
-    process.join(timeout=5)
+    try:
+        process.start()
+        process.join(timeout=30)
+        assert process.exitcode == 0
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
 
 
 @pytest.mark.parametrize(argnames=["daemon"], argvalues=[[True], [False]])
@@ -396,12 +448,17 @@ def test_telemetry_init_automatic_child(daemon: bool) -> None:
     #
     # Use spawn so the proxy object caches aren't inherited by child processes.
     #
-    # This is to force test the fallback path. Note that we can't ensure the main test process doesn't have a
-    # telemetry IPC server created by other tests, so we don't check if the resulting telemetry instance is a proxy object.
+    # Port zero forces the fallback path without connecting to a server created by other tests.
     context = get_context(method="spawn")
     process = context.Process(target=_test_telemetry_init_automatic_child_parent, kwargs={"daemon": daemon})
-    process.start()
-    process.join(timeout=10)
+    try:
+        process.start()
+        process.join(timeout=45)
+        assert process.exitcode == 0
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
 
 
 def test_telemetry_fork_safety_locks_reinitialized() -> None:
