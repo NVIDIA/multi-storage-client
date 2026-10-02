@@ -56,7 +56,8 @@ See `multi-storage-client/AGENTS.md` and `multi-storage-explorer/AGENTS.md` for 
 
 ## Testing Policy
 
-- Add/update unit tests for **every** change (feature or bugfix).
+- Check existing test coverage before adding tests. When existing tests cover the behavior being modified, run those tests and do not introduce additional unit tests.
+- Add or update tests only for behavior or edge cases that existing tests do not cover; extend existing shared test suites where appropriate.
 - Prefer focused tests that validate specific behavior.
 - Integration tests are complex to run — flag when needed, run manually.
 
@@ -81,7 +82,7 @@ For any externally visible change:
 - [ ] Plan posted and agreed.
 - [ ] Changes implemented with minimal comments.
 - [ ] If Rust signatures changed, `.pyi` stub updated.
-- [ ] Unit tests added/updated and passing (Python, Rust as applicable).
+- [ ] Relevant existing tests passing; tests added/updated only for uncovered behavior (Python, Rust as applicable).
 - [ ] Integration tests added/updated (documented if not run).
 - [ ] Docs and examples updated.
 - [ ] `just build` succeeds.

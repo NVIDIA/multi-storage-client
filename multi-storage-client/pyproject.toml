@@ -78,7 +78,7 @@ explorer = [
 
 # Storage providers.
 aistore = [
-    "aistore>=1.23,<2"
+    "aistore>=2.0,<3"
 ]
 azure-storage-blob = [
     "azure-core>=1.38.0,<2",
