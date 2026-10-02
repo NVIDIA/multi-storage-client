@@ -1291,6 +1291,13 @@ class SingleStorageClient(AbstractStorageClient):
         signer_type: SignerType | None = None,
         signer_options: dict[str, Any] | None = None,
     ) -> str:
+        if self._metadata_provider:
+            if method.upper() not in ("GET", "HEAD"):
+                raise ValueError(
+                    f"Presigned {method.upper()} URLs are not supported when a metadata provider is configured; "
+                    "uploads through such a URL would bypass the metadata provider."
+                )
+            path = self._resolve_read_path(path)
         return self._storage_provider.generate_presigned_url(
             path, method=method, signer_type=signer_type, signer_options=signer_options
         )

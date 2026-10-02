@@ -33,6 +33,14 @@ To generate a URL that allows the recipient to **upload** an object, pass ``meth
 
    url = msc.generate_presigned_url("msc://my-s3-profile/uploads/data.tar", method="PUT")
 
+Metadata Providers
+==================
+
+When the profile has a metadata provider configured, the logical path is resolved to its physical
+storage path before signing, so the URL grants access to the same object that ``read()`` returns.
+Only ``GET`` and ``HEAD`` URLs can be generated for such profiles; requesting a ``PUT`` URL raises
+``ValueError`` because an upload through a presigned URL would bypass the metadata provider.
+
 Signer Types
 ============
 

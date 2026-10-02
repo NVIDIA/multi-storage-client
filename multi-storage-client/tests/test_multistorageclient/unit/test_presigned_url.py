@@ -29,7 +29,7 @@ from multistorageclient.providers.azure import (
 )
 from multistorageclient.providers.s3 import S3StorageProvider, S3URLSigner
 from multistorageclient.signers import CloudFrontURLSigner, URLSigner
-from multistorageclient.types import CredentialsProvider, SignerType
+from multistorageclient.types import CredentialsProvider, ResolvedPath, ResolvedPathState, SignerType
 
 # ---------------------------------------------------------------------------
 # S3URLSigner
@@ -362,6 +362,69 @@ class TestClientDelegation:
         mock_provider.generate_presigned_url.assert_called_once_with(
             "path/to/obj", method="PUT", signer_type=SignerType.S3, signer_options=None
         )
+
+
+class TestClientWithMetadataProvider:
+    @pytest.fixture
+    def client(self):
+        config = StorageClientConfig.from_yaml(
+            """
+            profiles:
+              test-single:
+                storage_provider:
+                  type: file
+                  options:
+                    base_path: /tmp/test
+            """,
+            profile="test-single",
+        )
+        client = StorageClient(config)
+        mock_provider = MagicMock()
+        mock_provider.generate_presigned_url.return_value = "https://presigned"
+        client._storage_provider = mock_provider
+        client._metadata_provider = MagicMock()
+        return client
+
+    def test_get_signs_physical_path(self, client):
+        client._metadata_provider.realpath.return_value = ResolvedPath(
+            physical_path="tenant/dataset/managed/folder/a_small", state=ResolvedPathState.EXISTS
+        )
+
+        url = client.generate_presigned_url("folder/a_small")
+
+        assert url == "https://presigned"
+        client._metadata_provider.realpath.assert_called_once_with("folder/a_small")
+        client._storage_provider.generate_presigned_url.assert_called_once_with(
+            "tenant/dataset/managed/folder/a_small", method="GET", signer_type=None, signer_options=None
+        )
+
+    def test_head_signs_physical_path(self, client):
+        client._metadata_provider.realpath.return_value = ResolvedPath(
+            physical_path="phys/obj", state=ResolvedPathState.EXISTS
+        )
+
+        client.generate_presigned_url("obj", method="HEAD", signer_options={"expires_in": 60})
+
+        client._storage_provider.generate_presigned_url.assert_called_once_with(
+            "phys/obj", method="HEAD", signer_type=None, signer_options={"expires_in": 60}
+        )
+
+    def test_missing_object_raises(self, client):
+        client._metadata_provider.realpath.return_value = ResolvedPath(
+            physical_path="missing", state=ResolvedPathState.UNTRACKED
+        )
+
+        with pytest.raises(FileNotFoundError):
+            client.generate_presigned_url("missing")
+
+        client._storage_provider.generate_presigned_url.assert_not_called()
+
+    def test_put_rejected(self, client):
+        with pytest.raises(ValueError, match="metadata provider"):
+            client.generate_presigned_url("folder/new", method="PUT")
+
+        client._metadata_provider.realpath.assert_not_called()
+        client._storage_provider.generate_presigned_url.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
