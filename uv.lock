@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.10, <4"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -76,7 +76,7 @@ wheels = [
 
 [[package]]
 name = "aistore"
-version = "1.23.0"
+version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "braceexpand" },
@@ -93,9 +93,9 @@ dependencies = [
     { name = "urllib3" },
     { name = "xxhash" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/dd/bf/bf1d9e7cf6dd2101bff19405f69b8afa01022a4ecb08e1602367bfa43daf/aistore-1.23.0.tar.gz", hash = "sha256:dbd06151b102d50b515fd8d4b6f29e143989aad933a1c1b1274c0560eac7596f", size = 150597, upload-time = "2026-03-25T22:28:29.044Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f7/5d/1707772a21a8b01f6700da01ff067416a9ce7ad1e765e2011150da37f2c2/aistore-2.0.0.tar.gz", hash = "sha256:a4f7b7561c8ffa997a315f92d1a46252bb68da4e8f7f8f23e076cb17fc31033d", size = 175450, upload-time = "2026-09-28T21:41:32.495Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9e/a2/5eb518ecf5ef43af478c02984e3b8340d97c96b20eeaf5e742653f789ed3/aistore-1.23.0-py3-none-any.whl", hash = "sha256:05491c487d28efb644cfc1d02a28ca63e91c574037c8360b70b9644ed671d4f8", size = 214828, upload-time = "2026-03-25T22:28:27.542Z" },
+    { url = "https://files.pythonhosted.org/packages/d1/1a/7a28165ba78b6c2aac8ccc7d4526ce6ed16b9c1695da9568750f8f130f36/aistore-2.0.0-py3-none-any.whl", hash = "sha256:871ec0f940ff6775bcaea7ea3a39a05424b0787eb18503a9f5b273b8fbad2bcb", size = 245811, upload-time = "2026-09-28T21:41:30.878Z" },
 ]
 
 [[package]]
@@ -2453,7 +2453,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiofiles", marker = "extra == 'explorer'", specifier = ">=23.2.1" },
-    { name = "aistore", marker = "extra == 'aistore'", specifier = ">=1.23,<2" },
+    { name = "aistore", marker = "extra == 'aistore'", specifier = ">=2.0,<3" },
     { name = "awscrt", marker = "extra == 'boto3'", specifier = ">=0.32.1,<1" },
     { name = "azure-core", marker = "extra == 'azure-storage-blob'", specifier = ">=1.38.0,<2" },
     { name = "azure-identity", marker = "extra == 'azure-storage-blob'", specifier = ">=1.25,<2" },
