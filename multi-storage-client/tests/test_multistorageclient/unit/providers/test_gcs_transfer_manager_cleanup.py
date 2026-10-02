@@ -39,6 +39,92 @@ def _staging_files(tmp_path):
     return sorted(p.name for p in (tmp_path / "staging").iterdir())
 
 
+def test_rust_uploads_receive_attributes(gcs_provider, tmp_path):
+    rust_client = MagicMock()
+    gcs_provider._rust_client = rust_client
+    attributes = {"source": "rust"}
+    local_file = tmp_path / "data.bin"
+    local_file.write_bytes(b"payload")
+
+    with patch("multistorageclient.providers.gcs.run_async_rust_client_method") as run_rust:
+        gcs_provider._put_object("bucket/put", b"payload", attributes=attributes)
+        run_rust.assert_called_once_with(rust_client, "put", "put", b"payload", attributes=attributes)
+        gcs_provider._gcs_client.bucket.return_value.blob.return_value.upload_from_string.assert_not_called()
+
+        gcs_provider._multipart_threshold = 8
+        run_rust.reset_mock()
+        gcs_provider._upload_file("bucket/small", str(local_file), attributes=attributes)
+        run_rust.assert_called_once_with(rust_client, "upload", str(local_file), "small", attributes=attributes)
+
+        gcs_provider._multipart_threshold = 1
+        run_rust.reset_mock()
+        gcs_provider._upload_file("bucket/large", str(local_file), attributes=attributes)
+        run_rust.assert_called_once_with(
+            rust_client, "upload_multipart_from_file", str(local_file), "large", attributes=attributes
+        )
+
+
+@pytest.mark.parametrize(
+    "attributes",
+    [
+        {"Owner": "alice"},
+        {"my key": "value"},
+        {"名字": "value"},
+        {"key": "line\nfeed"},
+        {"key": " leading"},
+        {"key": "trailing "},
+        {"key": ""},
+    ],
+)
+def test_gcs_metadata_is_forwarded_to_rust(gcs_provider, tmp_path, attributes):
+    rust_client = MagicMock()
+    gcs_provider._rust_client = rust_client
+    blob = gcs_provider._gcs_client.bucket.return_value.blob.return_value
+    local_file = tmp_path / "data.bin"
+    local_file.write_bytes(b"payload")
+
+    with (
+        patch("multistorageclient.providers.gcs.run_async_rust_client_method") as run_rust,
+        patch("multistorageclient.providers.gcs.transfer_manager.upload_chunks_concurrently") as upload_chunks,
+    ):
+        gcs_provider._put_object("bucket/put", b"payload", attributes=attributes)
+        run_rust.assert_called_once_with(rust_client, "put", "put", b"payload", attributes=attributes)
+        blob.upload_from_string.assert_not_called()
+
+        gcs_provider._multipart_threshold = 8
+        run_rust.reset_mock()
+        gcs_provider._upload_file("bucket/small", str(local_file), attributes=attributes)
+        run_rust.assert_called_once_with(rust_client, "upload", str(local_file), "small", attributes=attributes)
+
+        gcs_provider._multipart_threshold = 1
+        run_rust.reset_mock()
+        gcs_provider._upload_file("bucket/large", str(local_file), attributes=attributes)
+        run_rust.assert_called_once_with(
+            rust_client, "upload_multipart_from_file", str(local_file), "large", attributes=attributes
+        )
+        upload_chunks.assert_not_called()
+
+
+def test_gcs_rust_invalid_metadata_reports_context(gcs_provider, tmp_path):
+    gcs_provider._rust_client = MagicMock()
+    blob = gcs_provider._gcs_client.bucket.return_value.blob.return_value
+    local_file = tmp_path / "data.bin"
+    local_file.write_bytes(b"payload")
+
+    with patch(
+        "multistorageclient.providers.gcs.run_async_rust_client_method",
+        side_effect=ValueError("Invalid metadata key: 'my key'"),
+    ):
+        with pytest.raises(RuntimeError, match="Invalid metadata key"):
+            gcs_provider._put_object("bucket/put", b"payload", attributes={"my key": "value"})
+
+        gcs_provider._multipart_threshold = 1
+        with pytest.raises(RuntimeError, match="Invalid metadata key"):
+            gcs_provider._upload_file("bucket/large", str(local_file), attributes={"my key": "value"})
+
+    blob.upload_from_string.assert_not_called()
+
+
 def test_upload_file_object_removes_staging_file_on_failure(gcs_provider, tmp_path):
     with (
         patch(

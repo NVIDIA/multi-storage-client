@@ -62,11 +62,14 @@ class RustClient:
         :param retry: Retry configuration for the Rust client.
         """
 
-    async def put(self, path: str, data: bytes | memoryview | bytearray) -> int:
+    async def put(
+        self, path: str, data: bytes | memoryview | bytearray, attributes: dict[str, str] | None = ...
+    ) -> int:
         """
         Upload data to the object store at the specified path.
         :param path: The remote object path in the storage backend.
         :param data: The data to upload as bytes, memoryview, or bytearray (buffer protocol).
+        :param attributes: Optional user-defined object metadata.
         :return: The number of bytes uploaded.
         """
 
@@ -78,11 +81,12 @@ class RustClient:
         :return: The downloaded data as bytes.
         """
 
-    async def upload(self, local_path: str, remote_path: str) -> int:
+    async def upload(self, local_path: str, remote_path: str, attributes: dict[str, str] | None = ...) -> int:
         """
         Upload a local file to the object store.
         :param local_path: Path to the local file to upload.
         :param remote_path: The destination path in the storage backend.
+        :param attributes: Optional user-defined object metadata.
         :return: The number of bytes uploaded.
         """
 
@@ -100,6 +104,7 @@ class RustClient:
         remote_path: str,
         multipart_chunksize: int | None = ...,
         max_concurrency: int | None = ...,
+        attributes: dict[str, str] | None = ...,
     ) -> int:
         """
         Upload a local file to the object store using multipart upload.
@@ -112,6 +117,7 @@ class RustClient:
         :param remote_path: The destination path in the storage backend.
         :param multipart_chunksize: The size of the multipart chunks.
         :param max_concurrency: The maximum number of concurrent operations.
+        :param attributes: Optional user-defined object metadata.
         :return: The number of bytes uploaded.
         """
 
@@ -121,6 +127,7 @@ class RustClient:
         data: bytes | memoryview | bytearray,
         multipart_chunksize: int | None = ...,
         max_concurrency: int | None = ...,
+        attributes: dict[str, str] | None = ...,
     ) -> int:
         """
         Upload data to the object store at the specified remote_path using multipart upload.
@@ -133,6 +140,7 @@ class RustClient:
         :param data: The data to upload as bytes, memoryview, or bytearray (buffer protocol).
         :param multipart_chunksize: The size of the multipart chunks.
         :param max_concurrency: The maximum number of concurrent operations.
+        :param attributes: Optional user-defined object metadata.
         :return: The number of bytes uploaded.
         """
 

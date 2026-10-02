@@ -425,9 +425,9 @@ class GoogleStorageProvider(BaseStorageProvider):
                 # Rust client doesn't support creating objects with trailing /, see https://github.com/apache/arrow-rs/issues/7026
                 and not path.endswith("/")
                 and not kwargs
-                and not validated_attributes
             ):
-                run_async_rust_client_method(self._rust_client, "put", key, body)
+                rust_attributes = {"attributes": validated_attributes} if validated_attributes else {}
+                run_async_rust_client_method(self._rust_client, "put", key, body, **rust_attributes)
             else:
                 blob.upload_from_string(body, **kwargs)
 
@@ -710,8 +710,10 @@ class GoogleStorageProvider(BaseStorageProvider):
 
             # Upload small files
             if file_size <= self._multipart_threshold:
-                if self._rust_client and not attributes:
-                    run_async_rust_client_method(self._rust_client, "upload", f, key)
+                validated_attributes = validate_attributes(attributes)
+                if self._rust_client:
+                    rust_attributes = {"attributes": validated_attributes} if validated_attributes else {}
+                    run_async_rust_client_method(self._rust_client, "upload", f, key, **rust_attributes)
                 else:
                     with open(f, "rb") as fp:
                         self._put_object(remote_path, fp.read(), attributes=attributes)
@@ -719,13 +721,16 @@ class GoogleStorageProvider(BaseStorageProvider):
 
             # Upload large files using transfer manager
             def _invoke_api() -> int:
-                if self._rust_client and not attributes:
-                    run_async_rust_client_method(self._rust_client, "upload_multipart_from_file", f, key)
+                validated_attributes = validate_attributes(attributes)
+                if self._rust_client:
+                    rust_attributes = {"attributes": validated_attributes} if validated_attributes else {}
+                    run_async_rust_client_method(
+                        self._rust_client, "upload_multipart_from_file", f, key, **rust_attributes
+                    )
                 else:
                     bucket_obj = self._gcs_client.bucket(bucket)
                     blob = bucket_obj.blob(key)
                     # GCS will raise an error if blob.metadata is None
-                    validated_attributes = validate_attributes(attributes)
                     if validated_attributes is not None:
                         blob.metadata = validated_attributes
                     transfer_manager.upload_chunks_concurrently(

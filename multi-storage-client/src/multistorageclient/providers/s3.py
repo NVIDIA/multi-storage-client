@@ -549,14 +549,15 @@ class S3StorageProvider(BaseStorageProvider):
                 kwargs["Metadata"] = validated_attributes
 
             # TODO(NGCDP-5804): Add support to update ContentType header in Rust client
-            rust_unsupported_feature_keys = {"Metadata", "StorageClass", "IfMatch", "IfNoneMatch", "ContentType"}
+            rust_unsupported_feature_keys = {"StorageClass", "IfMatch", "IfNoneMatch", "ContentType"}
             if (
                 self._rust_client
                 # Rust client doesn't support creating objects with trailing /, see https://github.com/apache/arrow-rs/issues/7026
                 and not path.endswith("/")
                 and all(key not in kwargs for key in rust_unsupported_feature_keys)
             ):
-                run_async_rust_client_method(self._rust_client, "put", key, body)
+                rust_attributes = {"attributes": validated_attributes} if validated_attributes else {}
+                run_async_rust_client_method(self._rust_client, "put", key, body, **rust_attributes)
             else:
                 if self._checksum_algorithm:
                     kwargs["ChecksumAlgorithm"] = self._checksum_algorithm
@@ -928,9 +929,11 @@ class S3StorageProvider(BaseStorageProvider):
 
             # Upload small files
             if file_size <= self._multipart_threshold:
-                if self._rust_client and not attributes and not content_type:
+                if self._rust_client and not content_type and not self._is_directory_bucket(bucket):
+                    validated_attributes = validate_attributes(attributes)
+                    rust_attributes = {"attributes": validated_attributes} if validated_attributes else {}
                     self._translate_errors(
-                        lambda: run_async_rust_client_method(self._rust_client, "upload", f, key),
+                        lambda: run_async_rust_client_method(self._rust_client, "upload", f, key, **rust_attributes),
                         operation="PUT",
                         bucket=bucket,
                         key=key,
@@ -950,8 +953,11 @@ class S3StorageProvider(BaseStorageProvider):
                 validated_attributes = validate_attributes(attributes)
                 if validated_attributes:
                     extra_args["Metadata"] = validated_attributes
-                if self._rust_client and not extra_args:
-                    run_async_rust_client_method(self._rust_client, "upload_multipart_from_file", f, key)
+                if self._rust_client and "ContentType" not in extra_args and "StorageClass" not in extra_args:
+                    rust_attributes = {"attributes": validated_attributes} if validated_attributes else {}
+                    run_async_rust_client_method(
+                        self._rust_client, "upload_multipart_from_file", f, key, **rust_attributes
+                    )
                 else:
                     if self._checksum_algorithm:
                         extra_args["ChecksumAlgorithm"] = self._checksum_algorithm
@@ -994,10 +1000,18 @@ class S3StorageProvider(BaseStorageProvider):
                 if validated_attributes:
                     extra_args["Metadata"] = validated_attributes
 
-                if self._rust_client and isinstance(f, io.BytesIO) and not extra_args:
+                if (
+                    self._rust_client
+                    and isinstance(f, io.BytesIO)
+                    and "ContentType" not in extra_args
+                    and "StorageClass" not in extra_args
+                ):
                     data = f.getbuffer()
+                    rust_attributes = {"attributes": validated_attributes} if validated_attributes else {}
                     try:
-                        run_async_rust_client_method(self._rust_client, "upload_multipart_from_bytes", key, data)
+                        run_async_rust_client_method(
+                            self._rust_client, "upload_multipart_from_bytes", key, data, **rust_attributes
+                        )
                     finally:
                         data.release()
                 else:

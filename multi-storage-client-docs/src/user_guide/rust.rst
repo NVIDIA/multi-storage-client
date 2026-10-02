@@ -91,8 +91,14 @@ These operations cover most of the I/O operations when using MSC, regardless of 
 * :py:class:`multistorageclient.types.StorageProvider.glob`
 * :py:class:`multistorageclient.types.StorageProvider.is_file`
 
-.. note::
-   For `put_object()` and `upload_file()` operations, if `attributes` are provided, the Rust client will not be used and will fall back to the Python implementation.
+For ``put_object()`` and ``upload_file()``, user-defined ``attributes`` are uploaded by the Rust client
+as object metadata when the Rust path is otherwise supported. Operations requiring features such as
+conditional writes or a custom ``Content-Type`` still use the Python implementation. MSC passes
+metadata to the selected upload implementation without changing keys or values or switching paths
+based on metadata content. HTTP-backed uploads may lowercase metadata keys or reject values according
+to the underlying client and service. If Rust cannot construct a metadata header, it reports the
+offending metadata key instead of panicking. A direct ``RustClient`` call raises ``ValueError``;
+provider calls include the cause in their error message.
 
 
 ********************
