@@ -40,6 +40,10 @@ into MSC's operations and performance, making it harder to debug issues and opti
    # HuggingFace
    pip install "multi-storage-client[huggingface]"
 
+The ``aistore`` extra installs AIStore Python SDK 2.x. Both the native AIStore provider (``ais``)
+and the S3-compatible AIStore provider (``ais_s3``) use this SDK. For the S3-compatible provider,
+install both extras with ``pip install "multi-storage-client[aistore,boto3]"``.
+
 MSC also implements adapters to let higher-level libraries like fsspec or PyTorch work wth the MSC.
 Likewise, there are extras for each higher level library.
 

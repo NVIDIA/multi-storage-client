@@ -23,7 +23,6 @@ from aistore.sdk import Client, RetryConfig
 from aistore.sdk.authn import AuthNClient
 from aistore.sdk.errors import AISError
 from aistore.sdk.obj.content_iterator import ParallelBuffer
-from aistore.sdk.obj.object_props import ObjectProps
 from dateutil.parser import parse as dateutil_parser
 from requests.exceptions import HTTPError
 from urllib3.util import Retry
@@ -258,11 +257,10 @@ class AIStoreStorageProvider(BaseStorageProvider):
             dest_obj = self.client.bucket(bck_name=dest_bucket, provider=self.provider).object(obj_name=dest_key)
 
             # Get source size before copying
-            src_headers = src_obj.head()
-            src_props = ObjectProps(src_headers)
+            src_props = src_obj.head()
 
             # Server-side copy (preserves custom metadata automatically)
-            src_obj.copy(to_obj=dest_obj)  # type: ignore[attr-defined]
+            src_obj.copy(to_obj=dest_obj)
 
             return int(src_props.size)
 
@@ -334,8 +332,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
             def _invoke_api() -> ObjectMetadata:
                 obj = self.client.bucket(bck_name=bucket, provider=self.provider).object(obj_name=key)
                 try:
-                    headers = obj.head()
-                    props = ObjectProps(headers)
+                    props = obj.head(props="size,atime,checksum,custom")
 
                     # The access time is not always present in the response.
                     if props.access_time:
@@ -347,7 +344,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
                     symlink_target = user_metadata.get("msc-symlink-target") if user_metadata else None
                     return ObjectMetadata(
                         key=key,
-                        content_length=int(props.size),  # pyright: ignore [reportArgumentType]
+                        content_length=props.size,
                         last_modified=last_modified,
                         etag=props.checksum_value,
                         metadata=user_metadata,
