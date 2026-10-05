@@ -196,6 +196,8 @@ class CuObjEngine:
     def install_hooks(self, s3_client) -> None:
         """Register token-injection hooks for S3 RDMA transfer operations."""
         events = s3_client.meta.events
+        # The RDMA request body is always empty so don't use the 100-continue handshake
+        events.unregister("before-call.s3", add_expect_header)
         events.register("before-sign.s3.PutObject", self._inject_token)
         events.register("before-sign.s3.GetObject", self._inject_token)
         events.register("before-sign.s3.UploadPart", self._inject_token)
