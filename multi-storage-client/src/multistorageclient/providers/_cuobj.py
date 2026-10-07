@@ -55,6 +55,8 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+from botocore.handlers import add_expect_header
+
 # The cuObject token API lives in the multistorageclient_rust extension behind
 # the crate's `rdma` feature. Import the compiled module defensively: a default
 # (non-rdma) wheel omits the cuobj_* functions entirely, and a source checkout
@@ -196,6 +198,8 @@ class CuObjEngine:
     def install_hooks(self, s3_client) -> None:
         """Register token-injection hooks for S3 RDMA transfer operations."""
         events = s3_client.meta.events
+        # The RDMA request body is always empty so don't use the 100-continue handshake
+        events.unregister("before-call.s3", add_expect_header)
         events.register("before-sign.s3.PutObject", self._inject_token)
         events.register("before-sign.s3.GetObject", self._inject_token)
         events.register("before-sign.s3.UploadPart", self._inject_token)
