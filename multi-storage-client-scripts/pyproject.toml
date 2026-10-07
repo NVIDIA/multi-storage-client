@@ -13,7 +13,7 @@ classifiers = [
 ]
 dependencies = [
     "multi-storage-client",
-    "dulwich>=1.2.13,<2",
+    "dulwich>=1.2.17,<2",
     "githubkit>=0.16.1,<1",
     "httpx-retries>=0.6,<1",
     "packaging>=26.3,<27"

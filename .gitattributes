@@ -1,2 +1,3 @@
 # Lock files.
 *.lock gitlab-generated linguist-generated
+pnpm-lock.yaml gitlab-generated linguist-generated

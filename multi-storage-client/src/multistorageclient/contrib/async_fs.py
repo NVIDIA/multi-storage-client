@@ -195,6 +195,9 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
         """
         Copies a file from the source path to the destination path.
 
+        Virtual directory prefixes are skipped. Recursive fsspec moves expand those
+        prefixes and ask for them to be copied, but they are not objects.
+
         :param path1: The source file path.
         :param path2: The destination file path.
         :param kwargs: Additional arguments for copy functionality.
@@ -208,6 +211,9 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
             raise AttributeError(
                 f"Cannot copy file from '{path1}' to '{path2}' because the source and destination paths are associated with different profiles. Cross-profile file operations are not supported."
             )
+
+        if src_storage_client.info(src_path).type == "directory":
+            return
 
         src_storage_client.copy(src_path, dest_path)
 
