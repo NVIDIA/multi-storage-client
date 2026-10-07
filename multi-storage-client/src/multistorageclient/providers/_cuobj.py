@@ -55,6 +55,8 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+from botocore.handlers import add_expect_header
+
 # The cuObject token API lives in the multistorageclient_rust extension behind
 # the crate's `rdma` feature. Import the compiled module defensively: a default
 # (non-rdma) wheel omits the cuobj_* functions entirely, and a source checkout
