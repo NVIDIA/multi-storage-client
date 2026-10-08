@@ -32,6 +32,8 @@ from typing import IO, Any, ClassVar, NamedTuple, TypeVar, cast
 import opentelemetry.metrics as api_metrics
 import opentelemetry.util.types as api_types
 
+from multistorageclient_rust import RustRetryableError
+
 from ..rust_utils import run_coroutine_sync
 from ..telemetry import Telemetry
 from ..telemetry.attributes.base import AttributesProvider, collect_attributes
@@ -41,6 +43,7 @@ from ..types import (
     BatchTransferFailure,
     ObjectMetadata,
     Range,
+    RetryableError,
     SignerType,
     StorageProvider,
     SymlinkHandling,
@@ -1269,6 +1272,8 @@ class BaseStorageProvider(StorageProvider):
                         data_size = await rust_client.download(key, local_path)
                 except Exception as e:
                     error_type = type(e).__name__
+                    if isinstance(e, RustRetryableError):
+                        raise RetryableError(str(e)) from e
                     raise
                 finally:
                     latency = time.perf_counter() - start_time
@@ -1418,6 +1423,8 @@ class BaseStorageProvider(StorageProvider):
                         data_size = await rust_client.upload(local_path, key)
                 except Exception as e:
                     error_type = type(e).__name__
+                    if isinstance(e, RustRetryableError):
+                        raise RetryableError(str(e)) from e
                     raise
                 finally:
                     latency = time.perf_counter() - start_time
