@@ -123,14 +123,14 @@ class S3CuObjectStorageProvider(S3StorageProvider):
         content_type: str | None = None,
     ) -> int:
         bucket, key = split_path(path)
+        size = memoryview(body).nbytes
+        if size > self._rdma_multipart_chunksize:
+            extra = self._rdma_create_extra(bucket, attributes, content_type)
+            return self._rdma_upload_multipart(
+                bucket, key, self._buffer_parts(body), size, extra, if_match, if_none_match
+            )
 
         def _invoke_api() -> int:
-            size = memoryview(body).nbytes
-            if size > self._rdma_multipart_chunksize:
-                extra = self._rdma_create_extra(bucket, attributes, content_type)
-                return self._rdma_upload_multipart(
-                    bucket, key, self._buffer_parts(body), size, extra, if_match, if_none_match
-                )
             kwargs: dict[str, Any] = {"Bucket": bucket, "Key": key, "Body": body}
             kwargs.update(self._rdma_create_extra(bucket, attributes, content_type))
             if if_match:
