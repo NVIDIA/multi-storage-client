@@ -106,6 +106,7 @@ def verify_fsspec_implementation(profile: str):
 @pytest.mark.parametrize(
     argnames=["temp_data_store_type"],
     argvalues=[
+        [tempdatastore.TemporaryPOSIXDirectory],
         [tempdatastore.TemporaryAWSS3Bucket],
     ],
 )
