@@ -27,6 +27,7 @@ import pytest
 from multistorageclient.providers.base import BaseStorageProvider
 from multistorageclient.telemetry import Telemetry
 from multistorageclient.types import BatchTransferError, ObjectMetadata, Range, RetryableError, SymlinkHandling
+from multistorageclient_rust import RustRetryableError
 
 
 class MockBaseStorageProvider(BaseStorageProvider):
@@ -211,8 +212,11 @@ def test_upload_files_threaded_reports_all_failed_indices():
     assert {failure.destination_path for failure in exc_info.value.failures} == {"remote-b", "remote-c"}
 
 
-def test_upload_files_async_reports_failed_indices(tmp_path):
+@pytest.mark.parametrize("error_type", [RetryableError, RustRetryableError, PermissionError])
+@pytest.mark.parametrize("multipart_threshold", [0, 1])
+def test_upload_files_async_reports_failed_indices(tmp_path, error_type, multipart_threshold):
     provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+    provider._multipart_threshold = multipart_threshold
 
     class FakeRustClient:
         def __init__(self):
@@ -221,7 +225,7 @@ def test_upload_files_async_reports_failed_indices(tmp_path):
         async def upload(self, local_path: str, key: str) -> int:
             self.uploaded_keys.append(key)
             if key.endswith("remote-b"):
-                raise RetryableError(f"failed {key}")
+                raise error_type(f"failed {key}")
             return 1
 
         async def upload_multipart_from_file(self, local_path: str, key: str) -> int:
@@ -245,6 +249,10 @@ def test_upload_files_async_reports_failed_indices(tmp_path):
     assert [failure.index for failure in exc_info.value.failures] == [1]
     assert exc_info.value.failures[0].source_path == local_paths[1]
     assert exc_info.value.failures[0].destination_path == "remote-b"
+    expected_type = RetryableError if error_type is RustRetryableError else error_type
+    assert isinstance(exc_info.value.failures[0].error, expected_type)
+    if error_type is RustRetryableError:
+        assert isinstance(exc_info.value.failures[0].error.__cause__, RustRetryableError)
 
 
 def test_download_files_threaded_reports_all_failed_indices():
@@ -272,8 +280,11 @@ def test_download_files_threaded_reports_all_failed_indices():
     assert {failure.destination_path for failure in exc_info.value.failures} == {"local-b", "local-c"}
 
 
-def test_download_files_async_reports_failed_indices():
+@pytest.mark.parametrize("error_type", [RetryableError, RustRetryableError, PermissionError])
+@pytest.mark.parametrize("multipart_threshold", [0, 1])
+def test_download_files_async_reports_failed_indices(error_type, multipart_threshold):
     provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+    provider._multipart_threshold = multipart_threshold
 
     class FakeRustClient:
         def __init__(self):
@@ -282,7 +293,7 @@ def test_download_files_async_reports_failed_indices():
         async def download(self, key: str, local_path: str) -> int:
             self.downloaded_keys.append(key)
             if key.endswith("remote-b"):
-                raise RetryableError(f"failed {key}")
+                raise error_type(f"failed {key}")
             return 1
 
         async def download_multipart_to_file(self, key: str, local_path: str) -> int:
@@ -307,6 +318,10 @@ def test_download_files_async_reports_failed_indices():
     assert [failure.index for failure in exc_info.value.failures] == [1]
     assert exc_info.value.failures[0].source_path == "remote-b"
     assert exc_info.value.failures[0].destination_path == "local-b"
+    expected_type = RetryableError if error_type is RustRetryableError else error_type
+    assert isinstance(exc_info.value.failures[0].error, expected_type)
+    if error_type is RustRetryableError:
+        assert isinstance(exc_info.value.failures[0].error.__cause__, RustRetryableError)
 
 
 def test_download_files_async_reports_preflight_failures():

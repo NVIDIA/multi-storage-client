@@ -67,6 +67,17 @@ You can configure the chunk size and concurrency level for the Rust client indep
 
 For more details of configuration options, please refer to :ref:`rust-client-reference`.
 
+The Rust client's ``read_timeout`` limits how long an individual read can wait for
+data and resets after each successful read. Its default is 60 seconds, matching
+boto3; an explicit storage provider ``read_timeout`` is inherited by the Rust client.
+Each HTTP request also has a separate total timeout of 600 seconds, including
+connection establishment and response body transfer. For multipart downloads, this
+total timeout applies to each part request, rather than the complete file.
+
+The retry ``timeout`` (180 seconds by default) controls how long request retries
+remain eligible. It is separate from both HTTP timeouts. Batch transfers retry files
+that fail with a retryable Rust error according to the MSC retry configuration.
+
 ********************
 Supported Operations
 ********************

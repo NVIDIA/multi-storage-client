@@ -196,7 +196,8 @@ fn multipart_safe_chunk_size(object_size: u64, requested_chunk_size: usize) -> R
 
 // Connection timeout settings
 const DEFAULT_CONNECT_TIMEOUT: u64 = 60;
-const DEFAULT_READ_TIMEOUT: u64 = 120;
+const DEFAULT_READ_TIMEOUT: u64 = 60;
+const DEFAULT_REQUEST_TIMEOUT: u64 = 600;
 const DEFAULT_POOL_IDLE_TIMEOUT: u64 = 30;
 const DEFAULT_POOL_CONNECTIONS: usize = 64;
 
@@ -420,7 +421,8 @@ fn build_s3_store<'a>(
     client_options = client_options.with_connect_timeout(std::time::Duration::from_secs(connect_timeout_secs));
 
     let read_timeout_secs = get_timeout_secs(&configs, "read_timeout", DEFAULT_READ_TIMEOUT);
-    client_options = client_options.with_timeout(std::time::Duration::from_secs(read_timeout_secs));
+    client_options = client_options.with_read_timeout(Duration::from_secs(read_timeout_secs));
+    client_options = client_options.with_timeout(Duration::from_secs(DEFAULT_REQUEST_TIMEOUT));
 
     if let Some(allow_http_val) = configs.get("allow_http") {
         match allow_http_val {
@@ -522,7 +524,8 @@ fn build_gcs_store<'a>(
     client_options = client_options.with_connect_timeout(std::time::Duration::from_secs(connect_timeout_secs));
 
     let read_timeout_secs = get_timeout_secs(&configs, "read_timeout", DEFAULT_READ_TIMEOUT);
-    client_options = client_options.with_timeout(std::time::Duration::from_secs(read_timeout_secs));
+    client_options = client_options.with_read_timeout(Duration::from_secs(read_timeout_secs));
+    client_options = client_options.with_timeout(Duration::from_secs(DEFAULT_REQUEST_TIMEOUT));
 
     client_options = client_options.with_pool_idle_timeout(std::time::Duration::from_secs(DEFAULT_POOL_IDLE_TIMEOUT));
 

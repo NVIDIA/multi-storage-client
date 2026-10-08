@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import io
 import os
 import tempfile
@@ -35,6 +36,80 @@ from multistorageclient_rust import (  # pyright: ignore[reportAttributeAccessIs
 )
 
 from .utils import RefreshableTestCredentialsProvider
+
+
+@pytest.mark.parametrize("multipart", [False, True])
+@pytest.mark.parametrize("stalled", [False, True])
+@pytest.mark.asyncio
+async def test_rustclient_download_read_timeout(tmp_path, multipart, stalled):
+    body = b"abcdef"
+    tasks: list[asyncio.Task] = []
+
+    async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        task = asyncio.current_task()
+        assert task is not None
+        tasks.append(task)
+        try:
+            request = await reader.readuntil(b"\r\n\r\n")
+            is_head = request.startswith(b"HEAD ")
+            is_range = b"range: " in request.lower()
+            status = "206 Partial Content" if is_range else "200 OK"
+            headers = (
+                f"HTTP/1.1 {status}\r\nContent-Length: {len(body)}\r\n"
+                'ETag: "test"\r\nLast-Modified: Wed, 01 Jan 2025 00:00:00 GMT\r\n'
+                "Connection: close\r\n"
+            )
+            if is_range:
+                headers += f"Content-Range: bytes 0-{len(body) - 1}/{len(body)}\r\n"
+            writer.write((headers + "\r\n").encode())
+            await writer.drain()
+            if not is_head:
+                if stalled:
+                    await asyncio.sleep(1.5)
+                    writer.write(body)
+                    await writer.drain()
+                else:
+                    for byte in body:
+                        await asyncio.sleep(0.3)
+                        writer.write(bytes([byte]))
+                        await writer.drain()
+        except ConnectionError:
+            pass
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    server = await asyncio.start_server(serve, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        async with server:
+            client = RustClient(
+                provider="s3",
+                configs={
+                    "bucket": "test-bucket",
+                    "endpoint_url": f"http://127.0.0.1:{port}",
+                    "allow_http": True,
+                    "skip_signature": True,
+                    "read_timeout": 1,
+                    "multipart_chunksize": len(body),
+                },
+                retry=RustRetryConfig(attempts=0),
+            )
+            path = tmp_path / "download"
+
+            async def download():
+                if multipart:
+                    return await client.download_multipart_to_file("key", str(path))
+                return await client.download("key", str(path))
+
+            if stalled:
+                with pytest.raises(RustRetryableError, match="timed out"):
+                    await download()
+            else:
+                assert await download() == len(body)
+                assert await asyncio.to_thread(path.read_bytes) == body
+    finally:
+        await asyncio.gather(*tasks)
 
 
 async def run_rust_client_operations(rust_client: RustClient, storage_client: StorageClient):
