@@ -130,7 +130,7 @@ PROFILE_SCHEMA = {
                             "rdma": {
                                 "type": "object",
                                 "properties": {
-                                    "multipart_chunksize": {"type": "integer", "minimum": 1},
+                                    "multipart_chunksize": {"type": "integer", "minimum": 1, "maximum": 4294967295},
                                 },
                             },
                         },

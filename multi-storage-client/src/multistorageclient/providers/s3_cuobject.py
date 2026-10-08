@@ -30,11 +30,20 @@ import io
 import logging
 import os
 import struct
+from collections.abc import Callable, Iterator
 from typing import IO, Any, cast
+
+from botocore.exceptions import ClientError
 
 from ..types import Range
 from ..utils import split_path, validate_attributes
-from ._cuobj import CuObjEngine
+from ._cuobj import (
+    RDMA_MAX_MEMORY_REG_SIZE,
+    CuObjEngine,
+    CuObjError,
+    parse_rdma_bytes_transferred,
+    raise_if_declined,
+)
 from .s3 import EXPRESS_ONEZONE_STORAGE_CLASS, MiB, S3StorageProvider
 
 logger = logging.getLogger(__name__)
@@ -43,13 +52,19 @@ PROVIDER = "s3_cuobject"
 
 # cuObject transfers the whole registered buffer in a single shot, so the boto
 # multipart threshold is raised past any practical object size and every
-# transfer takes the single-shot path. Uploads larger than
-# ``rdma.multipart_chunksize`` are split by the RDMA multipart path below.
+# transfer takes the single-shot path. Transfers larger than
+# ``rdma.multipart_chunksize`` are split by the RDMA paths below: uploads into
+# multipart parts, downloads into ranged GETs.
 RDMA_SINGLE_SHOT_THRESHOLD = 1 << 62
 
-# Default RDMA multipart part size. Uploads larger than this are sent as an
-# RDMA multipart upload (one registered buffer + token + CRC64NVME per part).
+# Default RDMA part size. Uploads larger than this are sent as an RDMA multipart
+# upload (one registered buffer + token + CRC64NVME per part); downloads larger
+# than this are fetched as ranged RDMA GETs of this size.
 RDMA_MULTIPART_CHUNKSIZE = 512 * MiB
+
+
+def _http_status(error: ClientError) -> int | None:
+    return error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
 
 
 class S3CuObjectStorageProvider(S3StorageProvider):
@@ -85,9 +100,10 @@ class S3CuObjectStorageProvider(S3StorageProvider):
         self._checksum_algorithm = None
         self._multipart_threshold = RDMA_SINGLE_SHOT_THRESHOLD
         self._rdma_multipart_chunksize = int(self._rdma_options.get("multipart_chunksize", RDMA_MULTIPART_CHUNKSIZE))
-        if self._rdma_multipart_chunksize < 1:
+        if not 1 <= self._rdma_multipart_chunksize <= RDMA_MAX_MEMORY_REG_SIZE:
             raise ValueError(
-                f"rdma.multipart_chunksize must be a positive integer, got {self._rdma_multipart_chunksize}"
+                f"rdma.multipart_chunksize must be between 1 and {RDMA_MAX_MEMORY_REG_SIZE}, "
+                f"got {self._rdma_multipart_chunksize}"
             )
 
         self._rdma_engine = CuObjEngine()
@@ -107,20 +123,20 @@ class S3CuObjectStorageProvider(S3StorageProvider):
         content_type: str | None = None,
     ) -> int:
         bucket, key = split_path(path)
+        size = memoryview(body).nbytes
+        if size > self._rdma_multipart_chunksize:
+            extra = self._rdma_create_extra(bucket, attributes, content_type)
+            return self._rdma_upload_multipart(
+                bucket, key, self._buffer_parts(body), size, extra, if_match, if_none_match
+            )
 
         def _invoke_api() -> int:
             kwargs: dict[str, Any] = {"Bucket": bucket, "Key": key, "Body": body}
-            if content_type:
-                kwargs["ContentType"] = content_type
-            if self._is_directory_bucket(bucket):
-                kwargs["StorageClass"] = EXPRESS_ONEZONE_STORAGE_CLASS
+            kwargs.update(self._rdma_create_extra(bucket, attributes, content_type))
             if if_match:
                 kwargs["IfMatch"] = if_match
             if if_none_match:
                 kwargs["IfNoneMatch"] = if_none_match
-            validated_attributes = validate_attributes(attributes)
-            if validated_attributes:
-                kwargs["Metadata"] = validated_attributes
             return self._rdma_put(kwargs, body)
 
         return self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
@@ -149,6 +165,22 @@ class S3CuObjectStorageProvider(S3StorageProvider):
             ) from error
         return base64.b64encode(struct.pack(">Q", checksums.crc64nvme(cast(bytes, buffer)))).decode("ascii")
 
+    def _rdma_call(self, operation: Callable[..., Any], is_put: bool, **kwargs: Any) -> Any:
+        """Issue an RDMA request and validate its ``x-amz-rdma-reply``.
+
+        A decline arrives as an HTTP error status, which botocore raises as a
+        ``ClientError``; it is surfaced as a :class:`CuObjError` instead.
+        """
+        engine = self._rdma_engine
+        assert engine is not None
+        try:
+            response = operation(**kwargs)
+        except ClientError as error:
+            raise_if_declined(error.response)
+            raise
+        engine.check_reply(response, is_put=is_put)
+        return response
+
     def _rdma_put(self, kwargs: dict[str, Any], body: bytes | bytearray | memoryview) -> int:
         """Single-shot RDMA PUT: cuObject transfers the registered buffer; the HTTP body is empty.
 
@@ -169,43 +201,73 @@ class S3CuObjectStorageProvider(S3StorageProvider):
             return 0
         kwargs = {**kwargs, "Body": b"", "ChecksumCRC64NVME": self._rdma_checksum(buffer)}
         with engine.transfer(buffer, is_put=True):
-            response = self._s3_client.put_object(**kwargs)
-            engine.check_reply(response)
-        return len(buffer)
+            self._rdma_call(self._s3_client.put_object, True, **kwargs)
+        return memoryview(buffer).nbytes
 
     def _rdma_get(self, path: str, bucket: str, key: str, byte_range: Range | None) -> bytearray:
-        """Single-shot RDMA GET into a registered buffer; returns the buffer."""
-        engine = self._rdma_engine
-        assert engine is not None
+        """RDMA GET into a registered buffer, split into ranged GETs above the part size.
+
+        Returns the buffer truncated to ``x-amz-rdma-bytes-transferred``, which
+        can be shorter than requested for a range past the end of the object. A
+        full-object GET must deliver exactly the size the HEAD reported.
+        """
         if_match: str | None = None
         if byte_range is not None:
-            size = byte_range.size
-            bytes_range: str | None = f"bytes={byte_range.offset}-{byte_range.offset + byte_range.size - 1}"
+            offset, size = byte_range.offset, byte_range.size
         else:
             metadata = self._get_object_metadata(path)
-            size = metadata.content_length
-            bytes_range = None
+            offset, size = 0, metadata.content_length
             # Bind the GET to the object version the buffer was sized against; if
             # the object is replaced between the HEAD and the GET the endpoint
             # returns 412 instead of delivering bytes into a mismatched buffer.
             if_match = metadata.etag
+        part_size = self._rdma_multipart_chunksize
+        ranged = byte_range is not None or size > part_size
 
         def _invoke_api() -> bytearray:
             buffer = bytearray(size)
-            if size == 0:
-                return buffer
-            get_kwargs: dict[str, Any] = {"Bucket": bucket, "Key": key}
-            if bytes_range is not None:
-                get_kwargs["Range"] = bytes_range
-            if if_match:
-                get_kwargs["IfMatch"] = if_match
-            with engine.transfer(buffer, is_put=False):
-                response = self._s3_client.get_object(**get_kwargs)
-                response["Body"].read()
-                engine.check_reply(response)
+            part_if_match = if_match
+            pos = 0
+            while pos < size:
+                n = min(part_size, size - pos)
+                bytes_range = f"bytes={offset + pos}-{offset + pos + n - 1}" if ranged else None
+                try:
+                    with memoryview(buffer)[pos : pos + n] as view:
+                        transferred, etag = self._rdma_get_part(view, bucket, key, bytes_range, part_if_match)
+                except ClientError as error:
+                    # A ranged read whose earlier parts ended exactly at the end
+                    # of the object gets 416 for the next part: the read is done.
+                    if byte_range is not None and pos > 0 and _http_status(error) == 416:
+                        break
+                    raise
+                # Pin the remaining parts to the version the first part read, so
+                # a split read never mixes bytes from two object versions.
+                part_if_match = part_if_match or etag
+                pos += transferred
+                if transferred < n:
+                    break
+            if byte_range is None and pos != size:
+                raise CuObjError(f"RDMA GET of {path} delivered {pos} of {size} bytes")
+            del buffer[pos:]
             return buffer
 
         return self._translate_errors(_invoke_api, operation="GET", bucket=bucket, key=key)
+
+    def _rdma_get_part(
+        self, view: memoryview, bucket: str, key: str, bytes_range: str | None, if_match: str | None
+    ) -> tuple[int, str | None]:
+        """RDMA GET of one part into ``view``; returns the bytes transferred and the object ETag."""
+        engine = self._rdma_engine
+        assert engine is not None
+        get_kwargs: dict[str, Any] = {"Bucket": bucket, "Key": key}
+        if bytes_range is not None:
+            get_kwargs["Range"] = bytes_range
+        if if_match:
+            get_kwargs["IfMatch"] = if_match
+        with engine.transfer(view, is_put=False):
+            response = self._rdma_call(self._s3_client.get_object, False, **get_kwargs)
+            response["Body"].read()
+            return parse_rdma_bytes_transferred(response, view.nbytes), response.get("ETag")
 
     def _rdma_create_extra(
         self, bucket: str, attributes: dict[str, str] | None, content_type: str | None
@@ -234,7 +296,7 @@ class S3CuObjectStorageProvider(S3StorageProvider):
             with open(f, "rb") as fp:
                 if size > self._rdma_multipart_chunksize:
                     extra = self._rdma_create_extra(bucket, attributes, content_type)
-                    return self._rdma_upload_multipart(bucket, key, fp, size, extra)
+                    return self._rdma_upload_multipart(bucket, key, self._stream_parts(fp, size), size, extra)
                 return self._put_object(remote_path, fp.read(), attributes=attributes, content_type=content_type)
 
         f.seek(0, io.SEEK_END)
@@ -245,13 +307,43 @@ class S3CuObjectStorageProvider(S3StorageProvider):
         # "r") reads str and falls through to the single-shot encode path.
         if size > self._rdma_multipart_chunksize and not isinstance(f, io.TextIOBase):
             extra = self._rdma_create_extra(bucket, attributes, content_type)
-            return self._rdma_upload_multipart(bucket, key, f, size, extra)
+            return self._rdma_upload_multipart(bucket, key, self._stream_parts(f, size), size, extra)
         data = f.read()
         if isinstance(data, str):
             data = data.encode("utf-8")
         return self._put_object(remote_path, data, attributes=attributes, content_type=content_type)
 
-    def _rdma_upload_multipart(self, bucket: str, key: str, fp: IO, size: int, extra: dict[str, Any]) -> int:
+    def _stream_parts(self, fp: IO, size: int) -> Iterator[bytearray]:
+        """Read ``size`` bytes from ``fp`` as part-sized writable buffers."""
+        remaining = size
+        while remaining > 0:
+            n = min(self._rdma_multipart_chunksize, remaining)
+            chunk = bytearray()
+            while len(chunk) < n:
+                data = fp.read(n - len(chunk))
+                if not data:
+                    raise RuntimeError(f"unexpected end of input after {size - remaining + len(chunk)} bytes")
+                chunk.extend(data)
+            yield chunk
+            remaining -= n
+
+    def _buffer_parts(self, body: bytes | bytearray | memoryview) -> Iterator[bytearray | memoryview]:
+        """Slice an in-memory body into part-sized writable buffers, copying only read-only parts."""
+        view = memoryview(body).cast("B")
+        for pos in range(0, view.nbytes, self._rdma_multipart_chunksize):
+            part = view[pos : pos + self._rdma_multipart_chunksize]
+            yield bytearray(part) if part.readonly else part
+
+    def _rdma_upload_multipart(
+        self,
+        bucket: str,
+        key: str,
+        chunks: Iterator[bytearray | memoryview],
+        size: int,
+        extra: dict[str, Any],
+        if_match: str | None = None,
+        if_none_match: str | None = None,
+    ) -> int:
         """RDMA multipart upload: each part is transferred as its own registered buffer.
 
         cuObject transfers one part-sized buffer per ``UploadPart`` (empty HTTP
@@ -262,25 +354,17 @@ class S3CuObjectStorageProvider(S3StorageProvider):
         """
         engine = self._rdma_engine
         assert engine is not None
-        part_size = self._rdma_multipart_chunksize
 
         def _invoke_api() -> int:
             upload_id = self._s3_client.create_multipart_upload(Bucket=bucket, Key=key, **extra)["UploadId"]
             parts: list[dict[str, Any]] = []
             try:
-                part_number = 1
-                remaining = size
-                while remaining > 0:
-                    n = min(part_size, remaining)
-                    chunk = bytearray()
-                    while len(chunk) < n:
-                        data = fp.read(n - len(chunk))
-                        if not data:
-                            raise RuntimeError(f"unexpected end of input for {bucket}/{key} at part {part_number}")
-                        chunk.extend(data)
+                for part_number, chunk in enumerate(chunks, start=1):
                     checksum = self._rdma_checksum(chunk)
                     with engine.transfer(chunk, is_put=True):
-                        response = self._s3_client.upload_part(
+                        response = self._rdma_call(
+                            self._s3_client.upload_part,
+                            True,
                             Bucket=bucket,
                             Key=key,
                             UploadId=upload_id,
@@ -288,12 +372,14 @@ class S3CuObjectStorageProvider(S3StorageProvider):
                             Body=b"",
                             ChecksumCRC64NVME=checksum,
                         )
-                        engine.check_reply(response)
                     parts.append({"PartNumber": part_number, "ETag": response["ETag"]})
-                    remaining -= n
-                    part_number += 1
+                complete: dict[str, Any] = {}
+                if if_match:
+                    complete["IfMatch"] = if_match
+                if if_none_match:
+                    complete["IfNoneMatch"] = if_none_match
                 self._s3_client.complete_multipart_upload(
-                    Bucket=bucket, Key=key, UploadId=upload_id, MultipartUpload={"Parts": parts}
+                    Bucket=bucket, Key=key, UploadId=upload_id, MultipartUpload={"Parts": parts}, **complete
                 )
             except BaseException:
                 try:

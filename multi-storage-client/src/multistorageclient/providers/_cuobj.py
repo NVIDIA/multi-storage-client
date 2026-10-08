@@ -51,6 +51,7 @@ instantiates :class:`CuObjEngine` when the ``rdma`` option is configured.
 """
 
 import ctypes
+import re
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -73,6 +74,21 @@ _HAS_CUOBJ = _rust_ext is not None and hasattr(_rust_ext, "cuobj_available")
 # thread-local state rather than on the client (mirrors the thread-local token
 # in BotoCuObjClient).
 _thread_state = threading.local()
+
+X_AMZ_RDMA_TOKEN = "x-amz-rdma-token"
+X_AMZ_RDMA_REPLY = "x-amz-rdma-reply"
+X_AMZ_RDMA_BYTES_TRANSFERRED = "x-amz-rdma-bytes-transferred"
+
+RDMA_REPLY_SUCCESS = 200
+RDMA_REPLY_NO_CONTENT = 204
+RDMA_REPLY_PARTIAL_CONTENT = 206
+RDMA_REPLY_NOT_IMPLEMENTED = 501
+
+# The x-amz-rdma-token descriptor carries the window size in a 32-bit field, so
+# a single registered buffer cannot describe more than this many bytes.
+RDMA_MAX_MEMORY_REG_SIZE = (1 << 32) - 1
+
+_DIGITS = re.compile(r"[0-9]+")
 
 
 class CuObjError(RuntimeError):
@@ -152,6 +168,38 @@ def put_rdma_token(token: str) -> None:
         raise CuObjError("cuMemObjPutRDMAToken failed") from error
 
 
+def parse_rdma_reply(reply: str | None) -> int | None:
+    """Parse an ``x-amz-rdma-reply`` header value.
+
+    Returns ``RDMA_REPLY_NOT_IMPLEMENTED`` when the endpoint declined RDMA (an
+    explicit ``501`` or an absent/empty header, which a non-RDMA endpoint never
+    sets), the HTTP-style status code (100-599) otherwise, or ``None`` for a
+    malformed value. The whole value must be ASCII digits, so ``"200xyz"``,
+    ``" 200"`` or ``"+200"`` cannot masquerade as a success.
+    """
+    if not reply or reply == str(RDMA_REPLY_NOT_IMPLEMENTED):
+        return RDMA_REPLY_NOT_IMPLEMENTED
+    if not _DIGITS.fullmatch(reply):
+        return None
+    code = int(reply)
+    return code if 100 <= code <= 599 else None
+
+
+def parse_rdma_bytes_transferred(response, size: int) -> int:
+    """Return the byte count an accepted RDMA GET delivered into a ``size``-byte buffer.
+
+    ``x-amz-rdma-bytes-transferred`` is authoritative and may be below ``size``
+    for a ranged read. The endpoint sets it only when bytes moved, so its
+    absence means zero bytes.
+    """
+    value = response["ResponseMetadata"]["HTTPHeaders"].get(X_AMZ_RDMA_BYTES_TRANSFERRED)
+    if not value:
+        return 0
+    if not _DIGITS.fullmatch(value) or int(value) > size:
+        raise CuObjError(f"invalid {X_AMZ_RDMA_BYTES_TRANSFERRED}={value!r} for a {size}-byte buffer")
+    return int(value)
+
+
 def _buffer_address(buffer: bytearray | memoryview, nbytes: int) -> int:
     """Return the address of a writable, contiguous buffer for RDMA registration.
 
@@ -206,50 +254,105 @@ class CuObjEngine:
 
     @staticmethod
     def _inject_token(request, **kwargs) -> None:
-        token = getattr(_thread_state, "rdma_token", None)
-        if token is not None:
-            # SigV4 signs every x-amz-* header, so the token must be present
-            # before signing (before-sign), not after.
-            request.headers["x-amz-rdma-token"] = token
+        """Mint a fresh RDMA token for every signing attempt of the in-flight request.
+
+        botocore re-signs each retry, so this releases the previous attempt's
+        token and mints a new one rather than resending a stale descriptor.
+        """
+        region = getattr(_thread_state, "rdma_region", None)
+        if region is None:
+            return
+        _release_thread_token()
+        addr, nbytes, is_put = region
+        token = get_rdma_token(addr, nbytes, 0, is_put)
+        _thread_state.rdma_token = token
+        # SigV4 signs every x-amz-* header, so the token must be present
+        # before signing (before-sign), not after.
+        request.headers[X_AMZ_RDMA_TOKEN] = token
 
     @staticmethod
-    def check_reply(response) -> None:
-        """Fail loudly when an endpoint did not honor the RDMA request.
+    def check_reply(response, is_put: bool) -> None:
+        """Validate the endpoint's ``x-amz-rdma-reply`` for an RDMA request.
 
-        With ``rdma`` explicitly enabled there is no silent TCP fallback: a
-        missing or ``501`` reply means the payload did not move over RDMA.
+        There is no silent TCP fallback: a declined, malformed, or
+        HTTP-mismatched reply raises :class:`CuObjError`. A PUT or UploadPart
+        succeeds on HTTP 200 with an ETag; the reply is optional there, but when
+        present it must be ``200`` or ``204`` (the CRC64NVME checksum rejects an
+        endpoint that ignored the token). A GET must pair HTTP 200 with reply
+        ``200`` or HTTP 206 with ``206``; an absent reply means it was declined.
         """
-        headers = response["ResponseMetadata"]["HTTPHeaders"]
-        reply = headers.get("x-amz-rdma-reply")
-        if not reply or reply == "501":
-            raise CuObjError(
-                f"S3 endpoint declined RDMA (x-amz-rdma-reply={reply!r}); the endpoint is not "
-                "RDMA-capable. Disable the 'rdma' option to use the standard TCP data plane."
+        metadata = response["ResponseMetadata"]
+        status = metadata.get("HTTPStatusCode")
+        reply = metadata["HTTPHeaders"].get(X_AMZ_RDMA_REPLY)
+        code = parse_rdma_reply(reply)
+        if is_put:
+            accepted = (
+                status == 200
+                and bool(response.get("ETag"))
+                and (not reply or code in (RDMA_REPLY_SUCCESS, RDMA_REPLY_NO_CONTENT))
             )
+        else:
+            accepted = (status, code) in (
+                (200, RDMA_REPLY_SUCCESS),
+                (206, RDMA_REPLY_PARTIAL_CONTENT),
+            )
+        if accepted:
+            return
+        if code == RDMA_REPLY_NOT_IMPLEMENTED and (reply or not is_put):
+            raise _declined(status, reply)
+        raise CuObjError(f"RDMA {'PUT' if is_put else 'GET'} failed (http={status}, {X_AMZ_RDMA_REPLY}={reply!r})")
 
     @contextmanager
     def transfer(self, buffer: bytearray | memoryview, is_put: bool) -> Iterator[None]:
-        """Register ``buffer``, publish its RDMA token for the wrapped request, then clean up.
+        """Register ``buffer`` for the wrapped request, then release its token and deregister it.
 
-        The descriptor is formatted ``<cuobject-descriptor>:<hex addr>:<hex size>``
-        so the endpoint can locate the exact registered region.
+        Tokens are minted per signing attempt by the ``before-sign`` hook. The
+        cuObject descriptor is sent verbatim as ``x-amz-rdma-token``: it already
+        carries the buffer address and transfer size in its own fields.
         """
         nbytes = memoryview(buffer).nbytes
+        if nbytes > RDMA_MAX_MEMORY_REG_SIZE:
+            raise CuObjError(
+                f"RDMA buffer of {nbytes} bytes exceeds the {RDMA_MAX_MEMORY_REG_SIZE}-byte "
+                f"{X_AMZ_RDMA_TOKEN} window; split the transfer into parts or ranges."
+            )
         addr = _buffer_address(buffer, nbytes)
         register_buffer(addr, nbytes)
-        token: str | None = None
+        _thread_state.rdma_region = (addr, nbytes, is_put)
         try:
-            token = get_rdma_token(addr, nbytes, 0, is_put)
-            _thread_state.rdma_token = f"{token}:{addr:016x}:{nbytes:016x}"
-            try:
-                yield
-            finally:
-                _thread_state.rdma_token = None
+            yield
         finally:
+            _thread_state.rdma_region = None
             # Deregister the buffer even if releasing the token raises, so a
             # failed release never leaks the pinned region.
             try:
-                if token is not None:
-                    put_rdma_token(token)
+                _release_thread_token()
             finally:
                 deregister_buffer(addr)
+
+
+def _release_thread_token() -> None:
+    token = getattr(_thread_state, "rdma_token", None)
+    _thread_state.rdma_token = None
+    if token is not None:
+        put_rdma_token(token)
+
+
+def _declined(status: int | None, reply: str | None) -> CuObjError:
+    return CuObjError(
+        f"S3 endpoint declined RDMA (http={status}, {X_AMZ_RDMA_REPLY}={reply!r}). Use the 's3' provider "
+        "if the endpoint is not RDMA-capable."
+    )
+
+
+def raise_if_declined(error_response: dict) -> None:
+    """Raise :class:`CuObjError` when a failed request's response carries an RDMA decline.
+
+    An endpoint declines with an HTTP error status plus ``x-amz-rdma-reply: 501``;
+    botocore surfaces that as a ``ClientError`` before :meth:`CuObjEngine.check_reply`
+    can see it.
+    """
+    metadata = error_response.get("ResponseMetadata", {})
+    reply = metadata.get("HTTPHeaders", {}).get(X_AMZ_RDMA_REPLY)
+    if reply == str(RDMA_REPLY_NOT_IMPLEMENTED):
+        raise _declined(metadata.get("HTTPStatusCode"), reply)

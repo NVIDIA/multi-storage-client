@@ -275,6 +275,56 @@ Options: See parameters in :py:class:`multistorageclient.providers.s3.S3StorageP
            base_path: my-bucket
            region_name: us-east-1
 
+``s3_cuobject``
+---------------
+
+S3 provider that moves object data over RDMA with NVIDIA cuObject. The HTTP request
+carries only the signed ``x-amz-rdma-token`` header, and the endpoint transfers the
+payload directly into or out of a registered buffer. Metadata, listing, and credentials
+work as in the ``s3`` provider.
+
+Requirements:
+
+* The ``multistorageclient_rust`` wheel built with the ``rdma`` feature
+  (``maturin build --features rdma``) on a host with the cuObject runtime.
+* An RDMA-capable network interface and an S3 endpoint that supports the
+  ``x-amz-rdma-*`` headers.
+* The ``awscrt`` package, which computes the CRC64NVME checksum sent with each upload.
+
+Options: See parameters in :py:class:`multistorageclient.providers.s3.S3StorageProvider`, plus:
+
+* ``rdma.multipart_chunksize`` -- part size in bytes. Default ``536870912`` (512 MiB),
+  maximum ``4294967295`` (the largest region one RDMA token can describe). Uploads larger
+  than this use an RDMA multipart upload. Downloads larger than this use ranged RDMA GETs
+  of this size.
+
+``rust_client`` and ``checksum_algorithm`` are not supported.
+
+.. code-block:: yaml
+   :caption: Example configuration.
+
+   profiles:
+     my-profile:
+       storage_provider:
+         type: s3_cuobject
+         options:
+           base_path: my-bucket
+           endpoint_url: https://rdma-s3.example.com
+           rdma:
+             multipart_chunksize: 1073741824
+
+There is no fallback to TCP. A request fails with an error when:
+
+* The endpoint declines RDMA (``x-amz-rdma-reply: 501``, or no reply header on a GET).
+* The ``x-amz-rdma-reply`` value is malformed or does not match the HTTP status.
+  A GET must pair HTTP ``200`` with reply ``200``, or HTTP ``206`` with reply ``206``.
+  A PUT must return HTTP ``200`` and an ETag. The reply header is optional on a PUT,
+  but when present it must be ``200`` or ``204``.
+* A full-object GET receives fewer bytes than the object size. For a ranged GET, the
+  result is cut to the ``x-amz-rdma-bytes-transferred`` count.
+
+Each retry of a request sends a newly minted RDMA token.
+
 ``s8k``
 -------
 
