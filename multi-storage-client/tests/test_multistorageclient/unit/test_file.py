@@ -16,13 +16,18 @@
 import functools
 import mmap
 import os
+from typing import cast
 from unittest.mock import Mock, patch
 
 import pytest
 
 from multistorageclient import StorageClient, StorageClientConfig, telemetry
+from multistorageclient.cache import CacheManager
+from multistorageclient.caching.cache_config import CacheConfig
+from multistorageclient.client.single import SingleStorageClient
 from multistorageclient.file import ObjectFile, PosixFile, RemoteFileReader
 from multistorageclient.providers.base import BaseStorageProvider
+from multistorageclient.types import ResolvedPath, ResolvedPathState, RetryableError, RetryConfig
 from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
 
@@ -526,3 +531,165 @@ def test_posix_file_readall_emits_read_metrics_once(tmp_path):
         emit_metrics.reset_mock()
         assert f.readall() == b"content"
         assert emit_metrics.call_count == 1
+
+
+def _object_file_client(tmp_path):
+    return SingleStorageClient(
+        StorageClientConfig.from_dict(
+            {"profiles": {"data": {"storage_provider": {"type": "file", "options": {"base_path": str(tmp_path)}}}}},
+            profile="data",
+        )
+    )
+
+
+@pytest.mark.parametrize("cache_enabled", [False, True])
+@pytest.mark.parametrize("mode", ["rb", "r"])
+def test_object_file_download_reuses_open_metadata(tmp_path, cache_enabled, mode):
+    content = b"cached file content\n"
+    (tmp_path / "object.txt").write_bytes(content)
+    client = _object_file_client(tmp_path)
+    if cache_enabled:
+        client._cache_manager = CacheManager(
+            profile="data",
+            cache_config=CacheConfig(
+                location=str(tmp_path / "cache"), size="10M", cache_line_size="1M", check_source_version=False
+            ),
+        )
+    provider = cast(BaseStorageProvider, client._storage_provider)
+    with (
+        patch.object(client, "_is_posix_file_storage_provider", return_value=False),
+        patch.object(provider, "_get_object_metadata", wraps=provider._get_object_metadata) as metadata_lookup,
+    ):
+        with client.open("object.txt", mode) as file:
+            assert file.read() == (content if mode == "rb" else content.decode())
+        assert metadata_lookup.call_count == 1
+
+
+@pytest.mark.parametrize("attempts_needed", [2, 4])
+def test_object_file_metadata_download_preserves_retry_limit(tmp_path, attempts_needed):
+    content = b"retried download"
+    (tmp_path / "object").write_bytes(content)
+    client = _object_file_client(tmp_path)
+    client._retry_config = RetryConfig(attempts=3, delay=0)
+    provider = cast(BaseStorageProvider, client._storage_provider)
+    download = provider._download_file
+    attempts = 0
+
+    def transient_download(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts < attempts_needed:
+            raise RetryableError("temporary download failure")
+        return download(*args, **kwargs)
+
+    with (
+        patch.object(provider, "_download_file", side_effect=transient_download),
+        patch.object(provider, "_get_object_metadata", wraps=provider._get_object_metadata) as metadata_lookup,
+        ObjectFile(client, "object") as file,
+    ):
+        if attempts_needed <= 3:
+            assert file.read() == content
+        else:
+            with pytest.raises(OSError) as exc_info:
+                file.read()
+            assert isinstance(exc_info.value.__cause__, RetryableError)
+        assert attempts == min(attempts_needed, 3)
+        assert metadata_lookup.call_count == 1
+
+
+@pytest.mark.parametrize("route", ["metadata", "replica", "override", "subclass", "info_override"])
+def test_object_file_metadata_reuse_keeps_routed_downloads(tmp_path, route):
+    content = b"routed content"
+    (tmp_path / "physical").write_bytes(content)
+    client = _object_file_client(tmp_path)
+    metadata = client.info("physical")
+    routing = Mock()
+    if route == "metadata":
+        client._metadata_provider = routing
+        routing.get_object_metadata.return_value = metadata
+        routing.realpath.return_value = ResolvedPath("physical", ResolvedPathState.EXISTS)
+    elif route == "replica":
+        client._replica_manager = routing
+        routing.download_from_replica_or_primary.side_effect = lambda path, destination, provider: (
+            provider.download_file("physical", destination)
+        )
+    elif route == "override":
+        routing.side_effect = lambda path, destination: client._storage_provider.download_file("physical", destination)
+        client.download_file = routing
+    elif route == "subclass":
+
+        class CustomClient(SingleStorageClient):
+            def info(self, path, strict=True):
+                return super().info("physical", strict)
+
+            def download_file(self, remote_path, local_path):
+                self._storage_provider.download_file("physical", local_path)
+
+        client = CustomClient(client._config)
+    else:
+        routing.return_value = metadata
+        client.info = routing
+    path = "logical" if route in ("metadata", "subclass") else "physical"
+    provider = client._storage_provider
+    with patch.object(provider, "download_file", wraps=provider.download_file) as download:
+        with ObjectFile(client, path) as file:
+            assert file.read() == content
+        if route != "metadata":
+            assert len(download.call_args.args) == 2
+    if route == "metadata":
+        routing.realpath.assert_called_once_with("logical")
+        assert routing.get_object_metadata.call_count == 2
+    elif route == "replica":
+        routing.download_from_replica_or_primary.assert_called_once()
+    elif route in ("override", "info_override"):
+        routing.assert_called_once()
+
+
+def test_public_download_still_fetches_metadata(tmp_path):
+    content = b"direct download"
+    (tmp_path / "object").write_bytes(content)
+    client = _object_file_client(tmp_path)
+    provider = cast(BaseStorageProvider, client._storage_provider)
+    with (
+        patch.object(provider, "_get_object_metadata", wraps=provider._get_object_metadata) as metadata_lookup,
+        patch.object(provider, "download_file", wraps=provider.download_file) as download,
+    ):
+        client.download_file("object", str(tmp_path / "download"))
+        download.assert_called_once_with("object", str(tmp_path / "download"))
+        assert (tmp_path / "download").read_bytes() == content
+        metadata_lookup.assert_called_once()
+
+
+def test_object_file_metadata_reuse_preserves_symlink_resolution(tmp_path):
+    content = b"symlink target content"
+    (tmp_path / "target").write_bytes(content)
+    (tmp_path / "link").symlink_to("target")
+    client = _object_file_client(tmp_path)
+    provider = cast(BaseStorageProvider, client._storage_provider)
+    with patch.object(provider, "_download_file", wraps=provider._download_file) as download:
+        with ObjectFile(client, "link") as file:
+            assert file.read() == content
+        assert download.call_args.args[0] == str(tmp_path / "target")
+        assert download.call_args.args[2].symlink_target is None
+        assert download.call_args.args[2].content_length == len(content)
+
+
+def test_object_file_memory_limit_preserves_streaming(tmp_path):
+    content = b"streamed content"
+    (tmp_path / "object").write_bytes(content)
+    client = _object_file_client(tmp_path)
+    with patch.object(client._storage_provider, "download_file") as download:
+        with ObjectFile(client, "object", memory_load_limit=1) as file:
+            assert file.read(4) == content[:4]
+            assert isinstance(file._file, RemoteFileReader)
+        download.assert_not_called()
+
+
+def test_object_file_duck_client_keeps_custom_download():
+    client = Mock()
+    client._cache_manager = None
+    client.info.return_value = Mock(content_length=4)
+    client.download_file.side_effect = lambda path, destination: destination.write(b"data")
+    with ObjectFile(client, "object") as file:
+        assert file.read() == b"data"
+    client.download_file.assert_called_once()

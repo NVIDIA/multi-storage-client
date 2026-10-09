@@ -162,6 +162,10 @@ class AbstractStorageClient(ABC):
         :raises FileNotFoundError: If the remote file does not exist.
         """
 
+    def _download_file_with_metadata(self, remote_path: str, local_path: str | IO, metadata: ObjectMetadata) -> None:
+        """Download using the client's existing routing when metadata cannot be reused."""
+        self.download_file(remote_path, local_path)
+
     @abstractmethod
     def download_files(
         self,
