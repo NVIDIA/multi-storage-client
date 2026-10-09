@@ -936,8 +936,8 @@ class CacheManager:
         """Read a byte range from a full cached file if it exists and is valid.
 
         This method checks if a full cached file exists at the given cache path,
-        validates its etag against the source version, and if valid, reads the
-        requested byte range directly from the cached file.
+        validates its etag against the source version when supplied, and if valid,
+        reads the requested byte range directly from the cached file.
 
         :param cache_path: Path to the cached file
         :param byte_range: The byte range to read (offset and size)
@@ -948,8 +948,7 @@ class CacheManager:
         if os.path.exists(cache_path):
             try:
                 # Validate the full cached file's etag
-                cached_etag = _xattr.getxattr(cache_path, "user.etag").decode("utf-8")
-                if cached_etag == source_version or source_version is None:
+                if source_version is None or _xattr.getxattr(cache_path, "user.etag").decode("utf-8") == source_version:
                     # Full file is cached and valid, read range directly from it
                     with open(cache_path, "rb") as f:
                         f.seek(byte_range.offset)
