@@ -343,11 +343,13 @@ class ObjectFile(IOBase, IO):
         return self._encoding if "b" not in self._mode else None
 
     def _download_to(self, destination: str | IO) -> None:
-        """Reuse metadata when the client supports it, preserving custom download implementations."""
-        if getattr(type(self._storage_client), "_download_file_with_metadata", None) is None:
-            self._storage_client.download_file(self._remote_path, destination)
-        else:
+        """Reuse open metadata for the built-in single-storage client."""
+        from .client.single import SingleStorageClient
+
+        if type(self._storage_client) is SingleStorageClient:
             self._storage_client._download_file_with_metadata(self._remote_path, destination, self._object_metadata)
+        else:
+            self._storage_client.download_file(self._remote_path, destination)
 
     def _download_file(self) -> None:
         """

@@ -24,6 +24,7 @@ import pytest
 from multistorageclient import StorageClient, StorageClientConfig, telemetry
 from multistorageclient.cache import CacheManager
 from multistorageclient.caching.cache_config import CacheConfig
+from multistorageclient.client.composite import CompositeStorageClient
 from multistorageclient.client.single import SingleStorageClient
 from multistorageclient.file import ObjectFile, PosixFile, RemoteFileReader
 from multistorageclient.providers.base import BaseStorageProvider
@@ -597,7 +598,9 @@ def test_object_file_metadata_download_preserves_retry_limit(tmp_path, attempts_
         assert metadata_lookup.call_count == 1
 
 
-@pytest.mark.parametrize("route", ["metadata", "replica", "override", "subclass", "info_override"])
+@pytest.mark.parametrize(
+    "route", ["metadata", "replica", "override", "subclass", "info_override", "facade", "composite"]
+)
 def test_object_file_metadata_reuse_keeps_routed_downloads(tmp_path, route):
     content = b"routed content"
     (tmp_path / "physical").write_bytes(content)
@@ -626,11 +629,29 @@ def test_object_file_metadata_reuse_keeps_routed_downloads(tmp_path, route):
                 self._storage_provider.download_file("physical", local_path)
 
         client = CustomClient(client._config)
+    elif route == "facade":
+        client = StorageClient(client._config)
+    elif route == "composite":
+        routing.get_object_metadata.return_value = metadata
+        routing.realpath.return_value = ResolvedPath("physical", ResolvedPathState.EXISTS, profile="data")
+        client = CompositeStorageClient(
+            StorageClientConfig(
+                profile="composite",
+                storage_provider_profiles=["data"],
+                child_configs={"data": client._config},
+                metadata_provider=routing,
+            )
+        )
     else:
         routing.return_value = metadata
         client.info = routing
-    path = "logical" if route in ("metadata", "subclass") else "physical"
-    provider = client._storage_provider
+    path = "logical" if route in ("metadata", "subclass", "composite") else "physical"
+    provider = cast(
+        BaseStorageProvider,
+        client._get_child_client("data")._storage_provider
+        if isinstance(client, CompositeStorageClient)
+        else client._storage_provider,
+    )
     with patch.object(provider, "download_file", wraps=provider.download_file) as download:
         with ObjectFile(client, path) as file:
             assert file.read() == content
@@ -639,6 +660,9 @@ def test_object_file_metadata_reuse_keeps_routed_downloads(tmp_path, route):
     if route == "metadata":
         routing.realpath.assert_called_once_with("logical")
         assert routing.get_object_metadata.call_count == 2
+    elif route == "composite":
+        routing.realpath.assert_called_once_with("logical")
+        routing.get_object_metadata.assert_called_once_with("logical", include_pending=False)
     elif route == "replica":
         routing.download_from_replica_or_primary.assert_called_once()
     elif route in ("override", "info_override"):
@@ -685,8 +709,9 @@ def test_object_file_memory_limit_preserves_streaming(tmp_path):
         download.assert_not_called()
 
 
-def test_object_file_duck_client_keeps_custom_download():
-    client = Mock()
+@pytest.mark.parametrize("spec", [None, SingleStorageClient])
+def test_object_file_duck_client_keeps_custom_download(spec):
+    client = Mock(spec=spec)
     client._cache_manager = None
     client.info.return_value = Mock(content_length=4)
     client.download_file.side_effect = lambda path, destination: destination.write(b"data")
