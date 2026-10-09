@@ -21,6 +21,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import pytest
 import xattr
@@ -1398,6 +1399,87 @@ def test_concurrent_chunk_creation_with_locking():
             f for f in os.listdir(file_dir) if f.startswith(f".{base_name}#chunk0") and not f.endswith(".lock")
         ]
         assert len(chunk_files) == 1, f"Expected 1 chunk0 file, found {len(chunk_files)}"
+
+
+@pytest.mark.parametrize(
+    ("cached_version", "source_version", "cached_file_exists", "expected_get_calls"),
+    [
+        (None, None, True, 0),
+        ("etag-1", None, True, 0),
+        ("etag-1", "etag-1", True, 0),
+        ("etag-1", "etag-2", True, 1),
+        (None, "etag-1", True, 1),
+        (None, None, False, 1),
+    ],
+)
+def test_range_read_reuses_valid_full_cached_file(
+    cache_manager, cached_version, source_version, cached_file_exists, expected_get_calls
+):
+    key = "data/ranges.bin"
+    cached_content = b"cached file contents"
+    remote_content = b"remote file contents"
+    provider = RangeAwareStorageProvider(remote_content)
+    if cached_file_exists:
+        cache_manager.set(key, cached_content, source_version=cached_version)
+    byte_range = Range(offset=2, size=7)
+
+    with patch.object(_xattr, "getxattr", wraps=_xattr.getxattr) as getxattr:
+        result = cache_manager.read(
+            key,
+            source_version=source_version,
+            byte_range=byte_range,
+            storage_provider=provider,
+            source_size=len(remote_content),
+        )
+        if cached_file_exists and source_version is None:
+            getxattr.assert_not_called()
+
+    expected_content = remote_content if expected_get_calls else cached_content
+    assert result == expected_content[2:9]
+    assert provider.call_count == expected_get_calls
+
+
+@pytest.mark.parametrize(
+    ("check_source_version", "read_check_mode"),
+    [(False, SourceVersionCheckMode.INHERIT), (True, SourceVersionCheckMode.DISABLE)],
+)
+def test_cached_range_read_without_version_check_avoids_remote_requests(tmpdir, check_source_version, read_check_mode):
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        profile = "data"
+        config_dict = {
+            "profiles": {profile: temp_data_store.profile_config_dict() | {"caching_enabled": True}},
+            "cache": {
+                "size": "10M",
+                "cache_line_size": "1M",
+                "location": str(tmpdir),
+                "check_source_version": check_source_version,
+            },
+        }
+        client = SingleStorageClient(config=StorageClientConfig.from_dict(config_dict, profile=profile))
+        key = "data/ranges.bin"
+        content = b"complete cached file contents"
+        client.write(key, content)
+        client._is_posix_file_storage_provider = lambda: False  # type: ignore
+        cache_manager = client._cache_manager
+        assert cache_manager is not None
+        assert client.read(key, check_source_version=read_check_mode) == content
+        with pytest.raises(OSError):
+            _xattr.getxattr(cache_manager._get_cache_file_path(key), "user.etag")
+
+        provider = client._storage_provider
+        with (
+            patch.object(provider, "get_object", wraps=provider.get_object) as get_object,
+            patch.object(provider, "get_object_metadata", wraps=provider.get_object_metadata) as get_metadata,
+            patch.object(cache_manager, "_read_range", wraps=cache_manager._read_range) as read_chunks,
+        ):
+            for byte_range in [Range(offset=3, size=7), Range(offset=len(content) - 2, size=7)]:
+                assert (
+                    client.read(key, byte_range=byte_range, check_source_version=read_check_mode)
+                    == content[byte_range.offset : byte_range.offset + byte_range.size]
+                )
+            get_object.assert_not_called()
+            get_metadata.assert_not_called()
+            read_chunks.assert_not_called()
 
 
 def test_full_file_byte_range_read_is_served_from_cache(tmpdir):

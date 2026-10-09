@@ -54,7 +54,7 @@ MSC supports partial file caching, which allows efficient caching of large files
 **Key Features:**
 
 * **Chunk-based Storage**: Large files are automatically split into configurable chunks (default 64MB) and stored separately in the cache.
-* **Range Request Optimization**: When reading specific byte ranges, MSC only downloads the necessary chunks, not the entire file.
+* **Range Request Optimization**: When reading specific byte ranges, MSC only downloads the necessary chunks, not the entire file. If the complete file is already cached, range reads reuse it directly; when source version checking is disabled, this does not require a cached ETag.
 
 **Configuration:**
 
