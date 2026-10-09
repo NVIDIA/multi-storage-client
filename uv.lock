@@ -2523,7 +2523,7 @@ wheels = [
 
 [[package]]
 name = "multi-storage-client"
-version = "1.1.0"
+version = "1.2.0"
 source = { editable = "multi-storage-client" }
 dependencies = [
     { name = "filelock" },
