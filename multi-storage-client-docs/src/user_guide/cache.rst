@@ -216,6 +216,8 @@ Available eviction policies:
 
 * **RANDOM**: Randomly selects files for eviction (except the most recently added file). Provides unpredictable but fair eviction behavior.
 
+MSC explicitly updates cached file access times only for LRU and MRU. FIFO, RANDOM, and NO_EVICTION skip these timestamp updates, reducing filesystem work when reading cached data.
+
 The ``purge_factor`` parameter controls how aggressively the cache is cleaned during eviction. It specifies the percentage of maximum cache size to delete (0-100) when eviction is triggered, reducing the frequency of future eviction cycles.
 
 * ``purge_factor = 0`` (default): Delete only what's needed to stay just under the cache limit. This provides minimal cleanup and may trigger frequent evictions.
