@@ -265,8 +265,6 @@ For large files where you only need to access specific portions, use partial fil
 
 **Performance Considerations:**
 
-* **Metadata Requests**: When opening a regular object directly from a storage provider, MSC reuses the file information fetched at open time for the download. This avoids a second metadata request, both when loading into memory and when filling the cache. Metadata-provider and replica routes retain their existing lookup behavior.
-
 * **Full File Caching** (``prefetch_file=True`` with ``client.open()``):  The cache transforms what would be hundreds or thousands of small, high-latency network requests into a single bulk download followed by fast local file system access.
 
 * **Partial File Caching** (``prefetch_file=False`` with ``client.open()``): Use for large files with sparse access patterns. Set ``cache_line_size`` based on your typical read sizes - smaller chunks (e.g., 16MB) for fine-grained access, larger chunks (e.g., 128MB) for coarser access patterns.
