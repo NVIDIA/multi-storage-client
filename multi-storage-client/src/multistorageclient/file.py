@@ -342,6 +342,15 @@ class ObjectFile(IOBase, IO):
         """
         return self._encoding if "b" not in self._mode else None
 
+    def _download_to(self, destination: str | IO) -> None:
+        """Reuse open metadata for the built-in single-storage client."""
+        from .client.single import SingleStorageClient
+
+        if type(self._storage_client) is SingleStorageClient:
+            self._storage_client._download_file_with_metadata(self._remote_path, destination, self._object_metadata)
+        else:
+            self._storage_client.download_file(self._remote_path, destination)
+
     def _download_file(self) -> None:
         """
         Download the file to the cache directory.
@@ -392,7 +401,7 @@ class ObjectFile(IOBase, IO):
                     ):
                         # The process writes the file to a temporary file and move it to the cache directory.
                         temp_file_path = self._generate_temp_file_path()
-                        self._storage_client.download_file(self._remote_path, temp_file_path)
+                        self._download_to(temp_file_path)
                         self._cache_manager.set(self._remote_path, temp_file_path, source_version)
 
                 file_object = self._cache_manager.open(
@@ -433,7 +442,7 @@ class ObjectFile(IOBase, IO):
                 return self._open_large_file()
 
             self._create_fileobj()
-            self._storage_client.download_file(self._remote_path, self._file)
+            self._download_to(self._file)
             self._file.seek(0)
         except Exception as error:
             self._download_error = error

@@ -517,7 +517,6 @@ class SingleStorageClient(AbstractStorageClient):
 
         return self._metadata_provider.get_object_metadata(path, include_pending=not strict)
 
-    @retry
     def download_file(self, remote_path: str, local_path: str | IO) -> None:
         """
         Download a remote file to a local path or file-like object.
@@ -526,14 +525,28 @@ class SingleStorageClient(AbstractStorageClient):
         :param local_path: The local file path or file-like object to write to.
         :raises FileNotFoundError: If the remote file does not exist.
         """
+        self._download_file(remote_path, local_path)
+
+    def _download_file_with_metadata(self, remote_path: str, local_path: str | IO, metadata: ObjectMetadata) -> None:
+        """Download with already fetched metadata while preserving instance overrides."""
+        if "info" in self.__dict__ or "download_file" in self.__dict__:
+            self.download_file(remote_path, local_path)
+        else:
+            self._download_file(remote_path, local_path, metadata)
+
+    @retry
+    def _download_file(self, remote_path: str, local_path: str | IO, metadata: ObjectMetadata | None = None) -> None:
+        """Download through the existing retry and routing logic, optionally reusing provider metadata."""
         if self._metadata_provider:
             physical_path = self._resolve_read_path(remote_path)
             metadata = self._metadata_provider.get_object_metadata(remote_path)
             self._storage_provider.download_file(physical_path, local_path, metadata)
         elif self._replica_manager:
             self._replica_manager.download_from_replica_or_primary(remote_path, local_path, self._storage_provider)
-        else:
+        elif metadata is None:
             self._storage_provider.download_file(remote_path, local_path)
+        else:
+            self._storage_provider.download_file(remote_path, local_path, metadata)
 
     def download_files(
         self,
