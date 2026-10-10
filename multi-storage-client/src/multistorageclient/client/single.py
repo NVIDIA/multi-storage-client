@@ -528,14 +528,8 @@ class SingleStorageClient(AbstractStorageClient):
         self._download_file(remote_path, local_path)
 
     def _download_file_with_metadata(self, remote_path: str, local_path: str | IO, metadata: ObjectMetadata) -> None:
-        """Reuse open metadata only for an unmodified client reading directly from its provider."""
-        if (
-            type(self) is not SingleStorageClient
-            or self._metadata_provider
-            or self._replica_manager
-            or "info" in self.__dict__
-            or "download_file" in self.__dict__
-        ):
+        """Download with already fetched metadata while preserving instance overrides."""
+        if "info" in self.__dict__ or "download_file" in self.__dict__:
             self.download_file(remote_path, local_path)
         else:
             self._download_file(remote_path, local_path, metadata)

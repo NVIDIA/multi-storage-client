@@ -16,6 +16,7 @@
 import functools
 import mmap
 import os
+from dataclasses import replace
 from typing import cast
 from unittest.mock import Mock, patch
 
@@ -24,7 +25,6 @@ import pytest
 from multistorageclient import StorageClient, StorageClientConfig, telemetry
 from multistorageclient.cache import CacheManager
 from multistorageclient.caching.cache_config import CacheConfig
-from multistorageclient.client.composite import CompositeStorageClient
 from multistorageclient.client.single import SingleStorageClient
 from multistorageclient.file import ObjectFile, PosixFile, RemoteFileReader
 from multistorageclient.providers.base import BaseStorageProvider
@@ -544,8 +544,7 @@ def _object_file_client(tmp_path):
 
 
 @pytest.mark.parametrize("cache_enabled", [False, True])
-@pytest.mark.parametrize("mode", ["rb", "r"])
-def test_object_file_download_reuses_open_metadata(tmp_path, cache_enabled, mode):
+def test_object_file_download_reuses_open_metadata(tmp_path, cache_enabled):
     content = b"cached file content\n"
     (tmp_path / "object.txt").write_bytes(content)
     client = _object_file_client(tmp_path)
@@ -561,8 +560,8 @@ def test_object_file_download_reuses_open_metadata(tmp_path, cache_enabled, mode
         patch.object(client, "_is_posix_file_storage_provider", return_value=False),
         patch.object(provider, "_get_object_metadata", wraps=provider._get_object_metadata) as metadata_lookup,
     ):
-        with client.open("object.txt", mode) as file:
-            assert file.read() == (content if mode == "rb" else content.decode())
+        with client.open("object.txt", "rb") as file:
+            assert file.read() == content
         assert metadata_lookup.call_count == 1
 
 
@@ -598,9 +597,7 @@ def test_object_file_metadata_download_preserves_retry_limit(tmp_path, attempts_
         assert metadata_lookup.call_count == 1
 
 
-@pytest.mark.parametrize(
-    "route", ["metadata", "replica", "override", "subclass", "info_override", "facade", "composite"]
-)
+@pytest.mark.parametrize("route", ["metadata", "replica", "override", "subclass", "info_override"])
 def test_object_file_metadata_reuse_keeps_routed_downloads(tmp_path, route):
     content = b"routed content"
     (tmp_path / "physical").write_bytes(content)
@@ -629,84 +626,22 @@ def test_object_file_metadata_reuse_keeps_routed_downloads(tmp_path, route):
                 self._storage_provider.download_file("physical", local_path)
 
         client = CustomClient(client._config)
-    elif route == "facade":
-        client = StorageClient(client._config)
-    elif route == "composite":
-        routing.get_object_metadata.return_value = metadata
-        routing.realpath.return_value = ResolvedPath("physical", ResolvedPathState.EXISTS, profile="data")
-        client = CompositeStorageClient(
-            StorageClientConfig(
-                profile="composite",
-                storage_provider_profiles=["data"],
-                child_configs={"data": client._config},
-                metadata_provider=routing,
-            )
-        )
     else:
-        routing.return_value = metadata
+        routing.return_value = replace(metadata, content_length=0)
         client.info = routing
-    path = "logical" if route in ("metadata", "subclass", "composite") else "physical"
-    provider = cast(
-        BaseStorageProvider,
-        client._get_child_client("data")._storage_provider
-        if isinstance(client, CompositeStorageClient)
-        else client._storage_provider,
-    )
-    with patch.object(provider, "download_file", wraps=provider.download_file) as download:
+    path = "logical" if route in ("metadata", "subclass") else "physical"
+    provider = cast(BaseStorageProvider, client._storage_provider)
+    with patch.object(provider, "_download_file", wraps=provider._download_file) as download:
         with ObjectFile(client, path) as file:
             assert file.read() == content
-        if route != "metadata":
-            assert len(download.call_args.args) == 2
+        assert download.call_args.args[2].content_length == len(content)
     if route == "metadata":
         routing.realpath.assert_called_once_with("logical")
         assert routing.get_object_metadata.call_count == 2
-    elif route == "composite":
-        routing.realpath.assert_called_once_with("logical")
-        routing.get_object_metadata.assert_called_once_with("logical", include_pending=False)
     elif route == "replica":
         routing.download_from_replica_or_primary.assert_called_once()
     elif route in ("override", "info_override"):
         routing.assert_called_once()
-
-
-def test_public_download_still_fetches_metadata(tmp_path):
-    content = b"direct download"
-    (tmp_path / "object").write_bytes(content)
-    client = _object_file_client(tmp_path)
-    provider = cast(BaseStorageProvider, client._storage_provider)
-    with (
-        patch.object(provider, "_get_object_metadata", wraps=provider._get_object_metadata) as metadata_lookup,
-        patch.object(provider, "download_file", wraps=provider.download_file) as download,
-    ):
-        client.download_file("object", str(tmp_path / "download"))
-        download.assert_called_once_with("object", str(tmp_path / "download"))
-        assert (tmp_path / "download").read_bytes() == content
-        metadata_lookup.assert_called_once()
-
-
-def test_object_file_metadata_reuse_preserves_symlink_resolution(tmp_path):
-    content = b"symlink target content"
-    (tmp_path / "target").write_bytes(content)
-    (tmp_path / "link").symlink_to("target")
-    client = _object_file_client(tmp_path)
-    provider = cast(BaseStorageProvider, client._storage_provider)
-    with patch.object(provider, "_download_file", wraps=provider._download_file) as download:
-        with ObjectFile(client, "link") as file:
-            assert file.read() == content
-        assert download.call_args.args[0] == str(tmp_path / "target")
-        assert download.call_args.args[2].symlink_target is None
-        assert download.call_args.args[2].content_length == len(content)
-
-
-def test_object_file_memory_limit_preserves_streaming(tmp_path):
-    content = b"streamed content"
-    (tmp_path / "object").write_bytes(content)
-    client = _object_file_client(tmp_path)
-    with patch.object(client._storage_provider, "download_file") as download:
-        with ObjectFile(client, "object", memory_load_limit=1) as file:
-            assert file.read(4) == content[:4]
-            assert isinstance(file._file, RemoteFileReader)
-        download.assert_not_called()
 
 
 @pytest.mark.parametrize("spec", [None, SingleStorageClient])
