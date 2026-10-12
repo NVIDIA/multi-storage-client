@@ -19,10 +19,12 @@ import logging
 import multiprocessing
 import os
 import queue
+import signal
 import tempfile
 import threading
 import time
-from typing import TYPE_CHECKING
+from multiprocessing.queues import Queue as MultiprocessingQueue
+from typing import TYPE_CHECKING, cast
 
 from ..constants import DEFAULT_SYNC_BATCH_SIZE
 from ..types import DryrunResult, ExecutionMode, SymlinkHandling, SyncError, SyncResult
@@ -30,7 +32,7 @@ from ..utils import PatternMatcher, calculate_worker_processes_and_threads
 from .monitors import ErrorMonitorThread, ResultMonitorThread
 from .producer import ProducerThread
 from .progress_bar import ProgressBar
-from .types import OperationType
+from .types import OperationBatch, OperationType
 from .worker import sync_worker_process
 
 if TYPE_CHECKING:
@@ -44,6 +46,12 @@ def is_ray_available():
 
 
 HAVE_RAY = is_ray_available()
+
+
+def _sync_worker_process_local(*args) -> None:
+    """Let the parent handle Ctrl+C and stop local worker processes."""
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    sync_worker_process(*args)
 
 
 class SyncManager:
@@ -205,7 +213,12 @@ class SyncManager:
             shutdown_event = SharedEvent()
 
         # Create a progress bar to track the progress of the sync operation.
-        progress = ProgressBar(desc=description, show_progress=True, total_items=0)
+        progress = ProgressBar(
+            desc=description,
+            show_progress=True,
+            total_items=0,
+            show_network_throughput=execution_mode == ExecutionMode.LOCAL,
+        )
 
         # Start the producer thread to compare source and target file listings and queue sync operations.
         producer_thread = ProducerThread(
@@ -250,27 +263,14 @@ class SyncManager:
         error_monitor_thread.start()
 
         if execution_mode == ExecutionMode.LOCAL:
-            if num_worker_processes == 1:
-                # Single process does not require multiprocessing.
-                sync_worker_process(
-                    self.source_client,
-                    self.source_path,
-                    self.target_client,
-                    self.target_path,
-                    num_worker_threads,
-                    preserve_source_attributes,
-                    file_queue,
-                    result_queue,
-                    error_queue,
-                    shutdown_event,
-                )
-            else:
-                # Create individual processes using spawn context for fork-safety
-                processes = []
-                for _ in range(num_worker_processes):
-                    process = ctx.Process(
-                        target=sync_worker_process,
-                        args=(
+            processes = []
+            temp_dir = tempfile.TemporaryDirectory(prefix="msc_sync_")
+            try:
+                if num_worker_processes == 1:
+                    # Single process does not require multiprocessing.
+                    # In-process transfer threads can outlive cancellation and must own their staging files.
+                    with progress.network_throughput({os.getpid()}):
+                        sync_worker_process(
                             self.source_client,
                             self.source_path,
                             self.target_client,
@@ -281,14 +281,60 @@ class SyncManager:
                             result_queue,
                             error_queue,
                             shutdown_event,
-                        ),
-                    )
-                    processes.append(process)
-                    process.start()
+                        )
+                else:
+                    # Create individual processes using spawn context for fork-safety
+                    for _ in range(num_worker_processes):
+                        process = ctx.Process(
+                            target=_sync_worker_process_local,
+                            args=(
+                                self.source_client,
+                                self.source_path,
+                                self.target_client,
+                                self.target_path,
+                                num_worker_threads,
+                                preserve_source_attributes,
+                                file_queue,
+                                result_queue,
+                                error_queue,
+                                shutdown_event,
+                                temp_dir.name,
+                            ),
+                        )
+                        processes.append(process)
+                        process.start()
 
-                # Wait for all processes to complete
+                    # Wait for all processes to complete
+                    with progress.network_throughput(
+                        {os.getpid()} | {p.pid for p in processes if p.pid is not None and p.is_alive()}
+                    ):
+                        for process in processes:
+                            process.join()
+            except KeyboardInterrupt:
+                shutdown_event.set()
                 for process in processes:
-                    process.join()
+                    if process.is_alive():
+                        process.terminate()
+                for process in processes:
+                    if process.pid is not None:
+                        process.join(timeout=1.0)
+                        if process.is_alive():
+                            process.kill()
+                            process.join(timeout=1.0)
+                if num_worker_processes == 1:
+                    file_queue.put(OperationBatch(operation=OperationType.STOP, items=[]))
+                else:
+                    # A terminated writer can leave a queue's feeder blocked at interpreter exit.
+                    cast(MultiprocessingQueue, result_queue).cancel_join_thread()
+                    cast(MultiprocessingQueue, error_queue).cancel_join_thread()
+                result_queue.put((OperationType.STOP, None, None))
+                error_queue.put(None)
+                result_monitor_thread.join(timeout=1.0)
+                error_monitor_thread.join(timeout=1.0)
+                progress.close()
+                raise
+            finally:
+                temp_dir.cleanup()
         elif execution_mode == ExecutionMode.RAY:
             if not HAVE_RAY:
                 raise RuntimeError(

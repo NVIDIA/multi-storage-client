@@ -387,6 +387,12 @@ The sync operation uses a parallel processing architecture with producer/consume
 
 For large files, the sync operation uses temporary files to avoid loading entire files into memory. Smaller files are transferred directly in memory for better performance.
 
+In local execution mode, the progress bar also shows a combined receive/send network rate, for example ``420/1000 [01:23, 25.0MB/s]``. It samples the main MSC process and this sync's worker processes approximately once per second in the background, so the rate can update while a large file is still transferring and the completed-file count stays unchanged. Traffic from other processes on a shared host is excluded. The rate includes listing requests, protocol traffic, retries, and other network activity within the monitored processes; it does not measure bytes successfully synchronized. A remote-to-remote copy includes both downloading and uploading bytes. Local filesystem copies may generate no network traffic.
+
+On macOS, sampling uses one persistent ``nettop`` process. On Linux, it uses ``pyroute2`` to read TCP socket counters and associates them with the monitored processes through ``/proc/<pid>/fd``. Linux sampling covers TCP traffic, excludes UDP and RDMA data paths, and may miss connections that open and close between samples. Sampling typically needs no elevated privileges for MSC's own processes, but system security policies can prevent access. Until a rate is available, the display shows ``--B/s``; if sampling fails or the platform is unsupported, it shows ``network unavailable`` and synchronization continues. Ray and dryrun modes do not display network rates. Set ``MSC_SUPPRESS_PROGRESS_BAR`` to hide the entire progress bar and disable network sampling.
+
+Press ``Ctrl+C`` to cancel a local sync. MSC stops its worker processes and network sampler, removes temporary files staged by stopped worker processes, closes the progress bar, and exits with status 130 without waiting for in-flight transfer thread pools. Interrupted syncs do not perform the final metadata commit; files already transferred are not rolled back. With a single worker process, transfer threads manage their own staging directories, and an immediate CLI exit can leave temporary files from unfinished remote-to-remote transfers.
+
 .. note::
    The sync operation automatically handles metadata updates for the target storage client.
 

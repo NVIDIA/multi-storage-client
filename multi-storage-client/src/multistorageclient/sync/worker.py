@@ -190,6 +190,7 @@ class BatchSyncHandler(ABC):
         preserve_source_attributes: bool,
         result_queue: QueueLike,
         error_queue: QueueLike,
+        temp_dir: str | None = None,
     ):
         self.source_client = source_client
         self.source_path = source_path
@@ -198,6 +199,7 @@ class BatchSyncHandler(ABC):
         self.preserve_source_attributes = preserve_source_attributes
         self.result_queue = result_queue
         self.error_queue = error_queue
+        self.temp_dir = temp_dir
 
     def process_add_batch(
         self,
@@ -446,7 +448,7 @@ class RemoteToRemoteHandler(BatchSyncHandler):
         worker_id: str,
         transfer_items: list[tuple[ObjectMetadata, str]],
     ) -> None:
-        temp_dir = tempfile.mkdtemp()
+        temp_dir = tempfile.mkdtemp(dir=self.temp_dir)
         try:
             source_remote_paths: list[str] = []
             target_remote_paths: list[str] = []
@@ -480,6 +482,7 @@ def create_sync_handler(
     preserve_source_attributes: bool,
     result_queue: QueueLike,
     error_queue: QueueLike,
+    temp_dir: str | None = None,
 ) -> BatchSyncHandler:
     """Create the appropriate sync handler based on source/target storage types."""
     source_is_posix = source_client._is_posix_file_storage_provider()
@@ -503,6 +506,7 @@ def create_sync_handler(
         preserve_source_attributes,
         result_queue,
         error_queue,
+        temp_dir,
     )
 
 
@@ -522,6 +526,7 @@ def sync_worker_process(
     result_queue: QueueLike,
     error_queue: QueueLike,
     shutdown_event: EventLike,
+    temp_dir: str | None = None,
 ):
     """Worker process that handles file synchronization operations.
 
@@ -534,6 +539,9 @@ def sync_worker_process(
 
     Worker threads pull directly from the shared queue for minimal dispatch
     overhead. A STOP sentinel is re-enqueued so sibling threads can also exit.
+    Local worker processes stage remote-to-remote transfers under the parent-owned
+    *temp_dir* so the parent can clean up after terminating them. In-process
+    worker threads manage their own per-batch staging directories.
     """
     worker_id = f"process-{os.getpid()}"
 
@@ -550,6 +558,7 @@ def sync_worker_process(
             preserve_source_attributes,
             result_queue,
             error_queue,
+            temp_dir,
         )
 
         def _worker_loop(thread_id: str) -> None:

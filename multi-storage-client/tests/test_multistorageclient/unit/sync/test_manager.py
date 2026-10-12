@@ -15,8 +15,14 @@
 
 import json
 import os
+import queue
 import shutil
+import sys
+import threading
+from contextlib import nullcontext
 from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 from unittest import mock
 
@@ -24,7 +30,11 @@ import pytest
 
 from multistorageclient.client import StorageClient
 from multistorageclient.sync import SyncManager
-from multistorageclient.types import ObjectMetadata, SyncError
+from multistorageclient.sync import manager as manager_module
+from multistorageclient.sync import progress_bar as progress_bar_module
+from multistorageclient.sync import worker as worker_module
+from multistorageclient.sync.worker import sync_worker_process
+from multistorageclient.types import ExecutionMode, ObjectMetadata, SyncError
 
 
 class MockStorageClient:
@@ -42,6 +52,14 @@ class MockStorageClient:
 
     def _is_posix_file_storage_provider(self) -> bool:
         return False
+
+
+@pytest.fixture(autouse=True)
+def network_sampler(monkeypatch):
+    monitor = mock.Mock(rate=25_000_000.0, error=None)
+    factory = mock.Mock(return_value=monitor)
+    monkeypatch.setattr(progress_bar_module, "NetworkThroughputMonitor", factory)
+    return factory
 
 
 def test_sync_function_return_producer_error():
@@ -151,6 +169,194 @@ def test_sync_objects_skips_commit_when_commit_metadata_false():
     with mock.patch.object(target_client, "commit_metadata") as mock_commit:
         manager.sync_objects(num_worker_processes=1, commit_metadata=False)
         mock_commit.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "single",
+        "multi",
+        "exited_worker",
+        "dryrun",
+        "ray",
+        "commit_failure",
+        "single_interrupt",
+        "multi_interrupt",
+        "start_interrupt",
+        "ignore_sigterm",
+    ],
+)
+def test_network_sampling_scope_and_cleanup(monkeypatch, tmp_path, capsys, network_sampler, scenario):
+    source_client = MockStorageClient()
+    target_client = MockStorageClient()
+    source_client.list = mock.Mock(return_value=iter(()))
+    target_client.list = mock.Mock(return_value=iter(()))
+    interrupted = scenario.endswith("interrupt") or scenario == "ignore_sigterm"
+    multiprocessing = scenario in {"multi", "exited_worker", "multi_interrupt", "start_interrupt", "ignore_sigterm"}
+    expected_pids = {os.getpid()}
+    shutdown = threading.Event()
+    monkeypatch.setattr(manager_module.tempfile, "tempdir", str(tmp_path))
+    unrelated = tmp_path / "unrelated"
+    unrelated.write_bytes(b"keep")
+    staging_dirs = []
+
+    def leave_partial_file(temp_dir):
+        path = Path(temp_dir)
+        staging_dirs.append(path)
+        batch_dir = path / str(len(staging_dirs))
+        batch_dir.mkdir()
+        (batch_dir / "partial").write_bytes(b"incomplete download")
+
+    if scenario == "single_interrupt":
+        monkeypatch.setattr(manager_module, "sync_worker_process", mock.Mock(side_effect=KeyboardInterrupt))
+    if multiprocessing:
+        queues = [mock.Mock(wraps=queue.Queue(), cancel_join_thread=mock.Mock()) for _ in range(3)]
+        processes = [mock.Mock(pid=101), mock.Mock(pid=102)]
+        for process in processes:
+            process.is_alive.return_value = True
+            process.terminate.side_effect = lambda p=process: setattr(p.is_alive, "return_value", False)
+            process.kill.side_effect = lambda p=process: setattr(p.is_alive, "return_value", False)
+
+            def join(timeout=None, p=process):
+                assert all(path.exists() for path in staging_dirs)
+                if timeout is None and scenario in {"multi_interrupt", "ignore_sigterm"}:
+                    raise KeyboardInterrupt
+
+            process.join.side_effect = join
+        processes[1].is_alive.return_value = scenario != "exited_worker"
+        if scenario == "start_interrupt":
+            processes[1].start.side_effect = KeyboardInterrupt
+            processes[1].pid = None
+            processes[1].is_alive.return_value = False
+        elif scenario in {"multi_interrupt", "ignore_sigterm"}:
+            if scenario == "ignore_sigterm":
+                processes[0].terminate.side_effect = None
+        context = mock.Mock()
+        context.Queue.side_effect = queues
+        context.Event.return_value = shutdown
+
+        def create_process(target, args):
+            leave_partial_file(args[-1])
+            return processes[len(staging_dirs) - 1]
+
+        context.Process.side_effect = create_process
+        monkeypatch.setattr(manager_module.multiprocessing, "get_context", mock.Mock(return_value=context))
+        expected_pids.update({101} if scenario == "exited_worker" else {101, 102})
+    if scenario == "ray":
+        ray = mock.Mock()
+        ray.remote.return_value.options.return_value.remote.side_effect = sync_worker_process
+        monkeypatch.setitem(sys.modules, "ray", ray)
+        monkeypatch.setitem(
+            sys.modules,
+            "multistorageclient.contrib.ray.utils",
+            SimpleNamespace(SharedQueue=queue.Queue, SharedEvent=threading.Event),
+        )
+        monkeypatch.setattr(manager_module, "HAVE_RAY", True)
+
+    def commit_metadata():
+        if scenario not in {"ray", "dryrun"}:
+            network_sampler.return_value.close.assert_called_once()
+        if scenario == "commit_failure":
+            raise RuntimeError("commit failed")
+
+    target_client.commit_metadata = mock.Mock(side_effect=commit_metadata)
+    manager = SyncManager(cast(StorageClient, source_client), "", cast(StorageClient, target_client), "")
+    expected_error = (
+        pytest.raises(KeyboardInterrupt)
+        if interrupted
+        else pytest.raises(RuntimeError, match="commit failed")
+        if scenario == "commit_failure"
+        else nullcontext()
+    )
+    with expected_error:
+        manager.sync_objects(
+            execution_mode=ExecutionMode.RAY if scenario == "ray" else ExecutionMode.LOCAL,
+            num_worker_processes=2 if multiprocessing else 1,
+            dryrun=scenario == "dryrun",
+            dryrun_output_path=str(tmp_path),
+        )
+    if scenario in {"ray", "dryrun", "start_interrupt"}:
+        network_sampler.assert_not_called()
+    else:
+        network_sampler.assert_called_once_with(expected_pids)
+        network_sampler.return_value.start.assert_called_once()
+        network_sampler.return_value.close.assert_called_once()
+    if scenario != "commit_failure":
+        assert ("25.0MB/s" in capsys.readouterr().err) == (scenario not in {"ray", "dryrun", "start_interrupt"})
+    if interrupted:
+        target_client.commit_metadata.assert_not_called()
+    assert unrelated.read_bytes() == b"keep"
+    assert all(not path.exists() for path in staging_dirs)
+    assert len(set(staging_dirs)) == int(multiprocessing)
+    if multiprocessing:
+        for process in processes:
+            process.start.assert_called_once()
+            if not interrupted:
+                process.join.assert_called_once()
+            elif process.pid is not None:
+                process.terminate.assert_called_once()
+                assert not process.is_alive()
+        if interrupted:
+            assert shutdown.is_set()
+            for channel in queues[1:]:
+                channel.cancel_join_thread.assert_called_once()
+            assert processes[0].kill.call_count == int(scenario == "ignore_sigterm")
+
+
+def test_single_process_interrupt_preserves_active_staging(monkeypatch, tmp_path):
+    """An SDK interruption must leave staging usable until in-process transfer threads finish."""
+    monkeypatch.setenv("MSC_NUM_THREADS_PER_PROCESS", "2")
+    monkeypatch.setattr(manager_module.tempfile, "tempdir", str(tmp_path))
+    started = threading.Event()
+    release = threading.Event()
+    staged_files = []
+    uploaded = []
+    threads = []
+    thread_class = threading.Thread
+    item = ObjectMetadata(key="large.bin", content_length=4, last_modified=datetime.now(timezone.utc))
+    source = mock.Mock(_metadata_provider=None)
+    target = mock.Mock(_metadata_provider=None)
+    for client in (source, target):
+        client._is_posix_file_storage_provider.return_value = False
+        client._is_rust_client_enabled.return_value = False
+    source.list_recursive.side_effect = lambda **kwargs: iter([item])
+    target.list_recursive.side_effect = lambda **kwargs: iter(())
+
+    def download(remote_paths, local_paths, metadata):
+        staged_files.extend(Path(path) for path in local_paths)
+        for path in staged_files:
+            path.write_bytes(b"data")
+        started.set()
+        assert release.wait(timeout=5)
+
+    def interrupt_join(*args, **kwargs):
+        assert started.wait(timeout=5)
+        raise KeyboardInterrupt
+
+    def make_thread(*args, **kwargs):
+        thread = thread_class(*args, **kwargs)
+        threads.append(thread)
+        monkeypatch.setattr(thread, "join", interrupt_join)
+        return thread
+
+    source.download_files.side_effect = download
+    target.upload_files.side_effect = lambda remote_paths, local_paths, attributes: uploaded.extend(
+        Path(path).read_bytes() for path in local_paths
+    )
+    monkeypatch.setattr(worker_module.threading, "Thread", make_thread)
+    manager = SyncManager(cast(StorageClient, source), "", cast(StorageClient, target), "")
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            manager.sync_objects(num_worker_processes=1)
+        assert staged_files and all(path.read_bytes() == b"data" for path in staged_files)
+        target.commit_metadata.assert_not_called()
+    finally:
+        release.set()
+        for thread in threads:
+            thread_class.join(thread, timeout=5)
+            assert not thread.is_alive()
+    assert uploaded == [b"data"]
+    assert all(not path.parent.exists() for path in staged_files)
 
 
 def _read_jsonl_keys(path: str) -> list[str]:

@@ -32,6 +32,36 @@ from multistorageclient.commands.cli.actions.ls import LsAction
 from multistorageclient.types import AWARE_DATETIME_MIN, ObjectMetadata
 
 
+@pytest.mark.parametrize("replicas", [False, True])
+def test_sync_interrupt_exits_without_waiting_for_transfer_pool(replicas):
+    script = """
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import Mock
+
+import multistorageclient as msc
+from multistorageclient.commands.cli.main import main
+
+pool = ThreadPoolExecutor(max_workers=1)
+pool.submit(time.sleep, 60)
+msc.sync = Mock(side_effect=KeyboardInterrupt)
+msc.sync_replicas = Mock(side_effect=KeyboardInterrupt)
+sys.argv = ["msc", "sync", "source"] + ([] if sys.argv[1] == "replicas" else ["--target-url", "target"])
+sys.exit(main())
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, "replicas" if replicas else "target"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert result.returncode == 130
+    assert "Synchronization interrupted." in result.stderr
+    assert "Traceback" not in result.stderr
+
+
 def create_test_files_with_random_structure(
     source_dir: str, num_files: int = 200, file_extensions: list[str] | None = None
 ) -> list[tuple[str, str, str, str]]:
