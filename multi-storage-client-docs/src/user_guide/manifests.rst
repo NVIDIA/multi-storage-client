@@ -80,6 +80,7 @@ MSC provides a :py:class:`multistorageclient.providers.ManifestMetadataProvider`
 
 Directory metadata is available when the manifest contains files below that directory, including the profile root (``""`` or ``"/"``).
 Calling ``get_object_metadata(..., include_pending=True)`` includes uncommitted additions and overwrites and excludes pending removals.
+Registering and converting object metadata preserves its storage class and symlink target. These fields also survive committing and reloading JSONL manifests.
 
 Generating Manifests
 --------------------
