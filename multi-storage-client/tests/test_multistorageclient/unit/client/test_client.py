@@ -414,6 +414,38 @@ def test_single_list_recursive_file_short_circuit_applies_key_bounds(single_back
     assert [obj.key for obj in included] == ["data/file.bin"]
 
 
+@pytest.mark.parametrize("include_url_prefix", [False, True])
+@pytest.mark.parametrize("metadata_backed", [False, True])
+@pytest.mark.parametrize(
+    "expression,expected", [('kind = "actual"', True), ('kind = "other"', False), ('missing = "value"', False)]
+)
+def test_single_file_listing_applies_attribute_filter(
+    single_backend_config, include_url_prefix, metadata_backed, expression, expected
+):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+    metadata = ObjectMetadata(
+        key="data/file.bin",
+        content_length=1,
+        last_modified=datetime.now(tz=timezone.utc),
+        metadata={"kind": "actual"},
+    )
+    if metadata_backed:
+        single._metadata_provider = MagicMock()
+        single._metadata_provider.get_object_metadata.return_value = metadata
+    else:
+        single._storage_provider.get_object_metadata = MagicMock(return_value=metadata)
+        single._storage_provider.is_file = MagicMock(return_value=True)
+
+    results = list(
+        client.list("data/file.bin", attribute_filter_expression=expression, include_url_prefix=include_url_prefix)
+    )
+
+    expected_key = "msc://test-single/data/file.bin" if include_url_prefix else "data/file.bin"
+    assert [obj.key for obj in results] == ([expected_key] if expected else [])
+
+
 def test_single_write_with_metadata_provider_accepts_non_string_attributes(single_backend_config):
     client = StorageClient(single_backend_config)
     single = client._delegate
