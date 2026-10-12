@@ -411,6 +411,24 @@ def test_single_write_with_metadata_provider_accepts_non_string_attributes(singl
     assert add_file_metadata.metadata == {"existing": "value", **attributes}
 
 
+@pytest.mark.parametrize("supply_metadata", [False, True])
+def test_download_file_forwards_metadata_to_composite_child(multi_backend_config, supply_metadata):
+    client = StorageClient(multi_backend_config)
+    composite = client._delegate
+    assert isinstance(composite, CompositeStorageClient)
+    composite._metadata_provider.realpath = MagicMock(
+        return_value=ResolvedPath("physical/object", ResolvedPathState.EXISTS, profile="loc1")
+    )
+    child = composite._child_clients["loc1"]
+    child.download_file = MagicMock()
+    metadata = ObjectMetadata("logical/object", 7, datetime.now(timezone.utc)) if supply_metadata else None
+
+    client.download_file("logical/object", "/local/object", metadata=metadata)
+
+    composite._metadata_provider.realpath.assert_called_once_with("logical/object")
+    child.download_file.assert_called_once_with("physical/object", "/local/object", metadata)
+
+
 # --- Batch download_files / upload_files tests ---
 
 

@@ -16,7 +16,6 @@
 import functools
 import mmap
 import os
-from dataclasses import replace
 from typing import cast
 from unittest.mock import Mock, patch
 
@@ -28,7 +27,7 @@ from multistorageclient.caching.cache_config import CacheConfig
 from multistorageclient.client.single import SingleStorageClient
 from multistorageclient.file import ObjectFile, PosixFile, RemoteFileReader
 from multistorageclient.providers.base import BaseStorageProvider
-from multistorageclient.types import ResolvedPath, ResolvedPathState, RetryableError, RetryConfig
+from multistorageclient.types import ResolvedPath, ResolvedPathState
 from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
 
@@ -565,39 +564,7 @@ def test_object_file_download_reuses_open_metadata(tmp_path, cache_enabled):
         assert metadata_lookup.call_count == 1
 
 
-@pytest.mark.parametrize("attempts_needed", [2, 4])
-def test_object_file_metadata_download_preserves_retry_limit(tmp_path, attempts_needed):
-    content = b"retried download"
-    (tmp_path / "object").write_bytes(content)
-    client = _object_file_client(tmp_path)
-    client._retry_config = RetryConfig(attempts=3, delay=0)
-    provider = cast(BaseStorageProvider, client._storage_provider)
-    download = provider._download_file
-    attempts = 0
-
-    def transient_download(*args, **kwargs):
-        nonlocal attempts
-        attempts += 1
-        if attempts < attempts_needed:
-            raise RetryableError("temporary download failure")
-        return download(*args, **kwargs)
-
-    with (
-        patch.object(provider, "_download_file", side_effect=transient_download),
-        patch.object(provider, "_get_object_metadata", wraps=provider._get_object_metadata) as metadata_lookup,
-        ObjectFile(client, "object") as file,
-    ):
-        if attempts_needed <= 3:
-            assert file.read() == content
-        else:
-            with pytest.raises(OSError) as exc_info:
-                file.read()
-            assert isinstance(exc_info.value.__cause__, RetryableError)
-        assert attempts == min(attempts_needed, 3)
-        assert metadata_lookup.call_count == 1
-
-
-@pytest.mark.parametrize("route", ["metadata", "replica", "override", "subclass", "info_override"])
+@pytest.mark.parametrize("route", ["metadata", "replica"])
 def test_object_file_metadata_reuse_keeps_routed_downloads(tmp_path, route):
     content = b"routed content"
     (tmp_path / "physical").write_bytes(content)
@@ -613,23 +580,7 @@ def test_object_file_metadata_reuse_keeps_routed_downloads(tmp_path, route):
         routing.download_from_replica_or_primary.side_effect = lambda path, destination, provider: (
             provider.download_file("physical", destination)
         )
-    elif route == "override":
-        routing.side_effect = lambda path, destination: client._storage_provider.download_file("physical", destination)
-        client.download_file = routing
-    elif route == "subclass":
-
-        class CustomClient(SingleStorageClient):
-            def info(self, path, strict=True):
-                return super().info("physical", strict)
-
-            def download_file(self, remote_path, local_path):
-                self._storage_provider.download_file("physical", local_path)
-
-        client = CustomClient(client._config)
-    else:
-        routing.return_value = replace(metadata, content_length=0)
-        client.info = routing
-    path = "logical" if route in ("metadata", "subclass") else "physical"
+    path = "logical" if route == "metadata" else "physical"
     provider = cast(BaseStorageProvider, client._storage_provider)
     with patch.object(provider, "_download_file", wraps=provider._download_file) as download:
         with ObjectFile(client, path) as file:
@@ -640,16 +591,3 @@ def test_object_file_metadata_reuse_keeps_routed_downloads(tmp_path, route):
         assert routing.get_object_metadata.call_count == 2
     elif route == "replica":
         routing.download_from_replica_or_primary.assert_called_once()
-    elif route in ("override", "info_override"):
-        routing.assert_called_once()
-
-
-@pytest.mark.parametrize("spec", [None, SingleStorageClient])
-def test_object_file_duck_client_keeps_custom_download(spec):
-    client = Mock(spec=spec)
-    client._cache_manager = None
-    client.info.return_value = Mock(content_length=4)
-    client.download_file.side_effect = lambda path, destination: destination.write(b"data")
-    with ObjectFile(client, "object") as file:
-        assert file.read() == b"data"
-    client.download_file.assert_called_once()

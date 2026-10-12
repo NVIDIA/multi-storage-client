@@ -9,6 +9,11 @@ Storage Client
 Main Facade
 ===========
 
+``StorageClient.download_file(remote_path, local_path, metadata=None)`` accepts
+metadata returned by ``info`` for the same object. Metadata-provider and replica
+routes retain their own metadata handling. Custom client implementations and
+``download_file`` overrides must accept the optional ``metadata`` argument.
+
 .. autoclass:: multistorageclient.StorageClient
    :members:
    :undoc-members:

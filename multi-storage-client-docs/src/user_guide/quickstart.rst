@@ -212,6 +212,10 @@ manual lifecycle control instead of using shortcuts.
 You can create :py:class:`multistorageclient.StorageClientConfig` and :py:class:`multistorageclient.StorageClient`
 instances directly.
 
+If you already have file information from ``client.info(path)``, you can pass it as
+``metadata`` to ``client.download_file`` to avoid a repeated provider lookup.
+Otherwise, leave ``metadata`` unset; MSC fetches the information automatically.
+
 .. code-block:: python
    :linenos:
 
