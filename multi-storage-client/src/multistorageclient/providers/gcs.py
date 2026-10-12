@@ -701,6 +701,7 @@ class GoogleStorageProvider(BaseStorageProvider):
         return True
 
     def _upload_file(self, remote_path: str, f: str | IO, attributes: dict[str, str] | None = None) -> int:
+        """Upload to GCS, encoding StringIO as UTF-8 for small and multipart transfers."""
         bucket, key = split_path(remote_path)
         file_size: int = 0
         self._refresh_gcs_client_if_needed()
@@ -794,6 +795,7 @@ class GoogleStorageProvider(BaseStorageProvider):
             return self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
 
     def _download_file(self, remote_path: str, f: str | IO, metadata: ObjectMetadata | None = None) -> int:
+        """Download from GCS, decoding StringIO as UTF-8 for small and multipart transfers."""
         self._refresh_gcs_client_if_needed()
 
         if metadata is None:
