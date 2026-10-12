@@ -17,7 +17,6 @@ import codecs
 import logging
 import os
 import stat
-from functools import total_ordering
 from pathlib import Path, PurePath, PurePosixPath
 from types import NotImplementedType
 
@@ -70,7 +69,6 @@ class StatResult:
         self.st_gid = os.getgid() if hasattr(os, "getgid") else 0  # Group ID
 
 
-@total_ordering
 class MultiStoragePath:
     """
     A path object similar to pathlib.Path that supports both local and remote file systems.
@@ -133,6 +131,27 @@ class MultiStoragePath:
         if other is NotImplemented:
             return NotImplemented
         return self._ordering_key() < other._ordering_key()
+
+    def __le__(self, other):
+        """Return whether this path sorts before or at another path-like object."""
+        other = self._coerce_path(other)
+        if other is NotImplemented:
+            return NotImplemented
+        return self._ordering_key() <= other._ordering_key()
+
+    def __gt__(self, other):
+        """Return whether this path sorts after another path-like object."""
+        other = self._coerce_path(other)
+        if other is NotImplemented:
+            return NotImplemented
+        return self._ordering_key() > other._ordering_key()
+
+    def __ge__(self, other):
+        """Return whether this path sorts after or at another path-like object."""
+        other = self._coerce_path(other)
+        if other is NotImplemented:
+            return NotImplemented
+        return self._ordering_key() >= other._ordering_key()
 
     @staticmethod
     def _coerce_path(other) -> "MultiStoragePath | NotImplementedType":
