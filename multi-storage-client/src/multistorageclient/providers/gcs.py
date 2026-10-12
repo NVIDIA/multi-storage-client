@@ -629,6 +629,10 @@ class GoogleStorageProvider(BaseStorageProvider):
         include_directories: bool = False,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
+        """List within exclusive ``start_after`` and inclusive ``end_at`` bounds.
+
+        Collect paginated directory prefixes before filtering their normalized keys.
+        """
         bucket, prefix = split_path(path)
 
         # Get the prefix of the start_after and end_at paths relative to the bucket.
@@ -678,8 +682,8 @@ class GoogleStorageProvider(BaseStorageProvider):
                             etag=blob.etag,
                             symlink_target=symlink_target,
                         )
-                elif start_after != key:
-                    return
+                elif start_after != key and not include_directories:
+                    break
 
             # The directories must be accessed last.
             if include_directories:
