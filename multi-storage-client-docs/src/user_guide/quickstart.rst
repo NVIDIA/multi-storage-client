@@ -206,6 +206,10 @@ See :py:mod:`multistorageclient` for all shortcut methods.
 Google Cloud Storage uploads and downloads using ``io.StringIO`` encode and
 decode UTF-8, including multipart transfers, independently of the system locale.
 
+Cloud listings translate provider errors when each page is fetched. A missing
+bucket or container raises ``FileNotFoundError``, including when the failure
+occurs after earlier results have already been yielded.
+
 Clients
 =======
 

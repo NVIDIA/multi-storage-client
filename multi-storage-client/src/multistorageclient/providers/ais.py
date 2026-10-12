@@ -38,7 +38,7 @@ from ..types import (
     SymlinkHandling,
 )
 from ..utils import safe_makedirs, split_path, validate_attributes
-from .base import BaseStorageProvider
+from .base import BaseStorageProvider, _translate_iterator_errors
 
 _T = TypeVar("_T")
 
@@ -411,7 +411,9 @@ class AIStoreStorageProvider(BaseStorageProvider):
                 elif end_at is not None and end_at < key:
                     return
 
-        return self._translate_errors(_invoke_api, operation="LIST", bucket=bucket, key=prefix)
+        return _translate_iterator_errors(
+            _invoke_api(), lambda f: self._translate_errors(f, operation="LIST", bucket=bucket, key=prefix)
+        )
 
     def _upload_file(self, remote_path: str, f: str | IO, attributes: dict[str, str] | None = None) -> int:
         file_size: int = 0
