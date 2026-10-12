@@ -498,6 +498,9 @@ class ImmutableDict(dict):
     def __delitem__(self, key):
         raise TypeError("ImmutableDict is immutable")
 
+    def __ior__(self, other):
+        raise TypeError("ImmutableDict is immutable")
+
     def clear(self):
         raise TypeError("ImmutableDict is immutable")
 

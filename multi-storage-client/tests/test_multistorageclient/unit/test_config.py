@@ -2758,3 +2758,15 @@ def test_immutable_dict_deepcopy_returns_mutable_lists():
     assert isinstance(copied["profiles"]["p"]["tags"], list)
     assert isinstance(copied["profiles"]["p"]["replicas"], list)
     assert type(copied["profiles"]["p"]["replicas"][0]) is dict
+
+
+def test_immutable_dict_rejects_in_place_union():
+    original = {"existing": {"value": 1}}
+    frozen = ImmutableDict(original)
+    alias = frozen
+
+    with pytest.raises(TypeError, match="ImmutableDict is immutable"):
+        frozen |= {"existing": {"value": 2}, "new": "value"}  # type: ignore
+
+    assert frozen is alias
+    assert frozen == original
