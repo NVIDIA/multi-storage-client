@@ -772,7 +772,9 @@ class GoogleStorageProvider(BaseStorageProvider):
                 # transfer manager does not support uploading a file object
                 temp_file_path: str | None = None
                 try:
-                    with tempfile.NamedTemporaryFile(mode=mode, delete=False, prefix=".") as fp:
+                    with tempfile.NamedTemporaryFile(
+                        mode=mode, encoding="utf-8" if mode == "w" else None, delete=False, prefix="."
+                    ) as fp:
                         temp_file_path = fp.name
                         fp.write(f.read())
 
@@ -882,7 +884,7 @@ class GoogleStorageProvider(BaseStorageProvider):
                         )
 
                     if isinstance(f, io.StringIO):
-                        with open(temp_file_path, "r") as fp:
+                        with open(temp_file_path, "r", encoding="utf-8") as fp:
                             f.write(fp.read())
                     else:
                         with open(temp_file_path, "rb") as fp:
