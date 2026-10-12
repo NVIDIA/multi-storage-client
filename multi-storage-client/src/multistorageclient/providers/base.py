@@ -1235,10 +1235,13 @@ class BaseStorageProvider(StorageProvider):
         for i, (remote_path, local_path) in enumerate(zip(remote_paths, local_paths)):
             try:
                 full_path = self._prepend_base_path(remote_path)
+                item_metadata = metadata[i]
+                if item_metadata.symlink_target is not None:
+                    full_path, item_metadata = self._resolve_symlink_path(full_path)
                 _, key = split_path(full_path)
                 if os.path.dirname(local_path):
                     safe_makedirs(os.path.dirname(local_path))
-                use_multipart = metadata[i].content_length > multipart_threshold
+                use_multipart = item_metadata.content_length > multipart_threshold
                 items.append(
                     _AsyncTransferItem(
                         item_index=i,
