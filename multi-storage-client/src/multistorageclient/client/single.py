@@ -491,7 +491,10 @@ class SingleStorageClient(AbstractStorageClient):
                 return data
         elif self._replica_manager:
             # No cache, but replicas available
-            return self._read_from_replica_or_primary(path)
+            data = self._read_from_replica_or_primary(path)
+            if byte_range is not None:
+                return data[byte_range.offset : byte_range.offset + byte_range.size]
+            return data
         else:
             # No cache, no replicas - direct storage provider read
             return self._storage_provider.get_object(path, byte_range=byte_range)
