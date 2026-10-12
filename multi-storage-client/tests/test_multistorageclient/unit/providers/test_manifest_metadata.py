@@ -936,6 +936,12 @@ def test_manifest_get_object_metadata_directory(temp_data_store_type: type[tempd
         assert meta.key == "models/"
         assert meta.content_length == 0
 
+        for root_path in ("", "/"):
+            meta = provider.get_object_metadata(root_path)
+            assert meta.type == "directory"
+            assert meta.key == ""
+            assert meta.content_length == 0
+
         # Directory with trailing slash
         meta = provider.get_object_metadata("models/")
         assert meta.type == "directory"
@@ -998,6 +1004,10 @@ def test_manifest_get_object_metadata_directory_pending(temp_data_store_type: ty
         # Without include_pending, the directory should not be found
         with pytest.raises(FileNotFoundError):
             provider.get_object_metadata("pending_dir")
+        for root_path in ("", "/"):
+            with pytest.raises(FileNotFoundError):
+                provider.get_object_metadata(root_path)
+            assert provider.get_object_metadata(root_path, include_pending=True).type == "directory"
 
         # With include_pending, the directory should be detected
         meta = provider.get_object_metadata("pending_dir", include_pending=True)
@@ -1019,6 +1029,10 @@ def test_manifest_get_object_metadata_directory_pending(temp_data_store_type: ty
         # With include_pending, the file is pending removal so directory should not exist
         with pytest.raises(FileNotFoundError):
             provider.get_object_metadata("pending_dir", include_pending=True)
+        for root_path in ("", "/"):
+            assert provider.get_object_metadata(root_path).type == "directory"
+            with pytest.raises(FileNotFoundError):
+                provider.get_object_metadata(root_path, include_pending=True)
 
 
 def _make_manifest_provider(files: dict[str, ManifestObjectMetadata]) -> ManifestMetadataProvider:
