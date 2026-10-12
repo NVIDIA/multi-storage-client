@@ -614,7 +614,7 @@ class MultiStoragePath:
         """
         Open the file in text mode, write to it, and close the file.
         """
-        self._storage_client.write(str(self._internal_path), data.encode(encoding))
+        self._storage_client.write(str(self._internal_path), data.encode(encoding, errors))
 
     # Reading directories
 
