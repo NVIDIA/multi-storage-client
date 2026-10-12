@@ -461,16 +461,18 @@ class CacheManager:
         os.chmod(file, mode=stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
 
     def _update_access_time(self, file_path: str) -> None:
-        """Update access time to current time for LRU policy.
+        """Update access time to current time for LRU and MRU policies.
 
-        Only updates atime, preserving mtime for FIFO ordering.
-        This is used to track when files are accessed for LRU eviction.
+        Only updates atime, preserving mtime. Other eviction policies do not track access time.
 
         All operations go through one open file descriptor so they apply to the same inode: another process may
         evict and recreate the same cache path concurrently, and a path-based restore would chmod the replacement.
 
         :param file_path: Path to the file to update access time.
         """
+        if self._cache_config.eviction_policy.policy.lower() not in {LRU, MRU}:
+            return
+
         current_time = time.time()
         try:
             fd = os.open(file_path, os.O_RDONLY)
@@ -712,8 +714,8 @@ class CacheManager:
     ) -> None:
         """Atomically write chunk data to cache with metadata.
 
-        Writes to a temporary file, sets xattr metadata on it, then
-        atomically replaces the target path. This ensures concurrent readers
+        Writes to a temporary file, sets xattr metadata and read-only permissions on it,
+        then atomically replaces the target path. This ensures concurrent readers
         never see a partially written chunk. Metadata is best-effort: on
         filesystems without xattr support the write still succeeds, but later
         validation may invalidate short final chunks and fall back to a
@@ -742,6 +744,7 @@ class CacheManager:
                 temp_path = temp_file.name
                 temp_file.write(chunk_data)
             self._set_chunk_metadata(temp_path, source_version, cache_line_size, object_size)
+            self._make_readonly(temp_path)
             os.replace(temp_path, chunk_path)
         finally:
             if temp_path and os.path.exists(temp_path):
