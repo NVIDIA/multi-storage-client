@@ -14,9 +14,10 @@
 # limitations under the License.
 
 import io
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from boto3.exceptions import S3UploadFailedError
@@ -26,7 +27,7 @@ from botocore.stub import Stubber
 
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.providers.s3 import S3StorageProvider, StaticS3CredentialsProvider
-from multistorageclient.types import PreconditionFailedError, RetryableError
+from multistorageclient.types import ObjectMetadata, PreconditionFailedError, RetryableError
 from multistorageclient_rust import RustClient, RustClientError, RustRetryableError
 
 
@@ -78,6 +79,33 @@ def test_translate_errors_success():
     )
 
     assert result == "success_result"
+
+
+@pytest.mark.parametrize(
+    ("rust_error", "expected_error"),
+    [
+        (RustRetryableError("connection reset"), RetryableError),
+        (RustClientError("access denied", 403), PermissionError),
+        (RustClientError("not found", 404), FileNotFoundError),
+    ],
+)
+def test_small_rust_download_errors_are_translated(tmp_path, rust_error, expected_error):
+    provider = _create_s3_provider()
+    provider._rust_client = MagicMock()
+    local_file = tmp_path / "data.bin"
+    local_file.write_bytes(b"original")
+    metadata = ObjectMetadata(
+        key="bucket/key", content_length=7, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)
+    )
+
+    with (
+        patch("multistorageclient.providers.s3.run_async_rust_client_method", side_effect=rust_error),
+        pytest.raises(expected_error, match="bucket/key") as error,
+    ):
+        provider._download_file("bucket/key", str(local_file), metadata)
+
+    assert error.value.__cause__ is rust_error
+    assert local_file.read_bytes() == b"original"
 
 
 def test_translate_errors_client_error_404_no_such_upload():
