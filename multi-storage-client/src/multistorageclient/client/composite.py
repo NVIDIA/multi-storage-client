@@ -237,13 +237,13 @@ class CompositeStorageClient(AbstractStorageClient):
             prefetch_file,
         )
 
-    def download_file(self, remote_path: str, local_path: str | IO) -> None:
+    def download_file(self, remote_path: str, local_path: str | IO, metadata: ObjectMetadata | None = None) -> None:
         resolved = self._metadata_provider.realpath(remote_path)
         if not resolved.exists:
             raise FileNotFoundError(f"Path '{remote_path}' not found")
 
         child = self._get_child_client(resolved.profile)
-        child.download_file(resolved.physical_path, local_path)
+        child.download_file(resolved.physical_path, local_path, metadata)
 
     def download_files(
         self,

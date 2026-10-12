@@ -153,12 +153,13 @@ class AbstractStorageClient(ABC):
         """
 
     @abstractmethod
-    def download_file(self, remote_path: str, local_path: str | IO) -> None:
+    def download_file(self, remote_path: str, local_path: str | IO, metadata: ObjectMetadata | None = None) -> None:
         """
         Download a remote file to a local path or file-like object.
 
         :param remote_path: The logical path of the remote file to download.
         :param local_path: The local file path or file-like object to write to.
+        :param metadata: Optional metadata for this object, as returned by :py:meth:`info`, to avoid a provider lookup.
         :raises FileNotFoundError: If the remote file does not exist.
         """
 

@@ -392,7 +392,7 @@ class ObjectFile(IOBase, IO):
                     ):
                         # The process writes the file to a temporary file and move it to the cache directory.
                         temp_file_path = self._generate_temp_file_path()
-                        self._storage_client.download_file(self._remote_path, temp_file_path)
+                        self._storage_client.download_file(self._remote_path, temp_file_path, self._object_metadata)
                         self._cache_manager.set(self._remote_path, temp_file_path, source_version)
 
                 file_object = self._cache_manager.open(
@@ -433,7 +433,7 @@ class ObjectFile(IOBase, IO):
                 return self._open_large_file()
 
             self._create_fileobj()
-            self._storage_client.download_file(self._remote_path, self._file)
+            self._storage_client.download_file(self._remote_path, self._file, self._object_metadata)
             self._file.seek(0)
         except Exception as error:
             self._download_error = error
