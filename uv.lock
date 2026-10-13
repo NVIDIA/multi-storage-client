@@ -2533,6 +2533,7 @@ dependencies = [
     { name = "opentelemetry-api" },
     { name = "prettytable" },
     { name = "psutil" },
+    { name = "pyroute2", marker = "sys_platform == 'linux'" },
     { name = "python-dateutil" },
     { name = "pyyaml" },
     { name = "tqdm" },
@@ -2655,6 +2656,7 @@ requires-dist = [
     { name = "prettytable", specifier = ">=3.10,<4" },
     { name = "psutil", specifier = ">=7,<8" },
     { name = "pyarrow", marker = "extra == 'parquet'", specifier = ">=23.0.1" },
+    { name = "pyroute2", marker = "sys_platform == 'linux'", specifier = ">=0.9.4,<1" },
     { name = "python-dateutil", specifier = ">=2.9,<3" },
     { name = "pyyaml", specifier = ">=6.0.3,<7" },
     { name = "ray", marker = "extra == 'ray'", specifier = ">=2.56,<3" },
@@ -3606,6 +3608,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e8/52/d87eba7cb129b81563019d1679026e7a112ef76855d6159d24754dbd2a51/pyperclip-1.11.0.tar.gz", hash = "sha256:244035963e4428530d9e3a6101a1ef97209c6825edab1567beac148ccc1db1b6", size = 12185, upload-time = "2025-09-26T14:40:37.245Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/df/80/fc9d01d5ed37ba4c42ca2b55b4339ae6e200b456be3a1aaddf4a9fa99b8c/pyperclip-1.11.0-py3-none-any.whl", hash = "sha256:299403e9ff44581cb9ba2ffeed69c7aa96a008622ad0c46cb575ca75b5b84273", size = 11063, upload-time = "2025-09-26T14:40:36.069Z" },
+]
+
+[[package]]
+name = "pyroute2"
+version = "0.9.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b0/5e/fc64e211cce0078555c6db98aaf14348aed527565f3c4876913a290a5b2c/pyroute2-0.9.4.tar.gz", hash = "sha256:3cbccbe1af0c2b2aeae81b327e0e91aa94c81ab19f851e74b26bef70202f3070", size = 463980, upload-time = "2025-07-29T14:35:27.866Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e2/89/c011b555ccde0e5846ad3bb5a091fd0fcac997156406a9ad107f81cf91c9/pyroute2-0.9.4-py3-none-any.whl", hash = "sha256:4e12437d18f6f42912cbd3f870edf06896183a78fd0c8126ba7a72a81f28d6cf", size = 467555, upload-time = "2025-07-29T14:35:23.88Z" },
 ]
 
 [[package]]

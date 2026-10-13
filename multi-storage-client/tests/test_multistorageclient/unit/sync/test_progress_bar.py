@@ -15,7 +15,13 @@
 
 import threading
 import time
+from contextlib import nullcontext
+from types import SimpleNamespace
+from unittest import mock
 
+import pytest
+
+from multistorageclient.sync import progress_bar as progress_bar_module
 from multistorageclient.sync.progress_bar import ProgressBar
 
 
@@ -112,7 +118,7 @@ def test_progress_update_interval():
 
 
 def test_progress_bar_thread_safety():
-    progress = ProgressBar(desc="Syncing", show_progress=True, total_items=10000)
+    progress = ProgressBar(desc="Syncing", show_progress=True, total_items=10000, show_network_throughput=True)
     assert progress.pbar is not None
 
     # Track refresh calls
@@ -177,3 +183,72 @@ def test_progress_bar_thread_safety():
     )
 
     progress.close()
+
+
+def test_network_throughput_display_lifecycle(monkeypatch):
+    clock = mock.Mock(return_value=100.0)
+    monkeypatch.setattr(progress_bar_module, "time", SimpleNamespace(time=clock))
+    monitor = mock.Mock(rate=None, error=None)
+    factory = mock.Mock(return_value=monitor)
+    monkeypatch.setattr(progress_bar_module, "NetworkThroughputMonitor", factory)
+
+    with (
+        ProgressBar(desc="Syncing", show_progress=True, total_items=10, show_network_throughput=True) as progress,
+        progress.network_throughput({123, 456}),
+    ):
+        assert progress.pbar is not None
+        assert "--B/s" in str(progress.pbar)
+        factory.assert_called_once_with({123, 456})
+        monitor.start.assert_called_once()
+        monitor.rate = 25_000_000.0
+        for method, argument, count in [("update_total", 10, 0), ("update_progress", 1, 1), ("reset_progress", 0, 0)]:
+            clock.return_value += 1.0
+            getattr(progress, method)(argument)
+            assert "25.0MB/s" in str(progress.pbar)
+            assert progress.pbar.n == count
+            assert progress.pbar.total == 10
+        monitor.rate = 0.0
+        progress.refresh()
+        assert "0.00B/s" in str(progress.pbar)
+    monitor.close.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "show_progress, show_network, suppress",
+    [(True, False, False), (False, True, False), (True, True, True)],
+)
+def test_process_sampler_is_not_started_when_disabled(monkeypatch, show_progress, show_network, suppress):
+    if suppress:
+        monkeypatch.setenv("MSC_SUPPRESS_PROGRESS_BAR", "1")
+    factory = mock.Mock()
+    monkeypatch.setattr(progress_bar_module, "NetworkThroughputMonitor", factory)
+
+    with (
+        ProgressBar(desc="Syncing", show_progress=show_progress, show_network_throughput=show_network) as progress,
+        progress.network_throughput({123}),
+    ):
+        progress.update_total(1)
+        progress.update_progress()
+        progress.refresh()
+
+    factory.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["startup", "sampling", "worker"])
+def test_network_throughput_closes_on_failure(monkeypatch, failure):
+    monitor = mock.Mock(rate=None, error=OSError("unavailable") if failure == "sampling" else None)
+    if failure == "startup":
+        monitor.start.side_effect = RuntimeError("cannot start thread")
+    monkeypatch.setattr(progress_bar_module, "NetworkThroughputMonitor", mock.Mock(return_value=monitor))
+    with ProgressBar(desc="Syncing", show_progress=True, total_items=1, show_network_throughput=True) as progress:
+        with (
+            pytest.raises(RuntimeError, match="worker failed") if failure == "worker" else nullcontext(),
+            progress.network_throughput({123}),
+        ):
+            progress.update_progress()
+            assert progress.pbar is not None
+            assert progress.pbar.n == 1
+            if failure == "worker":
+                raise RuntimeError("worker failed")
+            assert "network unavailable" in str(progress.pbar)
+        monitor.close.assert_called_once()

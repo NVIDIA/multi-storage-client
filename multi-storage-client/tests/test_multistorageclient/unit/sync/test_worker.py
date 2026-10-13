@@ -18,6 +18,7 @@ import os
 import queue
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -470,6 +471,46 @@ def test_sync_single_file_to_directory(temp_data_store_type: type[tempdatastore.
 
         assert posix_client.is_file("file.txt")
         assert posix_client.read("file.txt") == content
+
+
+@pytest.mark.parametrize(
+    "failure, parent_owned",
+    [(None, True), ("download", True), ("upload", True), (None, False)],
+)
+def test_remote_staging_cleanup(tmp_path, failure, parent_owned):
+    source = mock.Mock(_is_posix_file_storage_provider=lambda: False)
+    target = mock.Mock(_is_posix_file_storage_provider=lambda: False)
+    staged_files = []
+    unrelated = tmp_path / "unrelated"
+    unrelated.write_bytes(b"keep")
+
+    def download(remote_paths, local_paths, metadata):
+        staged_files.extend(Path(path) for path in local_paths)
+        for path in staged_files:
+            path.write_bytes(b"downloaded")
+            if parent_owned:
+                assert path.parent.parent == tmp_path
+        if failure == "download":
+            raise RuntimeError("download failed")
+
+    def upload(remote_paths, local_paths, attributes):
+        assert all(Path(path).read_bytes() == b"downloaded" for path in local_paths)
+        if failure == "upload":
+            raise RuntimeError("upload failed")
+
+    source.download_files.side_effect = download
+    target.upload_files.side_effect = upload
+    handler = sync_worker_module.create_sync_handler(
+        source, "", target, "", False, queue.Queue(), queue.Queue(), str(tmp_path) if parent_owned else None
+    )
+    item = ObjectMetadata(key="large.bin", content_length=10, last_modified=datetime.now(timezone.utc))
+    if failure:
+        with pytest.raises(RuntimeError, match=f"{failure} failed"):
+            handler._execute_batch_transfer("worker", [(item, "target.bin")])
+    else:
+        handler._execute_batch_transfer("worker", [(item, "target.bin")])
+    assert staged_files and all(not path.parent.exists() for path in staged_files)
+    assert unrelated.read_bytes() == b"keep"
 
 
 @pytest.mark.parametrize(
