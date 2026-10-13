@@ -18,11 +18,12 @@ import os
 import threading
 from collections.abc import Iterator
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..constants import DEFAULT_SYNC_BATCH_SIZE
 from ..types import ObjectMetadata, SymlinkHandling
-from ..utils import PatternMatcher
+from ..utils import NullStorageClient, PatternMatcher
 from .progress_bar import ProgressBar
 from .types import EventLike, OperationBatch, OperationType, QueueLike
 
@@ -204,24 +205,61 @@ class ProducerThread(threading.Thread):
         *,
         show_attributes: bool = False,
     ) -> Iterator[ObjectMetadata]:
-        """Create a listing iterator, preferring recursive listing when compatible.
+        """Use existing listing APIs, then filter reserved POSIX staging paths.
 
-        Falls back to ``list`` when attributes are required or parallel listing is disabled.
+        Prefer recursive listing unless attributes or settings require ``list``.
+        Staging entries are filtered after traversal, without reading markers.
         """
         if show_attributes or os.getenv(MSC_SYNC_DISABLE_PARALLEL_LISTING_ENV) is not None:
-            return client.list(
+            listing = client.list(
                 path=path,
                 show_attributes=show_attributes,
                 symlink_handling=self.symlink_handling,
             )
+        else:
+            listing = client.list_recursive(
+                path=path,
+                symlink_handling=self.symlink_handling,
+            )
+        return self._exclude_download_staging(listing) if client._is_posix_file_storage_provider() else listing
 
-        return client.list_recursive(
-            path=path,
-            symlink_handling=self.symlink_handling,
-        )
+    @staticmethod
+    def _is_download_staging_path(path: str, *, directory: bool = False) -> bool:
+        """Check path names for MSC download staging, without resolving the path.
+
+        Match dot-prefixed directories ending in ``.msc-dl``. Callers apply this
+        only to automatic POSIX sync paths; explicit ``source_files`` bypass it.
+        No metadata lookup, marker read, or symlink resolution is needed.
+
+        :param path: Sync path whose directory components should be checked.
+        :param directory: Include the final component when it denotes a directory.
+            Otherwise check only parents, keeping standalone files such as
+            ``.model.msc-dl`` eligible for sync.
+        :return: Whether a checked directory name starts with ``.`` and ends with
+            ``.msc-dl``.
+        """
+        parts = Path(path).parts if directory else Path(path).parts[:-1]
+        return any(part.startswith(".") and part.endswith(".msc-dl") for part in parts)
+
+    def _exclude_download_staging(self, listing: Iterator[ObjectMetadata]) -> Iterator[ObjectMetadata]:
+        """Filter staging paths from an automatic POSIX listing, preserving order.
+
+        Callers restrict this filter to POSIX clients. Explicit ``source_files``
+        bypass it; marker contents and hidden-file settings do not affect it.
+
+        :param listing: Metadata whose keys are checked by path name only.
+        :return: Entries outside reserved staging directories.
+        """
+        for metadata in listing:
+            if not self._is_download_staging_path(metadata.key, directory=metadata.type == "directory"):
+                yield metadata
 
     def _create_source_iterator(self):
-        """Create source iterator and enforce preserve_source_attributes policy."""
+        """Create source iterator, honoring explicit files without staging exclusion.
+
+        Apply the preserve_source_attributes and symlink policies to both explicit
+        files and automatic listings.
+        """
         if self.source_files is not None:
             # The merge loop in run() requires both iterators to be sorted by key, so the
             # caller-supplied list must be sorted (and de-duplicated) before being resolved.
@@ -262,7 +300,17 @@ class ProducerThread(threading.Thread):
 
     def run(self):
         try:
-            source_iter = iter(self._create_source_iterator())
+            source_iter = (
+                metadata
+                for metadata in self._create_source_iterator()
+                if self.source_files is not None
+                or isinstance(self.target_client, NullStorageClient)
+                or not self.target_client._is_posix_file_storage_provider()
+                or not self._is_download_staging_path(
+                    os.path.join(self.target_path, metadata.key[len(self.source_path) :].lstrip("/")),
+                    directory=metadata.type == "directory",
+                )
+            )
 
             target_show_attributes = bool(
                 self.preserve_source_attributes and getattr(self.target_client, "_metadata_provider", None)

@@ -19,6 +19,7 @@ import io
 import json
 import logging
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -392,8 +393,11 @@ class ObjectFile(IOBase, IO):
                     ):
                         # The process writes the file to a temporary file and move it to the cache directory.
                         temp_file_path = self._generate_temp_file_path()
-                        self._storage_client.download_file(self._remote_path, temp_file_path, self._object_metadata)
-                        self._cache_manager.set(self._remote_path, temp_file_path, source_version)
+                        try:
+                            self._storage_client.download_file(self._remote_path, temp_file_path, self._object_metadata)
+                            self._cache_manager.set(self._remote_path, temp_file_path, source_version)
+                        finally:
+                            self._cleanup_temp_file(temp_file_path)
 
                 file_object = self._cache_manager.open(
                     self._remote_path,
@@ -421,6 +425,32 @@ class ObjectFile(IOBase, IO):
 
         with tempfile.NamedTemporaryFile(mode=self._mode) as temp_file:
             return temp_file.name
+
+    @staticmethod
+    def _cleanup_temp_file(path: str) -> None:
+        """Remove disposable cache/append staging after its transfer has stopped.
+
+        This operation owns the temporary path and will not reuse it in a later
+        call. Remove the file and its entire adjacent download-state directory
+        regardless of marker contents. Call only after download retries finish.
+        Log cleanup errors without replacing the transfer's original error.
+
+        :param path: Temporary local destination owned by this file operation.
+        """
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            logger.warning("Could not remove temporary file %s: %s", path, error)
+
+        state_dir = os.path.join(os.path.dirname(path), "." + os.path.basename(path) + ".msc-dl")
+        try:
+            shutil.rmtree(state_dir)
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            logger.warning("Could not remove temporary download state %s: %s", state_dir, error)
 
     def _download_fileobj(self) -> None:
         """
@@ -646,8 +676,7 @@ class ObjectFile(IOBase, IO):
                 self._storage_client.upload_file(self._remote_path, temp_file_path, attributes=self._attributes)
             finally:
                 # Remove the staging file even if the download, append or upload failed.
-                if os.path.exists(temp_file_path):
-                    os.unlink(temp_file_path)
+                self._cleanup_temp_file(temp_file_path)
 
     def resolve_filesystem_path(self) -> str:
         """

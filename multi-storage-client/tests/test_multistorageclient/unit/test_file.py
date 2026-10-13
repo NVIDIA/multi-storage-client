@@ -14,8 +14,10 @@
 # limitations under the License.
 
 import functools
+import json
 import mmap
 import os
+import threading
 from typing import cast
 from unittest.mock import Mock, patch
 
@@ -473,6 +475,99 @@ def test_object_file_append_removes_staging_file_when_upload_fails(tmp_path):
 
     storage_client.upload_file.assert_called_once()
     assert not staging_path.exists()
+
+
+@pytest.mark.parametrize("mode", ["rb", "ab"])
+@pytest.mark.parametrize(
+    "state_kind",
+    [
+        "recognized",
+        "cleanup_failure",
+        "missing",
+        "corrupt",
+        "unreadable",
+        "marker_symlink",
+        "directory_symlink",
+    ],
+)
+def test_object_file_failed_download_cleans_owned_staging_state(tmp_path, monkeypatch, caplog, mode, state_kind):
+    if state_kind == "cleanup_failure":
+        monkeypatch.setattr(
+            "multistorageclient.file.shutil.rmtree", Mock(side_effect=PermissionError("cleanup failed"))
+        )
+    storage_client = Mock()
+    storage_client._storage_provider = Mock(spec=BaseStorageProvider)
+    cache_manager = Mock() if mode == "rb" else None
+    storage_client._cache_manager = cache_manager
+    storage_client.info.return_value = Mock(content_length=11, etag="revision-1")
+    staging_path = tmp_path / "staging.bin"
+    state_dir = tmp_path / ".staging.bin.msc-dl"
+    if cache_manager:
+        cache_manager.prefetch_file.return_value = True
+        cache_manager.check_source_version.return_value = True
+        cache_manager.contains.return_value = False
+        cache_manager.get_max_cache_size.return_value = 100
+        cache_manager.generate_temp_file_path.return_value = str(staging_path)
+        cache_manager.acquire_lock.return_value = threading.Lock()
+
+    def fail_download(*_):
+        staging_path.write_bytes(b"partial staging file")
+        actual_dir = tmp_path / "unrelated" if state_kind == "directory_symlink" else state_dir
+        actual_dir.mkdir()
+        if state_kind == "directory_symlink":
+            state_dir.symlink_to(actual_dir, target_is_directory=True)
+        state: dict[str, object] = {
+            "format": "msc-download-v1",
+            "key": "object",
+            "size": 11,
+            "etag": "revision-1",
+            "version": None,
+            "chunk_size": 4,
+        }
+        marker = state_dir / "state.json"
+        if state_kind == "marker_symlink":
+            external_marker = tmp_path / "external-marker.json"
+            external_marker.write_text(json.dumps(state))
+            marker.symlink_to(external_marker)
+        elif state_kind != "missing":
+            marker.write_text("{broken" if state_kind == "corrupt" else json.dumps(state))
+        if state_kind == "unreadable":
+            original_open = open
+
+            def guarded_open(path, *args, **kwargs):
+                if path == str(marker) or path == marker:
+                    raise PermissionError("unreadable marker")
+                return original_open(path, *args, **kwargs)
+
+            monkeypatch.setattr("builtins.open", guarded_open)
+        (state_dir / "000000.chunk").write_bytes(b"abcd")
+        raise RuntimeError("download failed")
+
+    storage_client.download_file.side_effect = fail_download
+    object_file = ObjectFile(storage_client=storage_client, remote_path="object", mode=mode)
+    try:
+        if mode == "rb":
+            with pytest.raises(OSError, match="Failed to download file") as exc:
+                object_file.read()
+            assert str(exc.value.__cause__) == "download failed"
+        else:
+            object_file._generate_temp_file_path = lambda: str(staging_path)  # type: ignore
+            object_file.write(b"appended")
+            with pytest.raises(RuntimeError, match="download failed"):
+                object_file.close()
+        assert not staging_path.exists()
+        assert state_dir.exists() is (state_kind in ("cleanup_failure", "directory_symlink"))
+        if state_kind in ("cleanup_failure", "directory_symlink"):
+            assert (state_dir / "000000.chunk").read_bytes() == b"abcd"
+        if state_kind == "marker_symlink":
+            assert json.loads((tmp_path / "external-marker.json").read_text())["format"] == "msc-download-v1"
+        if state_kind == "cleanup_failure":
+            assert "Could not remove temporary download state" in caplog.text
+        if cache_manager:
+            cache_manager.set.assert_not_called()
+        storage_client.upload_file.assert_not_called()
+    finally:
+        object_file.close()
 
 
 def test_non_posix_files_do_not_record_file_descriptor_metrics():

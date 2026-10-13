@@ -348,6 +348,13 @@ The ``msc sync`` command synchronizes files between storage locations. It can be
 
 The sync operation compares files between source and target locations using metadata (etag, size, modification time) to determine if files need to be copied. Files are processed in parallel using multiple worker processes and threads for optimal performance.
 
+Automatic sync excludes files inside dot-prefixed POSIX directories ending in
+``.msc-dl`` from copying and unmatched-file deletion, regardless of hidden-file
+settings or download-state metadata. Explicit ``source_files`` bypass the copying
+exclusion, subject to normal sync settings. Filtering checks path names, not symlink
+targets; ordinary listing is unchanged. See :doc:`/user_guide/rust` for resumable
+downloads.
+
 .. code-block:: shell
   :caption: Basic sync usage
 

@@ -32,15 +32,13 @@ use pyo3_async_runtimes::tokio::future_into_py;
 use pyo3_bytes::PyBytes;
 use std::collections::{HashMap, VecDeque};
 use std::error::Error as StdError;
-use std::path::Path as StdPath;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use tempfile::NamedTempFile;
 use thiserror::Error;
 use tokio::fs;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
-use tokio::sync::{mpsc, Semaphore};
+use tokio::io::AsyncReadExt;
+use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use http::header::{HeaderName, HeaderValue};
 use http::StatusCode;
@@ -48,6 +46,7 @@ use aws_smithy_http_client::{tls, Builder};
 use aws_config::BehaviorVersion;
 
 mod credentials;
+mod download;
 #[cfg(feature = "rdma")]
 mod cuobj;
 mod types;
@@ -838,77 +837,9 @@ impl RustClient {
         let concurrency = max_concurrency.unwrap_or(self.max_concurrency);
 
         future_into_py(py, async move {
-            let result = store.head(&remote_path).await.map_err(StorageError::from)?;
-            let total_size = result.size;
-
-            // Create the temp file in the same directory of local_path because tempfile.persist()
-            // does not support cross filesystem.
-            let target_path = StdPath::new(&local_path);
-            let temp_dir = target_path.parent().unwrap_or_else(|| StdPath::new("."));
-            let temp_file = NamedTempFile::new_in(temp_dir).map_err(StorageError::from)?;
-
-            let mut output_file = tokio::fs::File::from_std(temp_file.reopen().map_err(StorageError::from)?);
-            output_file.set_len(total_size).await.map_err(StorageError::from)?;
-
-            let num_chunks = (total_size + chunksize as u64 - 1) / chunksize as u64;
-
-            let semaphore = Arc::new(Semaphore::new(concurrency));
-            let (tx , mut rx): (
-                mpsc::Sender<Result<(u64, Vec<u8>), StorageError>>,
-                mpsc::Receiver<Result<(u64, Vec<u8>), StorageError>>,
-            ) = mpsc::channel(concurrency);
-
-            // Start a task to process downloaded chunks in arrival order and write to file
-            let write_handle = tokio::task::spawn(async move {
-                while let Some(result) = rx.recv().await {
-                    match result {
-                        Ok((chunk_index, data)) => {
-                            output_file.seek(tokio::io::SeekFrom::Start(chunk_index as u64 * chunksize as u64)).await.map_err(StorageError::from)?;
-                            output_file.write_all(&data).await.map_err(StorageError::from)?;
-                        }
-                        Err(e) => {
-                            return Err(StorageError::from(e));
-                        }
-                    }
-                }
-                output_file.flush().await.map_err(StorageError::from)?;
-                output_file.sync_all().await.map_err(StorageError::from)?;
-                drop(output_file);
-
-                Ok::<(), StorageError>(())
-            });
-
-            // Download chunks in parallel
-            for chunk_index in 0..num_chunks {
-                let permit = semaphore.clone().acquire_owned().await.unwrap();
-                let store = Arc::clone(&store);
-                let remote_path = remote_path.clone();
-                let tx = tx.clone();
-                let start_offset = chunk_index * chunksize as u64;
-                let end_offset = std::cmp::min(start_offset + chunksize as u64, total_size);
-
-                tokio::task::spawn(async move {
-                    let range = start_offset..end_offset;
-                    match store.get_range(&remote_path, range).await {
-                        Ok(result) => {
-                            let data = result.to_vec();
-                            let _ = tx.send(Ok((chunk_index, data))).await;
-                        }
-                        Err(e) => {
-                            let _ = tx.send(Err(StorageError::from(e))).await;
-                        }
-                    }
-                    drop(permit);
-                });
-            }
-
-            drop(tx);
-
-            write_handle.await.unwrap()?;
-
-            temp_file.persist(&local_path).map_err(StorageError::from)?;
-
-            Ok(total_size)
+            download::download(store, remote_path, local_path, chunksize, concurrency)
+                .await
+                .map_err(PyErr::from)
         })
     }
 

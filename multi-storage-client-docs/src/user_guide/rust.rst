@@ -192,3 +192,27 @@ The results demonstrate that with the Rust Client, MSC performance scales almost
 By leveraging native CSP SDKs, MSC(Python) delivers up to 2x better performance than fsspec.
 
 The Rust client for MSC, on top of that, provides an additional up to 12x performance improvement.
+
+
+*******************
+Resumable Downloads
+*******************
+
+Rust multipart downloads to local files resume automatically after interruption.
+Retry the same destination against the same backend and bucket to reuse completed
+chunks when the source object is unchanged. For ``/data/model.bin``, progress is
+saved in ``/data/.model.bin.msc-dl/``. No additional configuration is needed.
+
+After downloading all chunks, MSC merges them, atomically replaces the destination,
+and removes the state directory. An existing destination remains intact until
+publication. Merging requires approximately twice the object size in staging space,
+plus any existing destination. To discard progress, stop the download and remove
+its state directory.
+
+Resume requires a usable ETag or object version; changed objects start fresh.
+Missing state metadata restarts the download in the same directory; invalid or
+unreadable metadata reports an error and preserves its contents. Disposable cache
+and append staging is cleaned up even on failure and is not reused by later calls.
+
+Automatic sync excludes reserved staging paths; explicit ``source_files`` can
+select them for copying. See :doc:`/user_guide/cli` for the sync exclusion rules.
