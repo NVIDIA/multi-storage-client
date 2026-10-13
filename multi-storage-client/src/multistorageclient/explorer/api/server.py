@@ -30,6 +30,7 @@ from fastapi.staticfiles import StaticFiles
 
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.shortcuts import _resolve_msc_url
+from multistorageclient.types import Range
 
 from .models import (
     ConfigUploadResponse,
@@ -399,8 +400,7 @@ async def preview_file(request: PreviewRequest):
             def do_read():
                 if content_truncated:
                     # Use byte_range to read only first max_bytes
-                    # Range is a dict with 'start' and 'end' keys
-                    byte_range = {"start": 0, "end": max_bytes - 1}
+                    byte_range = Range(offset=0, size=max_bytes)
                     return client.read(path=path, byte_range=byte_range)
                 else:
                     return client.read(path=path)
