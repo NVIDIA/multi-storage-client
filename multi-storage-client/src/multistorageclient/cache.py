@@ -262,6 +262,7 @@ class CacheManager:
         byte_range: Range | None = None,
         storage_provider: Any | None = None,
         source_size: int | None = None,
+        check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
     ) -> bytes | None:
         """Read the contents of a file from the cache if it exists.
 
@@ -274,6 +275,7 @@ class CacheManager:
         :param byte_range: Optional byte range for partial file reads
         :param storage_provider: Storage provider required for range reads
         :param source_size: Optional size of the source object in bytes
+        :param check_source_version: Whether to validate cached data against the source version
         :return: The file contents as bytes, or None if not found in cache
         """
         # If this is a range read, check for full cached file first
@@ -281,7 +283,9 @@ class CacheManager:
             cache_path = self._get_cache_file_path(key)
 
             # Try to read range from full cached file first
-            range_data = self._read_range_from_full_cached_file(cache_path, byte_range, source_version)
+            range_data = self._read_range_from_full_cached_file(
+                cache_path, byte_range, source_version, check_source_version
+            )
             if range_data is not None:
                 return range_data
 
@@ -290,7 +294,7 @@ class CacheManager:
 
         # Full-file cached read (existing behavior)
         try:
-            if self.contains(key=key, source_version=source_version):
+            if self.contains(key=key, check_source_version=check_source_version, source_version=source_version):
                 file_path = self._get_cache_file_path(key)
                 with open(file_path, "rb") as fp:
                     data = fp.read()
@@ -934,24 +938,38 @@ class CacheManager:
                 pass
 
     def _read_range_from_full_cached_file(
-        self, cache_path: str, byte_range: Range, source_version: str | None
+        self,
+        cache_path: str,
+        byte_range: Range,
+        source_version: str | None,
+        check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
     ) -> bytes | None:
         """Read a byte range from a full cached file if it exists and is valid.
 
         This method checks if a full cached file exists at the given cache path,
         validates its etag against the source version when supplied, and if valid,
-        reads the requested byte range directly from the cached file.
+        reads the requested byte range directly from the cached file. Without a source
+        version, the cached file is reused only when source version checking is disabled.
 
         :param cache_path: Path to the cached file
         :param byte_range: The byte range to read (offset and size)
         :param source_version: Source version identifier for cache validation
+        :param check_source_version: Whether source version checking is enabled for this read
         :return: The requested byte range data if successful, None otherwise
         """
+        check_enabled = check_source_version == SourceVersionCheckMode.ENABLE or (
+            check_source_version == SourceVersionCheckMode.INHERIT and self.check_source_version()
+        )
+
         # Check if we have a full cached file that's valid
         if os.path.exists(cache_path):
             try:
                 # Validate the full cached file's etag
-                if source_version is None or _xattr.getxattr(cache_path, "user.etag").decode("utf-8") == source_version:
+                if source_version:
+                    is_valid = _xattr.getxattr(cache_path, "user.etag").decode("utf-8") == source_version
+                else:
+                    is_valid = not check_enabled
+                if is_valid:
                     # Full file is cached and valid, read range directly from it
                     with open(cache_path, "rb") as f:
                         f.seek(byte_range.offset)

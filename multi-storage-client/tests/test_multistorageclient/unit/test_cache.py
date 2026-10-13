@@ -1453,18 +1453,20 @@ def test_concurrent_chunk_creation_with_locking():
 
 
 @pytest.mark.parametrize(
-    ("cached_version", "source_version", "cached_file_exists", "expected_get_calls"),
+    ("cached_version", "source_version", "cached_file_exists", "check_source_version", "expected_get_calls"),
     [
-        (None, None, True, 0),
-        ("etag-1", None, True, 0),
-        ("etag-1", "etag-1", True, 0),
-        ("etag-1", "etag-2", True, 1),
-        (None, "etag-1", True, 1),
-        (None, None, False, 1),
+        (None, None, True, SourceVersionCheckMode.INHERIT, 0),
+        ("etag-1", None, True, SourceVersionCheckMode.INHERIT, 0),
+        ("etag-1", "etag-1", True, SourceVersionCheckMode.INHERIT, 0),
+        ("etag-1", "etag-2", True, SourceVersionCheckMode.INHERIT, 1),
+        (None, "etag-1", True, SourceVersionCheckMode.INHERIT, 1),
+        (None, None, False, SourceVersionCheckMode.INHERIT, 1),
+        (None, None, True, SourceVersionCheckMode.ENABLE, 1),
+        ("etag-1", None, True, SourceVersionCheckMode.ENABLE, 1),
     ],
 )
 def test_range_read_reuses_valid_full_cached_file(
-    cache_manager, cached_version, source_version, cached_file_exists, expected_get_calls
+    cache_manager, cached_version, source_version, cached_file_exists, check_source_version, expected_get_calls
 ):
     key = "data/ranges.bin"
     cached_content = b"cached file contents"
@@ -1481,8 +1483,9 @@ def test_range_read_reuses_valid_full_cached_file(
             byte_range=byte_range,
             storage_provider=provider,
             source_size=len(remote_content),
+            check_source_version=check_source_version,
         )
-        if cached_file_exists and source_version is None:
+        if source_version is None and not expected_get_calls:
             getxattr.assert_not_called()
 
     expected_content = remote_content if expected_get_calls else cached_content
