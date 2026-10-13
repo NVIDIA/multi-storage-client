@@ -417,16 +417,15 @@ class ManifestMetadataProvider(MetadataProvider):
             yield self._files[key]
 
     def get_object_metadata(self, path: str, include_pending: bool = False) -> ObjectMetadata:
-        if path in self._files:
-            if include_pending and path in self._pending_removes:
+        if include_pending:
+            if path in self._pending_removes:
                 raise FileNotFoundError(f"Object {path} does not exist.")
-            else:
-                # Return ManifestObjectMetadata directly (it extends ObjectMetadata)
-                return self._files[path]
-        elif include_pending and path in self._pending_adds:
-            return self._pending_adds[path]
-        else:
-            return self._get_directory_metadata(path, include_pending)
+            if path in self._pending_adds:
+                return self._pending_adds[path]
+        if path in self._files:
+            # Return ManifestObjectMetadata directly (it extends ObjectMetadata)
+            return self._files[path]
+        return self._get_directory_metadata(path, include_pending)
 
     def _get_directory_metadata(self, path: str, include_pending: bool) -> ObjectMetadata:
         dir_prefix = path.rstrip("/") + "/"
