@@ -21,6 +21,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import pytest
 import xattr
@@ -42,8 +43,47 @@ from test_multistorageclient.unit.utils.tempdatastore import create_test_data
 def _cache_manager(tmpdir) -> CacheManager:
     return CacheManager(
         profile="data",
-        cache_config=CacheConfig(location=str(tmpdir), size="10M", cache_line_size="1M", check_source_version=False),
+        cache_config=CacheConfig(
+            location=str(tmpdir),
+            size="10M",
+            cache_line_size="1M",
+            check_source_version=False,
+            eviction_policy=EvictionPolicyConfig(policy="LRU"),
+        ),
     )
+
+
+@pytest.mark.parametrize("policy", ["FIFO", "LRU", "MRU", "RANDOM", "NO_EVICTION"])
+def test_update_access_time_only_for_access_based_eviction(tmpdir, policy):
+    cache_manager = CacheManager(
+        profile="data",
+        cache_config=CacheConfig(
+            location=str(tmpdir), size="10M", cache_line_size="1M", eviction_policy=EvictionPolicyConfig(policy=policy)
+        ),
+    )
+    file_path = os.path.join(str(tmpdir), "cached.bin")
+    with open(file_path, "wb") as f:
+        f.write(b"data")
+    os.utime(file_path, (0, 123456789))
+    cache_manager._make_readonly(file_path)
+    original_stat = os.stat(file_path)
+
+    with (
+        patch.object(cache_module.os, "open", wraps=os.open) as open_file,
+        patch.object(cache_module.os, "utime", wraps=os.utime) as update_time,
+    ):
+        cache_manager._update_access_time(file_path)
+
+    updated_stat = os.stat(file_path)
+    tracks_access = policy in {"LRU", "MRU"}
+    assert open_file.call_count == int(tracks_access)
+    assert update_time.call_count == int(tracks_access)
+    if tracks_access:
+        assert updated_stat.st_atime > original_stat.st_atime
+    else:
+        assert updated_stat.st_atime_ns == original_stat.st_atime_ns
+    assert updated_stat.st_mtime_ns == original_stat.st_mtime_ns
+    assert stat.S_IMODE(updated_stat.st_mode) == 0o444
 
 
 def test_update_access_time_tolerates_permission_error_on_restore(tmpdir):
@@ -453,7 +493,9 @@ def test_partial_chunk_publish_is_atomic_without_source_version(tmpdir, monkeypa
     assert not [name for name in os.listdir(os.path.dirname(chunk_path)) if name.startswith(".chunk_tmp_")]
 
 
-def test_partial_chunk_metadata_is_set_before_publish(tmpdir, monkeypatch):
+@pytest.mark.parametrize("policy", ["FIFO", "LRU", "MRU", "RANDOM", "NO_EVICTION"])
+@pytest.mark.parametrize("object_size", [512, 2 * 1024 * 1024])
+def test_partial_chunk_metadata_is_set_before_publish(tmpdir, monkeypatch, policy, object_size):
     probe_path = os.path.join(tmpdir, "xattr-probe")
     with open(probe_path, "wb") as probe_file:
         probe_file.write(b"probe")
@@ -467,21 +509,28 @@ def test_partial_chunk_metadata_is_set_before_publish(tmpdir, monkeypatch):
 
     cache_manager = CacheManager(
         profile="test",
-        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir)),
+        cache_config=CacheConfig(
+            size="10M",
+            cache_line_size="1M",
+            check_source_version=True,
+            location=str(tmpdir),
+            eviction_policy=EvictionPolicyConfig(policy=policy),
+        ),
     )
-    storage_provider = RangeAwareStorageProvider(create_test_data(2))
+    storage_provider = RangeAwareStorageProvider(b"x" * object_size)
     key = "bucket/versioned.bin"
     source_version = "etag-123"
     byte_range = Range(offset=0, size=16 * 1024)
 
     cache_path = cache_manager._get_cache_file_path(key)
     chunk_path = cache_manager._get_chunk_path(cache_path, 0)
-    observed: dict[str, str | bool] = {}
+    observed: dict[str, str | bool | int] = {}
     original_replace = cache_module.os.replace
 
     def checking_replace(src: str, dst: str) -> None:
         if dst == chunk_path:
             observed["chunk_visible_before_replace"] = os.path.exists(dst)
+            observed["mode"] = stat.S_IMODE(os.stat(src).st_mode)
             observed["etag"] = _xattr.getxattr(src, "user.etag").decode("utf-8")
             observed["cache_line_size"] = _xattr.getxattr(src, "user.cache_line_size").decode("utf-8")
             observed["object_size"] = _xattr.getxattr(src, "user.size").decode("utf-8")
@@ -499,10 +548,13 @@ def test_partial_chunk_metadata_is_set_before_publish(tmpdir, monkeypatch):
 
     assert result == storage_provider._data[: byte_range.size]
     assert observed["chunk_visible_before_replace"] is False
+    assert observed["mode"] == 0o444
     assert observed["etag"] == source_version
     assert observed["cache_line_size"] == str(1024 * 1024)
     assert observed["object_size"] == str(len(storage_provider._data))
-    assert _xattr.getxattr(chunk_path, "user.etag").decode("utf-8") == source_version
+    published_path = cache_path if object_size < 1024 * 1024 else chunk_path
+    assert stat.S_IMODE(os.stat(published_path).st_mode) == 0o444
+    assert _xattr.getxattr(published_path, "user.etag").decode("utf-8") == source_version
 
 
 def test_assemble_result_handles_short_final_chunk(tmpdir):
