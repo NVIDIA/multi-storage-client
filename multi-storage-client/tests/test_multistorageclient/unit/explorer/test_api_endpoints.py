@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from unittest.mock import patch
+
 import pytest
 
 pytest.importorskip("fastapi", reason="FastAPI required for explorer tests")
@@ -22,6 +24,8 @@ from fastapi.testclient import TestClient
 
 # Import the server module directly
 import multistorageclient.explorer.api.server as app_module
+from multistorageclient import StorageClient, StorageClientConfig
+from multistorageclient.types import Range
 
 # Tests for the /api/health endpoint
 
@@ -161,6 +165,33 @@ def test_preview_request_default_max_bytes():
 
     request = PreviewRequest(url="msc://profile/file.txt")
     assert request.max_bytes == 1048576  # 1 MB default
+
+
+@pytest.mark.parametrize("content", [b"abc", b"abcd", b"abcdefgh"])
+def test_preview_reads_only_requested_bytes(test_client, tmp_path, content):
+    storage_client = StorageClient(
+        StorageClientConfig.from_dict(
+            {
+                "profiles": {
+                    "test-local": {"storage_provider": {"type": "file", "options": {"base_path": str(tmp_path)}}}
+                }
+            },
+            profile="test-local",
+        )
+    )
+    storage_client.write("file.txt", content)
+    app_module._client_cache["test-local"] = storage_client
+
+    with patch.object(storage_client, "read", wraps=storage_client.read) as read:
+        response = test_client.post("/api/files/preview", json={"url": "msc://test-local/file.txt", "max_bytes": 4})
+
+    assert response.status_code == 200
+    assert response.json()["content"] == content[:4].decode()
+    assert response.json()["content_truncated"] is (len(content) > 4)
+    if len(content) > 4:
+        read.assert_called_once_with(path="file.txt", byte_range=Range(offset=0, size=4))
+    else:
+        read.assert_called_once_with(path="file.txt")
 
 
 def test_sync_request_default_options():

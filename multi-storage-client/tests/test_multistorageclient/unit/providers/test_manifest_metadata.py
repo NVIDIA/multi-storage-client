@@ -843,6 +843,9 @@ def test_manifest_physical_path_tracking(temp_data_store_type: type[tempdatastor
         obj_metadata = provider.get_object_metadata("logical/file.txt", include_pending=True)
         # Note: ManifestObjectMetadata stores physical path separately, but returns logical path in key
         assert obj_metadata.key == "logical/file.txt"
+        assert obj_metadata.content_length == new_metadata.content_length
+        assert obj_metadata.etag == new_metadata.etag
+        assert provider.get_object_metadata("logical/file.txt").content_length == 1024
 
         # Commit and verify physical path is updated
         provider.commit_updates()
