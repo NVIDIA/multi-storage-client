@@ -59,6 +59,10 @@ The MSC Explorer provides read-only access to your storage backends with the fol
 * **View Metadata**: See file information including size, type, and last modified date in an organized table view.
 * **Download**: Download files from remote storage to your local machine.
 
+The content preview API requests the first ``max_bytes`` bytes of larger files
+(1 MiB by default) using byte-range reads where supported. If a range read fails,
+the API falls back to reading the full file and truncating the preview.
+
 Configuration
 =============
 

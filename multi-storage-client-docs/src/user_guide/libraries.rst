@@ -210,4 +210,7 @@ within the same resolved storage profile. Paths from different profiles return
 ``False``, even when their internal paths match. Local paths and equivalent
 ``msc://__filesystem__/`` paths use the same profile.
 
+``read_text()`` and ``write_text()`` honor their ``encoding`` and ``errors``
+arguments when decoding and encoding text, respectively.
+
 .. note:: The ``Path`` class implements much of the same interface as ``pathlib.Path``, making it familiar to use while working with remote storage.
