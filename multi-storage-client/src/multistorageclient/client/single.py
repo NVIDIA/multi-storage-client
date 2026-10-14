@@ -462,6 +462,7 @@ class SingleStorageClient(AbstractStorageClient):
                         byte_range=byte_range,
                         storage_provider=self._storage_provider,
                         source_size=metadata.content_length if metadata else None,
+                        check_source_version=check_source_version,
                     )
                     if data is not None:
                         return data
@@ -518,12 +519,13 @@ class SingleStorageClient(AbstractStorageClient):
         return self._metadata_provider.get_object_metadata(path, include_pending=not strict)
 
     @retry
-    def download_file(self, remote_path: str, local_path: str | IO) -> None:
+    def download_file(self, remote_path: str, local_path: str | IO, metadata: ObjectMetadata | None = None) -> None:
         """
         Download a remote file to a local path or file-like object.
 
         :param remote_path: The logical path of the remote file to download.
         :param local_path: The local file path or file-like object to write to.
+        :param metadata: Optional metadata for this object, as returned by :py:meth:`info`, to avoid a provider lookup.
         :raises FileNotFoundError: If the remote file does not exist.
         """
         if self._metadata_provider:
@@ -533,7 +535,7 @@ class SingleStorageClient(AbstractStorageClient):
         elif self._replica_manager:
             self._replica_manager.download_from_replica_or_primary(remote_path, local_path, self._storage_provider)
         else:
-            self._storage_provider.download_file(remote_path, local_path)
+            self._storage_provider.download_file(remote_path, local_path, metadata)
 
     def download_files(
         self,

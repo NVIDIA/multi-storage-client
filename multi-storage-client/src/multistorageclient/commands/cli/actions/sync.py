@@ -14,7 +14,9 @@
 # limitations under the License.
 
 import argparse
+import os
 import sys
+from multiprocessing.util import _run_finalizers  # pyright: ignore[reportAttributeAccessIssue]
 
 import multistorageclient as msc
 from multistorageclient.types import ExecutionMode, PatternList, PatternType, SymlinkHandling
@@ -226,6 +228,13 @@ class SyncAction(Action):
             if args.verbose:
                 print("Synchronization completed successfully")
             return 0
+        except KeyboardInterrupt:
+            if execution_mode == ExecutionMode.LOCAL:
+                print("Synchronization interrupted.", file=sys.stderr, flush=True)
+                # Release multiprocessing resources without waiting for transfer pools at interpreter exit.
+                _run_finalizers(0)
+                os._exit(130)
+            raise
         except Exception as e:
             print(f"Error during synchronization: {e!s}", file=sys.stderr)
             return 1

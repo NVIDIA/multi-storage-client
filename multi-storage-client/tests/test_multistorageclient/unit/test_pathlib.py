@@ -141,6 +141,17 @@ def test_path_read_text_honors_errors(file_storage_config):
             path.read_text()
 
 
+def test_path_write_text_honors_errors(file_storage_config, tmp_path):
+    path = msc.Path(tmp_path / "ascii.txt")
+
+    path.write_text("caf\u00e9", encoding="ascii", errors="ignore")
+    assert path.read_bytes() == b"caf"
+    path.write_text("caf\u00e9", encoding="ascii", errors="replace")
+    assert path.read_bytes() == b"caf?"
+    with pytest.raises(UnicodeEncodeError):
+        path.write_text("caf\u00e9", encoding="ascii")
+
+
 def test_path_mkdir_rmdir(file_storage_config):
     with tempfile.TemporaryDirectory() as temp_dir:
         path = msc.Path(f"{temp_dir}/dir1/dir2/dir3")

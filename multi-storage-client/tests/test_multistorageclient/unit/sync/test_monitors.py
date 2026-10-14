@@ -18,8 +18,10 @@ import threading
 import time
 from datetime import datetime, timezone
 from typing import cast
+from unittest import mock
 
 from multistorageclient.client import StorageClient
+from multistorageclient.sync import progress_bar as progress_bar_module
 from multistorageclient.sync.monitors import ErrorMonitorThread, ResultMonitorThread
 from multistorageclient.sync.producer import ProducerThread
 from multistorageclient.sync.progress_bar import ProgressBar
@@ -121,7 +123,7 @@ def test_error_consumer_thread_fail_fast():
     assert not error_consumer.is_alive()
 
 
-def test_result_monitor_refreshes_progress_while_producer_listing_blocks():
+def test_result_monitor_refreshes_progress_while_producer_listing_blocks(monkeypatch):
     source_client = MockStorageClient()
     target_client = MockStorageClient()
     file_queue = queue.Queue()
@@ -144,7 +146,9 @@ def test_result_monitor_refreshes_progress_while_producer_listing_blocks():
     source_client.list = lambda **kwargs: slow_source_iter()  # type: ignore[method-assign]
     target_client.list = lambda **kwargs: iter(())  # type: ignore[method-assign]
 
-    progress = ProgressBar(desc="Syncing", show_progress=True)
+    network_monitor = mock.Mock(rate=1_500_000.0, error=None)
+    monkeypatch.setattr(progress_bar_module, "NetworkThroughputMonitor", mock.Mock(return_value=network_monitor))
+    progress = ProgressBar(desc="Syncing", show_progress=True, show_network_throughput=True)
     assert progress.pbar is not None
 
     original_refresh = progress.pbar.refresh
@@ -172,16 +176,17 @@ def test_result_monitor_refreshes_progress_while_producer_listing_blocks():
         result_queue=result_queue,
     )
 
-    result_monitor_thread.start()
-    producer_thread.start()
-    assert sleep_started.wait(timeout=2.0)
+    with progress.network_throughput({123}):
+        result_monitor_thread.start()
+        producer_thread.start()
+        assert sleep_started.wait(timeout=2.0)
 
-    sleep_start = time.monotonic()
-    producer_thread.join(timeout=15.0)
-    sleep_end = time.monotonic()
-    result_queue.put((OperationType.STOP, None, None))
-    result_monitor_thread.join(timeout=2.0)
-    progress.close()
+        sleep_start = time.monotonic()
+        producer_thread.join(timeout=15.0)
+        sleep_end = time.monotonic()
+        result_queue.put((OperationType.STOP, None, None))
+        result_monitor_thread.join(timeout=2.0)
+        progress.close()
 
     refreshes_during_sleep = [t for t in refresh_times if sleep_start <= t <= sleep_end]
 
@@ -189,3 +194,7 @@ def test_result_monitor_refreshes_progress_while_producer_listing_blocks():
     assert not producer_thread.is_alive()
     assert not result_monitor_thread.is_alive()
     assert len(refreshes_during_sleep) >= 8
+    network_monitor.start.assert_called_once()
+    network_monitor.close.assert_called_once()
+    assert "1.50MB/s" in str(progress.pbar)
+    assert progress.pbar.n == 0

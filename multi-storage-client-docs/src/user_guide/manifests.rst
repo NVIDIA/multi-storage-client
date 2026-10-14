@@ -78,6 +78,8 @@ Writing and Using Manifests Programmatically
 
 MSC provides a :py:class:`multistorageclient.providers.ManifestMetadataProvider` to read from and write to manifests, and a :py:class:`multistorageclient.generators.ManifestMetadataGenerator` to generate the manifests. When manifests are configured as a “metadata provider,” MSC can utilize them for efficient object metadata retrieval.
 
+Calling ``get_object_metadata(..., include_pending=True)`` includes uncommitted additions and overwrites and excludes pending removals.
+
 Generating Manifests
 --------------------
 

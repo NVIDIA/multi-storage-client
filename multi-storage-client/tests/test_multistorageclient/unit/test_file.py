@@ -16,13 +16,18 @@
 import functools
 import mmap
 import os
+from typing import cast
 from unittest.mock import Mock, patch
 
 import pytest
 
 from multistorageclient import StorageClient, StorageClientConfig, telemetry
+from multistorageclient.cache import CacheManager
+from multistorageclient.caching.cache_config import CacheConfig
+from multistorageclient.client.single import SingleStorageClient
 from multistorageclient.file import ObjectFile, PosixFile, RemoteFileReader
 from multistorageclient.providers.base import BaseStorageProvider
+from multistorageclient.types import ResolvedPath, ResolvedPathState
 from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
 
@@ -526,3 +531,63 @@ def test_posix_file_readall_emits_read_metrics_once(tmp_path):
         emit_metrics.reset_mock()
         assert f.readall() == b"content"
         assert emit_metrics.call_count == 1
+
+
+def _object_file_client(tmp_path):
+    return SingleStorageClient(
+        StorageClientConfig.from_dict(
+            {"profiles": {"data": {"storage_provider": {"type": "file", "options": {"base_path": str(tmp_path)}}}}},
+            profile="data",
+        )
+    )
+
+
+@pytest.mark.parametrize("cache_enabled", [False, True])
+def test_object_file_download_reuses_open_metadata(tmp_path, cache_enabled):
+    content = b"cached file content\n"
+    (tmp_path / "object.txt").write_bytes(content)
+    client = _object_file_client(tmp_path)
+    if cache_enabled:
+        client._cache_manager = CacheManager(
+            profile="data",
+            cache_config=CacheConfig(
+                location=str(tmp_path / "cache"), size="10M", cache_line_size="1M", check_source_version=False
+            ),
+        )
+    provider = cast(BaseStorageProvider, client._storage_provider)
+    with (
+        patch.object(client, "_is_posix_file_storage_provider", return_value=False),
+        patch.object(provider, "_get_object_metadata", wraps=provider._get_object_metadata) as metadata_lookup,
+    ):
+        with client.open("object.txt", "rb") as file:
+            assert file.read() == content
+        assert metadata_lookup.call_count == 1
+
+
+@pytest.mark.parametrize("route", ["metadata", "replica"])
+def test_object_file_metadata_reuse_keeps_routed_downloads(tmp_path, route):
+    content = b"routed content"
+    (tmp_path / "physical").write_bytes(content)
+    client = _object_file_client(tmp_path)
+    metadata = client.info("physical")
+    routing = Mock()
+    if route == "metadata":
+        client._metadata_provider = routing
+        routing.get_object_metadata.return_value = metadata
+        routing.realpath.return_value = ResolvedPath("physical", ResolvedPathState.EXISTS)
+    elif route == "replica":
+        client._replica_manager = routing
+        routing.download_from_replica_or_primary.side_effect = lambda path, destination, provider: (
+            provider.download_file("physical", destination)
+        )
+    path = "logical" if route == "metadata" else "physical"
+    provider = cast(BaseStorageProvider, client._storage_provider)
+    with patch.object(provider, "_download_file", wraps=provider._download_file) as download:
+        with ObjectFile(client, path) as file:
+            assert file.read() == content
+        assert download.call_args.args[2].content_length == len(content)
+    if route == "metadata":
+        routing.realpath.assert_called_once_with("logical")
+        assert routing.get_object_metadata.call_count == 2
+    elif route == "replica":
+        routing.download_from_replica_or_primary.assert_called_once()

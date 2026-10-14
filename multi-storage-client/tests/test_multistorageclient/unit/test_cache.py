@@ -21,6 +21,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import pytest
 import xattr
@@ -42,8 +43,47 @@ from test_multistorageclient.unit.utils.tempdatastore import create_test_data
 def _cache_manager(tmpdir) -> CacheManager:
     return CacheManager(
         profile="data",
-        cache_config=CacheConfig(location=str(tmpdir), size="10M", cache_line_size="1M", check_source_version=False),
+        cache_config=CacheConfig(
+            location=str(tmpdir),
+            size="10M",
+            cache_line_size="1M",
+            check_source_version=False,
+            eviction_policy=EvictionPolicyConfig(policy="LRU"),
+        ),
     )
+
+
+@pytest.mark.parametrize("policy", ["FIFO", "LRU", "MRU", "RANDOM", "NO_EVICTION"])
+def test_update_access_time_only_for_access_based_eviction(tmpdir, policy):
+    cache_manager = CacheManager(
+        profile="data",
+        cache_config=CacheConfig(
+            location=str(tmpdir), size="10M", cache_line_size="1M", eviction_policy=EvictionPolicyConfig(policy=policy)
+        ),
+    )
+    file_path = os.path.join(str(tmpdir), "cached.bin")
+    with open(file_path, "wb") as f:
+        f.write(b"data")
+    os.utime(file_path, (0, 123456789))
+    cache_manager._make_readonly(file_path)
+    original_stat = os.stat(file_path)
+
+    with (
+        patch.object(cache_module.os, "open", wraps=os.open) as open_file,
+        patch.object(cache_module.os, "utime", wraps=os.utime) as update_time,
+    ):
+        cache_manager._update_access_time(file_path)
+
+    updated_stat = os.stat(file_path)
+    tracks_access = policy in {"LRU", "MRU"}
+    assert open_file.call_count == int(tracks_access)
+    assert update_time.call_count == int(tracks_access)
+    if tracks_access:
+        assert updated_stat.st_atime > original_stat.st_atime
+    else:
+        assert updated_stat.st_atime_ns == original_stat.st_atime_ns
+    assert updated_stat.st_mtime_ns == original_stat.st_mtime_ns
+    assert stat.S_IMODE(updated_stat.st_mode) == 0o444
 
 
 def test_update_access_time_tolerates_permission_error_on_restore(tmpdir):
@@ -453,7 +493,9 @@ def test_partial_chunk_publish_is_atomic_without_source_version(tmpdir, monkeypa
     assert not [name for name in os.listdir(os.path.dirname(chunk_path)) if name.startswith(".chunk_tmp_")]
 
 
-def test_partial_chunk_metadata_is_set_before_publish(tmpdir, monkeypatch):
+@pytest.mark.parametrize("policy", ["FIFO", "LRU", "MRU", "RANDOM", "NO_EVICTION"])
+@pytest.mark.parametrize("object_size", [512, 2 * 1024 * 1024])
+def test_partial_chunk_metadata_is_set_before_publish(tmpdir, monkeypatch, policy, object_size):
     probe_path = os.path.join(tmpdir, "xattr-probe")
     with open(probe_path, "wb") as probe_file:
         probe_file.write(b"probe")
@@ -467,21 +509,28 @@ def test_partial_chunk_metadata_is_set_before_publish(tmpdir, monkeypatch):
 
     cache_manager = CacheManager(
         profile="test",
-        cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=True, location=str(tmpdir)),
+        cache_config=CacheConfig(
+            size="10M",
+            cache_line_size="1M",
+            check_source_version=True,
+            location=str(tmpdir),
+            eviction_policy=EvictionPolicyConfig(policy=policy),
+        ),
     )
-    storage_provider = RangeAwareStorageProvider(create_test_data(2))
+    storage_provider = RangeAwareStorageProvider(b"x" * object_size)
     key = "bucket/versioned.bin"
     source_version = "etag-123"
     byte_range = Range(offset=0, size=16 * 1024)
 
     cache_path = cache_manager._get_cache_file_path(key)
     chunk_path = cache_manager._get_chunk_path(cache_path, 0)
-    observed: dict[str, str | bool] = {}
+    observed: dict[str, str | bool | int] = {}
     original_replace = cache_module.os.replace
 
     def checking_replace(src: str, dst: str) -> None:
         if dst == chunk_path:
             observed["chunk_visible_before_replace"] = os.path.exists(dst)
+            observed["mode"] = stat.S_IMODE(os.stat(src).st_mode)
             observed["etag"] = _xattr.getxattr(src, "user.etag").decode("utf-8")
             observed["cache_line_size"] = _xattr.getxattr(src, "user.cache_line_size").decode("utf-8")
             observed["object_size"] = _xattr.getxattr(src, "user.size").decode("utf-8")
@@ -499,10 +548,13 @@ def test_partial_chunk_metadata_is_set_before_publish(tmpdir, monkeypatch):
 
     assert result == storage_provider._data[: byte_range.size]
     assert observed["chunk_visible_before_replace"] is False
+    assert observed["mode"] == 0o444
     assert observed["etag"] == source_version
     assert observed["cache_line_size"] == str(1024 * 1024)
     assert observed["object_size"] == str(len(storage_provider._data))
-    assert _xattr.getxattr(chunk_path, "user.etag").decode("utf-8") == source_version
+    published_path = cache_path if object_size < 1024 * 1024 else chunk_path
+    assert stat.S_IMODE(os.stat(published_path).st_mode) == 0o444
+    assert _xattr.getxattr(published_path, "user.etag").decode("utf-8") == source_version
 
 
 def test_assemble_result_handles_short_final_chunk(tmpdir):
@@ -1398,6 +1450,90 @@ def test_concurrent_chunk_creation_with_locking():
             f for f in os.listdir(file_dir) if f.startswith(f".{base_name}#chunk0") and not f.endswith(".lock")
         ]
         assert len(chunk_files) == 1, f"Expected 1 chunk0 file, found {len(chunk_files)}"
+
+
+@pytest.mark.parametrize(
+    ("cached_version", "source_version", "cached_file_exists", "check_source_version", "expected_get_calls"),
+    [
+        (None, None, True, SourceVersionCheckMode.INHERIT, 0),
+        ("etag-1", None, True, SourceVersionCheckMode.INHERIT, 0),
+        ("etag-1", "etag-1", True, SourceVersionCheckMode.INHERIT, 0),
+        ("etag-1", "etag-2", True, SourceVersionCheckMode.INHERIT, 1),
+        (None, "etag-1", True, SourceVersionCheckMode.INHERIT, 1),
+        (None, None, False, SourceVersionCheckMode.INHERIT, 1),
+        (None, None, True, SourceVersionCheckMode.ENABLE, 1),
+        ("etag-1", None, True, SourceVersionCheckMode.ENABLE, 1),
+    ],
+)
+def test_range_read_reuses_valid_full_cached_file(
+    cache_manager, cached_version, source_version, cached_file_exists, check_source_version, expected_get_calls
+):
+    key = "data/ranges.bin"
+    cached_content = b"cached file contents"
+    remote_content = b"remote file contents"
+    provider = RangeAwareStorageProvider(remote_content)
+    if cached_file_exists:
+        cache_manager.set(key, cached_content, source_version=cached_version)
+    byte_range = Range(offset=2, size=7)
+
+    with patch.object(_xattr, "getxattr", wraps=_xattr.getxattr) as getxattr:
+        result = cache_manager.read(
+            key,
+            source_version=source_version,
+            byte_range=byte_range,
+            storage_provider=provider,
+            source_size=len(remote_content),
+            check_source_version=check_source_version,
+        )
+        if source_version is None and not expected_get_calls:
+            getxattr.assert_not_called()
+
+    expected_content = remote_content if expected_get_calls else cached_content
+    assert result == expected_content[2:9]
+    assert provider.call_count == expected_get_calls
+
+
+@pytest.mark.parametrize(
+    ("check_source_version", "read_check_mode"),
+    [(False, SourceVersionCheckMode.INHERIT), (True, SourceVersionCheckMode.DISABLE)],
+)
+def test_cached_range_read_without_version_check_avoids_remote_requests(tmpdir, check_source_version, read_check_mode):
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        profile = "data"
+        config_dict = {
+            "profiles": {profile: temp_data_store.profile_config_dict() | {"caching_enabled": True}},
+            "cache": {
+                "size": "10M",
+                "cache_line_size": "1M",
+                "location": str(tmpdir),
+                "check_source_version": check_source_version,
+            },
+        }
+        client = SingleStorageClient(config=StorageClientConfig.from_dict(config_dict, profile=profile))
+        key = "data/ranges.bin"
+        content = b"complete cached file contents"
+        client.write(key, content)
+        client._is_posix_file_storage_provider = lambda: False  # type: ignore
+        cache_manager = client._cache_manager
+        assert cache_manager is not None
+        assert client.read(key, check_source_version=read_check_mode) == content
+        with pytest.raises(OSError):
+            _xattr.getxattr(cache_manager._get_cache_file_path(key), "user.etag")
+
+        provider = client._storage_provider
+        with (
+            patch.object(provider, "get_object", wraps=provider.get_object) as get_object,
+            patch.object(provider, "get_object_metadata", wraps=provider.get_object_metadata) as get_metadata,
+            patch.object(cache_manager, "_read_range", wraps=cache_manager._read_range) as read_chunks,
+        ):
+            for byte_range in [Range(offset=3, size=7), Range(offset=len(content) - 2, size=7)]:
+                assert (
+                    client.read(key, byte_range=byte_range, check_source_version=read_check_mode)
+                    == content[byte_range.offset : byte_range.offset + byte_range.size]
+                )
+            get_object.assert_not_called()
+            get_metadata.assert_not_called()
+            read_chunks.assert_not_called()
 
 
 def test_full_file_byte_range_read_is_served_from_cache(tmpdir):
