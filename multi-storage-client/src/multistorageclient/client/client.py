@@ -240,9 +240,11 @@ class StorageClient(AbstractStorageClient):
         :param check_source_version: Whether to check the source version of cached objects.
         :param attributes: Attributes to add to the file.
             This parameter is only applicable when the mode is "w" or "wb" or "a" or "ab". Defaults to None.
-        :param prefetch_file: Whether to prefetch the file content.
+        :param prefetch_file: Whether to download the entire file before reads.
+            When ``False``, binary reads fetch only the requested byte ranges, using partial file caching
+            when caching is enabled. Text mode ("r") always downloads the entire file.
             This parameter is only applicable to ObjectFile when the mode is "r" or "rb".
-            If None, inherits from cache configuration.
+            If None, inherits from cache configuration, or defaults to ``True`` when caching is disabled.
         :return: A file-like object (PosixFile or ObjectFile) for the specified path.
         :raises FileNotFoundError: If the file does not exist (read mode).
         :raises NotImplementedError: If the operation is not supported (e.g., write on CompositeStorageClient).

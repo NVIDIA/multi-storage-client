@@ -230,7 +230,7 @@ class ObjectFile(IOBase, IO):
         :param memory_load_limit: Size limit in bytes for loading files into memory. Defaults to 512MB. This parameter is only applicable when the mode is "r" or "rb".
         :param check_source_version: Whether to check the source version of cached objects.
         :param attributes: The attributes to add to the file if a new file is created.
-        :param prefetch_file: If True, downloads the entire file to cache in the background for faster subsequent reads. If False, uses RemoteFileReader for streaming reads without caching. If None, inherits from cache configuration.
+        :param prefetch_file: If True, downloads the entire file in the background, to the cache when caching is enabled or into memory otherwise. If False, binary reads use RemoteFileReader to fetch only the requested byte ranges (with partial file caching when caching is enabled); text mode always downloads the entire file. If None, inherits from cache configuration, or defaults to True when caching is disabled.
         """
         if mode not in ("r", "w", "rb", "wb", "a", "ab"):
             raise ValueError(f'Invalid mode "{mode}", only "w", "r", "a", "wb", "rb" and "ab" are supported.')
@@ -313,8 +313,11 @@ class ObjectFile(IOBase, IO):
                 # Read
                 self._object_metadata = self._storage_client.info(self._remote_path)
                 self._download_complete = threading.Event()
-                self._download_thread = threading.Thread(target=self._download_fileobj)
-                self._download_thread.start()
+                if self._prefetch_file or self._mode == "r":
+                    self._download_thread = threading.Thread(target=self._download_fileobj)
+                    self._download_thread.start()
+                else:
+                    self._open_large_file()
             else:
                 # Write or append
                 self._create_fileobj()

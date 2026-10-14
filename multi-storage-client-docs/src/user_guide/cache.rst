@@ -162,6 +162,8 @@ The ``prefetch_file`` parameter in ``client.open()`` controls whether the entire
 
 * **cache.prefetch_file=False**: Use when libraries call ``open()`` on your behalf and cannot pass ``prefetch_file=False``. Explicit ``client.open(..., prefetch_file=True)`` still overrides the config for individual calls.
 
+When caching is disabled (no ``cache`` section, or ``disable_read_cache=True``), ``prefetch_file`` defaults to ``true`` and the file is downloaded into memory, unless it is larger than ``memory_load_limit``. Passing ``prefetch_file=False`` instead reads only the requested byte ranges directly from the object store. Text mode (``"r"``) always downloads the entire file.
+
 *************************
 Cache Directory Structure
 *************************

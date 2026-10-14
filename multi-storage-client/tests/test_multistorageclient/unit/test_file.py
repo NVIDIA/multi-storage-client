@@ -27,7 +27,7 @@ from multistorageclient.caching.cache_config import CacheConfig
 from multistorageclient.client.single import SingleStorageClient
 from multistorageclient.file import ObjectFile, PosixFile, RemoteFileReader
 from multistorageclient.providers.base import BaseStorageProvider
-from multistorageclient.types import ResolvedPath, ResolvedPathState
+from multistorageclient.types import Range, ResolvedPath, ResolvedPathState, SourceVersionCheckMode
 from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
 
@@ -453,6 +453,30 @@ def test_object_file_large_text_read_propagates_background_error(cache_enabled):
     object_file._download_thread.join(timeout=1)
     assert not object_file._download_thread.is_alive()
     object_file.close()
+
+
+@pytest.mark.parametrize("disable_read_cache", [False, True])
+def test_object_file_uncached_read_without_prefetch_uses_range_reads(disable_read_cache):
+    chunk = b"x" * (64 * 1024)
+    storage_client = Mock()
+    storage_client._cache_manager = Mock() if disable_read_cache else None
+    storage_client.info.return_value = Mock(content_length=8 * 1024 * 1024)
+    storage_client.read.return_value = chunk
+
+    with ObjectFile(
+        storage_client=storage_client,
+        remote_path="object",
+        mode="rb",
+        disable_read_cache=disable_read_cache,
+        prefetch_file=False,
+    ) as object_file:
+        assert isinstance(object_file._file, RemoteFileReader)
+        assert object_file.read(len(chunk)) == chunk
+
+    storage_client.download_file.assert_not_called()
+    storage_client.read.assert_called_once_with(
+        "object", byte_range=Range(offset=0, size=len(chunk)), check_source_version=SourceVersionCheckMode.INHERIT
+    )
 
 
 def test_object_file_append_removes_staging_file_when_upload_fails(tmp_path):
