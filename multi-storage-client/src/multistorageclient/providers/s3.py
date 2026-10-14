@@ -1051,21 +1051,18 @@ class S3StorageProvider(BaseStorageProvider):
 
             # Download large files using TransferConfig
             def _invoke_api() -> int:
-                with tempfile.NamedTemporaryFile(mode="wb", delete=False, dir=os.path.dirname(f), prefix=".") as fp:
-                    temp_file_path = fp.name
-                    if self._rust_client:
-                        run_async_rust_client_method(
-                            self._rust_client, "download_multipart_to_file", key, temp_file_path
-                        )
-                    else:
+                if self._rust_client:
+                    run_async_rust_client_method(self._rust_client, "download_multipart_to_file", key, f)
+                else:
+                    with tempfile.NamedTemporaryFile(mode="wb", delete=False, dir=os.path.dirname(f), prefix=".") as fp:
+                        temp_file_path = fp.name
                         self._s3_client.download_fileobj(
                             Bucket=bucket,
                             Key=key,
                             Fileobj=fp,
                             Config=self._transfer_config,
                         )
-
-                os.rename(src=temp_file_path, dst=f)
+                    os.rename(src=temp_file_path, dst=f)
 
                 return metadata.content_length
 

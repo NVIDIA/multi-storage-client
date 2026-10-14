@@ -25,6 +25,8 @@ rdma = ["dep:libc"]
 cc = "1.2"
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 pyo3 = "0.29"
 pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 pyo3-bytes = "0.7.1"
@@ -34,6 +36,7 @@ reqwest = { version = "0.13.5", default-features = false }
 object_store = { version = "0.14.2", features = ["aws", "gcp"] }
 thiserror = "2.0.21"
 tempfile = "3.27"
+same-file = "1"
 chrono = "0.4.45"
 regex = "1.13.1"
 http = "1.5"

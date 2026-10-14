@@ -158,11 +158,16 @@ class RustClient:
         those chunks in parallel. This approach provides better performance for large files
         compared to download() method.
 
-        :param remote_path: The destination path in the storage backend.
-        :param local_path: Path to the local file to upload.
+        Retain completed chunks in .<local-file-name>.msc-dl/ after interruption.
+        Retrying the same destination against the same backend and bucket resumes
+        an unchanged object when a usable ETag/version is available. On success,
+        merge the chunks, atomically replace the destination, and remove the state.
+
+        :param remote_path: The source path in the storage backend.
+        :param local_path: Path to the local file to save the download.
         :param multipart_chunksize: The size of the multipart chunks.
         :param max_concurrency: The maximum number of concurrent operations.
-        :return: The number of bytes downloaded.
+        :return: The complete object size in bytes, including reused chunks.
         """
 
     async def download_multipart_to_bytes(

@@ -15,7 +15,10 @@
 
 import asyncio
 import io
+import json
 import os
+import stat
+import sys
 import tempfile
 import time
 import uuid
@@ -27,7 +30,7 @@ from test_multistorageclient.unit.utils import tempdatastore
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.constants import MEMORY_LOAD_LIMIT
 from multistorageclient.providers.s3 import StaticS3CredentialsProvider
-from multistorageclient.types import Range
+from multistorageclient.types import BatchTransferError, Range, RetryableError
 from multistorageclient_rust import (  # pyright: ignore[reportAttributeAccessIssue]
     RustClient,
     RustClientError,
@@ -810,3 +813,584 @@ async def test_rustclient_with_aws_credentials_file(
         finally:
             if os.path.exists(creds_file_path):
                 os.unlink(creds_file_path)
+
+
+class _DownloadServer:
+    def __init__(self):
+        self.body = b"abcdefghijk"
+        self.etag = '"revision-1"'
+        self.fail_at: int | None = 4
+        self.mutate_at: int | None = None
+        self.requests: list[int] = []
+        self.conditions: list[str | None] = []
+        self.pause_zero = False
+        self.release_zero = asyncio.Event()
+        self.tasks: list[asyncio.Task] = []
+
+    async def __aenter__(self):
+        self.server = await asyncio.start_server(self.serve, "127.0.0.1", 0)
+        self.port = self.server.sockets[0].getsockname()[1]
+        return self
+
+    async def __aexit__(self, *_):
+        self.release_zero.set()
+        self.server.close()
+        await self.server.wait_closed()
+        await asyncio.gather(*self.tasks)
+
+    def configs(self, chunk_size=4):
+        return {
+            "bucket": "test-bucket",
+            "endpoint_url": f"http://127.0.0.1:{self.port}",
+            "allow_http": True,
+            "skip_signature": True,
+            "multipart_chunksize": chunk_size,
+            "max_concurrency": 1,
+        }
+
+    def client(self, chunk_size=4):
+        return RustClient(configs=self.configs(chunk_size), retry=RustRetryConfig(attempts=0))
+
+    async def serve(self, reader, writer):
+        task = asyncio.current_task()
+        assert task is not None
+        self.tasks.append(task)
+        try:
+            request = (await reader.readuntil(b"\r\n\r\n")).decode()
+            headers = {}
+            for line in request.split("\r\n")[1:]:
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    headers[key.lower()] = value.strip()
+            is_head = request.startswith("HEAD ")
+            start, end = 0, len(self.body)
+            status = "200 OK"
+            if not is_head:
+                start, last = map(int, headers["range"].removeprefix("bytes=").split("-"))
+                end = last + 1
+                self.requests.append(start)
+                self.conditions.append(headers.get("if-match"))
+                if start == 0 and self.pause_zero:
+                    await self.release_zero.wait()
+                status = "206 Partial Content"
+                if start == self.mutate_at:
+                    self.etag = '"revision-2"'
+                if headers.get("if-match") is not None and headers["if-match"] != self.etag:
+                    writer.write(b"HTTP/1.1 412 Precondition Failed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    await writer.drain()
+                    return
+            content = self.body[start:end]
+            response = (
+                f"HTTP/1.1 {status}\r\nContent-Length: {len(content)}\r\n"
+                "Last-Modified: Wed, 01 Jan 2025 00:00:00 GMT\r\nConnection: close\r\n"
+            )
+            if self.etag:
+                response += f"ETag: {self.etag}\r\n"
+            if not is_head:
+                response += f"Content-Range: bytes {start}-{end - 1}/{len(self.body)}\r\n"
+            writer.write((response + "\r\n").encode())
+            if not is_head:
+                writer.write(content[:1] if start == self.fail_at else content)
+            await writer.drain()
+        except ConnectionError:
+            pass
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except ConnectionError:
+                pass
+
+
+_DOWNLOAD_SCRIPT = """
+import asyncio, json, sys
+from multistorageclient_rust import RustClient, RustRetryConfig
+async def main():
+    client = RustClient(configs=json.loads(sys.argv[1]), retry=RustRetryConfig(attempts=0))
+    await client.download_multipart_to_file('key', sys.argv[2])
+asyncio.run(main())
+"""
+
+
+@pytest.mark.asyncio
+async def test_rustclient_download_resume_new_process(tmp_path):
+    async with _DownloadServer() as server:
+        path = tmp_path / "download"
+        path.write_bytes(b"original destination")
+        with pytest.raises(RustRetryableError):
+            await server.client().download_multipart_to_file("key", str(path))
+        state_dir = tmp_path / ".download.msc-dl"
+        assert json.loads((state_dir / "state.json").read_text())["key"] == "key"
+        assert (state_dir / "000000.chunk").read_bytes() == server.body[:4]
+        assert path.read_bytes() == b"original destination"
+        (state_dir / "000001.chunk.Abc123.tmp").write_bytes(b"incomplete")
+        server.fail_at = None
+        server.requests.clear()
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            _DOWNLOAD_SCRIPT,
+            json.dumps(server.configs(8)),
+            str(path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await process.communicate()
+        assert process.returncode == 0, stderr.decode()
+        assert server.requests == [4, 8]
+        assert all(condition == server.etag for condition in server.conditions)
+        assert path.read_bytes() == server.body
+        assert not state_dir.exists()
+
+
+@pytest.mark.parametrize("change", ["invalid_chunk", "key", "revision"])
+@pytest.mark.asyncio
+async def test_rustclient_download_resume_invalid_chunk_and_source(tmp_path, change):
+    async with _DownloadServer() as server:
+        path = tmp_path / "download"
+        with pytest.raises(RustRetryableError):
+            await server.client().download_multipart_to_file("key", str(path))
+        if change == "revision":
+            server.etag = '"revision-2"'
+            server.body = server.body.upper()
+        elif change == "invalid_chunk":
+            (tmp_path / ".download.msc-dl" / "000000.chunk").write_bytes(b"short")
+        server.fail_at = None
+        server.requests.clear()
+        key = "other-key" if change == "key" else "key"
+        assert await server.client().download_multipart_to_file(key, str(path)) == len(server.body)
+        assert server.requests == [0, 4, 8]
+        assert path.read_bytes() == server.body
+
+
+@pytest.mark.asyncio
+async def test_rustclient_download_resume_remote_replacement(tmp_path):
+    async with _DownloadServer() as server:
+        server.fail_at = None
+        server.mutate_at = 4
+        path = tmp_path / "download"
+        with pytest.raises(RustClientError) as exc:
+            await server.client().download_multipart_to_file("key", str(path))
+        assert exc.value.args[1] == 412
+        assert not path.exists()
+        assert (tmp_path / ".download.msc-dl" / "000000.chunk").read_bytes() == server.body[:4]
+
+
+@pytest.mark.asyncio
+async def test_rustclient_download_resume_publication_failure(tmp_path):
+    async with _DownloadServer() as server:
+        server.fail_at = None
+        path = tmp_path / "download"
+        path.mkdir()
+        with pytest.raises(RuntimeError):
+            await server.client().download_multipart_to_file("key", str(path))
+        assert (tmp_path / ".download.msc-dl" / "000002.chunk").read_bytes() == server.body[8:]
+        path.rmdir()
+        server.requests.clear()
+        assert await server.client().download_multipart_to_file("key", str(path)) == len(server.body)
+        assert server.requests == []
+        assert path.read_bytes() == server.body
+        assert not (tmp_path / ".download.msc-dl").exists()
+
+
+@pytest.mark.parametrize("marker_kind", ["missing", "corrupt", "unrecognized", "unreadable"])
+@pytest.mark.asyncio
+async def test_rustclient_download_resume_directory_conflict(tmp_path, marker_kind):
+    async with _DownloadServer() as server:
+        state_dir = tmp_path / ".download.msc-dl"
+        state_dir.mkdir()
+        existing = state_dir / "user-file"
+        existing.write_bytes(b"preserve")
+        interrupted = state_dir / "merged.Abc123.tmp"
+        interrupted.write_bytes(b"preserve without a valid marker")
+        marker = state_dir / "state.json"
+        if marker_kind == "unreadable" and os.name == "posix" and os.geteuid() == 0:
+            pytest.skip("Requires permission enforcement")
+        if marker_kind != "missing":
+            marker.write_text("{broken" if marker_kind == "corrupt" else json.dumps({"format": "other"}))
+        original_marker = marker.read_bytes() if marker.exists() else None
+        if marker_kind == "unreadable":
+            marker.chmod(0)
+        try:
+            if marker_kind == "missing":
+                server.fail_at = None
+                path = tmp_path / "download"
+                assert await server.client().download_multipart_to_file("key", str(path)) == len(server.body)
+                assert path.read_bytes() == server.body
+            else:
+                with pytest.raises(RuntimeError):
+                    await server.client().download_multipart_to_file("key", str(tmp_path / "download"))
+        finally:
+            if marker_kind == "unreadable":
+                marker.chmod(0o600)
+        assert existing.read_bytes() == b"preserve"
+        if marker_kind == "missing":
+            assert not interrupted.exists()
+            assert json.loads(marker.read_text())["key"] == "key"
+        else:
+            assert interrupted.read_bytes() == b"preserve without a valid marker"
+            assert (marker.read_bytes() if marker.exists() else None) == original_marker
+        assert server.requests == ([0, 4, 8] if marker_kind == "missing" else [])
+
+
+@pytest.mark.parametrize("leftovers", ["empty", "lock", "initializing"])
+@pytest.mark.parametrize("published", [False, True])
+@pytest.mark.asyncio
+async def test_rustclient_download_missing_marker_reinitializes_same_directory(tmp_path, leftovers, published):
+    async with _DownloadServer() as server:
+        path = tmp_path / "download"
+        if published:
+            path.write_bytes(b"original destination")
+        state_dir = tmp_path / ".download.msc-dl"
+        state_dir.mkdir()
+        if leftovers != "empty":
+            (state_dir / "lock").write_bytes(b"")
+        if leftovers == "initializing":
+            (state_dir / "state.json.Abc123.tmp").write_bytes(b"{unfinished")
+            (state_dir / "000000.chunk").write_bytes(b"WRNG")
+        original_inode = state_dir.stat().st_ino
+
+        for attempt in (0, 1):
+            server.requests.clear()
+            with pytest.raises(RustRetryableError):
+                await server.client().download_multipart_to_file("key", str(path))
+            assert server.requests == ([0, 4] if attempt == 0 else [4])
+            assert path.exists() is published
+            if published:
+                assert path.read_bytes() == b"original destination"
+            assert state_dir.stat().st_ino == original_inode
+            assert json.loads((state_dir / "state.json").read_text())["key"] == "key"
+            assert (state_dir / "000000.chunk").read_bytes() == server.body[:4]
+            assert list(tmp_path.glob(".*.msc-dl")) == [state_dir]
+
+        server.fail_at = None
+        server.requests.clear()
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            _DOWNLOAD_SCRIPT,
+            json.dumps(server.configs()),
+            str(path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await process.communicate()
+        assert process.returncode == 0, stderr.decode()
+        assert server.requests == [4, 8]
+        assert path.read_bytes() == server.body
+        assert list(tmp_path.iterdir()) == [path]
+
+
+@pytest.mark.asyncio
+async def test_rustclient_download_resume_cleans_interrupted_temps(tmp_path):
+    async with _DownloadServer() as server:
+        path = tmp_path / "download"
+        with pytest.raises(RustRetryableError):
+            await server.client().download_multipart_to_file("key", str(path))
+        state_dir = tmp_path / ".download.msc-dl"
+        marker = (state_dir / "state.json").read_bytes()
+        interrupted = ["merged.Abc123.tmp", "000001.chunk.Def456.tmp", "state.json.Ghi789.tmp"]
+        unrelated = [
+            "notes.tmp",
+            "notes.chunk.Abc123.tmp",
+            "merged.notes.tmp",
+            "merged.notes.txt",
+            "state.json.user.tmp",
+            "000001.chunk.notes.txt",
+        ]
+        for name in interrupted + unrelated:
+            (state_dir / name).write_bytes(b"preserve unrelated files")
+        unrelated_dir = state_dir / "merged.Jkl012.tmp"
+        unrelated_dir.mkdir()
+        (unrelated_dir / "file").write_bytes(b"preserve directory")
+        external = tmp_path / "external"
+        external.write_bytes(b"preserve symlink target")
+        link = state_dir / "merged.Mno345.tmp"
+        link.symlink_to(external)
+        server.requests.clear()
+        with pytest.raises(RustRetryableError):
+            await server.client().download_multipart_to_file("key", str(path))
+        assert all(not (state_dir / name).exists() for name in interrupted)
+        assert all((state_dir / name).read_bytes() == b"preserve unrelated files" for name in unrelated)
+        assert (unrelated_dir / "file").read_bytes() == b"preserve directory"
+        assert link.is_symlink() and external.read_bytes() == b"preserve symlink target"
+        assert (state_dir / "state.json").read_bytes() == marker
+        assert (state_dir / "000000.chunk").read_bytes() == server.body[:4]
+        assert (state_dir / "lock").is_file()
+        assert server.requests == [4]
+        assert not path.exists()
+
+
+@pytest.mark.asyncio
+async def test_rustclient_download_without_validator(tmp_path):
+    async with _DownloadServer() as server:
+        server.fail_at = None
+        server.etag = ""
+        path = tmp_path / "download"
+        assert await server.client().download_multipart_to_file("key", str(path)) == len(server.body)
+        assert path.read_bytes() == server.body
+        assert list(tmp_path.iterdir()) == [path]
+
+
+@pytest.mark.parametrize("second_process", [False, True])
+@pytest.mark.asyncio
+async def test_rustclient_download_concurrent_destination(tmp_path, second_process):
+    async with _DownloadServer() as server:
+        server.fail_at = None
+        server.pause_zero = True
+        configs = server.configs()
+        configs["max_concurrency"] = 2
+        path = tmp_path / "download"
+        state_dir = tmp_path / ".download.msc-dl"
+        first = asyncio.ensure_future(
+            RustClient(configs=configs, retry=RustRetryConfig(attempts=0)).download_multipart_to_file("key", str(path))
+        )
+        second = None
+
+        async def wait_for(predicate):
+            while not predicate():
+                await asyncio.sleep(0.01)
+
+        async def download_again():
+            if not second_process:
+                return await RustClient(configs=configs, retry=RustRetryConfig(attempts=0)).download_multipart_to_file(
+                    "key", str(path)
+                )
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                _DOWNLOAD_SCRIPT,
+                json.dumps(configs),
+                str(path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                _, stderr = await process.communicate()
+                assert process.returncode == 0, stderr.decode()
+                return len(server.body)
+            finally:
+                if process.returncode is None:
+                    process.kill()
+                    await process.communicate()
+
+        try:
+            await asyncio.wait_for(wait_for(lambda: (state_dir / "000001.chunk").exists()), timeout=10)
+            active_temp = state_dir / "merged.Abc123.tmp"
+            active_temp.write_bytes(b"owned by the first download")
+            second = asyncio.create_task(download_again())
+            await asyncio.wait_for(wait_for(lambda: server.requests.count(0) == 2), timeout=10)
+            independent = list(tmp_path.glob(".msc-dl-*.msc-dl"))
+            assert len(independent) == 1
+            assert independent[0] != state_dir
+            assert (state_dir / "000001.chunk").read_bytes() == server.body[4:8]
+            assert active_temp.read_bytes() == b"owned by the first download"
+            server.release_zero.set()
+            assert await asyncio.gather(first, second) == [len(server.body), len(server.body)]
+            assert path.read_bytes() == server.body
+            assert list(tmp_path.iterdir()) == [path]
+        finally:
+            server.release_zero.set()
+            await asyncio.gather(first, *([second] if second is not None else []), return_exceptions=True)
+
+
+@pytest.mark.parametrize("with_validator", [False, True])
+@pytest.mark.asyncio
+async def test_rustclient_download_resume_after_process_killed(tmp_path, with_validator):
+    async with _DownloadServer() as server:
+        server.fail_at = None
+        server.pause_zero = True
+        if not with_validator:
+            server.etag = ""
+        configs = server.configs()
+        configs["max_concurrency"] = 2
+        path = tmp_path / "download"
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            _DOWNLOAD_SCRIPT,
+            json.dumps(configs),
+            str(path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        state_dir = tmp_path / ".download.msc-dl" if with_validator else None
+
+        async def wait_for_chunk() -> None:
+            nonlocal state_dir
+            while True:
+                if state_dir is None:
+                    state_dir = next(tmp_path.glob(".msc-dl-*.msc-dl"), None)
+                if state_dir is not None and (state_dir / "000001.chunk").exists():
+                    return
+                if process.returncode is not None:
+                    _, stderr = await process.communicate()
+                    pytest.fail(
+                        f"Download subprocess exited with code {process.returncode} before completing a chunk:\n"
+                        f"{stderr.decode(errors='replace')}"
+                    )
+                await asyncio.sleep(0.01)
+
+        try:
+            await asyncio.wait_for(wait_for_chunk(), timeout=10)
+        finally:
+            if process.returncode is None:
+                process.kill()
+            await process.communicate()
+        assert state_dir is not None
+        assert state_dir.name.startswith(".") and state_dir.name.endswith(".msc-dl")
+        completed = {int(chunk.stem) * 4 for chunk in state_dir.glob("*.chunk")}
+        assert (state_dir / "state.json").exists() is with_validator
+        assert 4 in completed
+        assert 0 not in completed
+        server.pause_zero = False
+        server.release_zero.set()
+        await asyncio.gather(*server.tasks)
+        server.requests.clear()
+        assert await server.client().download_multipart_to_file("key", str(path)) == len(server.body)
+        if with_validator:
+            assert not completed.intersection(server.requests)
+            assert not state_dir.exists()
+        else:
+            assert server.requests == [0, 4, 8]
+            assert state_dir.exists()
+            assert list(tmp_path.glob(".*.msc-dl")) == [state_dir]
+        assert path.read_bytes() == server.body
+
+
+@pytest.mark.parametrize("first_batch", [False, True])
+@pytest.mark.asyncio
+async def test_download_resume_single_and_batch(tmp_path, first_batch):
+    async with _DownloadServer() as server:
+        config = StorageClientConfig.from_dict(
+            {
+                "profiles": {
+                    "source": {
+                        "storage_provider": {
+                            "type": "s3",
+                            "options": {
+                                "base_path": "test-bucket",
+                                "endpoint_url": f"http://127.0.0.1:{server.port}",
+                                "region_name": "us-east-1",
+                                "multipart_threshold": 1,
+                                "rust_client": {
+                                    "allow_http": True,
+                                    "multipart_chunksize": 4,
+                                    "max_concurrency": 1,
+                                    "retry": {"attempts": 0},
+                                },
+                            },
+                        },
+                        "credentials_provider": {
+                            "type": "S3Credentials",
+                            "options": {
+                                "access_key": "test",
+                                "secret_key": "test",
+                            },
+                        },
+                    }
+                }
+            },
+            profile="source",
+        )
+        client = StorageClient(config)
+        path = tmp_path / "download"
+
+        def transfer(batch):
+            if batch:
+                client.download_files(["key"], [str(path)])
+            else:
+                client.download_file("key", str(path))
+
+        with pytest.raises(BatchTransferError if first_batch else RetryableError):
+            await asyncio.to_thread(transfer, first_batch)
+        assert (tmp_path / ".download.msc-dl" / "000000.chunk").read_bytes() == server.body[:4]
+        server.fail_at = None
+        server.requests.clear()
+        await asyncio.to_thread(transfer, not first_batch)
+        assert server.requests == [4, 8]
+        assert path.read_bytes() == server.body
+        assert not (tmp_path / ".download.msc-dl").exists()
+
+
+@pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="Requires POSIX permission enforcement")
+@pytest.mark.parametrize("reset_source", [False, True])
+@pytest.mark.asyncio
+async def test_rustclient_download_cleanup_failure_keeps_recognized_state(tmp_path, reset_source):
+    async with _DownloadServer() as server:
+        path = tmp_path / "download"
+        with pytest.raises(RustRetryableError):
+            await server.client().download_multipart_to_file("key", str(path))
+        state_dir = tmp_path / ".download.msc-dl"
+        blocked = state_dir / "blocked"
+        if reset_source:
+            state_dir.chmod(0o500)
+        else:
+            blocked.mkdir()
+            (blocked / "file").write_bytes(b"preserve unrelated contents")
+        server.fail_at = None
+        if reset_source:
+            server.etag = '"revision-2"'
+        try:
+            if reset_source:
+                with pytest.raises(RuntimeError):
+                    await server.client().download_multipart_to_file("key", str(path))
+                assert not path.exists()
+            else:
+                assert await server.client().download_multipart_to_file("key", str(path)) == len(server.body)
+                assert path.read_bytes() == server.body
+            assert json.loads((state_dir / "state.json").read_text())["format"] == "msc-download-v1"
+        finally:
+            state_dir.chmod(0o700)
+            if not reset_source:
+                assert (blocked / "file").read_bytes() == b"preserve unrelated contents"
+                (blocked / "file").unlink()
+                blocked.rmdir()
+        assert await server.client().download_multipart_to_file("key", str(path)) == len(server.body)
+        assert path.read_bytes() == server.body
+        assert not state_dir.exists()
+
+
+@pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="Requires POSIX permission enforcement")
+@pytest.mark.asyncio
+async def test_rustclient_download_state_initialization_failure_removes_directory(tmp_path):
+    async with _DownloadServer() as server:
+        path = tmp_path / "download"
+        previous_umask = os.umask(0o777)
+        try:
+            with pytest.raises(RuntimeError):
+                await server.client().download_multipart_to_file("key", str(path))
+            assert not (tmp_path / ".download.msc-dl").exists()
+            assert server.requests == []
+        finally:
+            os.umask(previous_umask)
+            state_dir = tmp_path / ".download.msc-dl"
+            if state_dir.exists():
+                state_dir.chmod(0o700)
+        server.fail_at = None
+        assert await server.client().download_multipart_to_file("key", str(path)) == len(server.body)
+        assert path.read_bytes() == server.body
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Requires POSIX permissions")
+@pytest.mark.asyncio
+async def test_rustclient_download_private_permissions(tmp_path):
+    async with _DownloadServer() as server:
+        path = tmp_path / "download"
+        path.write_bytes(b"old destination")
+        path.chmod(0o644)
+        previous_umask = os.umask(0)
+        try:
+            with pytest.raises(RustRetryableError):
+                await server.client().download_multipart_to_file("key", str(path))
+            state_dir = tmp_path / ".download.msc-dl"
+            assert stat.S_IMODE(state_dir.stat().st_mode) == 0o700
+            assert stat.S_IMODE((state_dir / "state.json").stat().st_mode) == 0o600
+            assert stat.S_IMODE((state_dir / "000000.chunk").stat().st_mode) == 0o600
+            server.fail_at = None
+            assert await server.client().download_multipart_to_file("key", str(path)) == len(server.body)
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600
+            assert path.read_bytes() == server.body
+        finally:
+            os.umask(previous_umask)
