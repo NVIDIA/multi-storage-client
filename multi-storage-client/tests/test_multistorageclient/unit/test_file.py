@@ -462,6 +462,7 @@ def test_object_file_uncached_read_without_prefetch_uses_range_reads(disable_rea
     storage_client._cache_manager = Mock() if disable_read_cache else None
     storage_client.info.return_value = Mock(content_length=8 * 1024 * 1024)
     storage_client.read.return_value = chunk
+    storage_client._read_uncached.return_value = chunk
 
     with ObjectFile(
         storage_client=storage_client,
@@ -474,9 +475,14 @@ def test_object_file_uncached_read_without_prefetch_uses_range_reads(disable_rea
         assert object_file.read(len(chunk)) == chunk
 
     storage_client.download_file.assert_not_called()
-    storage_client.read.assert_called_once_with(
-        "object", byte_range=Range(offset=0, size=len(chunk)), check_source_version=SourceVersionCheckMode.INHERIT
-    )
+    byte_range = Range(offset=0, size=len(chunk))
+    if disable_read_cache:
+        storage_client._read_uncached.assert_called_once_with("object", byte_range)
+        storage_client.read.assert_not_called()
+    else:
+        storage_client.read.assert_called_once_with(
+            "object", byte_range=byte_range, check_source_version=SourceVersionCheckMode.INHERIT
+        )
 
 
 def test_object_file_append_removes_staging_file_when_upload_fails(tmp_path):

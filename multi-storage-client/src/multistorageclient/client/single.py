@@ -491,10 +491,29 @@ class SingleStorageClient(AbstractStorageClient):
                 return data
         elif self._replica_manager:
             # No cache, but replicas available
+            if byte_range:
+                return self._replica_manager.read_range_from_replica_or_primary(
+                    path, byte_range, self._storage_provider
+                )
             return self._read_from_replica_or_primary(path)
         else:
             # No cache, no replicas - direct storage provider read
             return self._storage_provider.get_object(path, byte_range=byte_range)
+
+    @retry
+    def _read_uncached(self, path: str, byte_range: Range) -> bytes:
+        """
+        Read a byte range from the storage provider, bypassing the read cache.
+
+        :param path: The logical path of the object to read.
+        :param byte_range: The byte range to read (offset and length).
+        :return: The requested bytes.
+        """
+        if self._metadata_provider:
+            path = self._resolve_read_path(path)
+        if self._replica_manager:
+            return self._replica_manager.read_range_from_replica_or_primary(path, byte_range, self._storage_provider)
+        return self._storage_provider.get_object(path, byte_range=byte_range)
 
     def info(self, path: str, strict: bool = True) -> ObjectMetadata:
         """

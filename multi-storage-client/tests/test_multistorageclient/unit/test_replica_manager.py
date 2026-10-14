@@ -23,7 +23,7 @@ from unittest.mock import patch
 import pytest
 
 from multistorageclient import StorageClient, StorageClientConfig
-from multistorageclient.types import ExecutionMode
+from multistorageclient.types import ExecutionMode, Range
 from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.utils.wait import wait
 
@@ -589,6 +589,29 @@ def test_read_only_replica_serves_reads_without_upload_or_delete(caplog: pytest.
 
         replica_aware_client.sync_replicas("")
         assert "No writable replicas configured" in caplog.text
+
+
+def test_range_read_uses_replicas_without_backfill() -> None:
+    """Range reads return only the requested bytes from a replica, falling back to the source without backfill."""
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as origin_store,
+        tempdatastore.TemporaryPOSIXDirectory() as replica_store,
+    ):
+        config = create_basic_replica_config(origin_store, replica_store)
+        origin_client, replica_aware_client = create_test_clients(config)
+        replica_client = replica_aware_client.replicas[0]
+
+        replica_client.write("present", b"replica content")
+        origin_client.write("present", b"source content")
+        assert replica_aware_client.read("present", byte_range=Range(offset=0, size=7)) == b"replica"
+        assert replica_aware_client._read_uncached("present", Range(offset=8, size=7)) == b"content"
+
+        origin_client.write("missing", b"source only")
+        with patch("multistorageclient.replica_manager._REPLICA_THREAD_POOL.submit") as submit:
+            assert replica_aware_client.read("missing", byte_range=Range(offset=7, size=4)) == b"only"
+            assert replica_aware_client._read_uncached("missing", Range(offset=0, size=6)) == b"source"
+            submit.assert_not_called()
+        assert not replica_client.is_file("missing")
 
 
 def test_read_only_replica_does_not_block_writable_replica_backfill() -> None:

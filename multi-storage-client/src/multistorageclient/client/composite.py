@@ -177,6 +177,14 @@ class CompositeStorageClient(AbstractStorageClient):
         child = self._get_child_client(resolved.profile)
         return child.read(resolved.physical_path, byte_range, check_source_version)
 
+    def _read_uncached(self, path: str, byte_range: Range) -> bytes:
+        resolved = self._metadata_provider.realpath(path)
+        if not resolved.exists:
+            raise FileNotFoundError(f"Path '{path}' not found")
+
+        child = self._get_child_client(resolved.profile)
+        return child._read_uncached(resolved.physical_path, byte_range)
+
     def open(
         self,
         path: str,

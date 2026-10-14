@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO, StringIO
 from typing import IO
 
-from .types import StorageProvider
+from .types import Range, StorageProvider
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +115,29 @@ class ReplicaManager:
             logger.debug(
                 f"Submitted background replica upload for {remote_path} to {len(replicas_that_need_updates)} replicas"
             )
+
+    def read_range_from_replica_or_primary(
+        self, remote_path: str, byte_range: Range, storage_provider: StorageProvider
+    ) -> bytes:
+        """Read a byte range from replicas, falling back to the primary provider.
+
+        Partial reads do not backfill replicas.
+
+        :param remote_path: path to the file to read
+        :param byte_range: byte range to read
+        :param storage_provider: storage provider to use if the file is not found in the replicas
+        :return: the requested bytes
+        """
+        for replica_client in self._storage_client.replicas:
+            try:
+                return replica_client._read_uncached(remote_path, byte_range)
+            except FileNotFoundError:
+                continue
+            except Exception as e:
+                logger.error(f"Error reading from replica: {e}")
+                continue
+
+        return storage_provider.get_object(remote_path, byte_range=byte_range)
 
     def _prepare_file_for_upload(self, file: str | IO) -> tuple[str, bool]:
         """Convert file object to path and determine if cleanup is needed.

@@ -89,6 +89,16 @@ class AbstractStorageClient(ABC):
         """
 
     @abstractmethod
+    def _read_uncached(self, path: str, byte_range: Range) -> bytes:
+        """
+        Read a byte range from storage, bypassing the read cache.
+
+        :param path: The logical path of the object to read.
+        :param byte_range: The byte range to read (offset and length).
+        :return: The requested bytes.
+        """
+
+    @abstractmethod
     def get_posix_path(self, path: str) -> str | None:
         """
         Returns the physical POSIX filesystem path for POSIX storage providers.

@@ -211,6 +211,16 @@ class StorageClient(AbstractStorageClient):
         """
         return self._delegate.read(path, byte_range, check_source_version)
 
+    def _read_uncached(self, path: str, byte_range: Range) -> bytes:
+        """
+        Read a byte range from storage, bypassing the read cache.
+
+        :param path: The logical path of the object to read.
+        :param byte_range: The byte range to read (offset and length).
+        :return: The requested bytes.
+        """
+        return self._delegate._read_uncached(path, byte_range)
+
     def open(
         self,
         path: str,

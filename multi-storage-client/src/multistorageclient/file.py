@@ -56,12 +56,14 @@ class RemoteFileReader(IO[bytes]):
         file_size: int,
         storage_client: AbstractStorageClient,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
+        disable_read_cache: bool = False,
     ):
         self._remote_path = remote_path
         self._file_size = file_size
         self._pos = 0
         self._storage_client = storage_client
         self._check_source_version = check_source_version
+        self._disable_read_cache = disable_read_cache
 
     @property
     def name(self) -> str:
@@ -106,9 +108,12 @@ class RemoteFileReader(IO[bytes]):
 
         # Perform range read from storage provider
         bytes_range = Range(offset=offset, size=length)
-        data = self._storage_client.read(
-            self._remote_path, byte_range=bytes_range, check_source_version=self._check_source_version
-        )
+        if self._disable_read_cache:
+            data = self._storage_client._read_uncached(self._remote_path, bytes_range)
+        else:
+            data = self._storage_client.read(
+                self._remote_path, byte_range=bytes_range, check_source_version=self._check_source_version
+            )
         # If the storage client is using the Rust client, convert the Rust bytes-like buffer to Python bytes
         # to support Python bytes operations like startswith()
         if self._storage_client._is_rust_client_enabled() and hasattr(data, "to_bytes"):
@@ -247,6 +252,7 @@ class ObjectFile(IOBase, IO):
         self._open_files = []
         self._download_error: Exception | None = None
         self._check_source_version = check_source_version
+        self._disable_read_cache = disable_read_cache
 
         if disable_read_cache:
             self._cache_manager = None
@@ -460,6 +466,7 @@ class ObjectFile(IOBase, IO):
             file_size,
             self._storage_client,
             check_source_version=self._check_source_version,
+            disable_read_cache=self._disable_read_cache,
         )
         self._download_complete.set()
 
