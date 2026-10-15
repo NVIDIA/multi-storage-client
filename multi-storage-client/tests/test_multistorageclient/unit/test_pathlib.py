@@ -342,6 +342,16 @@ def test_path_ordering():
     assert not (local_path < filesystem_path)
     assert not (filesystem_path < local_path)
     assert local_path != Path("/tmp/testfile")
+    for path_type in (Path, PurePosixPath):
+        equal_path = path_type("/tmp/testfile")
+        assert local_path <= equal_path
+        assert equal_path <= local_path
+        assert local_path >= equal_path
+        assert equal_path >= local_path
+        assert not local_path < equal_path
+        assert not equal_path < local_path
+        assert not local_path > equal_path
+        assert not equal_path > local_path
     assert [str(path) for path in sorted([Path("/tmp/z"), msc.Path("/tmp/a"), PurePosixPath("/tmp/m")])] == [
         "/tmp/a",
         "/tmp/m",
