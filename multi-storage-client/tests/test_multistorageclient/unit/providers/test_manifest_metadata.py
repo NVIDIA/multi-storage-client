@@ -795,7 +795,11 @@ def test_manifest_physical_path_tracking(temp_data_store_type: type[tempdatastor
             last_modified=datetime.now(tz=timezone.utc),
             content_type="text/plain",
             etag="abc123",
+            storage_class="STANDARD_IA",
         )
+        converted_metadata = ManifestObjectMetadata.from_object_metadata(metadata)
+        assert converted_metadata.storage_class == metadata.storage_class
+        assert converted_metadata.to_object_metadata() == metadata
         provider.add_file("logical/file.txt", metadata)  # Logical path
 
         # Test that realpath returns exists=False for uncommitted files
@@ -810,6 +814,7 @@ def test_manifest_physical_path_tracking(temp_data_store_type: type[tempdatastor
         # Test that get_object_metadata returns logical path in key
         obj_metadata = provider.get_object_metadata("logical/file.txt", include_pending=True)
         assert obj_metadata.key == "logical/file.txt"
+        assert obj_metadata.storage_class == metadata.storage_class
 
         # Commit the pending changes
         provider.commit_updates()
@@ -823,6 +828,25 @@ def test_manifest_physical_path_tracking(temp_data_store_type: type[tempdatastor
         objects = list(provider.list_objects(""))
         assert len(objects) == 1
         assert objects[0].key == "logical/file.txt"
+
+        provider.add_file(
+            "logical/link.txt",
+            ObjectMetadata(
+                key="logical/link.txt",
+                content_length=0,
+                last_modified=metadata.last_modified,
+                symlink_target="file.txt",
+            ),
+        )
+        provider.commit_updates()
+        provider = ManifestMetadataProvider(
+            storage_provider=storage_client._storage_provider,
+            manifest_path=DEFAULT_MANIFEST_BASE_DIR,
+            writable=True,
+            allow_overwrites=True,
+        )
+        assert provider.get_object_metadata("logical/file.txt").storage_class == metadata.storage_class
+        assert provider.realpath("logical/link.txt").physical_path == "storage/path/file.txt"
 
         # Test overwrite scenario
         new_metadata = ObjectMetadata(

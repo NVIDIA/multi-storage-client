@@ -505,6 +505,12 @@ class ManifestMetadataProvider(MetadataProvider):
         return ResolvedPath(physical_path=logical_path, state=ResolvedPathState.UNTRACKED, profile=None)
 
     def add_file(self, path: str, metadata: ObjectMetadata) -> None:
+        """
+        Stages a file for the next manifest commit, preserving its storage class and symlink target.
+
+        :param path: The logical path to register in the manifest.
+        :param metadata: Object metadata whose key is the physical path, or manifest metadata with a matching logical path.
+        """
         if not self.is_writable():
             raise RuntimeError(f"Manifest update support not enabled in configuration. Attempted to add {path}.")
 
@@ -530,8 +536,10 @@ class ManifestMetadataProvider(MetadataProvider):
                 last_modified=metadata.last_modified,
                 content_type=metadata.content_type,
                 etag=metadata.etag,
+                storage_class=metadata.storage_class,
                 metadata=metadata.metadata,
                 type=metadata.type,
+                symlink_target=metadata.symlink_target,
                 physical_path=metadata.key,  # Physical path (from storage provider)
             )
 
