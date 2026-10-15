@@ -176,6 +176,7 @@ The ``msc ls`` command lists files and directories in a storage service. It supp
 
 .. note::
    The ``--attribute-filter-expression`` option allows you to filter files based on their metadata attributes.
+   The filter also applies when the path names a single file rather than a directory.
 
    **Supported Operators:**
      - Equality: ``=``, ``!=``
