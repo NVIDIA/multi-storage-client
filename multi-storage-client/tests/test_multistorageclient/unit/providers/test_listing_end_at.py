@@ -13,14 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""end_at handling when a listing page mixes directory prefixes and objects (S3 and OCI)."""
+"""end_at handling when a listing page mixes directory prefixes and objects."""
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from google.auth.credentials import AnonymousCredentials
+from google.cloud import storage
 
+from multistorageclient.providers.gcs import GoogleStorageProvider
 from multistorageclient.providers.oci import OracleStorageProvider
 from multistorageclient.providers.s3 import S3StorageProvider, StaticS3CredentialsProvider
 
@@ -86,3 +89,43 @@ def test_oci_end_at_keeps_objects_on_page_with_out_of_range_prefix(oci_provider)
 
     assert keys == ["a", "b"]
     oci_provider._oci_client.list_objects.assert_called_once()
+
+
+def test_gcs_end_at_keeps_prefixes_on_page_with_out_of_range_object():
+    gcs_client = MagicMock()
+    with patch.object(GoogleStorageProvider, "_create_gcs_client", return_value=gcs_client):
+        provider = GoogleStorageProvider(project_id="project", base_path="bucket")
+
+    blobs = MagicMock()
+    blobs.__iter__.return_value = [
+        SimpleNamespace(name="a", size=1, updated=LAST_MODIFIED, content_type=None, etag="1", metadata=None),
+        SimpleNamespace(name="z", size=1, updated=LAST_MODIFIED, content_type=None, etag="2", metadata=None),
+    ]
+    blobs.prefixes = {"b/", "y/"}
+    gcs_client.bucket.return_value.list_blobs.return_value = blobs
+
+    keys = [obj.key for obj in provider.list_objects("", end_at="m", include_directories=True)]
+
+    assert keys == ["a", "b"]
+
+
+@pytest.mark.parametrize("include_directories", [False, True])
+def test_gcs_end_at_keeps_later_page_prefixes(include_directories):
+    gcs_client = storage.Client(project="project", credentials=AnonymousCredentials())
+    with patch.object(GoogleStorageProvider, "_create_gcs_client", return_value=gcs_client):
+        provider = GoogleStorageProvider(project_id="project", base_path="bucket")
+
+    pages = [
+        {
+            "items": [
+                {"name": name, "size": "1", "updated": "2025-01-01T00:00:00Z", "etag": name} for name in ["a", "m."]
+            ],
+            "nextPageToken": "page-2",
+        },
+        {"prefixes": ["m/"]},
+    ]
+    with patch.object(gcs_client._connection, "api_request", side_effect=pages) as api_request:
+        keys = [obj.key for obj in provider.list_objects("", end_at="m", include_directories=include_directories)]
+
+    assert keys == (["a", "m"] if include_directories else ["a"])
+    assert api_request.call_count == (2 if include_directories else 1)

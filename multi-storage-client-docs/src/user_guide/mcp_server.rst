@@ -185,6 +185,10 @@ Lists files and directories from a storage location.
 
 * ``include_directories``: Whether to include directories in results (default: false)
 
+  Directory prefixes within ``start_after`` and ``end_at`` are included even when
+  the same provider response contains files outside those bounds. GCS collects
+  directory prefixes across all pages before applying these bounds.
+
 * ``attribute_filter_expression``: Filter results by attributes
 
 * ``show_attributes``: Include attributes in the response (default: false)
