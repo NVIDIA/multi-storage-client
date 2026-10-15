@@ -46,7 +46,7 @@ from ..types import (
     SymlinkHandling,
 )
 from ..utils import safe_makedirs, split_path, validate_attributes
-from .base import BaseStorageProvider
+from .base import BaseStorageProvider, _translate_iterator_errors
 
 _T = TypeVar("_T")
 
@@ -652,7 +652,9 @@ class AzureBlobStorageProvider(BaseStorageProvider):
                     elif end_at is not None and end_at < key:
                         return
 
-        return self._translate_errors(_invoke_api, operation="LIST", container=container_name, blob=prefix)
+        return _translate_iterator_errors(
+            _invoke_api(), lambda f: self._translate_errors(f, operation="LIST", container=container_name, blob=prefix)
+        )
 
     def _generate_presigned_url(
         self,

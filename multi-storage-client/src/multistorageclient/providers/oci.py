@@ -44,7 +44,7 @@ from ..types import (
     SymlinkHandling,
 )
 from ..utils import safe_makedirs, split_path, validate_attributes
-from .base import BaseStorageProvider
+from .base import BaseStorageProvider, _translate_iterator_errors
 
 _T = TypeVar("_T")
 
@@ -481,7 +481,9 @@ class OracleStorageProvider(BaseStorageProvider):
                 if next_start_with is None or (end_at is not None and end_at < next_start_with):
                     return
 
-        return self._translate_errors(_invoke_api, operation="LIST", bucket=bucket, key=prefix)
+        return _translate_iterator_errors(
+            _invoke_api(), lambda f: self._translate_errors(f, operation="LIST", bucket=bucket, key=prefix)
+        )
 
     @property
     def supports_parallel_listing(self) -> bool:

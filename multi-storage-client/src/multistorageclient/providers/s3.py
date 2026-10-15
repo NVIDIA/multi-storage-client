@@ -51,7 +51,7 @@ from ..utils import (
     split_path,
     validate_attributes,
 )
-from .base import BaseStorageProvider
+from .base import BaseStorageProvider, _translate_iterator_errors
 
 _T = TypeVar("_T")
 
@@ -814,7 +814,9 @@ class S3StorageProvider(BaseStorageProvider):
                 if past_end_at:
                     return
 
-        return self._translate_errors(_invoke_api, operation="LIST", bucket=bucket, key=prefix)
+        return _translate_iterator_errors(
+            _invoke_api(), lambda f: self._translate_errors(f, operation="LIST", bucket=bucket, key=prefix)
+        )
 
     @property
     def supports_parallel_listing(self) -> bool:
@@ -912,7 +914,9 @@ class S3StorageProvider(BaseStorageProvider):
                     etag=obj.etag,
                 )
 
-        yield from self._translate_errors(_invoke_api, operation="LIST", bucket=bucket, key=prefix)
+        yield from _translate_iterator_errors(
+            _invoke_api(), lambda f: self._translate_errors(f, operation="LIST", bucket=bucket, key=prefix)
+        )
 
     def _upload_file(
         self,

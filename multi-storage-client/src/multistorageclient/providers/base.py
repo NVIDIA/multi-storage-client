@@ -64,6 +64,18 @@ logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 
+def _translate_iterator_errors(
+    iterator: Iterator[_T],
+    translate_errors: Callable[[Callable[[], _T | None]], _T | None],
+) -> Iterator[_T]:
+    """Translate failures when a lazy iterator advances, preserving normal exhaustion."""
+    while True:
+        item = translate_errors(lambda: next(iterator, None))
+        if item is None:
+            return
+        yield item
+
+
 class _AsyncTransferItem(NamedTuple):
     item_index: int
     local_path: str
