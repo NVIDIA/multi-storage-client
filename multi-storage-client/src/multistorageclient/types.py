@@ -410,6 +410,9 @@ class StorageProvider(ABC):
             the local file path where the file will be saved, or a file-like object to write the
             downloaded content into.
         :param metadata: Metadata about the object to download.
+        :raises FileNotFoundError: If the remote file does not exist.
+        :raises PermissionError: If the provider reports denied read access.
+        :raises RetryableError: If the provider reports a retryable transfer failure.
         """
 
     @abstractmethod
