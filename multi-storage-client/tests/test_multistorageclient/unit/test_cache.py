@@ -21,7 +21,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 import xattr
@@ -35,6 +35,7 @@ from multistorageclient.caching.cache_config import (
 )
 from multistorageclient.client.single import SingleStorageClient
 from multistorageclient.config import StorageClientConfig
+from multistorageclient.file import ObjectFile
 from multistorageclient.types import Range, SourceVersionCheckMode
 from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.unit.utils.tempdatastore import create_test_data
@@ -362,6 +363,33 @@ def test_cache_manager_read_delete_file(profile_name, tmpdir, cache_manager):
     assert not os.path.exists(lock_path)
 
 
+@pytest.mark.parametrize("key", ["dataset/shard.tar", "/dataset/shard.tar", "//dataset/shard.tar"])
+def test_object_file_cache_lock_stays_with_cached_file(tmpdir, key):
+    cache_manager = _cache_manager(tmpdir)
+    expected_path = os.path.join(str(tmpdir), "data", "dataset", "shard.tar")
+    expected_lock = os.path.join(os.path.dirname(expected_path), ".shard.tar.lock")
+    assert cache_manager.acquire_lock(key).lock_file == expected_lock
+
+    content = b"dataset contents"
+    client = Mock()
+    client._cache_manager = cache_manager
+    client.info.return_value = Mock(content_length=len(content), etag="etag-1")
+
+    def download_file(remote_path, local_path, metadata):
+        assert remote_path == key
+        assert os.path.exists(expected_lock)
+        with open(local_path, "wb") as file:
+            file.write(content)
+
+    client.download_file.side_effect = download_file
+    for _ in range(2):
+        with ObjectFile(client, key) as file:
+            assert file.read() == content
+
+    client.download_file.assert_called_once()
+    assert os.path.exists(expected_path)
+
+
 def test_cache_manager_delete_rejects_absolute_path(profile_name, tmpdir, cache_manager):
     """Test that CacheManager rejects absolute delete paths."""
     outside_file = tmpdir.join("outside.txt")
@@ -435,13 +463,13 @@ def test_cache_manager_open_file(profile_name, tmpdir, cache_manager):
         assert result.name == os.path.join(tmpdir, profile_name, key)
 
 
-def test_partial_chunk_publish_is_atomic_without_source_version(tmpdir, monkeypatch):
+@pytest.mark.parametrize("key", ["bucket/concurrent.bin", "/bucket/concurrent.bin"])
+def test_partial_chunk_publish_is_atomic_without_source_version(tmpdir, monkeypatch, key):
     cache_manager = CacheManager(
         profile="test",
         cache_config=CacheConfig(size="10M", cache_line_size="1M", check_source_version=False, location=str(tmpdir)),
     )
     storage_provider = RangeAwareStorageProvider(create_test_data(2))
-    key = "bucket/concurrent.bin"
     byte_range = Range(offset=0, size=16 * 1024)
 
     cache_path = cache_manager._get_cache_file_path(key)
@@ -456,6 +484,7 @@ def test_partial_chunk_publish_is_atomic_without_source_version(tmpdir, monkeypa
         if dst == chunk_path:
             assert os.path.exists(src), "Temporary chunk should exist before publication"
             assert not os.path.exists(dst), "Chunk should remain invisible until replace completes"
+            assert os.path.exists(os.path.join(os.path.dirname(cache_path), ".concurrent.bin#chunk0.lock"))
             replace_started.set()
             assert allow_replace.wait(timeout=5), "Timed out waiting to complete atomic replace"
         original_replace(src, dst)
