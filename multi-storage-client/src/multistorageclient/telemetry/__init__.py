@@ -19,9 +19,14 @@ import inspect
 import json
 import logging
 import multiprocessing
+import multiprocessing.connection
 import multiprocessing.managers
+import multiprocessing.process
+import multiprocessing.util
 import os
+import sys
 import threading
+from collections.abc import Callable, Iterable
 from typing import Any, ClassVar, Literal
 
 import opentelemetry.metrics as api_metrics
@@ -29,6 +34,9 @@ import opentelemetry.trace as api_trace
 import psutil
 
 from .. import utils
+
+_MANAGER_START_TIMEOUT_SECONDS = 30.0
+_MANAGER_CLEANUP_TIMEOUT_SECONDS = 1.0
 
 # MSC telemetry prefers publishing raw samples when possible to support arbitrary post-hoc aggregations.
 #
@@ -454,6 +462,52 @@ class TelemetryManager(multiprocessing.managers.BaseManager):
       * The shutdown exit handler is registered on the manager's server process.
       * ⚠️ We expect a finite number of providers (i.e. no dynamic configs) so we don't leak them.
     """
+
+    _process: multiprocessing.process.BaseProcess
+
+    # BaseManager's private startup protocol is absent from its type stubs.
+    def start(self: Any, initializer: Callable[..., Any] | None = None, initargs: Iterable[Any] = ()) -> None:
+        """Start the telemetry child with a bounded wait for its listening address."""
+        if self._state.value != self._state.INITIAL:
+            raise multiprocessing.ProcessError("Telemetry manager has already been started")
+        if initializer is not None and not callable(initializer):
+            raise TypeError("initializer must be a callable")
+
+        # BaseManager.start() has no timeout for its readiness pipe. Keep its
+        # process and finalizer protocol, but bound the receive and clean up failures.
+        reader, writer = multiprocessing.connection.Pipe(duplex=False)
+        self._process = self._ctx.Process(
+            target=type(self)._run_server,
+            args=(self._registry, self._address, self._authkey, self._serializer, writer, initializer, initargs),
+        )
+        self._process.name = f"{type(self).__name__}-" + ":".join(str(i) for i in self._process._identity)
+        try:
+            self._process.start()
+            writer.close()
+            if not reader.poll(_MANAGER_START_TIMEOUT_SECONDS):
+                raise TimeoutError(f"Telemetry manager did not start within {_MANAGER_START_TIMEOUT_SECONDS:g} seconds")
+            self._address = reader.recv()
+        except BaseException:
+            if self._process.pid is not None:
+                if self._process.is_alive():
+                    self._process.terminate()
+                self._process.join(_MANAGER_CLEANUP_TIMEOUT_SECONDS)
+                if self._process.is_alive():
+                    self._process.kill()
+                    self._process.join(_MANAGER_CLEANUP_TIMEOUT_SECONDS)
+            raise
+        finally:
+            reader.close()
+            writer.close()
+
+        self._state.value = self._state.STARTED
+        finalizer_args: tuple[Any, ...] = (self._process, self._address, self._authkey, self._state, self._Client)
+        # Python 3.11 added a shutdown timeout to BaseManager's finalizer.
+        if sys.version_info >= (3, 11):
+            finalizer_args += (self._shutdown_timeout,)
+        self.shutdown = multiprocessing.util.Finalize(
+            self, type(self)._finalize_manager, args=finalizer_args, exitpriority=0
+        )
 
 
 def _fully_qualified_name(c: type[Any]) -> str:
