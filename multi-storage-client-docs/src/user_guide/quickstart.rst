@@ -206,6 +206,11 @@ See :py:mod:`multistorageclient` for all shortcut methods.
 Google Cloud Storage uploads and downloads using ``io.StringIO`` encode and
 decode UTF-8, including multipart transfers, independently of the system locale.
 
+When a Python-backed S3 download stages data in a temporary file, MSC attempts
+to remove that file if the transfer or final rename fails. Cleanup failures
+are logged without replacing the original error. An existing destination is
+replaced only after the staged download succeeds.
+
 Clients
 =======
 
