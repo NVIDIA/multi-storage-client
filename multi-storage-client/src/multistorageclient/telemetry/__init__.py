@@ -35,7 +35,7 @@ import psutil
 
 from .. import utils
 
-_MANAGER_START_TIMEOUT_SECONDS = 30.0
+_MANAGER_START_TIMEOUT_SECONDS = 60.0
 _MANAGER_CLEANUP_TIMEOUT_SECONDS = 1.0
 
 # MSC telemetry prefers publishing raw samples when possible to support arbitrary post-hoc aggregations.

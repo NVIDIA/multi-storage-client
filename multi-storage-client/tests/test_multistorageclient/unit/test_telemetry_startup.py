@@ -74,7 +74,7 @@ def test_startup_timeout_cleans_up_and_allows_retry(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(telemetry.TelemetryManager, "start", original_start)
     monkeypatch.setattr(context.Process, "start", original_process_start)
-    monkeypatch.setattr(telemetry, "_MANAGER_START_TIMEOUT_SECONDS", 30.0)
+    monkeypatch.setattr(telemetry, "_MANAGER_START_TIMEOUT_SECONDS", 60.0)
     resources = telemetry.init(mode=telemetry.TelemetryMode.SERVER, address=("127.0.0.1", 0))
     healthy_manager = resources._manager  # pyright: ignore [reportAttributeAccessIssue]
     try:
@@ -101,7 +101,7 @@ def test_startup_child_exit_preserves_error_and_reaps_child() -> None:
 
 
 def test_storage_operation_continues_after_telemetry_timeout(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    telemetry_provider = Mock(side_effect=TimeoutError("Telemetry manager did not start within 30 seconds"))
+    telemetry_provider = Mock(side_effect=TimeoutError("Telemetry manager did not start within 60 seconds"))
     provider = PosixFileStorageProvider(
         base_path=str(tmp_path), config_dict={"opentelemetry": {"metrics": {}}}, telemetry_provider=telemetry_provider
     )
@@ -110,4 +110,4 @@ def test_storage_operation_continues_after_telemetry_timeout(tmp_path: Path, cap
     assert provider.get_object("data.txt") == b"payload"
     assert provider.get_object("data.txt") == b"payload"
     telemetry_provider.assert_called_once_with()
-    assert "Failed to setup metrics: Telemetry manager did not start within 30 seconds" in caplog.text
+    assert "Failed to setup metrics: Telemetry manager did not start within 60 seconds" in caplog.text
