@@ -15,6 +15,7 @@
 
 import codecs
 import io
+import logging
 import os
 import tempfile
 from collections.abc import Callable, Iterator
@@ -52,6 +53,8 @@ from ..utils import (
     validate_attributes,
 )
 from .base import BaseStorageProvider
+
+logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 
@@ -1030,6 +1033,19 @@ class S3StorageProvider(BaseStorageProvider):
             return self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
 
     def _download_file(self, remote_path: str, f: str | IO, metadata: ObjectMetadata | None = None) -> int:
+        """
+        Downloads an object to a local path or file-like object.
+
+        Python downloads to paths stage data in a temporary file and replace the destination only after the transfer
+        succeeds. Transfer or rename failures preserve the existing destination and trigger best-effort cleanup of the
+        staging file. Cleanup failures are logged without masking the original error. Rust downloads use the Rust
+        client's destination and resumable state handling.
+
+        :param remote_path: The object path to download.
+        :param f: The destination file path or writable file-like object.
+        :param metadata: Optional object metadata to avoid an additional lookup.
+        :return: The downloaded object's content length.
+        """
         if metadata is None:
             metadata = self._get_object_metadata(remote_path)
 
@@ -1043,10 +1059,22 @@ class S3StorageProvider(BaseStorageProvider):
                 if self._rust_client:
                     run_async_rust_client_method(self._rust_client, "download", key, f)
                 else:
-                    with tempfile.NamedTemporaryFile(mode="wb", delete=False, dir=os.path.dirname(f), prefix=".") as fp:
-                        temp_file_path = fp.name
-                        fp.write(self._get_object(remote_path))
-                    os.rename(src=temp_file_path, dst=f)
+                    temp_file_path: str | None = None
+                    try:
+                        with tempfile.NamedTemporaryFile(
+                            mode="wb", delete=False, dir=os.path.dirname(f), prefix="."
+                        ) as fp:
+                            temp_file_path = fp.name
+                            fp.write(self._get_object(remote_path))
+                        os.rename(src=temp_file_path, dst=f)
+                    finally:
+                        if temp_file_path:
+                            try:
+                                os.unlink(temp_file_path)
+                            except FileNotFoundError:
+                                pass
+                            except OSError as error:
+                                logger.warning("Could not remove temporary file %s: %s", temp_file_path, error)
                 return metadata.content_length
 
             # Download large files using TransferConfig
@@ -1054,15 +1082,27 @@ class S3StorageProvider(BaseStorageProvider):
                 if self._rust_client:
                     run_async_rust_client_method(self._rust_client, "download_multipart_to_file", key, f)
                 else:
-                    with tempfile.NamedTemporaryFile(mode="wb", delete=False, dir=os.path.dirname(f), prefix=".") as fp:
-                        temp_file_path = fp.name
-                        self._s3_client.download_fileobj(
-                            Bucket=bucket,
-                            Key=key,
-                            Fileobj=fp,
-                            Config=self._transfer_config,
-                        )
-                    os.rename(src=temp_file_path, dst=f)
+                    temp_file_path: str | None = None
+                    try:
+                        with tempfile.NamedTemporaryFile(
+                            mode="wb", delete=False, dir=os.path.dirname(f), prefix="."
+                        ) as fp:
+                            temp_file_path = fp.name
+                            self._s3_client.download_fileobj(
+                                Bucket=bucket,
+                                Key=key,
+                                Fileobj=fp,
+                                Config=self._transfer_config,
+                            )
+                        os.rename(src=temp_file_path, dst=f)
+                    finally:
+                        if temp_file_path:
+                            try:
+                                os.unlink(temp_file_path)
+                            except FileNotFoundError:
+                                pass
+                            except OSError as error:
+                                logger.warning("Could not remove temporary file %s: %s", temp_file_path, error)
 
                 return metadata.content_length
 
