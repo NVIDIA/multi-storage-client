@@ -145,6 +145,10 @@ When you read from the source, MSC will automatically read from the replicas bas
    # client.copy("files/my-file.txt", "files/my-file-copy.txt")
    # client.open("files/my-file.txt", mode="rb")
 
+Byte-range reads return only the requested bytes, including when the read falls back
+to the source. Without caching, replica reads download the complete object before
+selecting the range so that any background replica backfill receives the complete content.
+
 If replicas are not populated (i.e., the data doesn't exist in the replica storage), MSC will automatically 
 fall back to the source profile. This ensures that your application continues to work even if the replica 
 synchronization hasn't been completed or if some replicas are unavailable.
