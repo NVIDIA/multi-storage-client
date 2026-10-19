@@ -168,6 +168,7 @@ def test_sync_help_command(run_cli):
     assert "Synchronize files" in stdout
     assert "--delete-unmatched-files" in stdout
     assert "--verbose" in stdout
+    assert "--progress-details" not in stdout
     assert "source_url" in stdout
     assert "--target-url" in stdout
     assert "--replica-indices" in stdout

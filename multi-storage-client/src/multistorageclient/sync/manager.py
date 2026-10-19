@@ -28,7 +28,8 @@ from typing import TYPE_CHECKING, cast
 
 from ..constants import DEFAULT_SYNC_BATCH_SIZE
 from ..types import DryrunResult, ExecutionMode, SymlinkHandling, SyncError, SyncResult
-from ..utils import PatternMatcher, calculate_worker_processes_and_threads
+from ..utils import NullStorageClient, PatternMatcher, calculate_worker_processes_and_threads
+from .logging import redirect_sync_logging, worker_logging
 from .monitors import ErrorMonitorThread, ResultMonitorThread
 from .producer import ProducerThread
 from .progress_bar import ProgressBar
@@ -51,7 +52,8 @@ HAVE_RAY = is_ray_available()
 def _sync_worker_process_local(*args) -> None:
     """Let the parent handle Ctrl+C and stop local worker processes."""
     signal.signal(signal.SIGINT, signal.SIG_IGN)
-    sync_worker_process(*args)
+    with worker_logging(args[7]):
+        sync_worker_process(*args)
 
 
 class SyncManager:
@@ -213,81 +215,82 @@ class SyncManager:
             shutdown_event = SharedEvent()
 
         # Create a progress bar to track the progress of the sync operation.
+        source_is_posix = self.source_client._is_posix_file_storage_provider()
+        target_is_posix = self.target_client._is_posix_file_storage_provider()
+        transfer_operation = "transfer"
+        if source_is_posix and target_is_posix:
+            transfer_operation = "copy"
+        elif source_is_posix:
+            transfer_operation = "upload"
+        elif target_is_posix:
+            transfer_operation = "download"
         progress = ProgressBar(
             desc=description,
             show_progress=True,
             total_items=0,
             show_network_throughput=execution_mode == ExecutionMode.LOCAL,
+            show_transfer_progress=execution_mode == ExecutionMode.LOCAL
+            and not isinstance(self.source_client, NullStorageClient),
+            transfer_operation=transfer_operation,
+            include_deletions=delete_unmatched_files,
         )
 
-        # Start the producer thread to compare source and target file listings and queue sync operations.
-        producer_thread = ProducerThread(
-            self.source_client,
-            self.source_path,
-            self.target_client,
-            self.target_path,
-            progress,
-            file_queue,
-            num_workers,
-            shutdown_event,
-            delete_unmatched_files,
-            pattern_matcher,
-            preserve_source_attributes,
-            symlink_handling,
-            source_files,
-            ignore_hidden,
-            batch_size,
-        )
-        producer_thread.start()
-
-        # Save a direct reference to the target client's metadata provider BEFORE the worker
-        # installs the QueueBackedMetadataProvider proxy.  The monitor uses this
-        # direct reference to replay add_file/remove_file, bypassing the proxy
-        # and avoiding feedback loops.
-        target_metadata_provider = getattr(self.target_client, "_metadata_provider", None)
-
-        result_monitor_thread = ResultMonitorThread(
-            self.target_client,
-            self.target_path,
-            progress,
-            result_queue,
-            metadata_provider=target_metadata_provider,
-        )
-        result_monitor_thread.start()
-
-        # Start the error monitor thread to monitor and handle errors from worker threads
-        error_monitor_thread = ErrorMonitorThread(
-            error_queue,
-            shutdown_event,
-        )
-        error_monitor_thread.start()
-
-        if execution_mode == ExecutionMode.LOCAL:
-            processes = []
-            temp_dir = tempfile.TemporaryDirectory(prefix="msc_sync_")
+        result_monitor_thread = None
+        error_monitor_thread = None
+        processes = []
+        temp_dir = None
+        with progress, redirect_sync_logging(enabled=progress._interactive):
             try:
-                if num_worker_processes == 1:
-                    # Single process does not require multiprocessing.
-                    # In-process transfer threads can outlive cancellation and must own their staging files.
-                    with progress.network_throughput({os.getpid()}):
-                        sync_worker_process(
-                            self.source_client,
-                            self.source_path,
-                            self.target_client,
-                            self.target_path,
-                            num_worker_threads,
-                            preserve_source_attributes,
-                            file_queue,
-                            result_queue,
-                            error_queue,
-                            shutdown_event,
-                        )
-                else:
-                    # Create individual processes using spawn context for fork-safety
-                    for _ in range(num_worker_processes):
-                        process = ctx.Process(
-                            target=_sync_worker_process_local,
-                            args=(
+                # Start the producer thread to compare source and target file listings and queue sync operations.
+                producer_thread = ProducerThread(
+                    self.source_client,
+                    self.source_path,
+                    self.target_client,
+                    self.target_path,
+                    progress,
+                    file_queue,
+                    num_workers,
+                    shutdown_event,
+                    delete_unmatched_files,
+                    pattern_matcher,
+                    preserve_source_attributes,
+                    symlink_handling,
+                    source_files,
+                    ignore_hidden,
+                    batch_size,
+                )
+                producer_thread.start()
+
+                # Save a direct reference to the target client's metadata provider BEFORE the worker
+                # installs the QueueBackedMetadataProvider proxy.  The monitor uses this
+                # direct reference to replay add_file/remove_file, bypassing the proxy
+                # and avoiding feedback loops.
+                target_metadata_provider = getattr(self.target_client, "_metadata_provider", None)
+
+                result_monitor_thread = ResultMonitorThread(
+                    self.target_client,
+                    self.target_path,
+                    progress,
+                    result_queue,
+                    metadata_provider=target_metadata_provider,
+                    shutdown_event=shutdown_event,
+                )
+                result_monitor_thread.start()
+
+                # Start the error monitor thread to monitor and handle errors from worker threads
+                error_monitor_thread = ErrorMonitorThread(
+                    error_queue,
+                    shutdown_event,
+                )
+                error_monitor_thread.start()
+
+                if execution_mode == ExecutionMode.LOCAL:
+                    temp_dir = tempfile.TemporaryDirectory(prefix="msc_sync_")
+                    if num_worker_processes == 1:
+                        # Single process does not require multiprocessing.
+                        # In-process transfer threads can outlive cancellation and must own their staging files.
+                        with progress.network_throughput({os.getpid()}):
+                            sync_worker_process(
                                 self.source_client,
                                 self.source_path,
                                 self.target_client,
@@ -298,19 +301,133 @@ class SyncManager:
                                 result_queue,
                                 error_queue,
                                 shutdown_event,
-                                temp_dir.name,
-                            ),
-                        )
-                        processes.append(process)
-                        process.start()
+                                track_transfers=progress.track_transfers,
+                            )
+                    else:
+                        # Create individual processes using spawn context for fork-safety
+                        for _ in range(num_worker_processes):
+                            process = ctx.Process(
+                                target=_sync_worker_process_local,
+                                args=(
+                                    self.source_client,
+                                    self.source_path,
+                                    self.target_client,
+                                    self.target_path,
+                                    num_worker_threads,
+                                    preserve_source_attributes,
+                                    file_queue,
+                                    result_queue,
+                                    error_queue,
+                                    shutdown_event,
+                                    temp_dir.name,
+                                    progress.track_transfers,
+                                ),
+                            )
+                            processes.append(process)
+                            process.start()
 
-                    # Wait for all processes to complete
-                    with progress.network_throughput(
-                        {os.getpid()} | {p.pid for p in processes if p.pid is not None and p.is_alive()}
-                    ):
-                        for process in processes:
-                            process.join()
-            except KeyboardInterrupt:
+                        # Wait for all processes to complete
+                        with progress.network_throughput(
+                            {os.getpid()} | {p.pid for p in processes if p.pid is not None and p.is_alive()}
+                        ):
+                            for process in processes:
+                                process.join()
+                elif execution_mode == ExecutionMode.RAY:
+                    if not HAVE_RAY:
+                        raise RuntimeError(
+                            "Ray execution mode requested but Ray is not installed. "
+                            "To use distributed sync with Ray, install it with: 'pip install ray'. "
+                            "Alternatively, use ExecutionMode.LOCAL for single-machine sync operations."
+                        )
+
+                    import ray
+
+                    sync_worker_process_ray = ray.remote(sync_worker_process)
+
+                    ray.get(
+                        [
+                            sync_worker_process_ray.options(
+                                num_cpus=num_worker_threads,
+                                scheduling_strategy="SPREAD",
+                            ).remote(
+                                self.source_client,
+                                self.source_path,
+                                self.target_client,
+                                self.target_path,
+                                num_worker_threads,
+                                preserve_source_attributes,
+                                file_queue,
+                                result_queue,
+                                error_queue,
+                                shutdown_event,
+                            )
+                            for _ in range(num_worker_processes)
+                        ]
+                    )
+
+                # Wait for the producer thread to finish.
+                producer_thread.join()
+
+                # Signal the result monitor thread to stop.
+                result_queue.put((OperationType.STOP, None, None))
+                result_monitor_thread.join()
+
+                # Signal the error monitor thread to stop.
+                error_queue.put(None)
+                error_monitor_thread.join()
+
+                # Commit the metadata to the target storage client (if commit_metadata is True).
+                if commit_metadata:
+                    if target_metadata_provider is not None:
+                        progress.set_phase("finalizing metadata")
+                        progress.refresh(force=True)
+                    self.target_client.commit_metadata()
+
+                # Collect all errors from various sources
+                error_messages = []
+
+                if producer_thread.error:
+                    error_messages.append(f"Producer thread error: {producer_thread.error}")
+
+                if result_monitor_thread.error:
+                    error_messages.append(f"Result monitor thread error: {result_monitor_thread.error}")
+
+                if error_monitor_thread.error:
+                    error_messages.append(f"Error monitor thread error: {error_monitor_thread.error}")
+
+                # Add worker errors with detailed information
+                if error_monitor_thread.errors:
+                    error_messages.append(f"\nWorker errors ({len(error_monitor_thread.errors)} total):")
+                    for i, error_info in enumerate(error_monitor_thread.errors, 1):
+                        error_messages.append(
+                            f"\n  Error {i}:\n"
+                            f"    Worker: {error_info.worker_id}\n"
+                            f"    Operation: {error_info.operation}\n"
+                            f"    File: {error_info.file_key}\n"
+                            f"    Exception: {error_info.exception_type}: {error_info.exception_message}\n"
+                            f"    Traceback:\n{error_info.traceback_str}"
+                        )
+
+                sync_result = SyncResult(
+                    total_work_units=producer_thread.total_work_units,
+                    total_files_added=result_monitor_thread.total_files_added,
+                    total_files_deleted=result_monitor_thread.total_files_deleted,
+                    total_bytes_added=result_monitor_thread.total_bytes_added,
+                    total_bytes_deleted=result_monitor_thread.total_bytes_deleted,
+                    total_time_seconds=time.time() - sync_start_time,
+                )
+
+                progress.close(complete=not error_messages)
+                logger.debug(f"Completed sync operation {description}")
+
+                if error_messages:
+                    raise SyncError(
+                        f"Errors in sync operation: {''.join(error_messages)}",
+                        sync_result=sync_result,
+                    )
+
+                return sync_result
+            except BaseException:
                 shutdown_event.set()
                 for process in processes:
                     if process.is_alive():
@@ -321,113 +438,22 @@ class SyncManager:
                         if process.is_alive():
                             process.kill()
                             process.join(timeout=1.0)
-                if num_worker_processes == 1:
-                    file_queue.put(OperationBatch(operation=OperationType.STOP, items=[]))
-                else:
-                    # A terminated writer can leave a queue's feeder blocked at interpreter exit.
-                    cast(MultiprocessingQueue, result_queue).cancel_join_thread()
-                    cast(MultiprocessingQueue, error_queue).cancel_join_thread()
-                result_queue.put((OperationType.STOP, None, None))
-                error_queue.put(None)
-                result_monitor_thread.join(timeout=1.0)
-                error_monitor_thread.join(timeout=1.0)
-                progress.close()
+                if execution_mode == ExecutionMode.LOCAL:
+                    if num_worker_processes == 1:
+                        file_queue.put(OperationBatch(operation=OperationType.STOP, items=[]))
+                    else:
+                        cast(MultiprocessingQueue, result_queue).cancel_join_thread()
+                        cast(MultiprocessingQueue, error_queue).cancel_join_thread()
+                if result_monitor_thread is not None and result_monitor_thread.ident is not None:
+                    result_queue.put((OperationType.STOP, None, None))
+                    result_monitor_thread.join(timeout=1.0)
+                if error_monitor_thread is not None and error_monitor_thread.ident is not None:
+                    error_queue.put(None)
+                    error_monitor_thread.join(timeout=1.0)
                 raise
             finally:
-                temp_dir.cleanup()
-        elif execution_mode == ExecutionMode.RAY:
-            if not HAVE_RAY:
-                raise RuntimeError(
-                    "Ray execution mode requested but Ray is not installed. "
-                    "To use distributed sync with Ray, install it with: 'pip install ray'. "
-                    "Alternatively, use ExecutionMode.LOCAL for single-machine sync operations."
-                )
-
-            import ray
-
-            sync_worker_process_ray = ray.remote(sync_worker_process)
-
-            ray.get(
-                [
-                    sync_worker_process_ray.options(
-                        num_cpus=num_worker_threads,
-                        scheduling_strategy="SPREAD",
-                    ).remote(
-                        self.source_client,
-                        self.source_path,
-                        self.target_client,
-                        self.target_path,
-                        num_worker_threads,
-                        preserve_source_attributes,
-                        file_queue,
-                        result_queue,
-                        error_queue,
-                        shutdown_event,
-                    )
-                    for _ in range(num_worker_processes)
-                ]
-            )
-
-        # Wait for the producer thread to finish.
-        producer_thread.join()
-
-        # Signal the result monitor thread to stop.
-        result_queue.put((OperationType.STOP, None, None))
-        result_monitor_thread.join()
-
-        # Signal the error monitor thread to stop.
-        error_queue.put(None)
-        error_monitor_thread.join()
-
-        # Commit the metadata to the target storage client (if commit_metadata is True).
-        if commit_metadata:
-            self.target_client.commit_metadata()
-
-        # Log the completion of the sync operation.
-        progress.close()
-        logger.debug(f"Completed sync operation {description}")
-
-        # Collect all errors from various sources
-        error_messages = []
-
-        if producer_thread.error:
-            error_messages.append(f"Producer thread error: {producer_thread.error}")
-
-        if result_monitor_thread.error:
-            error_messages.append(f"Result monitor thread error: {result_monitor_thread.error}")
-
-        if error_monitor_thread.error:
-            error_messages.append(f"Error monitor thread error: {error_monitor_thread.error}")
-
-        # Add worker errors with detailed information
-        if error_monitor_thread.errors:
-            error_messages.append(f"\nWorker errors ({len(error_monitor_thread.errors)} total):")
-            for i, error_info in enumerate(error_monitor_thread.errors, 1):
-                error_messages.append(
-                    f"\n  Error {i}:\n"
-                    f"    Worker: {error_info.worker_id}\n"
-                    f"    Operation: {error_info.operation}\n"
-                    f"    File: {error_info.file_key}\n"
-                    f"    Exception: {error_info.exception_type}: {error_info.exception_message}\n"
-                    f"    Traceback:\n{error_info.traceback_str}"
-                )
-
-        sync_result = SyncResult(
-            total_work_units=producer_thread.total_work_units,
-            total_files_added=result_monitor_thread.total_files_added,
-            total_files_deleted=result_monitor_thread.total_files_deleted,
-            total_bytes_added=result_monitor_thread.total_bytes_added,
-            total_bytes_deleted=result_monitor_thread.total_bytes_deleted,
-            total_time_seconds=time.time() - sync_start_time,
-        )
-
-        if error_messages:
-            raise SyncError(
-                f"Errors in sync operation: {''.join(error_messages)}",
-                sync_result=sync_result,
-            )
-
-        return sync_result
+                if temp_dir is not None:
+                    temp_dir.cleanup()
 
     def _sync_objects_dryrun(
         self,
