@@ -31,8 +31,11 @@ import pytest
 from multistorageclient.client import StorageClient
 from multistorageclient.sync import SyncManager
 from multistorageclient.sync import manager as manager_module
+from multistorageclient.sync import monitors as monitors_module
 from multistorageclient.sync import progress_bar as progress_bar_module
 from multistorageclient.sync import worker as worker_module
+from multistorageclient.sync.transfer_progress import TransferSnapshot
+from multistorageclient.sync.types import OperationType
 from multistorageclient.sync.worker import sync_worker_process
 from multistorageclient.types import ExecutionMode, ObjectMetadata, SyncError
 
@@ -76,6 +79,33 @@ def test_sync_function_return_producer_error():
         manager.sync_objects()
 
 
+def test_sync_objects_signals_workers_and_raises_original_result_monitor_error(monkeypatch):
+    source_client = MockStorageClient()
+    target_client = MockStorageClient()
+    monkeypatch.setattr(source_client, "list", lambda **kwargs: iter(()))
+    monkeypatch.setattr(target_client, "list", lambda **kwargs: iter(()))
+    failure = RuntimeError("metadata write failed")
+    provider = mock.Mock()
+    provider.add_file.side_effect = failure
+    monkeypatch.setattr(target_client, "_metadata_provider", provider, raising=False)
+    metadata = ObjectMetadata(key="file", content_length=1, last_modified=datetime.now(timezone.utc))
+
+    def worker(*args, **kwargs):
+        result_queue, shutdown_event = args[7], args[9]
+        result_queue.put((OperationType.ADD, "file", metadata))
+        assert shutdown_event.wait(timeout=2.0), "Result monitor must signal the worker shutdown event"
+        result_queue.put((OperationType.PROGRESS, "worker", TransferSnapshot(0, ())))
+        result_queue.put((OperationType.ADD, "after-error", metadata))
+
+    monkeypatch.setattr(manager_module, "sync_worker_process", worker)
+    manager = SyncManager(cast(StorageClient, source_client), "", cast(StorageClient, target_client), "")
+
+    with pytest.raises(SyncError, match="Result monitor thread error: metadata write failed"):
+        manager.sync_objects(num_worker_processes=1)
+
+    provider.add_file.assert_called_once_with("file", metadata)
+
+
 @pytest.mark.parametrize(
     argnames=["source_path", "target_path", "overlaps"],
     argvalues=[
@@ -109,7 +139,19 @@ def test_sync_manager_rejects_overlapping_paths_on_same_client(source_path: str,
         make_manager()
 
 
-def test_sync_objects_commits_metadata_by_default():
+@pytest.mark.parametrize(
+    "source_posix, target_posix, delete_unmatched, operation",
+    [
+        (False, True, False, "download"),
+        (True, False, False, "upload"),
+        (True, True, False, "copy"),
+        (False, False, False, "transfer"),
+        (False, True, True, "download"),
+        (True, False, True, "upload"),
+        (True, True, True, "copy"),
+    ],
+)
+def test_sync_objects_commits_metadata_by_default(source_posix, target_posix, delete_unmatched, operation):
     """Test that sync_objects calls commit_metadata when commit_metadata is True (default)."""
     source_client = MockStorageClient()
     target_client = MockStorageClient()
@@ -135,9 +177,22 @@ def test_sync_objects_commits_metadata_by_default():
         target_path="",
     )
 
-    with mock.patch.object(target_client, "commit_metadata") as mock_commit:
-        manager.sync_objects(num_worker_processes=1, commit_metadata=True)
+    with (
+        mock.patch.object(source_client, "_is_posix_file_storage_provider", return_value=source_posix),
+        mock.patch.object(target_client, "_is_posix_file_storage_provider", return_value=target_posix),
+        mock.patch.object(target_client, "commit_metadata") as mock_commit,
+        mock.patch.object(manager_module, "ProgressBar", wraps=progress_bar_module.ProgressBar) as progress_factory,
+    ):
+        manager.sync_objects(
+            num_worker_processes=1,
+            commit_metadata=True,
+            delete_unmatched_files=delete_unmatched,
+            description="Syncing dataset alpha",
+        )
         mock_commit.assert_called_once()
+        assert progress_factory.call_args.kwargs["transfer_operation"] == operation
+        assert progress_factory.call_args.kwargs["include_deletions"] is delete_unmatched
+        assert progress_factory.call_args.kwargs["desc"] == "Syncing dataset alpha"
 
 
 def test_sync_objects_skips_commit_when_commit_metadata_false():
@@ -236,7 +291,8 @@ def test_network_sampling_scope_and_cleanup(monkeypatch, tmp_path, capsys, netwo
         context.Event.return_value = shutdown
 
         def create_process(target, args):
-            leave_partial_file(args[-1])
+            assert args[-1] is True
+            leave_partial_file(args[-2])
             return processes[len(staging_dirs) - 1]
 
         context.Process.side_effect = create_process
@@ -322,7 +378,7 @@ def test_single_process_interrupt_preserves_active_staging(monkeypatch, tmp_path
     source.list_recursive.side_effect = lambda **kwargs: iter([item])
     target.list_recursive.side_effect = lambda **kwargs: iter(())
 
-    def download(remote_paths, local_paths, metadata):
+    def download(remote_paths, local_paths, metadata, transfer_callback=None):
         staged_files.extend(Path(path) for path in local_paths)
         for path in staged_files:
             path.write_bytes(b"data")
@@ -340,8 +396,8 @@ def test_single_process_interrupt_preserves_active_staging(monkeypatch, tmp_path
         return thread
 
     source.download_files.side_effect = download
-    target.upload_files.side_effect = lambda remote_paths, local_paths, attributes: uploaded.extend(
-        Path(path).read_bytes() for path in local_paths
+    target.upload_files.side_effect = lambda remote_paths, local_paths, attributes, transfer_callback=None: (
+        uploaded.extend(Path(path).read_bytes() for path in local_paths)
     )
     monkeypatch.setattr(worker_module.threading, "Thread", make_thread)
     manager = SyncManager(cast(StorageClient, source), "", cast(StorageClient, target), "")
@@ -678,3 +734,116 @@ class TestSyncObjectsDryrun:
         assert os.path.isfile(result.dryrun.files_to_delete)
         assert _read_jsonl_keys(result.dryrun.files_to_add) == ["a.txt"]
         assert _count_jsonl_lines(result.dryrun.files_to_delete) == 0
+
+
+@pytest.mark.parametrize("has_metadata_provider, commit_metadata", [(False, True), (True, False), (True, True)])
+def test_sync_progress_finalization_and_metadata_phase(monkeypatch, has_metadata_provider, commit_metadata):
+    source = MockStorageClient()
+    target = MockStorageClient()
+    item = ObjectMetadata(key="file", content_length=1, last_modified=datetime.now(timezone.utc))
+    monkeypatch.setattr(source, "list", lambda **kwargs: iter((item,)))
+    monkeypatch.setattr(target, "list", lambda **kwargs: iter((item,)))
+    if has_metadata_provider:
+        monkeypatch.setattr(target, "_metadata_provider", mock.Mock(), raising=False)
+    progress = progress_bar_module.ProgressBar("Syncing", True, show_transfer_progress=True)
+    progress.set_phase = mock.Mock(wraps=progress.set_phase)
+    worker = mock.Mock()
+    monkeypatch.setattr(manager_module, "ProgressBar", mock.Mock(return_value=progress))
+    monkeypatch.setattr(manager_module, "sync_worker_process", worker)
+
+    pbar = progress.pbar
+    assert pbar is not None
+
+    def commit():
+        assert progress._phase == ("finalizing metadata" if has_metadata_provider else None)
+        assert not pbar.finalized
+
+    target.commit_metadata = mock.Mock(side_effect=commit)
+    SyncManager(cast(StorageClient, source), "", cast(StorageClient, target), "").sync_objects(
+        num_worker_processes=1, commit_metadata=commit_metadata
+    )
+
+    assert worker.call_args.kwargs["track_transfers"] is True
+    assert mock.call(None) in progress.set_phase.call_args_list
+    assert (mock.call("finalizing metadata") in progress.set_phase.call_args_list) == (
+        has_metadata_provider and commit_metadata
+    )
+    assert target.commit_metadata.call_count == int(commit_metadata)
+    assert progress._closed
+    assert pbar.finalized
+    assert "100.0%" in str(progress.pbar)
+    assert progress._phase is None
+
+
+@pytest.mark.parametrize("delete, suppress", [(False, False), (True, False), (False, True)])
+def test_sync_single_worker_transfer_tracking(monkeypatch, delete, suppress):
+    from multistorageclient.utils import NullStorageClient
+
+    source = NullStorageClient() if delete else MockStorageClient()
+    target = MockStorageClient()
+    monkeypatch.setattr(target, "list", lambda **kwargs: iter(()))
+    if not delete:
+        monkeypatch.setattr(source, "list", lambda **kwargs: iter(()))
+    if suppress:
+        monkeypatch.setenv("MSC_SUPPRESS_PROGRESS_BAR", "1")
+    worker = mock.Mock()
+    progress_factory = mock.Mock(wraps=progress_bar_module.ProgressBar)
+    monkeypatch.setattr(manager_module, "ProgressBar", progress_factory)
+    monkeypatch.setattr(manager_module, "sync_worker_process", worker)
+
+    SyncManager(cast(StorageClient, source), "", cast(StorageClient, target), "").sync_objects(
+        num_worker_processes=1, delete_unmatched_files=delete, description="Deleting" if delete else "Syncing"
+    )
+
+    assert worker.call_args.kwargs["track_transfers"] is (not delete and not suppress)
+    assert progress_factory.call_args.kwargs["show_transfer_progress"] is (not delete)
+    assert progress_factory.call_args.kwargs["show_network_throughput"] is True
+    assert progress_factory.call_args.kwargs["desc"] == ("Deleting" if delete else "Syncing")
+
+
+@pytest.mark.parametrize("stage", ["producer_start", "worker", "producer_join", "result_join", "error_join"])
+@pytest.mark.parametrize("exception", [RuntimeError, KeyboardInterrupt])
+def test_sync_closes_progress_on_setup_worker_and_join_failures(monkeypatch, stage, exception):
+    source = MockStorageClient()
+    target = MockStorageClient()
+    monkeypatch.setattr(source, "list", lambda **kwargs: iter(()))
+    monkeypatch.setattr(target, "list", lambda **kwargs: iter(()))
+    progress = progress_bar_module.ProgressBar("Syncing", True, show_transfer_progress=True)
+    monkeypatch.setattr(manager_module, "ProgressBar", mock.Mock(return_value=progress))
+    captured_monitors = []
+    for class_name in ("ResultMonitorThread", "ErrorMonitorThread"):
+        original = getattr(manager_module, class_name)
+
+        def capture(*args, _original=original, **kwargs):
+            thread = _original(*args, **kwargs)
+            captured_monitors.append(thread)
+            return thread
+
+        monkeypatch.setattr(manager_module, class_name, capture)
+    failure = exception("injected failure")
+    if stage == "worker":
+        monkeypatch.setattr(manager_module, "sync_worker_process", mock.Mock(side_effect=failure))
+    elif stage == "producer_start":
+        monkeypatch.setattr(manager_module.ProducerThread, "start", mock.Mock(side_effect=failure))
+    else:
+        thread_class = {
+            "producer_join": manager_module.ProducerThread,
+            "result_join": monitors_module.ResultMonitorThread,
+            "error_join": monitors_module.ErrorMonitorThread,
+        }[stage]
+        original_join = thread_class.join
+
+        def join(thread, timeout=None):
+            if timeout is None:
+                raise failure
+            return original_join(thread, timeout)
+
+        monkeypatch.setattr(thread_class, "join", join)
+
+    with pytest.raises(exception, match="injected failure"):
+        SyncManager(cast(StorageClient, source), "", cast(StorageClient, target), "").sync_objects(
+            num_worker_processes=1
+        )
+
+    assert progress._closed
+    assert all(not thread.is_alive() for thread in captured_monitors)
