@@ -49,7 +49,7 @@ from .types import (
     StorageProvider,
     StorageProviderConfig,
 )
-from .utils import expand_env_vars, import_class, merge_dictionaries_no_overwrite
+from .utils import build_full_path, expand_env_vars, import_class, merge_dictionaries_no_overwrite
 
 # Constants related to implicit profiles
 SUPPORTED_IMPLICIT_PROFILE_PROTOCOLS = ("s3", "gs", "ais", "file")
@@ -1224,7 +1224,7 @@ class PathMapping:
 
         # For file paths or absolute paths
         if protocol == "file" or url.startswith("/"):
-            path = url if url.startswith("/") else pr.path
+            path = url if url.startswith("/") else build_full_path(url, pr)
 
             possible_mapping = self._mapping[protocol][""] if protocol in self._mapping else []
 
@@ -1241,7 +1241,7 @@ class PathMapping:
 
         # For object storage
         bucket = pr.netloc
-        path = pr.path
+        path = build_full_path(url, pr)
         path = path.removeprefix("/")
 
         # Check bucket-specific mapping

@@ -27,6 +27,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
+from urllib.parse import ParseResult
 
 from lark import Lark, Transformer
 from wcmatch import glob as wcmatch_glob
@@ -222,6 +223,27 @@ def join_paths(base: str, path: str) -> str:
     It removes any trailing slashes from the base and leading slashes from the path before joining them together.
     """
     return os.path.join(base.rstrip("/"), path.lstrip("/"))
+
+
+def build_full_path(original_url: str, pr: ParseResult) -> str:
+    """
+    Construct the full path from a parsed URL, including query and fragment.
+
+    ``urlparse`` moves anything after ``?`` into the query and anything after ``#`` into the fragment,
+    but both characters are valid in object keys and file names, so they are added back to the path.
+
+    :param original_url: The original URL before parsing
+    :param pr: The parsed URL result from urlparse
+    :return: The complete path including query and fragment if present
+    """
+    path = pr.path
+    if pr.query:
+        path += "?" + pr.query
+    elif original_url.endswith("?"):
+        path += "?"  # handle the glob pattern that has a trailing question mark
+    if pr.fragment:
+        path += "#" + pr.fragment
+    return path
 
 
 def expand_env_vars(data: Any) -> Any:

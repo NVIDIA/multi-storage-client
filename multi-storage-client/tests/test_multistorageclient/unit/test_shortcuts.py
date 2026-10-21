@@ -659,6 +659,19 @@ def test_explicit_path_translation(file_storage_config_with_path_mapping):
     assert client.profile == "azure-new-bucket-456"
     assert path == "prefix/file.txt"
 
+    # Test Case 7: "?" and "#" are part of the key, not a query or fragment
+    client, path = msc.resolve_storage_client("s3://bucket1/prefix/file?.txt")
+    assert client.profile == "s3-bucket1"
+    assert path == "prefix/file?.txt"
+
+    client, path = msc.resolve_storage_client("s3://bucket1/prefix/shard#1.tar")
+    assert client.profile == "s3-bucket1"
+    assert path == "prefix/shard#1.tar"
+
+    client, path = msc.resolve_storage_client("file:///lustrefs/a/b/shard#1.tar")
+    assert client.profile == "file-a-b"
+    assert path == "/shard#1.tar"
+
 
 def test_implicit_profiles_without_msc_config():
     """Test the implicit profiles feature for non-MSC URLs."""
@@ -676,6 +689,16 @@ def test_implicit_profiles_without_msc_config():
         # Verify the same client is returned for the same implicit profile
         client2, _ = msc.resolve_storage_client("s3://test-bucket/another/path")
         assert client is client2  # Same instance
+
+        # "?" and "#" are part of the key, not a query or fragment
+        _, path = msc.resolve_storage_client("s3://test-bucket/path/to/file?.txt")
+        assert path == "path/to/file?.txt"
+
+        _, path = msc.resolve_storage_client("s3://test-bucket/path/to/shard#1.tar")
+        assert path == "path/to/shard#1.tar"
+
+        _, path = msc.resolve_storage_client("s3://test-bucket/path/to/file?")
+        assert path == "path/to/file?"
 
         # Test AIS implicit profile
         client, path = msc.resolve_storage_client("ais://test-bucket/path/to/object")
