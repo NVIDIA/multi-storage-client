@@ -478,10 +478,14 @@ def validate_attributes(attributes: dict[str, Any] | None) -> dict[str, Any] | N
 ATTRIBUTE_FILTER_GRAMMAR = r"""
     ?start: expr
 
-    ?expr: expr "OR" expr   -> or_expr
-         | expr "AND" expr  -> and_expr
-         | "(" expr ")"     -> parens
-         | comparison
+    ?expr: expr "OR" term     -> or_expr
+         | term
+
+    ?term: term "AND" factor  -> and_expr
+         | factor
+
+    ?factor: "(" expr ")"     -> parens
+           | comparison
 
     ?comparison: CNAME OP value -> compare
 
