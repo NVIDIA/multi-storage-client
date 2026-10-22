@@ -439,10 +439,11 @@ class CacheManager:
 
     def acquire_lock(self, key: str) -> BaseFileLock:
         """Create a FileLock object for a given key."""
-        file_dir = os.path.dirname(os.path.join(self._get_cache_dir(), key))
+        cache_path = self._get_cache_file_path(key)
+        file_dir = os.path.dirname(cache_path)
 
         # Create lock file in the same directory as the file
-        lock_name = f".{os.path.basename(key)}.lock"
+        lock_name = f".{os.path.basename(cache_path)}.lock"
         lock_file = os.path.join(file_dir, lock_name)
         return FileLock(lock_file, timeout=self.DEFAULT_FILE_LOCK_TIMEOUT)
 
@@ -654,7 +655,7 @@ class CacheManager:
         chunk_path = self._get_chunk_path(cache_path, chunk_idx)
         chunk_lock_key = f"{cache_path}#chunk{chunk_idx}"
 
-        with self.acquire_lock(chunk_lock_key):
+        with self.acquire_lock(os.path.relpath(chunk_lock_key, self._get_cache_dir())):
             # Double-check if chunk was created by another thread
             if os.path.exists(chunk_path):
                 return

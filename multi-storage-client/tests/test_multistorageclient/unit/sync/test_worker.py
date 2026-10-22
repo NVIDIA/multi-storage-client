@@ -26,6 +26,7 @@ import pytest
 import multistorageclient as msc
 from multistorageclient import _xattr
 from multistorageclient.sync import worker as sync_worker_module
+from multistorageclient.sync.transfer_progress import TransferProgress
 from multistorageclient.sync.types import OperationBatch, OperationType
 from multistorageclient.sync.worker import (
     check_skip_and_track_with_metadata_provider,
@@ -132,7 +133,8 @@ def test_sync_with_worker_error_fail_fast():
             target_client.sync_from(source_client, source_path, target_path)
 
 
-def test_batch_posix_to_posix():
+@pytest.mark.parametrize("source_path", ["", "nested"])
+def test_batch_posix_to_posix(source_path):
     """Test the live POSIX-to-POSIX handler path copies files between POSIX locations."""
     msc.shortcuts._STORAGE_CLIENT_CACHE.clear()
 
@@ -143,7 +145,7 @@ def test_batch_posix_to_posix():
         source_client, target_client = _setup_test_clients("source-test", "target-test", temp_source, temp_target)
 
         source_name = "nested/source.txt"
-        target_name = "subdir/nested/source.txt"
+        target_name = "subdir/source.txt" if source_path else "subdir/nested/source.txt"
         content = b"test content"
         source_client.write(source_name, content)
 
@@ -166,7 +168,7 @@ def test_batch_posix_to_posix():
 
         handler = sync_worker_module.create_sync_handler(
             source_client=source_client,
-            source_path="",
+            source_path=source_path,
             target_client=target_client,
             target_path="subdir",
             preserve_source_attributes=False,
@@ -175,7 +177,22 @@ def test_batch_posix_to_posix():
         )
         assert isinstance(handler, sync_worker_module.PosixToPosixHandler)
 
-        handler.process_add_batch(worker_id="test-worker", batch=batch)
+        progress = TransferProgress(lambda snapshot: None)
+        original_copy = handler._copy_to_posix_target
+        observed = []
+
+        def copy(source, target):
+            observed.append(progress.snapshot())
+            original_copy(source, target)
+
+        handler.progress = progress
+        with mock.patch.object(handler, "_copy_to_posix_target", side_effect=copy):
+            handler.process_add_batch(worker_id="test-worker", batch=batch)
+
+        assert len(observed) == 1
+        assert observed[0].count == 1
+        assert observed[0].oldest[0].path == ("source.txt" if source_path else source_name)
+        assert progress.snapshot().count == 0
 
         assert error_queue.empty(), f"Unexpected error: {error_queue.get()}"
         assert target_client.is_file(target_name)
@@ -300,6 +317,53 @@ def test_batch_remote_to_posix(temp_data_store_type: type[tempdatastore.Temporar
             target_key = f"downloaded/{name}"
             assert posix_client.is_file(target_key)
             assert posix_client.read(target_key) == content
+
+
+@pytest.mark.parametrize("direction", ["download", "upload", "transfer"])
+def test_batch_callbacks_remove_finished_files_before_batch_returns(tmp_path, direction):
+    source = mock.Mock(_metadata_provider=None)
+    target = mock.Mock(_metadata_provider=None)
+    source._is_posix_file_storage_provider.return_value = direction == "upload"
+    target._is_posix_file_storage_provider.return_value = direction == "download"
+    source.get_posix_path.side_effect = lambda path: str(tmp_path / path)
+    target.get_posix_path.side_effect = lambda path: str(tmp_path / path)
+    progress = TransferProgress(lambda snapshot: None)
+    stages = []
+
+    def transfer(remote_paths, local_paths, items, *, transfer_callback):
+        stages.append("download" if remote_paths[0].startswith("src/") else "upload")
+        remote_paths = ["physical/" + path for path in remote_paths]
+        paths = list(zip(remote_paths, local_paths) if stages[-1] == "download" else zip(local_paths, remote_paths))
+        transfer_callback(*paths[0], "started")
+        transfer_callback(*paths[1], "started")
+        assert progress.snapshot().count == 2
+        assert {item.path for item in progress.snapshot().oldest} == {"first.bin", "second.bin"}
+        transfer_callback(*paths[0], "completed")
+        assert [item.path for item in progress.snapshot().oldest] == ["second.bin"]
+        transfer_callback(*paths[1], "completed")
+        assert progress.snapshot().count == 0
+        if stages[-1] == "download":
+            for path in local_paths:
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+                Path(path).write_bytes(b"x")
+
+    source.download_files.side_effect = transfer
+    target.upload_files.side_effect = transfer
+    handler = sync_worker_module.create_sync_handler(
+        source, "src/", target, "dst/", False, queue.Queue(), queue.Queue(), str(tmp_path), progress
+    )
+    batch = OperationBatch(
+        operation=OperationType.ADD,
+        items=[
+            (ObjectMetadata(key="src/" + name, content_length=1, last_modified=datetime.now(timezone.utc)), None)
+            for name in ["first.bin", "second.bin"]
+        ],
+    )
+    handler.process_add_batch("worker", batch)
+    assert handler.error_queue.empty()
+    assert handler.result_queue.qsize() == 2
+    assert stages == (["download", "upload"] if direction == "transfer" else [direction])
+    assert progress.snapshot().count == 0
 
 
 def _make_handler_with_metadata_provider():
@@ -484,7 +548,7 @@ def test_remote_staging_cleanup(tmp_path, failure, parent_owned):
     unrelated = tmp_path / "unrelated"
     unrelated.write_bytes(b"keep")
 
-    def download(remote_paths, local_paths, metadata):
+    def download(remote_paths, local_paths, metadata, transfer_callback=None):
         staged_files.extend(Path(path) for path in local_paths)
         for path in staged_files:
             path.write_bytes(b"downloaded")
@@ -493,7 +557,7 @@ def test_remote_staging_cleanup(tmp_path, failure, parent_owned):
         if failure == "download":
             raise RuntimeError("download failed")
 
-    def upload(remote_paths, local_paths, attributes):
+    def upload(remote_paths, local_paths, attributes, transfer_callback=None):
         assert all(Path(path).read_bytes() == b"downloaded" for path in local_paths)
         if failure == "upload":
             raise RuntimeError("upload failed")

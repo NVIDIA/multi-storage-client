@@ -15,6 +15,7 @@
 
 import fnmatch
 import importlib
+import inspect
 import logging
 import math
 import multiprocessing
@@ -23,18 +24,59 @@ import re
 import shutil
 import time
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from lark import Lark, Transformer
 from wcmatch import glob as wcmatch_glob
 
-from .types import ExecutionMode, ObjectMetadata, PatternList, PatternType
+from .types import BatchTransferCallback, ExecutionMode, ObjectMetadata, PatternList, PatternType, TransferState
 
 if TYPE_CHECKING:
     from .client.types import AbstractStorageClient
 
 logger = logging.getLogger(__name__)
+
+
+def _invoke_batch_transfer(
+    transfer: Callable[..., None], *args: Any, transfer_callback: BatchTransferCallback | None
+) -> None:
+    """Forward observers only to batch overrides that support them, without retrying transfers."""
+    try:
+        signature = inspect.signature(transfer)
+    except (TypeError, ValueError):
+        return transfer(*args, transfer_callback=transfer_callback)
+    try:
+        signature.bind(*args, transfer_callback=transfer_callback)
+    except TypeError:
+        return transfer(*args)
+    return transfer(*args, transfer_callback=transfer_callback)
+
+
+@contextmanager
+def _transfer_notification(
+    transfer_callback: BatchTransferCallback | None, source_path: str, destination_path: str
+) -> Iterator[None]:
+    """Notify an observer without letting callback exceptions change transfer results."""
+
+    def notify(state: TransferState) -> None:
+        if transfer_callback is not None:
+            try:
+                transfer_callback(source_path, destination_path, state)
+            except Exception:
+                logger.warning(
+                    "Transfer callback failed for %s -> %s (%s)", source_path, destination_path, state, exc_info=True
+                )
+
+    notify("started")
+    try:
+        yield
+    except BaseException:
+        notify("failed")
+        raise
+    else:
+        notify("completed")
 
 
 def safe_makedirs(path: str, mode: int = 0o777, exist_ok: bool = True) -> None:
@@ -478,10 +520,14 @@ def validate_attributes(attributes: dict[str, Any] | None) -> dict[str, Any] | N
 ATTRIBUTE_FILTER_GRAMMAR = r"""
     ?start: expr
 
-    ?expr: expr "OR" expr   -> or_expr
-         | expr "AND" expr  -> and_expr
-         | "(" expr ")"     -> parens
-         | comparison
+    ?expr: expr "OR" term     -> or_expr
+         | term
+
+    ?term: term "AND" factor  -> and_expr
+         | factor
+
+    ?factor: "(" expr ")"     -> parens
+           | comparison
 
     ?comparison: CNAME OP value -> compare
 

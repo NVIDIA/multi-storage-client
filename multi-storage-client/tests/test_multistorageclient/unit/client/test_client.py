@@ -35,6 +35,7 @@ from multistorageclient.types import (
     RetryableError,
     SymlinkHandling,
 )
+from multistorageclient.utils import _invoke_batch_transfer
 
 
 @pytest.fixture
@@ -100,6 +101,49 @@ def test_single_backend_facade(single_backend_config):
     posix_path = client.get_posix_path("test/path")
     assert posix_path is not None
     assert posix_path.startswith("/tmp/test")
+
+
+@pytest.mark.parametrize("signature", ["legacy", "explicit", "kwargs"])
+@pytest.mark.parametrize("notify", [False, True])
+def test_batch_invocation_supports_override_signatures(signature, notify):
+    observed = []
+    callback = MagicMock() if notify else None
+
+    def legacy(paths):
+        observed.append((paths, None))
+
+    def explicit(paths, *, transfer_callback):
+        observed.append((paths, transfer_callback))
+
+    def kwargs(paths, **options):
+        observed.append((paths, options["transfer_callback"]))
+
+    _invoke_batch_transfer(
+        {"legacy": legacy, "explicit": explicit, "kwargs": kwargs}[signature],
+        ["file"],
+        transfer_callback=callback,
+    )
+
+    assert observed == [(["file"], None if signature == "legacy" else callback)]
+
+
+@pytest.mark.parametrize("supports_callback", [False, True])
+def test_batch_invocation_does_not_retry_type_errors(supports_callback):
+    calls = []
+    error = TypeError("transfer failed after a side effect")
+
+    def legacy(paths):
+        calls.append(paths)
+        raise error
+
+    def current(paths, transfer_callback=None):
+        legacy(paths)
+
+    with pytest.raises(TypeError) as caught:
+        _invoke_batch_transfer(current if supports_callback else legacy, ["file"], transfer_callback=MagicMock())
+
+    assert caught.value is error
+    assert calls == [["file"]]
 
 
 def test_multi_backend_facade(multi_backend_config):
@@ -448,6 +492,36 @@ def test_single_download_files_rejects_mismatched_metadata_length_with_replica_m
         client.download_files(["/a"], ["/local_a"], metadata=[])
 
 
+@pytest.mark.parametrize("fail", [False, True])
+def test_replica_batch_download_emits_file_lifecycle_events(single_backend_config, fail):
+    client = StorageClient(single_backend_config)
+    single = client._delegate
+    assert isinstance(single, SingleStorageClient)
+    single._metadata_provider = None
+    single._replica_manager = MagicMock()
+    events = []
+
+    def download(remote_path, local_path):
+        if fail and remote_path == "second":
+            raise PermissionError("failed")
+
+    def transfer_callback(source_path, destination_path, state):
+        events.append((source_path, destination_path, state))
+
+    single.download_file = MagicMock(side_effect=download)
+    if fail:
+        with pytest.raises(PermissionError):
+            client.download_files(["first", "second"], ["/first", "/second"], transfer_callback=transfer_callback)
+    else:
+        client.download_files(["first", "second"], ["/first", "/second"], transfer_callback=transfer_callback)
+    assert events == [
+        ("first", "/first", "started"),
+        ("first", "/first", "completed"),
+        ("second", "/second", "started"),
+        ("second", "/second", "failed" if fail else "completed"),
+    ]
+
+
 def test_download_files_rejects_mismatched_lengths_composite(multi_backend_config):
     client = StorageClient(multi_backend_config)
     with pytest.raises(ValueError, match="same length"):
@@ -466,7 +540,9 @@ def test_download_files_delegates_to_single(single_backend_config):
 
     client.download_files(["/remote/a"], ["/local/a"], max_workers=8)
 
-    client._delegate.download_files.assert_called_once_with(["/remote/a"], ["/local/a"], None, 8)
+    client._delegate.download_files.assert_called_once_with(
+        ["/remote/a"], ["/local/a"], None, 8, transfer_callback=None
+    )
 
 
 def test_download_files_delegates_metadata_to_single(single_backend_config):
@@ -476,7 +552,9 @@ def test_download_files_delegates_metadata_to_single(single_backend_config):
     meta = [ObjectMetadata(key="/remote/a", content_length=42, last_modified=datetime.now(tz=timezone.utc))]
     client.download_files(["/remote/a"], ["/local/a"], metadata=meta, max_workers=8)
 
-    client._delegate.download_files.assert_called_once_with(["/remote/a"], ["/local/a"], meta, 8)
+    client._delegate.download_files.assert_called_once_with(
+        ["/remote/a"], ["/local/a"], meta, 8, transfer_callback=None
+    )
 
 
 def test_download_files_delegates_to_composite(multi_backend_config):
@@ -485,7 +563,9 @@ def test_download_files_delegates_to_composite(multi_backend_config):
 
     client.download_files(["/remote/a"], ["/local/a"])
 
-    client._delegate.download_files.assert_called_once_with(["/remote/a"], ["/local/a"], None, 16)
+    client._delegate.download_files.assert_called_once_with(
+        ["/remote/a"], ["/local/a"], None, 16, transfer_callback=None
+    )
 
 
 def test_upload_files_delegates_to_single(single_backend_config):
@@ -494,7 +574,7 @@ def test_upload_files_delegates_to_single(single_backend_config):
 
     client.upload_files(["/remote/a"], ["/local/a"], max_workers=4)
 
-    client._delegate.upload_files.assert_called_once_with(["/remote/a"], ["/local/a"], None, 4)
+    client._delegate.upload_files.assert_called_once_with(["/remote/a"], ["/local/a"], None, 4, transfer_callback=None)
 
 
 def test_upload_files_delegates_attributes_to_single(single_backend_config):
@@ -504,7 +584,7 @@ def test_upload_files_delegates_attributes_to_single(single_backend_config):
     attrs = [{"key": "val"}]
     client.upload_files(["/remote/a"], ["/local/a"], attributes=attrs, max_workers=4)
 
-    client._delegate.upload_files.assert_called_once_with(["/remote/a"], ["/local/a"], attrs, 4)
+    client._delegate.upload_files.assert_called_once_with(["/remote/a"], ["/local/a"], attrs, 4, transfer_callback=None)
 
 
 def test_single_download_files_without_metadata_delegates_to_provider(single_backend_config):
@@ -517,7 +597,9 @@ def test_single_download_files_without_metadata_delegates_to_provider(single_bac
 
     client.download_files(["/a", "/b"], ["/la", "/lb"], max_workers=4)
 
-    single._storage_provider.download_files.assert_called_once_with(["/a", "/b"], ["/la", "/lb"], None, 4)
+    single._storage_provider.download_files.assert_called_once_with(
+        ["/a", "/b"], ["/la", "/lb"], None, 4, transfer_callback=None
+    )
 
 
 def test_single_download_files_with_metadata_resolves_paths(single_backend_config):
@@ -537,7 +619,7 @@ def test_single_download_files_with_metadata_resolves_paths(single_backend_confi
 
     assert metadata_provider.realpath.call_count == 2
     single._storage_provider.download_files.assert_called_once_with(
-        ["physical/a", "physical/b"], ["/la", "/lb"], None, 8
+        ["physical/a", "physical/b"], ["/la", "/lb"], None, 8, transfer_callback=None
     )
 
 
@@ -613,7 +695,7 @@ def test_single_download_files_empty_lists(single_backend_config):
 
     single._storage_provider.download_files = MagicMock()
     client.download_files([], [])
-    single._storage_provider.download_files.assert_called_once_with([], [], None, 16)
+    single._storage_provider.download_files.assert_called_once_with([], [], None, 16, transfer_callback=None)
 
 
 def test_single_upload_files_without_metadata_delegates_to_provider(single_backend_config):
@@ -626,7 +708,9 @@ def test_single_upload_files_without_metadata_delegates_to_provider(single_backe
 
     client.upload_files(["/remote/a", "/remote/b"], ["/la", "/lb"], max_workers=4)
 
-    single._storage_provider.upload_files.assert_called_once_with(["/la", "/lb"], ["/remote/a", "/remote/b"], None, 4)
+    single._storage_provider.upload_files.assert_called_once_with(
+        ["/la", "/lb"], ["/remote/a", "/remote/b"], None, 4, transfer_callback=None
+    )
 
 
 def test_single_upload_files_without_metadata_forwards_attributes(single_backend_config):
@@ -640,7 +724,9 @@ def test_single_upload_files_without_metadata_forwards_attributes(single_backend
     attrs = [{"k1": "v1"}, {"k2": "v2"}]
     client.upload_files(["/remote/a", "/remote/b"], ["/la", "/lb"], attributes=attrs, max_workers=4)
 
-    single._storage_provider.upload_files.assert_called_once_with(["/la", "/lb"], ["/remote/a", "/remote/b"], attrs, 4)
+    single._storage_provider.upload_files.assert_called_once_with(
+        ["/la", "/lb"], ["/remote/a", "/remote/b"], attrs, 4, transfer_callback=None
+    )
 
 
 def test_single_upload_files_with_metadata_resolves_and_registers(single_backend_config):
@@ -669,7 +755,9 @@ def test_single_upload_files_with_metadata_resolves_and_registers(single_backend
 
     client.upload_files(["logical/a", "logical/b"], ["/la", "/lb"], max_workers=8)
 
-    single._storage_provider.upload_files.assert_called_once_with(["/la", "/lb"], ["physical/a", "physical/b"], None, 8)
+    single._storage_provider.upload_files.assert_called_once_with(
+        ["/la", "/lb"], ["physical/a", "physical/b"], None, 8, transfer_callback=None
+    )
     metadata_provider.generate_physical_path.assert_any_call("logical/a", for_overwrite=False)
     metadata_provider.generate_physical_path.assert_any_call("logical/b", for_overwrite=False)
     assert metadata_provider.add_file.call_count == 2
@@ -706,7 +794,9 @@ def test_single_upload_files_with_metadata_and_attributes(single_backend_config)
     attrs = [{"tag": "first", "count": 1}, {"tag": "second", "nested": {"key": "value"}}]
     client.upload_files(["logical/a", "logical/b"], ["/la", "/lb"], attributes=attrs, max_workers=8)
 
-    single._storage_provider.upload_files.assert_called_once_with(["/la", "/lb"], ["physical/a", "physical/b"], None, 8)
+    single._storage_provider.upload_files.assert_called_once_with(
+        ["/la", "/lb"], ["physical/a", "physical/b"], None, 8, transfer_callback=None
+    )
     assert metadata_provider.add_file.call_count == 2
     added_meta_a = metadata_provider.add_file.call_args_list[0][0][1]
     assert added_meta_a.metadata == {"tag": "first", "count": 1}
@@ -919,7 +1009,9 @@ def test_single_upload_files_with_metadata_allows_overwrite(single_backend_confi
     client.upload_files(["existing"], ["/la"])
 
     metadata_provider.generate_physical_path.assert_called_once_with("existing", for_overwrite=True)
-    single._storage_provider.upload_files.assert_called_once_with(["/la"], ["physical/existing_v2"], None, 16)
+    single._storage_provider.upload_files.assert_called_once_with(
+        ["/la"], ["physical/existing_v2"], None, 16, transfer_callback=None
+    )
     metadata_provider.add_file.assert_called_once_with("existing", obj_meta)
 
 
@@ -929,7 +1021,40 @@ def test_upload_files_rejects_mismatched_attributes_length(single_backend_config
         client.upload_files(["/a", "/b"], ["/la", "/lb"], attributes=[{"k": "v"}])
 
 
-def test_composite_download_files_groups_by_profile(multi_backend_config):
+def test_composite_download_files_supports_legacy_child(multi_backend_config, monkeypatch):
+    client = StorageClient(multi_backend_config)
+    composite = client._delegate
+    assert isinstance(composite, CompositeStorageClient)
+    composite._metadata_provider = MagicMock()
+    composite._metadata_provider.realpath.return_value = ResolvedPath(
+        physical_path="physical/file", state=ResolvedPathState.EXISTS, profile="loc1"
+    )
+    calls = []
+
+    def legacy_download(remote_paths, local_paths, metadata=None, max_workers=16):
+        calls.append((remote_paths, local_paths, metadata, max_workers))
+
+    monkeypatch.setattr(composite._child_clients["loc1"], "download_files", legacy_download)
+    observer = MagicMock()
+    client.download_files(["logical/file"], ["/local/file"], max_workers=4, transfer_callback=observer)
+
+    assert calls == [(["physical/file"], ["/local/file"], None, 4)]
+    observer.assert_not_called()
+
+
+@pytest.mark.parametrize("notify", [False, True])
+def test_composite_download_files_groups_by_profile(multi_backend_config, notify):
+    events = []
+
+    def transfer_callback(source_path, destination_path, state):
+        events.append((source_path, destination_path, state))
+
+    def download(remote_paths, local_paths, metadata, max_workers, transfer_callback):
+        if transfer_callback is not None:
+            for source, destination in zip(remote_paths, local_paths):
+                transfer_callback(source, destination, "started")
+                transfer_callback(source, destination, "completed")
+
     client = StorageClient(multi_backend_config)
     composite = client._delegate
     assert isinstance(composite, CompositeStorageClient)
@@ -943,6 +1068,8 @@ def test_composite_download_files_groups_by_profile(multi_backend_config):
 
     loc1_client = MagicMock()
     loc2_client = MagicMock()
+    loc1_client.download_files.side_effect = download
+    loc2_client.download_files.side_effect = download
     composite._child_clients["loc1"] = loc1_client
     composite._child_clients["loc2"] = loc2_client
 
@@ -950,10 +1077,28 @@ def test_composite_download_files_groups_by_profile(multi_backend_config):
         ["logical/a", "logical/b", "logical/c"],
         ["/la", "/lb", "/lc"],
         max_workers=4,
+        transfer_callback=transfer_callback if notify else None,
     )
 
-    loc1_client.download_files.assert_called_once_with(["phys/a", "phys/c"], ["/la", "/lc"], None, 4)
-    loc2_client.download_files.assert_called_once_with(["phys/b"], ["/lb"], None, 4)
+    loc1_client.download_files.assert_called_once_with(
+        ["phys/a", "phys/c"], ["/la", "/lc"], None, 4, transfer_callback=transfer_callback if notify else None
+    )
+    loc2_client.download_files.assert_called_once_with(
+        ["phys/b"], ["/lb"], None, 4, transfer_callback=transfer_callback if notify else None
+    )
+
+    assert events == (
+        [
+            ("phys/a", "/la", "started"),
+            ("phys/a", "/la", "completed"),
+            ("phys/c", "/lc", "started"),
+            ("phys/c", "/lc", "completed"),
+            ("phys/b", "/lb", "started"),
+            ("phys/b", "/lb", "completed"),
+        ]
+        if notify
+        else []
+    )
 
 
 def test_composite_download_files_raises_on_missing_file(multi_backend_config):

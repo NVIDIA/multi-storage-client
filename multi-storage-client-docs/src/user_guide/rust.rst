@@ -78,6 +78,9 @@ The retry ``timeout`` (180 seconds by default) controls how long request retries
 remain eligible. It is separate from both HTTP timeouts. Batch transfers retry files
 that fail with a retryable Rust error according to the MSC retry configuration.
 
+Batch downloads follow symbolic links and use the target object's size to select
+single-part or multipart transfer, matching individual downloads.
+
 ********************
 Supported Operations
 ********************

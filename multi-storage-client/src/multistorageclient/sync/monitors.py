@@ -44,12 +44,14 @@ class ResultMonitorThread(threading.Thread):
         progress: ProgressBar,
         result_queue: QueueLike,
         metadata_provider: MetadataProvider | None = None,
+        shutdown_event: EventLike | None = None,
     ):
         super().__init__(daemon=True)
         self.target_client = target_client
         self.target_path = target_path
         self.progress = progress
         self.result_queue = result_queue
+        self.shutdown_event = shutdown_event if shutdown_event is not None else threading.Event()
         self._metadata_provider = metadata_provider
         self._metadata_provider_lock = getattr(target_client, "_metadata_provider_lock", None)
         self.error = None
@@ -74,7 +76,12 @@ class ResultMonitorThread(threading.Thread):
                 if op == OperationType.STOP:
                     break
 
-                if op == OperationType.ADD:
+                if op == OperationType.LOG:
+                    logging.getLogger(physical_metadata.name).handle(physical_metadata)
+                elif op == OperationType.PROGRESS:
+                    self.progress.update_transfers(target_file_path, physical_metadata)
+                    self.progress.refresh()
+                elif op == OperationType.ADD:
                     # ADD messages arrive from QueueBackedMetadataProvider (when metadata
                     # provider is configured) or from the worker directly.
                     # Replay add_file on the REAL metadata provider via the saved direct reference,
@@ -94,6 +101,10 @@ class ResultMonitorThread(threading.Thread):
                     self.progress.update_progress()
         except Exception as e:
             self.error = e
+            self.shutdown_event.set()
+            # Workers must flush their queue feeders before the manager can join them and send STOP.
+            while self.result_queue.get()[0] != OperationType.STOP:
+                pass
 
 
 class ErrorMonitorThread(threading.Thread):

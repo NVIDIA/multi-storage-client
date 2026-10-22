@@ -23,7 +23,7 @@ from unittest.mock import patch
 import pytest
 
 from multistorageclient import StorageClient, StorageClientConfig
-from multistorageclient.types import ExecutionMode
+from multistorageclient.types import ExecutionMode, Range
 from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.utils.wait import wait
 
@@ -164,6 +164,27 @@ def test_replica_read_from_replica_after_sync() -> None:
         assert content_from_replica == test_content, (
             f"Content from replica mismatch: expected {test_content}, got {content_from_replica}"
         )
+
+
+@pytest.mark.parametrize("replica_hit", [False, True])
+@pytest.mark.parametrize("offset,size", [(0, 2), (2, 3), (4, 8), (7, 1)])
+def test_replica_read_byte_range_without_cache(replica_hit: bool, offset: int, size: int) -> None:
+    with (
+        tempdatastore.TemporaryPOSIXDirectory() as origin_store,
+        tempdatastore.TemporaryPOSIXDirectory() as replica_store,
+    ):
+        config = create_basic_replica_config(origin_store, replica_store)
+        origin_client, client = create_test_clients(config)
+        content = b"abcdef"
+        origin_client.write("file.txt", content)
+        if replica_hit:
+            client.replicas[0].write("file.txt", content)
+            origin_client.delete("file.txt")
+
+        assert client.read("file.txt", byte_range=Range(offset=offset, size=size)) == content[offset : offset + size]
+
+        wait_for_replicas_to_have_file(client, "file.txt")
+        assert client.replicas[0].read("file.txt") == content
 
 
 def test_replica_read_with_multiple_replicas() -> None:
