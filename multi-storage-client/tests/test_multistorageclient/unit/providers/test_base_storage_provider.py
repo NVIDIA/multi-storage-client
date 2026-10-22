@@ -1117,6 +1117,65 @@ def test_download_files_async_with_metadata():
     mock_rust_client.download_multipart_to_file.assert_awaited_with("large.txt", "/tmp/large.txt")
 
 
+@pytest.mark.parametrize("supply_metadata", [False, True])
+@pytest.mark.parametrize("target_size", [7, 2048])
+def test_download_files_async_resolves_symlink_targets(tmp_path, supply_metadata, target_size):
+    provider = MockBaseStorageProvider(base_path="bucket/prefix", provider_name="mock")
+    provider._multipart_threshold = 1024
+    now = datetime.now(tz=timezone.utc)
+    metadata = {
+        "bucket/prefix/link.txt": ObjectMetadata(
+            key="bucket/prefix/link.txt", content_length=0, last_modified=now, symlink_target="alias.txt"
+        ),
+        "bucket/prefix/alias.txt": ObjectMetadata(
+            key="bucket/prefix/alias.txt", content_length=0, last_modified=now, symlink_target="target.txt"
+        ),
+        "bucket/prefix/target.txt": ObjectMetadata(
+            key="bucket/prefix/target.txt", content_length=target_size, last_modified=now
+        ),
+    }
+    provider._get_object_metadata = Mock(side_effect=metadata.__getitem__)
+    provider._rust_client = MagicMock(
+        download=AsyncMock(return_value=target_size),
+        download_multipart_to_file=AsyncMock(return_value=target_size),
+    )
+    destination = str(tmp_path / "download.txt")
+
+    provider.download_files(
+        ["link.txt"], [destination], metadata=[metadata["bucket/prefix/link.txt"]] if supply_metadata else None
+    )
+
+    if target_size > provider._multipart_threshold:
+        provider._rust_client.download_multipart_to_file.assert_awaited_once_with("prefix/target.txt", destination)
+        provider._rust_client.download.assert_not_awaited()
+    else:
+        provider._rust_client.download.assert_awaited_once_with("prefix/target.txt", destination)
+        provider._rust_client.download_multipart_to_file.assert_not_awaited()
+
+
+@pytest.mark.parametrize("target_error", [FileNotFoundError("missing target"), ValueError("Symlink cycle")])
+def test_download_files_async_reports_symlink_resolution_failures(tmp_path, target_error):
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+    provider._rust_client = MagicMock(download=AsyncMock(return_value=1))
+    metadata = [
+        ObjectMetadata(
+            key="link.txt", content_length=0, last_modified=datetime.now(tz=timezone.utc), symlink_target="target.txt"
+        ),
+        ObjectMetadata(key="plain.txt", content_length=1, last_modified=datetime.now(tz=timezone.utc)),
+    ]
+    provider._resolve_symlink_path = Mock(side_effect=target_error)
+    destinations = [str(tmp_path / "link.txt"), str(tmp_path / "plain.txt")]
+
+    with pytest.raises(BatchTransferError) as error:
+        provider.download_files(["link.txt", "plain.txt"], destinations, metadata=metadata)
+
+    assert len(error.value.failures) == 1
+    assert error.value.failures[0].source_path == "link.txt"
+    assert error.value.failures[0].destination_path == destinations[0]
+    assert error.value.failures[0].error is target_error
+    provider._rust_client.download.assert_awaited_once_with("plain.txt", destinations[1])
+
+
 @pytest.mark.asyncio
 async def test_download_files_async_inside_running_loop():
     """Async/Rust batch downloads should work when the caller already has a running event loop."""
