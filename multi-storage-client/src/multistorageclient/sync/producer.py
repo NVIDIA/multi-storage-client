@@ -402,5 +402,6 @@ class ProducerThread(threading.Thread):
             self.error = e
         finally:
             self._flush_batch()
+            self.progress.set_phase(None)
             for _ in range(self.num_workers):
                 self.file_queue.put(OperationBatch(operation=OperationType.STOP, items=[]))

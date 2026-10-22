@@ -417,6 +417,7 @@ class ManifestMetadataProvider(MetadataProvider):
             yield self._files[key]
 
     def get_object_metadata(self, path: str, include_pending: bool = False) -> ObjectMetadata:
+        """Return object or directory metadata; ``""`` and ``"/"`` identify the profile root."""
         if include_pending:
             if path in self._pending_removes:
                 raise FileNotFoundError(f"Object {path} does not exist.")
@@ -428,7 +429,9 @@ class ManifestMetadataProvider(MetadataProvider):
         return self._get_directory_metadata(path, include_pending)
 
     def _get_directory_metadata(self, path: str, include_pending: bool) -> ObjectMetadata:
-        dir_prefix = path.rstrip("/") + "/"
+        dir_prefix = path.rstrip("/")
+        if dir_prefix:
+            dir_prefix += "/"
 
         has_committed = any(
             k.startswith(dir_prefix) and (not include_pending or k not in self._pending_removes) for k in self._files

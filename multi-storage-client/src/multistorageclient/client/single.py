@@ -35,6 +35,7 @@ from ..sync import SyncManager
 from ..types import (
     AWARE_DATETIME_MIN,
     MSC_PROTOCOL,
+    BatchTransferCallback,
     ExecutionMode,
     ObjectMetadata,
     PatternList,
@@ -47,7 +48,7 @@ from ..types import (
     SymlinkHandling,
     SyncResult,
 )
-from ..utils import NullStorageClient, PatternMatcher, join_paths
+from ..utils import NullStorageClient, PatternMatcher, _invoke_batch_transfer, _transfer_notification, join_paths
 from .types import AbstractStorageClient
 
 logger = logging.getLogger(__name__)
@@ -350,6 +351,7 @@ class SingleStorageClient(AbstractStorageClient):
         local_paths: Sequence[str],
         metadata: Sequence[ObjectMetadata | None] | None,
         max_workers: int,
+        transfer_callback: BatchTransferCallback | None = None,
     ) -> None:
         """
         Execute one provider batch download attempt for the selected item indices.
@@ -362,16 +364,21 @@ class SingleStorageClient(AbstractStorageClient):
         :param local_paths: Local destination paths for the full original batch.
         :param metadata: Optional per-file metadata for the full original batch.
         :param max_workers: Maximum provider workers for this attempt.
+        :param transfer_callback: Optional observer called with source path, destination path, and "started",
+            "completed", or "failed" for each executing attempt. Remote paths may be resolved physical paths.
+            Calls may be concurrent; callback exceptions are logged.
         """
         provider_remote_paths = [remote_paths[index] for index in indices]
         provider_local_paths = [local_paths[index] for index in indices]
         provider_metadata = [metadata[index] for index in indices] if metadata is not None else None
 
-        self._storage_provider.download_files(
+        _invoke_batch_transfer(
+            self._storage_provider.download_files,
             provider_remote_paths,
             provider_local_paths,
             provider_metadata,
             max_workers,
+            transfer_callback=transfer_callback,
         )
 
     @batch_retry(operation_name="upload_files")
@@ -382,6 +389,7 @@ class SingleStorageClient(AbstractStorageClient):
         remote_paths: Sequence[str],
         attributes: Sequence[dict[str, Any] | None] | None,
         max_workers: int,
+        transfer_callback: BatchTransferCallback | None = None,
     ) -> None:
         """
         Execute one provider batch upload attempt for the selected item indices.
@@ -394,16 +402,21 @@ class SingleStorageClient(AbstractStorageClient):
         :param remote_paths: Provider destination paths for the full original batch.
         :param attributes: Optional per-file attributes for the full original batch.
         :param max_workers: Maximum provider workers for this attempt.
+        :param transfer_callback: Optional observer called with source path, destination path, and "started",
+            "completed", or "failed" for each executing attempt. Remote paths may be resolved physical paths.
+            Calls may be concurrent; callback exceptions are logged.
         """
         provider_local_paths = [local_paths[index] for index in indices]
         provider_remote_paths = [remote_paths[index] for index in indices]
         provider_attributes = [attributes[index] for index in indices] if attributes is not None else None
 
-        self._storage_provider.upload_files(
+        _invoke_batch_transfer(
+            self._storage_provider.upload_files,
             provider_local_paths,
             provider_remote_paths,
             provider_attributes,
             max_workers,
+            transfer_callback=transfer_callback,
         )
 
     @retry
@@ -491,7 +504,10 @@ class SingleStorageClient(AbstractStorageClient):
                 return data
         elif self._replica_manager:
             # No cache, but replicas available
-            return self._read_from_replica_or_primary(path)
+            data = self._read_from_replica_or_primary(path)
+            if byte_range is not None:
+                return data[byte_range.offset : byte_range.offset + byte_range.size]
+            return data
         else:
             # No cache, no replicas - direct storage provider read
             return self._storage_provider.get_object(path, byte_range=byte_range)
@@ -543,6 +559,7 @@ class SingleStorageClient(AbstractStorageClient):
         local_paths: Sequence[str],
         metadata: Sequence[ObjectMetadata | None] | None = None,
         max_workers: int = 16,
+        transfer_callback: BatchTransferCallback | None = None,
     ) -> None:
         """
         Download multiple remote files to local paths.
@@ -551,6 +568,9 @@ class SingleStorageClient(AbstractStorageClient):
         :param local_paths: List of local file paths to save the downloaded files to.
         :param metadata: Optional per-file metadata used to decide between regular and multipart download.
         :param max_workers: Maximum number of concurrent download workers (default: 16).
+        :param transfer_callback: Optional observer called with source path, destination path, and "started",
+            "completed", or "failed" for each executing attempt. Remote paths may be resolved physical paths.
+            Calls may be concurrent; callback exceptions are logged.
         :raises ValueError: If remote_paths and local_paths have different lengths.
         :raises FileNotFoundError: If any remote file does not exist.
         """
@@ -563,13 +583,16 @@ class SingleStorageClient(AbstractStorageClient):
         if self._metadata_provider:
             physical_paths = [self._resolve_read_path(rp) for rp in remote_paths]
             self._download_files_batch(
-                list(range(len(remote_paths))), physical_paths, local_paths, metadata, max_workers
+                list(range(len(remote_paths))), physical_paths, local_paths, metadata, max_workers, transfer_callback
             )
         elif self._replica_manager:
             for remote_path, local_path in zip(remote_paths, local_paths):
-                self.download_file(remote_path, local_path)
+                with _transfer_notification(transfer_callback, remote_path, local_path):
+                    self.download_file(remote_path, local_path)
         else:
-            self._download_files_batch(list(range(len(remote_paths))), remote_paths, local_paths, metadata, max_workers)
+            self._download_files_batch(
+                list(range(len(remote_paths))), remote_paths, local_paths, metadata, max_workers, transfer_callback
+            )
 
     @retry
     def upload_file(self, remote_path: str, local_path: str | IO, attributes: dict[str, Any] | None = None) -> None:
@@ -596,6 +619,7 @@ class SingleStorageClient(AbstractStorageClient):
         local_paths: Sequence[str],
         attributes: Sequence[dict[str, Any] | None] | None = None,
         max_workers: int = 16,
+        transfer_callback: BatchTransferCallback | None = None,
     ) -> None:
         """
         Upload multiple local files to remote storage.
@@ -605,6 +629,9 @@ class SingleStorageClient(AbstractStorageClient):
         :param attributes: Optional list of per-file attributes to add. When provided, must have the same length
             as remote_paths/local_paths. Each element may be ``None`` for files that need no attributes.
         :param max_workers: Maximum number of concurrent upload workers (default: 16).
+        :param transfer_callback: Optional observer called with source path, destination path, and "started",
+            "completed", or "failed" for each executing attempt. Remote paths may be resolved physical paths.
+            Calls may be concurrent; callback exceptions are logged.
         :raises ValueError: If remote_paths and local_paths have different lengths.
         :raises ValueError: If attributes is provided and has a different length than remote_paths.
         """
@@ -624,11 +651,14 @@ class SingleStorageClient(AbstractStorageClient):
                 physical_paths,
                 None,
                 max_workers,
+                transfer_callback,
             )
 
             self._register_written_files(remote_paths, physical_paths, attributes, max_workers)
         else:
-            self._upload_files_batch(list(range(len(remote_paths))), local_paths, remote_paths, attributes, max_workers)
+            self._upload_files_batch(
+                list(range(len(remote_paths))), local_paths, remote_paths, attributes, max_workers, transfer_callback
+            )
 
     @retry
     def write(self, path: str, body: bytes, attributes: dict[str, Any] | None = None) -> None:

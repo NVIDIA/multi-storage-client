@@ -19,6 +19,10 @@ To ensure data integrity in multi-process or multi-threaded environments, MSC em
 concurrent writes to the same cached object. When multiple processes attempt to cache the same file simultaneously, an exclusive 
 lock ensures only one process proceeds with the write operation while others wait, eliminating redundant downloads and potential corruption.
 
+Object paths with a leading ``/`` use the same cache location as their relative
+equivalents. For example, ``/dataset/shard.tar`` and ``dataset/shard.tar`` both
+store their cached data and lock files under ``<cache location>/<profile>/dataset/``.
+
 .. note:: If the profile uses a POSIX filesystem (e.g. ``type: file``) as the storage provider, the cache won't be used for that profile.
 
 *************************

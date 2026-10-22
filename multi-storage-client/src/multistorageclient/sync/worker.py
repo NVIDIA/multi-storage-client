@@ -22,15 +22,17 @@ import tempfile
 import threading
 import traceback
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import xattr
 
-from ..types import ObjectMetadata
-from ..utils import safe_makedirs
+from ..types import BatchTransferCallback, ObjectMetadata
+from ..utils import _invoke_batch_transfer, _transfer_notification, safe_makedirs
 from .metadata_proxy import QueueBackedMetadataProvider
+from .transfer_progress import TransferProgress
 from .types import ErrorInfo, EventLike, OperationBatch, OperationType, QueueLike
 
 if TYPE_CHECKING:
@@ -39,6 +41,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 METADATA_LOOKUP_MIN_CONTENT_LENGTH = 16 * 1024 * 1024
+
 
 # ---------------------------------------------------------------------------
 # Public utility functions
@@ -191,6 +194,7 @@ class BatchSyncHandler(ABC):
         result_queue: QueueLike,
         error_queue: QueueLike,
         temp_dir: str | None = None,
+        progress: TransferProgress | None = None,
     ):
         self.source_client = source_client
         self.source_path = source_path
@@ -200,6 +204,22 @@ class BatchSyncHandler(ABC):
         self.result_queue = result_queue
         self.error_queue = error_queue
         self.temp_dir = temp_dir
+        self.progress = progress
+
+    def _transfer_callback(
+        self,
+        transfer_items: list[tuple[ObjectMetadata, str]],
+        local_paths: Sequence[str],
+        *,
+        local_source: bool = False,
+    ) -> BatchTransferCallback | None:
+        if self.progress is None:
+            return None
+        display_paths = {
+            local_path: build_target_file_path(self.source_path, "", metadata)
+            for local_path, (metadata, _) in zip(local_paths, transfer_items)
+        }
+        return self.progress.callback(display_paths, local_source=local_source)
 
     def process_add_batch(
         self,
@@ -384,7 +404,11 @@ class PosixToPosixHandler(BatchSyncHandler):
                 raise ValueError(f"Source key '{file_metadata.key}' has no POSIX path")
             if target_physical_path is None:
                 raise ValueError(f"Target path '{target_file_path}' has no POSIX path")
-            self._copy_to_posix_target(source_physical_path, target_physical_path)
+            transfer_callback = self._transfer_callback(
+                [(file_metadata, target_file_path)], [source_physical_path], local_source=True
+            )
+            with _transfer_notification(transfer_callback, source_physical_path, target_physical_path):
+                self._copy_to_posix_target(source_physical_path, target_physical_path)
             update_posix_metadata(self.target_client, target_physical_path, target_file_path, file_metadata)
 
 
@@ -408,7 +432,13 @@ class PosixToRemoteHandler(BatchSyncHandler):
             target_remote_paths.append(target_file_path)
             attributes.append(file_metadata.metadata)
 
-        self.target_client.upload_files(target_remote_paths, source_local_paths, attributes)
+        _invoke_batch_transfer(
+            self.target_client.upload_files,
+            target_remote_paths,
+            source_local_paths,
+            attributes,
+            transfer_callback=self._transfer_callback(transfer_items, source_local_paths, local_source=True),
+        )
 
 
 class RemoteToPosixHandler(BatchSyncHandler):
@@ -434,7 +464,13 @@ class RemoteToPosixHandler(BatchSyncHandler):
             source_metadata.append(file_metadata)
             items_with_physical.append((file_metadata, target_file_path, target_physical_path))
 
-        self.source_client.download_files(source_remote_paths, target_local_paths, source_metadata)
+        _invoke_batch_transfer(
+            self.source_client.download_files,
+            source_remote_paths,
+            target_local_paths,
+            source_metadata,
+            transfer_callback=self._transfer_callback(transfer_items, target_local_paths),
+        )
 
         for file_metadata, target_file_path, target_physical_path in items_with_physical:
             update_posix_metadata(self.target_client, target_physical_path, target_file_path, file_metadata)
@@ -463,8 +499,20 @@ class RemoteToRemoteHandler(BatchSyncHandler):
                 source_metadata.append(file_metadata)
                 attributes.append(file_metadata.metadata)
 
-            self.source_client.download_files(source_remote_paths, temp_local_paths, source_metadata)
-            self.target_client.upload_files(target_remote_paths, temp_local_paths, attributes)
+            _invoke_batch_transfer(
+                self.source_client.download_files,
+                source_remote_paths,
+                temp_local_paths,
+                source_metadata,
+                transfer_callback=self._transfer_callback(transfer_items, temp_local_paths),
+            )
+            _invoke_batch_transfer(
+                self.target_client.upload_files,
+                target_remote_paths,
+                temp_local_paths,
+                attributes,
+                transfer_callback=self._transfer_callback(transfer_items, temp_local_paths, local_source=True),
+            )
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -483,6 +531,7 @@ def create_sync_handler(
     result_queue: QueueLike,
     error_queue: QueueLike,
     temp_dir: str | None = None,
+    progress: TransferProgress | None = None,
 ) -> BatchSyncHandler:
     """Create the appropriate sync handler based on source/target storage types."""
     source_is_posix = source_client._is_posix_file_storage_provider()
@@ -507,6 +556,7 @@ def create_sync_handler(
         result_queue,
         error_queue,
         temp_dir,
+        progress,
     )
 
 
@@ -527,6 +577,7 @@ def sync_worker_process(
     error_queue: QueueLike,
     shutdown_event: EventLike,
     temp_dir: str | None = None,
+    track_transfers: bool = False,
 ):
     """Worker process that handles file synchronization operations.
 
@@ -544,6 +595,11 @@ def sync_worker_process(
     worker threads manage their own per-batch staging directories.
     """
     worker_id = f"process-{os.getpid()}"
+    progress = (
+        TransferProgress(lambda snapshot: result_queue.put((OperationType.PROGRESS, worker_id, snapshot)))
+        if track_transfers
+        else None
+    )
 
     original_metadata_provider = getattr(target_client, "_metadata_provider", None)
     if original_metadata_provider:
@@ -559,6 +615,7 @@ def sync_worker_process(
             result_queue,
             error_queue,
             temp_dir,
+            progress,
         )
 
         def _worker_loop(thread_id: str) -> None:
@@ -576,6 +633,8 @@ def sync_worker_process(
                 elif batch.operation == OperationType.SYMLINK:
                     handler.process_symlink_batch(thread_id, batch)
 
+        if progress is not None:
+            progress.start()
         if num_worker_threads <= 1:
             _worker_loop(worker_id)
         else:
@@ -587,5 +646,7 @@ def sync_worker_process(
             for t in threads:
                 t.join()
     finally:
+        if progress is not None:
+            progress.close()
         if original_metadata_provider:
             target_client._metadata_provider = original_metadata_provider

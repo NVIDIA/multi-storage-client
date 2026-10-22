@@ -51,6 +51,8 @@ class OperationType(Enum):
     ADD = "add"
     DELETE = "delete"
     SYMLINK = "symlink"  # Recreate a symbolic link on the target.
+    PROGRESS = "progress"  # Report a worker's active-file snapshot without marking files complete.
+    LOG = "log"  # Relay a spawned worker log record to the progress-owning process.
     STOP = "stop"  # Signal to stop the thread.
 
 
