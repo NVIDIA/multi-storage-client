@@ -1057,7 +1057,12 @@ class S3StorageProvider(BaseStorageProvider):
             # Download small files
             if metadata.content_length <= self._multipart_threshold:
                 if self._rust_client:
-                    run_async_rust_client_method(self._rust_client, "download", key, f)
+                    self._translate_errors(
+                        lambda: run_async_rust_client_method(self._rust_client, "download", key, f),
+                        operation="GET",
+                        bucket=bucket,
+                        key=key,
+                    )
                 else:
                     temp_file_path: str | None = None
                     try:

@@ -339,6 +339,10 @@ class GoogleStorageProvider(BaseStorageProvider):
             error_info = f"status_code: {status_code}, message: {error.message}"
             if status_code == 404:
                 raise FileNotFoundError(f"Object {bucket}/{key} does not exist.")  # pylint: disable=raise-missing-from
+            elif status_code == 403:
+                raise PermissionError(
+                    f"Permission denied to {operation} object(s) at {bucket}/{key}. {error_info}"
+                ) from error
             elif status_code == 412:
                 raise PreconditionFailedError(
                     f"Failed to {operation} object(s) at {bucket}/{key}. {error_info}"
@@ -714,7 +718,12 @@ class GoogleStorageProvider(BaseStorageProvider):
                 validated_attributes = validate_attributes(attributes)
                 if self._rust_client:
                     rust_attributes = {"attributes": validated_attributes} if validated_attributes else {}
-                    run_async_rust_client_method(self._rust_client, "upload", f, key, **rust_attributes)
+                    self._translate_errors(
+                        lambda: run_async_rust_client_method(self._rust_client, "upload", f, key, **rust_attributes),
+                        operation="PUT",
+                        bucket=bucket,
+                        key=key,
+                    )
                 else:
                     with open(f, "rb") as fp:
                         self._put_object(remote_path, fp.read(), attributes=attributes)
@@ -809,7 +818,12 @@ class GoogleStorageProvider(BaseStorageProvider):
             # Download small files
             if metadata.content_length <= self._multipart_threshold:
                 if self._rust_client:
-                    run_async_rust_client_method(self._rust_client, "download", key, f)
+                    self._translate_errors(
+                        lambda: run_async_rust_client_method(self._rust_client, "download", key, f),
+                        operation="GET",
+                        bucket=bucket,
+                        key=key,
+                    )
                 else:
                     temp_file_path: str | None = None
                     try:

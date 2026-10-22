@@ -20,9 +20,11 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
+from google.api_core.exceptions import Forbidden
 
 from multistorageclient.providers.gcs import GoogleStorageProvider
-from multistorageclient.types import ObjectMetadata
+from multistorageclient.types import ObjectMetadata, RetryableError
+from multistorageclient_rust import RustClientError, RustRetryableError
 
 
 @pytest.fixture
@@ -88,6 +90,52 @@ def test_stringio_transfers_use_utf8_with_ascii_locale(gcs_provider, tmp_path, o
             gcs_provider._download_file("bucket/key", destination, metadata)
             assert destination.getvalue() == text
 
+    assert _staging_files(tmp_path) == []
+
+
+@pytest.mark.parametrize("operation", ["upload", "download"])
+@pytest.mark.parametrize(
+    ("rust_error", "expected_error"),
+    [
+        (RustRetryableError("connection reset"), RetryableError),
+        (RustClientError("access denied", 403), PermissionError),
+        (RustClientError("not found", 404), FileNotFoundError),
+    ],
+)
+def test_small_rust_transfer_errors_are_translated(gcs_provider, tmp_path, operation, rust_error, expected_error):
+    gcs_provider._rust_client = MagicMock()
+    gcs_provider._multipart_threshold = 8
+    local_file = tmp_path / "data.bin"
+    local_file.write_bytes(b"payload")
+    metadata = ObjectMetadata(
+        key="bucket/key", content_length=7, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)
+    )
+
+    with (
+        patch("multistorageclient.providers.gcs.run_async_rust_client_method", side_effect=rust_error),
+        pytest.raises(expected_error, match="bucket/key") as error,
+    ):
+        if operation == "upload":
+            gcs_provider._upload_file("bucket/key", str(local_file))
+        else:
+            gcs_provider._download_file("bucket/key", str(local_file), metadata)
+
+    assert error.value.__cause__ is rust_error
+    assert local_file.read_bytes() == b"payload"
+
+
+@pytest.mark.parametrize(("method_name", "remote_path"), [("download_file", "key"), ("_download_file", "bucket/key")])
+def test_download_metadata_permission_errors_are_translated(gcs_provider, tmp_path, method_name, remote_path):
+    gcs_provider._rust_client = MagicMock()
+    error = Forbidden("access denied")
+    gcs_provider._gcs_client.bucket.return_value.get_blob.side_effect = error
+    destination = tmp_path / "out.bin"
+
+    with pytest.raises(PermissionError, match="bucket/key") as raised:
+        getattr(gcs_provider, method_name)(remote_path, str(destination))
+
+    assert raised.value.__cause__ is error
+    assert not destination.exists()
     assert _staging_files(tmp_path) == []
 
 

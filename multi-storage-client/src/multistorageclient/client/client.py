@@ -270,6 +270,8 @@ class StorageClient(AbstractStorageClient):
         :param local_path: The local file path or file-like object to write to.
         :param metadata: Optional metadata for this object, as returned by :py:meth:`info`, to avoid a provider lookup.
         :raises FileNotFoundError: If the remote file does not exist.
+        :raises PermissionError: If the provider reports denied read access.
+        :raises multistorageclient.types.RetryableError: If a retryable transfer failure remains after configured retries.
         """
         return self._delegate.download_file(remote_path, local_path, metadata)
 
