@@ -26,7 +26,7 @@ from fsspec.asyn import AsyncFileSystem, _run_coros_in_chunks
 from ..client import StorageClient
 from ..file import ObjectFile, PosixFile
 from ..shortcuts import resolve_storage_client
-from ..types import MSC_PROTOCOL_NAME
+from ..types import MSC_PROTOCOL_NAME, Range
 
 _GLOBAL_THREAD_POOL = ThreadPoolExecutor(max_workers=int(os.getenv("MSC_MAX_WORKERS", "8")))
 
@@ -319,25 +319,42 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
         """
         await self.asynchronize_sync(self.pipe_file, path, value, **kwargs)
 
-    def cat_file(self, path: str, **kwargs: Any) -> bytes:
+    def cat_file(self, path: str, start: int | None = None, end: int | None = None, **kwargs: Any) -> bytes:
         """
         Reads the contents of a file at the given path.
 
         :param path: The file path to read from.
+        :param start: The offset of the first byte to read. Negative values count back from the end of the file.
+            Defaults to the start of the file.
+        :param end: The offset to stop reading at (exclusive). Negative values count back from the end of the file.
+            Defaults to the end of the file.
         :param kwargs: Additional arguments for file reading functionality.
 
-        :return: The contents of the file as bytes.
+        :return: The contents of the file, or of the requested byte range, as bytes.
         """
         storage_client, path = self.resolve_path_and_storage_client(path)
-        return storage_client.read(path)
+        if start is None and end is None:
+            return storage_client.read(path)
 
-    async def _cat_file(self, path: str, **kwargs: Any) -> bytes:
+        if start is None:
+            start = 0
+        if start < 0 or end is None or end < 0:
+            start, end, _ = slice(start, end).indices(storage_client.info(path).content_length)
+        if end <= start:
+            return b""
+        return storage_client.read(path, byte_range=Range(offset=start, size=end - start))
+
+    async def _cat_file(self, path: str, start: int | None = None, end: int | None = None, **kwargs: Any) -> bytes:
         """
         Asynchronously reads the contents of a file at the given path.
 
         :param path: The file path to read from.
+        :param start: The offset of the first byte to read. Negative values count back from the end of the file.
+            Defaults to the start of the file.
+        :param end: The offset to stop reading at (exclusive). Negative values count back from the end of the file.
+            Defaults to the end of the file.
         :param kwargs: Additional arguments for file reading functionality.
 
-        :return: The contents of the file as bytes.
+        :return: The contents of the file, or of the requested byte range, as bytes.
         """
-        return await self.asynchronize_sync(self.cat_file, path, **kwargs)
+        return await self.asynchronize_sync(self.cat_file, path, start=start, end=end, **kwargs)

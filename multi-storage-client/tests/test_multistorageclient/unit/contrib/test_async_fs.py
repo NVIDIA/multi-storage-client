@@ -117,6 +117,46 @@ async def test_multi_async_filesystem(file_storage_config_with_cache):
         await filesystem._rm(remote_file_path, recursive=True)
 
 
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryAWSS3Bucket],
+        [tempdatastore.TemporaryPOSIXDirectory],
+    ],
+)
+def test_async_fs_cat_file_byte_ranges(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """cat_file returns content[start:end], which cat_ranges and read_bytes rely on."""
+    with temp_data_store_type() as temp_data_store:
+        config.setup_msc_config(config_dict={"profiles": {"test": temp_data_store.profile_config_dict()}})
+
+        filesystem = fsspec.filesystem("msc")
+        file_path = "test/byte-ranges.bin"
+        content = bytes(range(100))
+        filesystem.pipe_file(file_path, content)
+
+        for start, end in [
+            (None, None),
+            (10, 20),
+            (None, 20),
+            (90, None),
+            (-10, None),
+            (-30, -10),
+            (10, -80),
+            (95, 200),
+            (-200, 5),
+            (20, 10),
+            (200, None),
+        ]:
+            assert filesystem.cat_file(file_path, start=start, end=end) == content[start:end]
+
+        assert filesystem.read_bytes(file_path, start=10, end=20) == content[10:20]
+        assert filesystem.cat_ranges([file_path] * 3, [0, 50, -5], [10, 60, None]) == [
+            content[:10],
+            content[50:60],
+            content[-5:],
+        ]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     argnames=["temp_data_store_type"],
