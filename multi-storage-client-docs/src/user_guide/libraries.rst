@@ -210,6 +210,9 @@ within the same resolved storage profile. Paths from different profiles return
 ``False``, even when their internal paths match. Local paths and equivalent
 ``msc://__filesystem__/`` paths use the same profile.
 
+Ordering comparisons (``<``, ``<=``, ``>``, and ``>=``) also accept ``pathlib.Path``
+and ``pathlib.PurePath`` objects. Equivalent local paths have the same ordering key.
+
 ``read_text()`` and ``write_text()`` honor their ``encoding`` and ``errors``
 arguments when decoding and encoding text, respectively.
 
