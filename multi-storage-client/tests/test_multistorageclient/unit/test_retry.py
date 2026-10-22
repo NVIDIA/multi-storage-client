@@ -261,7 +261,7 @@ class FakeBatchStorageProvider:
         self._failing_indices_by_call = failing_indices_by_call
         self._error = error
 
-    def upload_files(self, local_paths, remote_paths, attributes=None, max_workers=16):
+    def upload_files(self, local_paths, remote_paths, attributes=None, max_workers=16, transfer_callback=None):
         self.calls.append(
             {
                 "local_paths": list(local_paths),
@@ -269,9 +269,9 @@ class FakeBatchStorageProvider:
                 "attributes": list(attributes) if attributes is not None else None,
             }
         )
-        self._raise_batch_error_for_call(local_paths, remote_paths)
+        self._raise_batch_error_for_call(local_paths, remote_paths, transfer_callback)
 
-    def download_files(self, remote_paths, local_paths, metadata=None, max_workers=16):
+    def download_files(self, remote_paths, local_paths, metadata=None, max_workers=16, transfer_callback=None):
         self.calls.append(
             {
                 "remote_paths": list(remote_paths),
@@ -279,13 +279,19 @@ class FakeBatchStorageProvider:
                 "metadata": list(metadata) if metadata is not None else None,
             }
         )
-        self._raise_batch_error_for_call(remote_paths, local_paths)
+        self._raise_batch_error_for_call(remote_paths, local_paths, transfer_callback)
 
-    def _raise_batch_error_for_call(self, source_paths, destination_paths):
+    def _raise_batch_error_for_call(self, source_paths, destination_paths, transfer_callback=None):
         call_index = len(self.calls) - 1
         failing_indices = (
             self._failing_indices_by_call[call_index] if call_index < len(self._failing_indices_by_call) else set()
         )
+        if transfer_callback is not None:
+            for index in range(len(source_paths)):
+                transfer_callback(source_paths[index], destination_paths[index], "started")
+                transfer_callback(
+                    source_paths[index], destination_paths[index], "failed" if index in failing_indices else "completed"
+                )
         if failing_indices:
             raise BatchTransferError(
                 [
@@ -300,7 +306,13 @@ class FakeBatchStorageProvider:
             )
 
 
-def test_upload_files_retries_only_failed_files():
+@pytest.mark.parametrize("notify", [False, True])
+def test_upload_files_retries_only_failed_files(notify):
+    events = []
+
+    def transfer_callback(source_path, destination_path, state):
+        events.append((source_path, destination_path, state))
+
     config = StorageClientConfig.from_json(
         """{
         "profiles": {
@@ -327,6 +339,7 @@ def test_upload_files_retries_only_failed_files():
             remote_paths=["remote-a", "remote-b", "remote-c"],
             local_paths=["local-a", "local-b", "local-c"],
             attributes=[{"name": "a"}, {"name": "b"}, {"name": "c"}],
+            transfer_callback=transfer_callback if notify else None,
         )
 
     assert storage_provider.calls == [
@@ -342,8 +355,25 @@ def test_upload_files_retries_only_failed_files():
         },
     ]
 
+    if notify:
+        for index in range(3):
+            expected = ["started", "failed", "started", "completed"] if index in {1} else ["started", "completed"]
+            assert [
+                state
+                for source, destination, state in events
+                if (source, destination) == (f"local-{'abc'[index]}", f"remote-{'abc'[index]}")
+            ] == expected
+    else:
+        assert events == []
 
-def test_download_files_retries_only_failed_files():
+
+@pytest.mark.parametrize("notify", [False, True])
+def test_download_files_retries_only_failed_files(notify):
+    events = []
+
+    def transfer_callback(source_path, destination_path, state):
+        events.append((source_path, destination_path, state))
+
     config = StorageClientConfig.from_json(
         """{
         "profiles": {
@@ -369,6 +399,7 @@ def test_download_files_retries_only_failed_files():
         storage_client.download_files(
             remote_paths=["remote-a", "remote-b", "remote-c"],
             local_paths=["local-a", "local-b", "local-c"],
+            transfer_callback=transfer_callback if notify else None,
         )
 
     assert storage_provider.calls == [
@@ -383,6 +414,17 @@ def test_download_files_retries_only_failed_files():
             "metadata": None,
         },
     ]
+
+    if notify:
+        for index in range(3):
+            expected = ["started", "failed", "started", "completed"] if index in {0, 2} else ["started", "completed"]
+            assert [
+                state
+                for source, destination, state in events
+                if (source, destination) == (f"remote-{'abc'[index]}", f"local-{'abc'[index]}")
+            ] == expected
+    else:
+        assert events == []
 
 
 def test_upload_files_does_not_retry_non_retryable_batch_failures():

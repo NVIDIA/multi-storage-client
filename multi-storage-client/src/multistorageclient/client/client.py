@@ -21,6 +21,7 @@ from ..config import StorageClientConfig
 from ..constants import MEMORY_LOAD_LIMIT
 from ..file import ObjectFile, PosixFile
 from ..types import (
+    BatchTransferCallback,
     ExecutionMode,
     MetadataProvider,
     ObjectMetadata,
@@ -32,6 +33,7 @@ from ..types import (
     SymlinkHandling,
     SyncResult,
 )
+from ..utils import _invoke_batch_transfer
 from .composite import CompositeStorageClient
 from .single import SingleStorageClient
 from .types import AbstractStorageClient
@@ -277,6 +279,7 @@ class StorageClient(AbstractStorageClient):
         local_paths: Sequence[str],
         metadata: Sequence[ObjectMetadata | None] | None = None,
         max_workers: int = 16,
+        transfer_callback: BatchTransferCallback | None = None,
     ) -> None:
         """
         Download multiple remote files to local paths.
@@ -285,10 +288,20 @@ class StorageClient(AbstractStorageClient):
         :param local_paths: List of local file paths to save the downloaded files to.
         :param metadata: Optional per-file metadata used to decide between regular and multipart download.
         :param max_workers: Maximum number of concurrent download workers (default: 16).
+        :param transfer_callback: Optional observer called with source path, destination path, and "started",
+            "completed", or "failed" for each executing attempt. Remote paths may be resolved physical paths.
+            Calls may be concurrent; callback exceptions are logged.
         :raises ValueError: If remote_paths and local_paths have different lengths.
         :raises FileNotFoundError: If any remote file does not exist.
         """
-        return self._delegate.download_files(remote_paths, local_paths, metadata, max_workers)
+        return _invoke_batch_transfer(
+            self._delegate.download_files,
+            remote_paths,
+            local_paths,
+            metadata,
+            max_workers,
+            transfer_callback=transfer_callback,
+        )
 
     def glob(
         self,
@@ -457,6 +470,7 @@ class StorageClient(AbstractStorageClient):
         local_paths: Sequence[str],
         attributes: Sequence[dict[str, Any] | None] | None = None,
         max_workers: int = 16,
+        transfer_callback: BatchTransferCallback | None = None,
     ) -> None:
         """
         Upload multiple local files to remote storage.
@@ -466,11 +480,21 @@ class StorageClient(AbstractStorageClient):
         :param attributes: Optional list of per-file attributes to add. When provided, must have the same length
             as remote_paths/local_paths. Each element may be ``None`` for files that need no attributes.
         :param max_workers: Maximum number of concurrent upload workers (default: 16).
+        :param transfer_callback: Optional observer called with source path, destination path, and "started",
+            "completed", or "failed" for each executing attempt. Remote paths may be resolved physical paths.
+            Calls may be concurrent; callback exceptions are logged.
         :raises ValueError: If remote_paths and local_paths have different lengths.
         :raises ValueError: If attributes is provided and has a different length than remote_paths.
         :raises NotImplementedError: If upload operations are not supported (e.g., CompositeStorageClient).
         """
-        return self._delegate.upload_files(remote_paths, local_paths, attributes, max_workers)
+        return _invoke_batch_transfer(
+            self._delegate.upload_files,
+            remote_paths,
+            local_paths,
+            attributes,
+            max_workers,
+            transfer_callback=transfer_callback,
+        )
 
     def commit_metadata(self, prefix: str | None = None) -> None:
         """
