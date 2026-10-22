@@ -189,6 +189,8 @@ The ``msc ls`` command lists files and directories in a storage service. It supp
      - ``environment != "test"`` - Find files not in test environment
      - ``(model_name = "gpt" OR model_name = "bert") AND version > 1.0`` - Complex filter with logical operators
 
+   **Operator Precedence:** ``AND`` binds tighter than ``OR``, so ``a = "1" AND b = "2" OR c = "3"`` is read as ``(a = "1" AND b = "2") OR c = "3"``. Use parentheses to group conditions differently.
+
    **Numeric vs String Comparison:** For comparison operators (``>``, ``>=``, ``<``, ``<=``), the system first attempts numeric comparison. If that fails, it falls back to lexicographic string comparison.
 
    **Performance Considerations:** When using attribute filtering, the system will make additional HEAD requests to retrieve metadata for each file if metadata provider is not provided. This can increase latency, especially when working with many files.
