@@ -77,6 +77,10 @@ total timeout applies to each part request, rather than the complete file.
 The retry ``timeout`` (180 seconds by default) controls how long request retries
 remain eligible. It is separate from both HTTP timeouts. Batch transfers retry files
 that fail with a retryable Rust error according to the MSC retry configuration.
+Single-file uploads and downloads also translate retryable Rust failures into MSC
+retryable errors, including transfers below the multipart threshold. Missing
+objects and denied access raise ``FileNotFoundError`` and ``PermissionError``.
+For GCS, permission failures during metadata lookup also raise ``PermissionError``.
 
 Batch downloads follow symbolic links and use the target object's size to select
 single-part or multipart transfer, matching individual downloads.
