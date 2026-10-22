@@ -22,6 +22,7 @@ from ..constants import MEMORY_LOAD_LIMIT
 from ..file import ObjectFile, PosixFile
 from ..types import (
     MSC_PROTOCOL,
+    BatchTransferCallback,
     ExecutionMode,
     MetadataProvider,
     ObjectMetadata,
@@ -32,7 +33,7 @@ from ..types import (
     SymlinkHandling,
     SyncResult,
 )
-from ..utils import PatternMatcher, join_paths
+from ..utils import PatternMatcher, _invoke_batch_transfer, join_paths
 from .single import SingleStorageClient
 from .types import AbstractStorageClient
 
@@ -251,6 +252,7 @@ class CompositeStorageClient(AbstractStorageClient):
         local_paths: Sequence[str],
         metadata: Sequence[ObjectMetadata | None] | None = None,
         max_workers: int = 16,
+        transfer_callback: BatchTransferCallback | None = None,
     ) -> None:
         if len(remote_paths) != len(local_paths):
             raise ValueError("remote_paths and local_paths must have the same length")
@@ -276,8 +278,13 @@ class CompositeStorageClient(AbstractStorageClient):
         for profile, (physical_paths, group_local_paths, group_metadata) in groups.items():
             child = self._get_child_client(profile)
             has_any_metadata = any(m is not None for m in group_metadata)
-            child.download_files(
-                physical_paths, group_local_paths, group_metadata if has_any_metadata else None, max_workers
+            _invoke_batch_transfer(
+                child.download_files,
+                physical_paths,
+                group_local_paths,
+                group_metadata if has_any_metadata else None,
+                max_workers,
+                transfer_callback=transfer_callback,
             )
 
     def glob(
@@ -388,6 +395,7 @@ class CompositeStorageClient(AbstractStorageClient):
         local_paths: Sequence[str],
         attributes: Sequence[dict[str, Any] | None] | None = None,
         max_workers: int = 16,
+        transfer_callback: BatchTransferCallback | None = None,
     ) -> None:
         """Upload operations not supported in read-only mode."""
         raise NotImplementedError(

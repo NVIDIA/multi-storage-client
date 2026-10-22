@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import multiprocessing
 import queue
 import threading
 import time
@@ -20,11 +21,14 @@ from datetime import datetime, timezone
 from typing import cast
 from unittest import mock
 
+import pytest
+
 from multistorageclient.client import StorageClient
 from multistorageclient.sync import progress_bar as progress_bar_module
 from multistorageclient.sync.monitors import ErrorMonitorThread, ResultMonitorThread
 from multistorageclient.sync.producer import ProducerThread
 from multistorageclient.sync.progress_bar import ProgressBar
+from multistorageclient.sync.transfer_progress import TransferActivity, TransferSnapshot
 from multistorageclient.sync.types import ErrorInfo, OperationType
 from multistorageclient.types import ObjectMetadata
 
@@ -44,6 +48,93 @@ class MockStorageClient:
 
     def _is_posix_file_storage_provider(self) -> bool:
         return False
+
+
+def _publish_results_past_pipe_capacity(result_queue, failing_operation):
+    metadata = ObjectMetadata(key="file", content_length=1, last_modified=datetime.now(timezone.utc))
+    snapshot = TransferSnapshot(1, (TransferActivity("path/" * 200, 0.0),))
+    payload = snapshot if failing_operation == OperationType.PROGRESS else metadata
+    result_queue.put((failing_operation, "worker", payload))
+    for _ in range(1024):
+        result_queue.put((OperationType.PROGRESS, "worker", snapshot))
+    result_queue.put((OperationType.ADD, "after-error", metadata))
+
+
+@pytest.mark.parametrize("failing_operation", [OperationType.ADD, OperationType.DELETE, OperationType.PROGRESS])
+@pytest.mark.parametrize("refresh_before_results", [False, True])
+def test_result_monitor_drains_worker_queue_after_processing_error(failing_operation, refresh_before_results):
+    context = multiprocessing.get_context("spawn")
+    result_queue = context.Queue()
+    failure_seen = threading.Event()
+    idle_refreshed = threading.Event()
+    failure = RuntimeError("result processing failed")
+    refresh_calls_before_failure = 0
+
+    def fail(*args):
+        nonlocal refresh_calls_before_failure
+        refresh_calls_before_failure = progress.refresh.call_count
+        failure_seen.set()
+        raise failure
+
+    provider = mock.Mock()
+    progress = mock.Mock()
+    progress.refresh.side_effect = idle_refreshed.set
+    if failing_operation == OperationType.ADD:
+        provider.add_file.side_effect = fail
+    elif failing_operation == OperationType.DELETE:
+        provider.remove_file.side_effect = fail
+    else:
+        progress.update_transfers.side_effect = fail
+    monitor = ResultMonitorThread(
+        cast(StorageClient, MockStorageClient()), "", progress, result_queue, metadata_provider=provider
+    )
+    process = context.Process(target=_publish_results_past_pipe_capacity, args=(result_queue, failing_operation))
+    monitor.start()
+    try:
+        if refresh_before_results:
+            assert idle_refreshed.wait(timeout=5.0)
+        process.start()
+        assert failure_seen.wait(timeout=5.0)
+        process.join(timeout=5.0)
+        assert not process.is_alive(), "Worker cannot exit while its result queue feeder is blocked"
+        assert process.exitcode == 0
+        assert monitor.is_alive(), "Monitor must drain results until STOP"
+        assert monitor.error is failure
+        assert monitor.shutdown_event.is_set()
+        assert provider.add_file.call_count == int(failing_operation == OperationType.ADD)
+        assert provider.remove_file.call_count == int(failing_operation == OperationType.DELETE)
+        assert progress.update_transfers.call_count == int(failing_operation == OperationType.PROGRESS)
+        progress.update_progress.assert_not_called()
+        assert progress.refresh.call_count == refresh_calls_before_failure
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5.0)
+        result_queue.cancel_join_thread()
+        if monitor.is_alive():
+            result_queue.put((OperationType.STOP, None, None))
+            monitor.join(timeout=5.0)
+        result_queue.close()
+    assert not monitor.is_alive()
+
+
+def test_result_monitor_drains_after_idle_refresh_error():
+    failure = RuntimeError("progress refresh failed")
+    progress = mock.Mock()
+    progress.refresh.side_effect = failure
+    result_queue = mock.Mock()
+    result_queue.get.side_effect = [queue.Empty(), (OperationType.STOP, None, None)]
+    shutdown_event = threading.Event()
+    monitor = ResultMonitorThread(
+        cast(StorageClient, MockStorageClient()), "", progress, result_queue, shutdown_event=shutdown_event
+    )
+
+    monitor.run()
+
+    assert monitor.error is failure
+    assert shutdown_event.is_set()
+    assert result_queue.get.call_count == 2
+    progress.refresh.assert_called_once()
 
 
 def test_result_consumer_exits_with_stop_signal():
@@ -66,6 +157,29 @@ def test_result_consumer_exits_with_stop_signal():
     result_consumer_thread.join(timeout=1)
 
     assert not result_consumer_thread.is_alive()
+
+
+def test_activity_snapshots_do_not_count_as_completed_files():
+    target_client = MockStorageClient()
+    result_queue = queue.Queue()
+    with ProgressBar("Syncing", True, total_items=100, show_transfer_progress=True) as progress:
+        result_queue.put(
+            (
+                OperationType.PROGRESS,
+                "worker",
+                TransferSnapshot(24, (TransferActivity("large.tar", time.monotonic()),)),
+            )
+        )
+        result_queue.put((OperationType.STOP, None, None))
+        monitor = ResultMonitorThread(cast(StorageClient, target_client), "", progress, result_queue)
+        monitor.run()
+        assert monitor.error is None
+        assert monitor.total_files_added == monitor.total_files_deleted == 0
+        assert monitor.total_bytes_added == monitor.total_bytes_deleted == 0
+        assert progress.pbar is not None
+        assert progress.pbar.n == 0
+        progress.refresh(force=True)
+        assert "in-flight: 24" in str(progress.pbar)
 
 
 def test_error_info_dataclass():
