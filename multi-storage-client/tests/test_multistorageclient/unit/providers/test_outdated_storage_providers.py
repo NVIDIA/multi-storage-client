@@ -13,13 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import queue
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from typing import IO
+from unittest.mock import Mock
 
 import pytest
 
+from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.providers.base import BaseStorageProvider
+from multistorageclient.providers.posix_file import PosixFileStorageProvider
+from multistorageclient.sync.transfer_progress import TransferProgress
+from multistorageclient.sync.types import OperationBatch, OperationType
+from multistorageclient.sync.worker import create_sync_handler
 from multistorageclient.types import ObjectMetadata, Range
 
 
@@ -95,6 +102,78 @@ class OutdatedStorageProvider(BaseStorageProvider):
 
     def _download_file(self, remote_path: str, f: str | IO, metadata: ObjectMetadata | None = None) -> int:
         return 0
+
+
+@pytest.mark.parametrize("boundary", ["provider", "delegate"])
+@pytest.mark.parametrize("notify", [False, True])
+def test_legacy_batch_overrides_through_client(tmp_path, monkeypatch, boundary, notify):
+    provider = PosixFileStorageProvider(base_path=str(tmp_path / "remote"))
+    client = StorageClient(StorageClientConfig(profile="legacy", storage_provider=provider))
+    target = provider if boundary == "provider" else client._delegate
+    download = target.download_files
+    upload = target.upload_files
+
+    def legacy_download(remote_paths, local_paths, metadata=None, max_workers=16):
+        download(remote_paths, local_paths, metadata, max_workers)
+
+    def legacy_upload(first_paths, second_paths, attributes=None, max_workers=16):
+        upload(first_paths, second_paths, attributes, max_workers)
+
+    monkeypatch.setattr(target, "download_files", legacy_download)
+    monkeypatch.setattr(target, "upload_files", legacy_upload)
+    observer = Mock()
+    source = tmp_path / "source"
+    source.write_bytes(b"legacy transfer")
+    destination = tmp_path / "destination"
+
+    client.upload_files(["file"], [str(source)], transfer_callback=observer if notify else None)
+    client.download_files(["file"], [str(destination)], transfer_callback=observer if notify else None)
+
+    assert destination.read_bytes() == source.read_bytes()
+    observer.assert_not_called()
+
+
+@pytest.mark.parametrize("direction", ["download", "upload", "transfer"])
+@pytest.mark.parametrize("notify", [False, True])
+def test_sync_supports_legacy_client_batch_overrides(tmp_path, monkeypatch, direction, notify):
+    source = StorageClient(
+        StorageClientConfig(
+            profile="source", storage_provider=PosixFileStorageProvider(base_path=str(tmp_path / "source"))
+        )
+    )
+    target = StorageClient(
+        StorageClientConfig(
+            profile="target", storage_provider=PosixFileStorageProvider(base_path=str(tmp_path / "target"))
+        )
+    )
+    source.write("file", b"legacy sync")
+    download = source.download_files
+    upload = target.upload_files
+
+    def legacy_download(remote_paths, local_paths, metadata=None, max_workers=16):
+        download(remote_paths, local_paths, metadata, max_workers)
+
+    def legacy_upload(remote_paths, local_paths, attributes=None, max_workers=16):
+        upload(remote_paths, local_paths, attributes, max_workers)
+
+    monkeypatch.setattr(source, "download_files", legacy_download)
+    monkeypatch.setattr(target, "upload_files", legacy_upload)
+    monkeypatch.setattr(source, "_is_posix_file_storage_provider", lambda: direction == "upload")
+    monkeypatch.setattr(target, "_is_posix_file_storage_provider", lambda: direction == "download")
+    observer = Mock()
+    progress = TransferProgress(lambda snapshot: None) if notify else None
+    if progress is not None:
+        monkeypatch.setattr(progress, "callback", Mock(return_value=observer))
+    results = queue.Queue()
+    errors = queue.Queue()
+    handler = create_sync_handler(source, "", target, "copied/", False, results, errors, str(tmp_path), progress)
+
+    handler.process_add_batch("test-worker", OperationBatch(OperationType.ADD, [(source.info("file"), None)]))
+
+    assert errors.empty(), list(errors.queue)
+    assert target.read("copied/file") == b"legacy sync"
+    assert results.qsize() == 1
+    observer.assert_not_called()
 
 
 # Integration test using client API

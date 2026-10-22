@@ -503,6 +503,28 @@ def test_create_attribute_filter_evaluator():
         create_attribute_filter_evaluator("invalid expression")
 
 
+def test_create_attribute_filter_evaluator_and_binds_tighter_than_or():
+    """AND is evaluated before OR regardless of the order the operators are written in."""
+    # a AND b OR c == (a AND b) OR c
+    evaluator = create_attribute_filter_evaluator('a = "1" AND b = "2" OR c = "3"')
+    assert evaluator({"c": "3"})
+    assert evaluator({"a": "1", "b": "2"})
+    assert not evaluator({"a": "1"})
+    assert not evaluator({"b": "2"})
+
+    # a OR b AND c == a OR (b AND c)
+    evaluator = create_attribute_filter_evaluator('a = "1" OR b = "2" AND c = "3"')
+    assert evaluator({"a": "1"})
+    assert evaluator({"b": "2", "c": "3"})
+    assert not evaluator({"b": "2"})
+    assert not evaluator({"c": "3"})
+
+    # Parentheses still override the default precedence.
+    evaluator = create_attribute_filter_evaluator('a = "1" AND (b = "2" OR c = "3")')
+    assert not evaluator({"c": "3"})
+    assert evaluator({"a": "1", "c": "3"})
+
+
 def test_matches_attribute_filter_expression():
     """Test matching objects against attribute filter expressions."""
     # Create test metadata

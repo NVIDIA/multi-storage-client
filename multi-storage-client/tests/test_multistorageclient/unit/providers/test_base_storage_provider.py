@@ -18,6 +18,8 @@ import tempfile
 import threading
 import time
 from collections.abc import Iterator
+from concurrent.futures import CancelledError
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from typing import IO, Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
@@ -102,6 +104,176 @@ class FailFastStorageProvider(MockBaseStorageProvider):
                 type="directory",
                 last_modified=datetime.now(tz=timezone.utc),
             )
+
+
+@pytest.mark.parametrize("backend", ["threaded", "async", "multipart"])
+@pytest.mark.parametrize("operation", ["download", "upload"])
+@pytest.mark.parametrize("fail", [False, True])
+@pytest.mark.parametrize("callback_raises", [False, True])
+def test_batch_activity_counts_executing_files_and_cleans_up(
+    tmp_path, backend, operation, fail, callback_raises, caplog
+):
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+    active = set()
+    events = []
+    lock = threading.Lock()
+
+    def transfer_callback(source_path, destination_path, state):
+        with lock:
+            events.append((source_path, destination_path, state))
+            if state == "started":
+                active.add((source_path, destination_path))
+            else:
+                active.remove((source_path, destination_path))
+        if callback_raises:
+            raise RuntimeError("observer failed")
+
+    observed = []
+    barrier = threading.Barrier(2)
+
+    def record(key):
+        observed.append(len(active))
+        if key.endswith(("a", "b")):
+            barrier.wait(timeout=3.0)
+        if fail and key.endswith("b"):
+            raise PermissionError("failed transfer")
+
+    class FakeRustClient:
+        async def download(self, key, local_path):
+            observed.append(len(active))
+            await asyncio.sleep(0)
+            if fail and key.endswith("b"):
+                raise PermissionError("failed transfer")
+            return 1
+
+        async def upload(self, local_path, key):
+            return await self.download(key, local_path)
+
+        async def download_multipart_to_file(self, key, local_path):
+            return await self.download(key, local_path)
+
+        async def upload_multipart_from_file(self, local_path, key):
+            return await self.download(key, local_path)
+
+    if backend == "threaded":
+        provider._download_file = Mock(side_effect=lambda remote_path, *args: record(remote_path))
+        provider._upload_file = Mock(side_effect=lambda remote_path, *args: record(remote_path))
+    else:
+        provider._rust_client = FakeRustClient()
+        provider._multipart_threshold = 0 if backend == "multipart" else 1024
+
+    remote_paths = ["physical/a", "physical/b", "physical/c"]
+    local_paths = [str(tmp_path / name) for name in ["a", "b", "c"]]
+    for path in local_paths:
+        with open(path, "wb") as stream:
+            stream.write(b"x")
+    metadata = [
+        ObjectMetadata(key=path, content_length=1, last_modified=datetime.now(tz=timezone.utc)) for path in remote_paths
+    ]
+    with pytest.raises(BatchTransferError) if fail else nullcontext():
+        if operation == "download":
+            provider.download_files(
+                remote_paths, local_paths, metadata, max_workers=2, transfer_callback=transfer_callback
+            )
+        else:
+            provider.upload_files(local_paths, remote_paths, max_workers=2, transfer_callback=transfer_callback)
+
+    assert max(observed) == 2
+    assert all(1 <= count <= 2 for count in observed)
+    expected_paths = list(zip(remote_paths, local_paths) if operation == "download" else zip(local_paths, remote_paths))
+    assert {(source, destination) for source, destination, _ in events} == set(expected_paths)
+    for index, paths in enumerate(expected_paths):
+        assert [state for source, destination, state in events if (source, destination) == paths] == [
+            "started",
+            "failed" if fail and index == 1 else "completed",
+        ]
+    assert not active
+    assert ("Transfer callback failed" in caplog.text) == callback_raises
+
+
+@pytest.mark.parametrize("operation", ["download", "upload"])
+def test_batch_notifications_report_cancellation_without_completion(tmp_path, operation):
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+    events = []
+
+    class CancelledRustClient:
+        async def download(self, key, local_path):
+            if key == "cancelled":
+                raise asyncio.CancelledError()
+            raise PermissionError("another file failed")
+
+        async def upload(self, local_path, key):
+            return await self.download(key, local_path)
+
+    provider._rust_client = CancelledRustClient()
+    local_path = str(tmp_path / "file")
+    with open(local_path, "wb") as stream:
+        stream.write(b"x")
+    metadata = ObjectMetadata(key="file", content_length=1, last_modified=datetime.now(tz=timezone.utc))
+
+    def transfer_callback(source_path, destination_path, state):
+        events.append((source_path, destination_path, state))
+
+    with pytest.raises(BatchTransferError) as error:
+        if operation == "download":
+            provider.download_files(
+                ["cancelled", "failed"],
+                [local_path, local_path],
+                [metadata, metadata],
+                transfer_callback=transfer_callback,
+            )
+        else:
+            provider.upload_files(
+                [local_path, local_path], ["cancelled", "failed"], transfer_callback=transfer_callback
+            )
+    for remote_path in ["cancelled", "failed"]:
+        paths = (remote_path, local_path) if operation == "download" else (local_path, remote_path)
+        assert [state for source, destination, state in events if (source, destination) == paths] == [
+            "started",
+            "failed",
+        ]
+    assert len(error.value.failures) == 2
+    assert isinstance(error.value.failures[1].error, PermissionError)
+    assert error.value.failures[0].index == 0
+    assert isinstance(error.value.failures[0].error, CancelledError)
+
+
+@pytest.mark.parametrize("backend", ["threaded", "async", "multipart"])
+@pytest.mark.parametrize("operation", ["download", "upload"])
+@pytest.mark.parametrize("callback_state", ["started", "completed", "failed"])
+def test_batch_callbacks_propagate_base_exceptions(tmp_path, backend, operation, callback_state):
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+    callback_error = pytest.fail.Exception("observer aborted")
+    transfer_error = PermissionError("transfer failed") if callback_state == "failed" else None
+    transfer = Mock(return_value=1, side_effect=transfer_error)
+    if backend == "threaded":
+        provider._download_file = transfer
+        provider._upload_file = transfer
+    else:
+        transfer = AsyncMock(return_value=1, side_effect=transfer_error)
+        provider._rust_client = Mock(
+            download=transfer,
+            upload=transfer,
+            download_multipart_to_file=transfer,
+            upload_multipart_from_file=transfer,
+        )
+        provider._multipart_threshold = 0 if backend == "multipart" else 1024
+
+    def callback(source_path, destination_path, state):
+        if state == callback_state:
+            raise callback_error
+
+    local_path = tmp_path / "file"
+    local_path.write_bytes(b"x")
+    metadata = ObjectMetadata(key="file", content_length=1, last_modified=datetime.now(tz=timezone.utc))
+    with pytest.raises(pytest.fail.Exception) as caught:
+        if operation == "download":
+            provider.download_files(["file"], [str(local_path)], [metadata], transfer_callback=callback)
+        else:
+            provider.upload_files([str(local_path)], ["file"], transfer_callback=callback)
+
+    assert caught.value is callback_error
+    assert transfer.call_count == (0 if callback_state == "started" else 1)
 
 
 def test_list_objects_with_base_path():
@@ -943,6 +1115,65 @@ def test_download_files_async_with_metadata():
 
     assert mock_rust_client.download_multipart_to_file.await_count == 1
     mock_rust_client.download_multipart_to_file.assert_awaited_with("large.txt", "/tmp/large.txt")
+
+
+@pytest.mark.parametrize("supply_metadata", [False, True])
+@pytest.mark.parametrize("target_size", [7, 2048])
+def test_download_files_async_resolves_symlink_targets(tmp_path, supply_metadata, target_size):
+    provider = MockBaseStorageProvider(base_path="bucket/prefix", provider_name="mock")
+    provider._multipart_threshold = 1024
+    now = datetime.now(tz=timezone.utc)
+    metadata = {
+        "bucket/prefix/link.txt": ObjectMetadata(
+            key="bucket/prefix/link.txt", content_length=0, last_modified=now, symlink_target="alias.txt"
+        ),
+        "bucket/prefix/alias.txt": ObjectMetadata(
+            key="bucket/prefix/alias.txt", content_length=0, last_modified=now, symlink_target="target.txt"
+        ),
+        "bucket/prefix/target.txt": ObjectMetadata(
+            key="bucket/prefix/target.txt", content_length=target_size, last_modified=now
+        ),
+    }
+    provider._get_object_metadata = Mock(side_effect=metadata.__getitem__)
+    provider._rust_client = MagicMock(
+        download=AsyncMock(return_value=target_size),
+        download_multipart_to_file=AsyncMock(return_value=target_size),
+    )
+    destination = str(tmp_path / "download.txt")
+
+    provider.download_files(
+        ["link.txt"], [destination], metadata=[metadata["bucket/prefix/link.txt"]] if supply_metadata else None
+    )
+
+    if target_size > provider._multipart_threshold:
+        provider._rust_client.download_multipart_to_file.assert_awaited_once_with("prefix/target.txt", destination)
+        provider._rust_client.download.assert_not_awaited()
+    else:
+        provider._rust_client.download.assert_awaited_once_with("prefix/target.txt", destination)
+        provider._rust_client.download_multipart_to_file.assert_not_awaited()
+
+
+@pytest.mark.parametrize("target_error", [FileNotFoundError("missing target"), ValueError("Symlink cycle")])
+def test_download_files_async_reports_symlink_resolution_failures(tmp_path, target_error):
+    provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
+    provider._rust_client = MagicMock(download=AsyncMock(return_value=1))
+    metadata = [
+        ObjectMetadata(
+            key="link.txt", content_length=0, last_modified=datetime.now(tz=timezone.utc), symlink_target="target.txt"
+        ),
+        ObjectMetadata(key="plain.txt", content_length=1, last_modified=datetime.now(tz=timezone.utc)),
+    ]
+    provider._resolve_symlink_path = Mock(side_effect=target_error)
+    destinations = [str(tmp_path / "link.txt"), str(tmp_path / "plain.txt")]
+
+    with pytest.raises(BatchTransferError) as error:
+        provider.download_files(["link.txt", "plain.txt"], destinations, metadata=metadata)
+
+    assert len(error.value.failures) == 1
+    assert error.value.failures[0].source_path == "link.txt"
+    assert error.value.failures[0].destination_path == destinations[0]
+    assert error.value.failures[0].error is target_error
+    provider._rust_client.download.assert_awaited_once_with("plain.txt", destinations[1])
 
 
 @pytest.mark.asyncio

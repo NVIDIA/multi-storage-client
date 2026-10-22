@@ -86,6 +86,9 @@ class RecordingProgress:
     def update_progress(self, items_completed: int = 1) -> None:
         pass
 
+    def set_phase(self, phase: str | None) -> None:
+        pass
+
 
 def test_match_file_metadata_seconds_resolution():
     """_match_file_metadata compares last_modified at seconds resolution."""

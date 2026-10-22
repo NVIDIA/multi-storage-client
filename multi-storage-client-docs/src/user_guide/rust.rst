@@ -82,6 +82,9 @@ retryable errors, including transfers below the multipart threshold. Missing
 objects and denied access raise ``FileNotFoundError`` and ``PermissionError``.
 For GCS, permission failures during metadata lookup also raise ``PermissionError``.
 
+Batch downloads follow symbolic links and use the target object's size to select
+single-part or multipart transfer, matching individual downloads.
+
 ********************
 Supported Operations
 ********************

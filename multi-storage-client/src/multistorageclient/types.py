@@ -21,12 +21,34 @@ from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
-from typing import IO, Any, NamedTuple
+from typing import IO, Any, Literal, NamedTuple, Protocol
 
 from dateutil.parser import parse as dateutil_parser
 
 MSC_PROTOCOL_NAME = "msc"
 MSC_PROTOCOL = MSC_PROTOCOL_NAME + "://"
+
+TransferState = Literal["started", "completed", "failed"]
+"""Lifecycle state of one file transfer attempt; failure includes cancellation."""
+
+
+class BatchTransferCallback(Protocol):
+    """Notify the lifecycle of each file attempt in a batch transfer.
+
+    Paths identify the transfer at the emitting layer; remote paths may already
+    be resolved by a metadata provider. Calls are synchronous and may be concurrent.
+    """
+
+    def __call__(
+        self,
+        source_path: str,
+        destination_path: str,
+        state: TransferState,
+        /,
+    ) -> None:
+        """Report a started, completed, or failed file transfer attempt."""
+        ...
+
 
 DEFAULT_RETRY_ATTEMPTS = 3
 DEFAULT_RETRY_DELAY = 1.0
@@ -422,6 +444,7 @@ class StorageProvider(ABC):
         local_paths: Sequence[str],
         metadata: Sequence[ObjectMetadata | None] | None = None,
         max_workers: int = 16,
+        transfer_callback: BatchTransferCallback | None = None,
     ) -> None:
         """
         Downloads multiple files from the storage provider to the local file system.
@@ -430,6 +453,9 @@ class StorageProvider(ABC):
         :param local_paths: List of local file paths to save the downloaded files to.
         :param metadata: Optional per-file metadata used to decide between regular and multipart download.
         :param max_workers: Maximum number of concurrent download workers (default: 16).
+        :param transfer_callback: Optional observer called with source path, destination path, and "started",
+            "completed", or "failed" for each executing attempt. Remote paths may be resolved physical paths.
+            Calls may be concurrent; callback exceptions are logged.
         :raises ValueError: If remote_paths and local_paths have different lengths.
         """
 
@@ -440,6 +466,7 @@ class StorageProvider(ABC):
         remote_paths: Sequence[str],
         attributes: Sequence[dict[str, Any] | None] | None = None,
         max_workers: int = 16,
+        transfer_callback: BatchTransferCallback | None = None,
     ) -> None:
         """
         Uploads multiple files from the local file system to the storage provider.
@@ -449,6 +476,9 @@ class StorageProvider(ABC):
         :param attributes: Optional list of per-file attributes to add. When provided, must have the same length
             as local_paths/remote_paths. Each element may be ``None`` for files that need no attributes.
         :param max_workers: Maximum number of concurrent upload workers (default: 16).
+        :param transfer_callback: Optional observer called with source path, destination path, and "started",
+            "completed", or "failed" for each executing attempt. Remote paths may be resolved physical paths.
+            Calls may be concurrent; callback exceptions are logged.
         :raises ValueError: If local_paths and remote_paths have different lengths.
         :raises ValueError: If attributes is provided and has a different length than local_paths.
         """

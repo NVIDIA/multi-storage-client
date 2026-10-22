@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import io
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
@@ -106,6 +107,57 @@ def test_small_rust_download_errors_are_translated(tmp_path, rust_error, expecte
 
     assert error.value.__cause__ is rust_error
     assert local_file.read_bytes() == b"original"
+
+
+@pytest.mark.parametrize("transfer", ["small_python", "multipart_python"])
+@pytest.mark.parametrize("failure", ["download", "rename"])
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_download_failure_cleans_staging_without_masking_error(tmp_path, transfer, failure, cleanup_fails, caplog):
+    provider = _create_s3_provider()
+    provider._s3_client = MagicMock()
+    provider._multipart_threshold = 8 if transfer == "small_python" else 0
+    destination = tmp_path / "data.bin"
+    destination.write_bytes(b"original")
+    metadata = ObjectMetadata(
+        key="bucket/key", content_length=7, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)
+    )
+    download_error = (
+        RetryableError("download failed")
+        if transfer == "small_python"
+        else _create_client_error(503, "SlowDown", "download failed")
+    )
+    rename_error = OSError("rename failed")
+
+    def get_object(*args):
+        if failure == "download":
+            raise download_error
+        return b"payload"
+
+    def download_fileobj(**kwargs):
+        kwargs["Fileobj"].write(b"partial")
+        if failure == "download":
+            raise download_error
+
+    provider._get_object = MagicMock(side_effect=get_object)
+    provider._s3_client.download_fileobj.side_effect = download_fileobj
+    with (
+        patch("multistorageclient.providers.s3.os.rename", side_effect=rename_error),
+        patch(
+            "multistorageclient.providers.s3.os.unlink",
+            wraps=os.unlink,
+            side_effect=PermissionError("cleanup denied") if cleanup_fails else None,
+        ),
+        pytest.raises(RetryableError if failure == "download" else (OSError, RuntimeError)) as raised,
+    ):
+        provider._download_file("bucket/key", str(destination), metadata)
+
+    original_error = download_error if failure == "download" else rename_error
+    assert raised.value is original_error or raised.value.__cause__ is original_error
+    staging_files = [path for path in tmp_path.iterdir() if path != destination]
+    assert len(staging_files) == int(cleanup_fails)
+    if cleanup_fails:
+        assert "cleanup denied" in caplog.text
+    assert destination.read_bytes() == b"original"
 
 
 def test_translate_errors_client_error_404_no_such_upload():
