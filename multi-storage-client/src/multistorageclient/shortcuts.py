@@ -20,13 +20,14 @@ import re
 import threading
 from collections.abc import Callable, Iterator, Sequence
 from typing import IO, Any
-from urllib.parse import ParseResult, urlparse
+from urllib.parse import urlparse
 
 from .client import StorageClient
 from .config import RESERVED_POSIX_PROFILE_NAME, SUPPORTED_IMPLICIT_PROFILE_PROTOCOLS, PathMapping, StorageClientConfig
 from .file import ObjectFile, PosixFile
 from .telemetry import Telemetry
 from .types import MSC_PROTOCOL, ExecutionMode, ObjectMetadata, PatternList, SignerType, SymlinkHandling, SyncResult
+from .utils import build_full_path
 
 _TELEMETRY_PROVIDER: Callable[[], Telemetry] | None = None
 _TELEMETRY_PROVIDER_LOCK = threading.Lock()
@@ -107,24 +108,6 @@ def set_telemetry_provider(telemetry_provider: Callable[[], Telemetry] | None) -
         _TELEMETRY_PROVIDER = telemetry_provider
 
 
-def _build_full_path(original_url: str, pr: ParseResult) -> str:
-    """
-    Helper function to construct the full path from a parsed URL, including query and fragment.
-
-    :param original_url: The original URL before parsing
-    :param pr: The parsed URL result from urlparse
-    :return: The complete path including query and fragment if present
-    """
-    path = pr.path
-    if pr.query:
-        path += "?" + pr.query
-    elif original_url.endswith("?"):
-        path += "?"  # handle the glob pattern that has a trailing question mark
-    if pr.fragment:
-        path += "#" + pr.fragment
-    return path
-
-
 def _resolve_msc_url(url: str) -> tuple[str, str]:
     """
     Resolve an MSC URL to a profile name and path.
@@ -136,7 +119,7 @@ def _resolve_msc_url(url: str) -> tuple[str, str]:
     profile = pr.netloc
     # Normalize only the object path so the msc:// scheme separator and profile stay intact.
     pr = pr._replace(path=re.sub(r"/+", "/", pr.path))
-    path = _build_full_path(url, pr)
+    path = build_full_path(url, pr)
     path = path.removeprefix("/")
     return profile, path
 
@@ -185,7 +168,7 @@ def _resolve_non_msc_url(url: str) -> tuple[str, str]:
     # For file paths, use the default POSIX profile
     if url.startswith("file://"):
         pr = urlparse(url)
-        return RESERVED_POSIX_PROFILE_NAME, _build_full_path(url, pr)
+        return RESERVED_POSIX_PROFILE_NAME, build_full_path(url, pr)
     elif url.startswith("/"):
         url = os.path.normpath(url)
         return RESERVED_POSIX_PROFILE_NAME, url
@@ -213,7 +196,7 @@ def _resolve_non_msc_url(url: str) -> tuple[str, str]:
     profile_name = f"_{protocol}-{bucket}"
 
     # Return normalized path with leading slash removed
-    path = pr.path
+    path = build_full_path(url, pr)
     path = path.removeprefix("/")
 
     return profile_name, path
