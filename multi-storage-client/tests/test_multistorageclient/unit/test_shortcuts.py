@@ -672,6 +672,15 @@ def test_explicit_path_translation(file_storage_config_with_path_mapping):
     assert client.profile == "file-a-b"
     assert path == "/shard#1.tar"
 
+    # Test Case 8: "#" in a mapped source prefix
+    client, path = msc.resolve_storage_client("s3://bucket1/data#1/file.txt")
+    assert client.profile == "s3-bucket1-a-b"
+    assert path == "file.txt"
+
+    client, path = msc.resolve_storage_client("s3://bucket1/data/file.txt")
+    assert client.profile == "s3-bucket1"
+    assert path == "data/file.txt"
+
 
 def test_implicit_profiles_without_msc_config():
     """Test the implicit profiles feature for non-MSC URLs."""

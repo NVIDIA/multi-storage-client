@@ -70,6 +70,7 @@ path_mapping:
   /lustrefs/a/: msc://file-a/
   s3://bucket1/: msc://s3-bucket1/
   s3://bucket1/a/b/: msc://s3-bucket1-a-b/
+  s3://bucket1/data#1/: msc://s3-bucket1-a-b/
   s3://old-bucket-123/: msc://azure-new-bucket-456/
 """
 

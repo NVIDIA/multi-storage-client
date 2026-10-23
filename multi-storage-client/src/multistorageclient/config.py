@@ -1196,11 +1196,11 @@ class PathMapping:
                 # For file or absolute paths, use the whole path as the prefix
                 # and leave bucket empty
                 bucket = ""
-                prefix = source_path if source_path.startswith("/") else pr.path
+                prefix = source_path if source_path.startswith("/") else build_full_path(source_path, pr)
             else:
                 # For object storage, extract bucket and prefix
                 bucket = pr.netloc
-                prefix = pr.path
+                prefix = build_full_path(source_path, pr)
                 prefix = prefix.removeprefix("/")
 
             # Add the mapping to the nested dict
