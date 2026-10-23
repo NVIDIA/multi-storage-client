@@ -31,6 +31,9 @@ This module provides the :py:class:`multistorageclient.contrib.async_fs.MultiSto
        lpath="/tmp/animal-photos/red-panda.png"
    )
 
+``cat_file()``, ``read_bytes()``, and ``cat_ranges()`` honor the ``start`` and ``end`` byte offsets with
+Python slice semantics, so libraries such as Zarr read only the byte ranges they request.
+
 *****
 Hydra
 *****
