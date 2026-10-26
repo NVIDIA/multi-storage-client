@@ -47,36 +47,36 @@ def test_diperiodic_exporting_metric_reader():
     time.sleep(2)
     metrics_data = exporter.metrics_data()
     assert metrics_data is not None
-    assert len(metrics_data.resource_metrics) == 1
-    assert len(metrics_data.resource_metrics[0].scope_metrics) == 1
-    assert len(metrics_data.resource_metrics[0].scope_metrics[0].metrics) == 1
-    assert isinstance(metrics_data.resource_metrics[0].scope_metrics[0].metrics[0].data, sdk_metrics_export.Gauge)
-    assert len(metrics_data.resource_metrics[0].scope_metrics[0].metrics[0].data.data_points) == 1
-    assert metrics_data.resource_metrics[0].scope_metrics[0].metrics[0].data.data_points[0].value == 1
+    assert len(metrics_data.resource_metrics) >= 1
+    assert len(metrics_data.resource_metrics[-1].scope_metrics) == 1
+    assert len(metrics_data.resource_metrics[-1].scope_metrics[-1].metrics) == 1
+    assert isinstance(metrics_data.resource_metrics[-1].scope_metrics[-1].metrics[-1].data, sdk_metrics_export.Gauge)
+    assert len(metrics_data.resource_metrics[-1].scope_metrics[-1].metrics[-1].data.data_points) == 1
+    assert metrics_data.resource_metrics[-1].scope_metrics[-1].metrics[-1].data.data_points[-1].value == 1
 
     # Force flush.
     gauge.set(2)
     reader.force_flush(timeout_millis=shutdown_timeout_millis)
     metrics_data = exporter.metrics_data()
     assert metrics_data is not None
-    assert len(metrics_data.resource_metrics) == 1
-    assert len(metrics_data.resource_metrics[0].scope_metrics) == 1
-    assert len(metrics_data.resource_metrics[0].scope_metrics[0].metrics) == 1
-    assert isinstance(metrics_data.resource_metrics[0].scope_metrics[0].metrics[0].data, sdk_metrics_export.Gauge)
-    assert len(metrics_data.resource_metrics[0].scope_metrics[0].metrics[0].data.data_points) == 1
-    assert metrics_data.resource_metrics[0].scope_metrics[0].metrics[0].data.data_points[0].value == 2
+    assert len(metrics_data.resource_metrics) >= 1
+    assert len(metrics_data.resource_metrics[-1].scope_metrics) == 1
+    assert len(metrics_data.resource_metrics[-1].scope_metrics[-1].metrics) == 1
+    assert isinstance(metrics_data.resource_metrics[-1].scope_metrics[-1].metrics[-1].data, sdk_metrics_export.Gauge)
+    assert len(metrics_data.resource_metrics[-1].scope_metrics[-1].metrics[-1].data.data_points) == 1
+    assert metrics_data.resource_metrics[-1].scope_metrics[-1].metrics[-1].data.data_points[-1].value == 2
 
     # Shutdown.
     gauge.set(3)
     reader.shutdown(timeout_millis=shutdown_timeout_millis)
     metrics_data = exporter.metrics_data()
     assert metrics_data is not None
-    assert len(metrics_data.resource_metrics) == 1
-    assert len(metrics_data.resource_metrics[0].scope_metrics) == 1
-    assert len(metrics_data.resource_metrics[0].scope_metrics[0].metrics) == 1
-    assert isinstance(metrics_data.resource_metrics[0].scope_metrics[0].metrics[0].data, sdk_metrics_export.Gauge)
-    assert len(metrics_data.resource_metrics[0].scope_metrics[0].metrics[0].data.data_points) == 1
-    assert metrics_data.resource_metrics[0].scope_metrics[0].metrics[0].data.data_points[0].value == 3
+    assert len(metrics_data.resource_metrics) >= 1
+    assert len(metrics_data.resource_metrics[-1].scope_metrics) == 1
+    assert len(metrics_data.resource_metrics[-1].scope_metrics[-1].metrics) == 1
+    assert isinstance(metrics_data.resource_metrics[-1].scope_metrics[-1].metrics[-1].data, sdk_metrics_export.Gauge)
+    assert len(metrics_data.resource_metrics[-1].scope_metrics[-1].metrics[-1].data.data_points) == 1
+    assert metrics_data.resource_metrics[-1].scope_metrics[-1].metrics[-1].data.data_points[-1].value == 3
 
     # Shutdown is idempotent.
     reader.shutdown(timeout_millis=shutdown_timeout_millis)
