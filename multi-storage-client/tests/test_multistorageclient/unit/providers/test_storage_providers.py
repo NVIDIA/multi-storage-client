@@ -20,7 +20,7 @@ import shutil
 import tempfile
 import urllib.request
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import cast
 
 import pytest
@@ -106,7 +106,7 @@ def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDat
         )
         storage_provider = cast(BaseStorageProvider, storage_client._storage_provider)
 
-        current_time = datetime.now(tz=timezone.utc).replace(microsecond=0)
+        current_time = datetime.now(tz=UTC).replace(microsecond=0)
 
         file_extension = ".txt"
         # Add a random string to the file path below so concurrent tests don't conflict.

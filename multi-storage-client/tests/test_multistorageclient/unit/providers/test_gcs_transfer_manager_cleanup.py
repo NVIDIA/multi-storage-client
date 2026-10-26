@@ -16,7 +16,7 @@
 import builtins
 import io
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -84,7 +84,7 @@ def test_stringio_transfers_use_utf8_with_ascii_locale(gcs_provider, tmp_path, o
             assert transferred == [payload]
         else:
             metadata = ObjectMetadata(
-                key="bucket/key", content_length=len(payload), last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)
+                key="bucket/key", content_length=len(payload), last_modified=datetime(2025, 1, 1, tzinfo=UTC)
             )
             destination = io.StringIO()
             gcs_provider._download_file("bucket/key", destination, metadata)
@@ -107,9 +107,7 @@ def test_small_rust_transfer_errors_are_translated(gcs_provider, tmp_path, opera
     gcs_provider._multipart_threshold = 8
     local_file = tmp_path / "data.bin"
     local_file.write_bytes(b"payload")
-    metadata = ObjectMetadata(
-        key="bucket/key", content_length=7, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)
-    )
+    metadata = ObjectMetadata(key="bucket/key", content_length=7, last_modified=datetime(2025, 1, 1, tzinfo=UTC))
 
     with (
         patch("multistorageclient.providers.gcs.run_async_rust_client_method", side_effect=rust_error),
@@ -239,9 +237,7 @@ def test_upload_file_object_removes_staging_file_on_failure(gcs_provider, tmp_pa
 
 
 def test_download_file_object_removes_staging_file_on_failure(gcs_provider, tmp_path):
-    metadata = ObjectMetadata(
-        key="bucket/key.bin", content_length=7, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)
-    )
+    metadata = ObjectMetadata(key="bucket/key.bin", content_length=7, last_modified=datetime(2025, 1, 1, tzinfo=UTC))
     with (
         patch(
             "multistorageclient.providers.gcs.transfer_manager.download_chunks_concurrently",
@@ -255,9 +251,7 @@ def test_download_file_object_removes_staging_file_on_failure(gcs_provider, tmp_
 
 
 def test_download_file_object_success_removes_staging_file(gcs_provider, tmp_path):
-    metadata = ObjectMetadata(
-        key="bucket/key.bin", content_length=7, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)
-    )
+    metadata = ObjectMetadata(key="bucket/key.bin", content_length=7, last_modified=datetime(2025, 1, 1, tzinfo=UTC))
 
     def fake_download(blob, filename, **kwargs):
         with open(filename, "wb") as fp:
@@ -274,9 +268,7 @@ def test_download_file_object_success_removes_staging_file(gcs_provider, tmp_pat
 
 
 def test_download_to_path_removes_staging_file_on_failure(gcs_provider, tmp_path):
-    metadata = ObjectMetadata(
-        key="bucket/key.bin", content_length=7, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)
-    )
+    metadata = ObjectMetadata(key="bucket/key.bin", content_length=7, last_modified=datetime(2025, 1, 1, tzinfo=UTC))
     with (
         patch(
             "multistorageclient.providers.gcs.transfer_manager.download_chunks_concurrently",

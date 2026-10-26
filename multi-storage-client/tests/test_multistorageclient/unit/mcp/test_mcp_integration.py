@@ -273,7 +273,7 @@ class TestMCPServerBasicOperations:
 
             # Validate timestamp format can be parsed (ISO format expected)
             try:
-                datetime.fromisoformat(metadata["last_modified"].replace("Z", "+00:00"))
+                datetime.fromisoformat(metadata["last_modified"])
             except ValueError:
                 pytest.fail(f"Invalid timestamp format: {metadata['last_modified']}")
 

@@ -18,7 +18,7 @@ import os
 import pickle
 import tempfile
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import ANY, MagicMock
 
 import pytest
@@ -345,7 +345,7 @@ def test_single_list_recursive_uses_provider_recursive_listing(single_backend_co
     assert isinstance(single, SingleStorageClient)
 
     expected_obj = ObjectMetadata(
-        key="data/file.bin", content_length=1, type="file", last_modified=datetime.now(tz=timezone.utc)
+        key="data/file.bin", content_length=1, type="file", last_modified=datetime.now(tz=UTC)
     )
     single._storage_provider.list_objects_recursive = MagicMock(return_value=iter([expected_obj]))
 
@@ -368,7 +368,7 @@ def test_single_list_recursive_uses_metadata_provider_when_configured(single_bac
     assert isinstance(single, SingleStorageClient)
 
     expected_obj = ObjectMetadata(
-        key="data/file.bin", content_length=1, type="file", last_modified=datetime.now(tz=timezone.utc)
+        key="data/file.bin", content_length=1, type="file", last_modified=datetime.now(tz=UTC)
     )
     metadata_provider = MagicMock()
     metadata_provider.realpath.return_value = MagicMock(exists=False)
@@ -398,7 +398,7 @@ def test_single_list_recursive_file_short_circuit_applies_key_bounds(single_back
     single.is_file = MagicMock(return_value=True)  # type: ignore[method-assign]
     single.info = MagicMock(
         return_value=ObjectMetadata(
-            key="data/file.bin", content_length=1, type="file", last_modified=datetime.now(tz=timezone.utc)
+            key="data/file.bin", content_length=1, type="file", last_modified=datetime.now(tz=UTC)
         )
     )  # type: ignore[method-assign]
     single._storage_provider.list_objects_recursive = MagicMock(
@@ -431,7 +431,7 @@ def test_single_write_with_metadata_provider_accepts_non_string_attributes(singl
     physical_metadata = ObjectMetadata(
         key="physical/file.bin",
         content_length=4,
-        last_modified=datetime.now(tz=timezone.utc),
+        last_modified=datetime.now(tz=UTC),
         metadata={"existing": "value"},
     )
     single._storage_provider.put_object = MagicMock()
@@ -465,7 +465,7 @@ def test_download_file_forwards_metadata_to_composite_child(multi_backend_config
     )
     child = composite._child_clients["loc1"]
     child.download_file = MagicMock()
-    metadata = ObjectMetadata("logical/object", 7, datetime.now(timezone.utc)) if supply_metadata else None
+    metadata = ObjectMetadata("logical/object", 7, datetime.now(UTC)) if supply_metadata else None
 
     client.download_file("logical/object", "/local/object", metadata=metadata)
 
@@ -549,7 +549,7 @@ def test_download_files_delegates_metadata_to_single(single_backend_config):
     client = StorageClient(single_backend_config)
     client._delegate.download_files = MagicMock()
 
-    meta = [ObjectMetadata(key="/remote/a", content_length=42, last_modified=datetime.now(tz=timezone.utc))]
+    meta = [ObjectMetadata(key="/remote/a", content_length=42, last_modified=datetime.now(tz=UTC))]
     client.download_files(["/remote/a"], ["/local/a"], metadata=meta, max_workers=8)
 
     client._delegate.download_files.assert_called_once_with(
@@ -745,8 +745,8 @@ def test_single_upload_files_with_metadata_resolves_and_registers(single_backend
     ]
     metadata_provider.allow_overwrites.return_value = False
 
-    obj_meta_a = ObjectMetadata(key="physical/a", content_length=100, last_modified=datetime.now(tz=timezone.utc))
-    obj_meta_b = ObjectMetadata(key="physical/b", content_length=200, last_modified=datetime.now(tz=timezone.utc))
+    obj_meta_a = ObjectMetadata(key="physical/a", content_length=100, last_modified=datetime.now(tz=UTC))
+    obj_meta_b = ObjectMetadata(key="physical/b", content_length=200, last_modified=datetime.now(tz=UTC))
     single._storage_provider.get_object_metadata = MagicMock(side_effect=[obj_meta_a, obj_meta_b])
     single._storage_provider.upload_files = MagicMock()
 
@@ -781,9 +781,9 @@ def test_single_upload_files_with_metadata_and_attributes(single_backend_config)
     ]
     metadata_provider.allow_overwrites.return_value = False
 
-    obj_meta_a = ObjectMetadata(key="physical/a", content_length=100, last_modified=datetime.now(tz=timezone.utc))
+    obj_meta_a = ObjectMetadata(key="physical/a", content_length=100, last_modified=datetime.now(tz=UTC))
     obj_meta_b = ObjectMetadata(
-        key="physical/b", content_length=200, last_modified=datetime.now(tz=timezone.utc), metadata={"existing": "val"}
+        key="physical/b", content_length=200, last_modified=datetime.now(tz=UTC), metadata={"existing": "val"}
     )
     single._storage_provider.get_object_metadata = MagicMock(side_effect=[obj_meta_a, obj_meta_b])
     single._storage_provider.upload_files = MagicMock()
@@ -837,7 +837,7 @@ def test_single_upload_files_registers_metadata_in_parallel(single_backend_confi
         if not both_started.wait(timeout=1):
             raise AssertionError("metadata registration did not run in parallel")
 
-        return ObjectMetadata(key=path, content_length=100, last_modified=datetime.now(tz=timezone.utc))
+        return ObjectMetadata(key=path, content_length=100, last_modified=datetime.now(tz=UTC))
 
     single._storage_provider.get_object_metadata = get_object_metadata
 
@@ -883,7 +883,7 @@ def test_single_upload_files_with_metadata_does_not_upload_when_overwrite_fails(
         physical_path="physical/a", state=ResolvedPathState.UNTRACKED
     )
     metadata_provider.allow_overwrites.return_value = False
-    obj_meta = ObjectMetadata(key="physical/a", content_length=100, last_modified=datetime.now(tz=timezone.utc))
+    obj_meta = ObjectMetadata(key="physical/a", content_length=100, last_modified=datetime.now(tz=UTC))
     single._storage_provider.get_object_metadata = MagicMock(return_value=obj_meta)
     single._storage_provider.upload_files = MagicMock()
     single._metadata_provider = metadata_provider
@@ -914,7 +914,7 @@ def test_single_upload_files_with_metadata_does_not_register_partial_provider_su
     single._metadata_provider = metadata_provider
     single._metadata_provider_lock = None
     single._storage_provider.get_object_metadata = MagicMock(
-        return_value=ObjectMetadata(key="physical/a", content_length=100, last_modified=datetime.now(tz=timezone.utc))
+        return_value=ObjectMetadata(key="physical/a", content_length=100, last_modified=datetime.now(tz=UTC))
     )
     single._storage_provider.upload_files = MagicMock(
         side_effect=BatchTransferError(
@@ -998,9 +998,7 @@ def test_single_upload_files_with_metadata_allows_overwrite(single_backend_confi
     metadata_provider.generate_physical_path.return_value = ResolvedPath(
         physical_path="physical/existing_v2", state=ResolvedPathState.EXISTS
     )
-    obj_meta = ObjectMetadata(
-        key="physical/existing_v2", content_length=100, last_modified=datetime.now(tz=timezone.utc)
-    )
+    obj_meta = ObjectMetadata(key="physical/existing_v2", content_length=100, last_modified=datetime.now(tz=UTC))
     single._storage_provider.get_object_metadata = MagicMock(return_value=obj_meta)
     single._storage_provider.upload_files = MagicMock()
     single._metadata_provider = metadata_provider

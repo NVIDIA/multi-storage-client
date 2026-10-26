@@ -16,7 +16,7 @@
 import threading
 import time
 from collections.abc import Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from multistorageclient.types import (
     Credentials,
@@ -61,7 +61,7 @@ class TestScopedCredentialsProvider(CredentialsProvider):
 class TestMetadataProvider(MetadataProvider):
     def __init__(self):
         self._files = {
-            key: ObjectMetadata(key=key, content_length=19283, last_modified=datetime.now(tz=timezone.utc))
+            key: ObjectMetadata(key=key, content_length=19283, last_modified=datetime.now(tz=UTC))
             for key in ["webdataset-00001.tar", "webdataset-00002.tar"]
         }
         self._pending = {}
@@ -87,7 +87,7 @@ class TestMetadataProvider(MetadataProvider):
 
     def get_object_metadata(self, path: str, include_pending: bool = False) -> ObjectMetadata:
         assert not include_pending, "Not supported in tests"
-        return ObjectMetadata(key=path, content_length=19283, last_modified=datetime.now(tz=timezone.utc))
+        return ObjectMetadata(key=path, content_length=19283, last_modified=datetime.now(tz=UTC))
 
     def glob(self, pattern: str, attribute_filter_expression: str | None = None) -> list[str]:
         return glob_util(list(self._files.keys()), pattern)
@@ -104,9 +104,7 @@ class TestMetadataProvider(MetadataProvider):
 
     def add_file(self, path: str, metadata: ObjectMetadata) -> None:
         assert path not in self._files
-        self._pending[path] = ObjectMetadata(
-            key=path, content_length=19283, last_modified=datetime.now(tz=timezone.utc)
-        )
+        self._pending[path] = ObjectMetadata(key=path, content_length=19283, last_modified=datetime.now(tz=UTC))
 
     def remove_file(self, path: str) -> None:
         assert path in self._files
@@ -210,7 +208,7 @@ class SlowRefreshableCredentialsProvider(CredentialsProvider):
         self._refresh_count = 0
         self._lock = threading.Lock()
         # Set expiration to near future to trigger refresh
-        self._expiration = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+        self._expiration = (datetime.now(UTC) - timedelta(seconds=60)).isoformat()
 
     def get_credentials(self) -> Credentials:
         print(f"[Test] Getting credentials (count: {self._refresh_count})")
@@ -230,7 +228,7 @@ class SlowRefreshableCredentialsProvider(CredentialsProvider):
             self._refresh_count += 1
         time.sleep(1)
         # Update expiration to far future after refresh
-        self._expiration = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        self._expiration = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
 
     @property
     def refresh_count(self) -> int:

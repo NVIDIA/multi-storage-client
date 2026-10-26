@@ -15,7 +15,7 @@
 
 import json
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -75,7 +75,7 @@ def test_file_based_credentials_provider_with_session_token():
 
 
 def test_file_based_credentials_provider_with_expiration():
-    expiration_time = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    expiration_time = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         cred_file = Path(tmpdir) / "credentials.json"
@@ -91,7 +91,7 @@ def test_file_based_credentials_provider_with_expiration():
 
 
 def test_file_based_credentials_provider_with_expired_credentials():
-    expiration_time = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    expiration_time = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         cred_file = Path(tmpdir) / "credentials.json"
@@ -369,7 +369,7 @@ def test_file_based_credentials_provider_caching():
 
 
 def test_file_based_credentials_provider_full_example():
-    expiration_time = (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()
+    expiration_time = (datetime.now(UTC) + timedelta(hours=12)).isoformat()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         cred_file = Path(tmpdir) / "credentials.json"

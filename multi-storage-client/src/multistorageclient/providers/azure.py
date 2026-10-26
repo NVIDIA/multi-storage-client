@@ -17,7 +17,7 @@ import io
 import os
 import tempfile
 from collections.abc import Callable, Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import IO, Any, TypeVar
 from urllib.parse import quote, urlparse
 
@@ -137,7 +137,7 @@ class AzureURLSigner(URLSigner):
         :return: A fully-qualified SAS URL.
         """
         container_name, blob_name = split_path(path)
-        expiry = datetime.now(timezone.utc) + timedelta(seconds=self._expires_in)
+        expiry = datetime.now(UTC) + timedelta(seconds=self._expires_in)
 
         sas_kwargs: dict[str, Any] = {
             "account_name": self._account_name,
@@ -698,7 +698,7 @@ class AzureBlobStorageProvider(BaseStorageProvider):
         elif isinstance(self._credentials_provider, DefaultAzureCredentialsProvider):
             # User delegation key path: refresh when the cached key is within the
             # refresh buffer of its own expiry or has not been fetched yet.
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             if (
                 self._delegation_user_key is None
                 or self._delegation_signer_expiry is None

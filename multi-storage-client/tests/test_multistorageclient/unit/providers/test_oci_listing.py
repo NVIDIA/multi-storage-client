@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -21,7 +21,7 @@ import pytest
 
 from multistorageclient.providers.oci import OracleStorageProvider
 
-LAST_MODIFIED = datetime(2025, 1, 1, tzinfo=timezone.utc)
+LAST_MODIFIED = datetime(2025, 1, 1, tzinfo=UTC)
 
 
 @pytest.fixture

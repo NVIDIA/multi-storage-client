@@ -20,7 +20,7 @@ import tempfile
 import threading
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock, patch
 
 import pytest
@@ -697,7 +697,7 @@ def test_cache_manager_refresh_cache(tmpdir):
         cache_manager.set(file_name, data_10mb)
 
     # Force refresh by setting last refresh time to the past
-    cache_manager._last_refresh_time = datetime.now(tz=timezone.utc) - timedelta(
+    cache_manager._last_refresh_time = datetime.now(tz=UTC) - timedelta(
         seconds=cache_manager._cache_refresh_interval + 1
     )
 
@@ -773,7 +773,7 @@ def test_partial_chunk_write_triggers_background_eviction(tmpdir):
     assert os.path.exists(chunk0_path)
     assert os.path.exists(chunk1_path)
 
-    cache_manager._last_refresh_time = datetime.now(tz=timezone.utc) - timedelta(
+    cache_manager._last_refresh_time = datetime.now(tz=UTC) - timedelta(
         seconds=cache_manager._cache_refresh_interval + 1
     )
 
@@ -845,7 +845,7 @@ def test_lru_eviction_policy(profile_name, lru_cache_config):
     time.sleep(1)  # Ensure time difference for LRU
     # Record the current last_refresh_time and set it to past to force refresh
     old_refresh_time = cache_manager._last_refresh_time
-    cache_manager._last_refresh_time = datetime.now(tz=timezone.utc).replace(year=2000)
+    cache_manager._last_refresh_time = datetime.now(tz=UTC).replace(year=2000)
     cache_manager.refresh_cache()
     # Verify that refresh occurred by checking last_refresh_time was updated
     assert cache_manager._last_refresh_time > old_refresh_time, "Cache refresh should update last_refresh_time"
@@ -887,7 +887,7 @@ def test_mru_eviction_policy(profile_name, mru_cache_config):
     time.sleep(1)  # Ensure time difference for MRU
     # Record the current last_refresh_time and set it to past to force refresh
     old_refresh_time = cache_manager._last_refresh_time
-    cache_manager._last_refresh_time = datetime.now(tz=timezone.utc).replace(year=2000)
+    cache_manager._last_refresh_time = datetime.now(tz=UTC).replace(year=2000)
     cache_manager.refresh_cache()
     # Verify that refresh occurred by checking last_refresh_time was updated
     assert cache_manager._last_refresh_time > old_refresh_time, "Cache refresh should update last_refresh_time"
@@ -942,7 +942,7 @@ def test_fifo_eviction_policy(profile_name, fifo_cache_config):
 
     # Force refresh to trigger eviction
     old_refresh_time = cache_manager._last_refresh_time
-    cache_manager._last_refresh_time = datetime.now(tz=timezone.utc).replace(year=2000)
+    cache_manager._last_refresh_time = datetime.now(tz=UTC).replace(year=2000)
     cache_manager.refresh_cache()
     assert cache_manager._last_refresh_time > old_refresh_time, "Cache refresh should update last_refresh_time"
 
@@ -959,7 +959,7 @@ def test_fifo_eviction_policy(profile_name, fifo_cache_config):
 
     # Force refresh to trigger eviction
     old_refresh_time = cache_manager._last_refresh_time
-    cache_manager._last_refresh_time = datetime.now(tz=timezone.utc).replace(year=2000)
+    cache_manager._last_refresh_time = datetime.now(tz=UTC).replace(year=2000)
     cache_manager.refresh_cache()
     assert cache_manager._last_refresh_time > old_refresh_time, "Cache refresh should update last_refresh_time"
 
@@ -1030,7 +1030,7 @@ def test_random_eviction_policy(profile_name, random_cache_config):
     cache_manager.set(f"{test_uuid}/file4", b"d" * 3 * 1024 * 1024)  # 3 MB
 
     # Force refresh to trigger eviction by setting last refresh time to the past
-    cache_manager._last_refresh_time = datetime.now(tz=timezone.utc).replace(year=2000)
+    cache_manager._last_refresh_time = datetime.now(tz=UTC).replace(year=2000)
     cache_manager.refresh_cache()
 
     # Verify that exactly one file was evicted (could be any of the files)
@@ -1283,7 +1283,7 @@ def test_no_eviction_policy(profile_name, no_eviction_cache_config):
     assert not os.path.exists(lock_file_path), "No lock file should be created for NONE policy"
 
     # Force refresh to trigger eviction by setting last refresh time to the past
-    cache_manager._last_refresh_time = datetime.now(tz=timezone.utc).replace(year=2000)
+    cache_manager._last_refresh_time = datetime.now(tz=UTC).replace(year=2000)
     cache_manager.refresh_cache()
 
     # Verify all 5 files are still in cache after refresh
@@ -1319,7 +1319,7 @@ def test_purge_factor_default(profile_name, lru_cache_config):
         time.sleep(0.1)
 
     # Force eviction
-    cache_manager._last_refresh_time = datetime.now(tz=timezone.utc).replace(year=2000)
+    cache_manager._last_refresh_time = datetime.now(tz=UTC).replace(year=2000)
     cache_manager.refresh_cache()
 
     # With purge_factor=0, cache should be just under 10MB
@@ -1353,7 +1353,7 @@ def test_purge_factor_values(profile_name, purge_factor_cache_config, expected_t
         time.sleep(0.1)
 
     # Force eviction
-    cache_manager._last_refresh_time = datetime.now(tz=timezone.utc).replace(year=2000)
+    cache_manager._last_refresh_time = datetime.now(tz=UTC).replace(year=2000)
     cache_manager.refresh_cache()
 
     # Calculate expected target size

@@ -20,7 +20,7 @@ import os
 import shutil
 import tempfile
 from collections.abc import Callable, Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from io import BytesIO, StringIO
 from typing import IO, Any, TypeVar
@@ -224,7 +224,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
                 key=path,
                 type="directory" if is_dir else "file",
                 content_length=0 if is_dir else os.path.getsize(path),
-                last_modified=datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc),
+                last_modified=datetime.fromtimestamp(os.path.getmtime(path), tz=UTC),
                 metadata=metadata_dict if metadata_dict else None,
                 symlink_target=symlink_target,
             )
@@ -262,7 +262,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
                     yield ObjectMetadata(
                         key=relative_path,
                         content_length=0,
-                        last_modified=datetime.fromtimestamp(os.path.getmtime(symlink_path), tz=timezone.utc),
+                        last_modified=datetime.fromtimestamp(os.path.getmtime(symlink_path), tz=UTC),
                         type=target_type,
                         symlink_target=relative_target,
                     )
@@ -274,7 +274,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
                     yield ObjectMetadata(
                         key=relative_path,
                         content_length=os.path.getsize(path),
-                        last_modified=datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc),
+                        last_modified=datetime.fromtimestamp(os.path.getmtime(path), tz=UTC),
                     )
             dir_path = path.rstrip("/") + "/"
             if not os.path.isdir(dir_path):
@@ -447,7 +447,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
                     yield ObjectMetadata(
                         key=relative_path,
                         content_length=os.path.getsize(full_path),
-                        last_modified=datetime.fromtimestamp(os.path.getmtime(full_path), tz=timezone.utc),
+                        last_modified=datetime.fromtimestamp(os.path.getmtime(full_path), tz=UTC),
                     )
                 elif entry_type == _EntryType.DIRECTORY:
                     yield ObjectMetadata(
@@ -465,7 +465,7 @@ class PosixFileStorageProvider(BaseStorageProvider):
                     yield ObjectMetadata(
                         key=relative_path,
                         content_length=0,
-                        last_modified=datetime.fromtimestamp(os.path.getmtime(full_path), tz=timezone.utc),
+                        last_modified=datetime.fromtimestamp(os.path.getmtime(full_path), tz=UTC),
                         type=target_type,
                         symlink_target=relative_target,
                     )

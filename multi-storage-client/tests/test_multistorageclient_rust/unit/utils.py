@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from multistorageclient.types import Credentials, CredentialsProvider
 
@@ -47,7 +47,7 @@ class RefreshableTestCredentialsProvider(CredentialsProvider):
         else:
             self._access_key = "invalid_access_key"
             self._secret_key = "invalid_secret_key"
-            self._expiration = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            self._expiration = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     @property
     def refresh_count(self) -> int:

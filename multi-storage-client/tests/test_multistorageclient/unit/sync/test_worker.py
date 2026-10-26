@@ -17,7 +17,7 @@ import json
 import os
 import queue
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
@@ -70,7 +70,7 @@ def test_object_metadata_replace():
     target_metadata = ObjectMetadata(
         key="target/path/file.txt",
         content_length=4,
-        last_modified=datetime(2025, 1, 1, 10, 0, 0, tzinfo=timezone.utc),
+        last_modified=datetime(2025, 1, 1, 10, 0, 0, tzinfo=UTC),
         etag="etag-1",
         metadata={"existing": "value", "version": "1"},
     )
@@ -156,7 +156,7 @@ def test_batch_posix_to_posix(source_path):
                     ObjectMetadata(
                         key=source_name,
                         content_length=len(content),
-                        last_modified=datetime.now(tz=timezone.utc),
+                        last_modified=datetime.now(tz=UTC),
                         metadata=None,
                     ),
                     None,
@@ -227,7 +227,7 @@ def test_batch_posix_to_remote(temp_data_store_type: type[tempdatastore.Temporar
                     ObjectMetadata(
                         key=name,
                         content_length=len(content),
-                        last_modified=datetime.now(tz=timezone.utc),
+                        last_modified=datetime.now(tz=UTC),
                         metadata={"source": name},
                     ),
                     None,
@@ -287,7 +287,7 @@ def test_batch_remote_to_posix(temp_data_store_type: type[tempdatastore.Temporar
                     ObjectMetadata(
                         key=name,
                         content_length=len(content),
-                        last_modified=datetime.now(tz=timezone.utc),
+                        last_modified=datetime.now(tz=UTC),
                         metadata={"source": name},
                     ),
                     None,
@@ -355,7 +355,7 @@ def test_batch_callbacks_remove_finished_files_before_batch_returns(tmp_path, di
     batch = OperationBatch(
         operation=OperationType.ADD,
         items=[
-            (ObjectMetadata(key="src/" + name, content_length=1, last_modified=datetime.now(timezone.utc)), None)
+            (ObjectMetadata(key="src/" + name, content_length=1, last_modified=datetime.now(UTC)), None)
             for name in ["first.bin", "second.bin"]
         ],
     )
@@ -389,9 +389,7 @@ def _make_handler_with_metadata_provider():
 def _make_add_batch(n: int):
     items: list[tuple[ObjectMetadata, ObjectMetadata | None]] = [
         (
-            ObjectMetadata(
-                key=f"src/file{i}.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)
-            ),
+            ObjectMetadata(key=f"src/file{i}.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=UTC)),
             None,
         )
         for i in range(n)
@@ -413,7 +411,7 @@ def _make_delete_handler(target_client, source_path: str, target_path: str) -> s
 
 def _make_delete_batch(*keys: str) -> OperationBatch:
     items: list[tuple[ObjectMetadata, ObjectMetadata | None]] = [
-        (ObjectMetadata(key=key, content_length=1, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)), None)
+        (ObjectMetadata(key=key, content_length=1, last_modified=datetime(2025, 1, 1, tzinfo=UTC)), None)
         for key in keys
     ]
     return OperationBatch(operation=OperationType.DELETE, items=items)
@@ -567,7 +565,7 @@ def test_remote_staging_cleanup(tmp_path, failure, parent_owned):
     handler = sync_worker_module.create_sync_handler(
         source, "", target, "", False, queue.Queue(), queue.Queue(), str(tmp_path) if parent_owned else None
     )
-    item = ObjectMetadata(key="large.bin", content_length=10, last_modified=datetime.now(timezone.utc))
+    item = ObjectMetadata(key="large.bin", content_length=10, last_modified=datetime.now(UTC))
     if failure:
         with pytest.raises(RuntimeError, match=f"{failure} failed"):
             handler._execute_batch_transfer("worker", [(item, "target.bin")])
@@ -603,7 +601,7 @@ def test_batch_remote_to_remote(temp_data_store_type: type[tempdatastore.Tempora
                     ObjectMetadata(
                         key=name,
                         content_length=len(content),
-                        last_modified=datetime.now(tz=timezone.utc),
+                        last_modified=datetime.now(tz=UTC),
                         metadata={"source": name},
                     ),
                     None,
@@ -661,7 +659,7 @@ def test_update_posix_metadata(use_metadata_provider: bool):
 
         custom_metadata = {"custom_key": "custom_value", "author": "test"}
         # Use a specific timestamp to verify mtime is set correctly
-        expected_mtime = datetime(2025, 6, 15, 10, 30, 45, tzinfo=timezone.utc)
+        expected_mtime = datetime(2025, 6, 15, 10, 30, 45, tzinfo=UTC)
         file_metadata = ObjectMetadata(
             key=test_file,
             content_length=len(content),

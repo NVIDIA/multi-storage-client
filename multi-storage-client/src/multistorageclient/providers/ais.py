@@ -16,7 +16,7 @@
 import io
 import os
 from collections.abc import Callable, Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import IO, Any, TypeVar
 
 from aistore.sdk import Client, RetryConfig
@@ -336,7 +336,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
 
                     # The access time is not always present in the response.
                     if props.access_time:
-                        last_modified = datetime.fromtimestamp(int(props.access_time) / 1e9).astimezone(timezone.utc)
+                        last_modified = datetime.fromtimestamp(int(props.access_time) / 1e9).astimezone(UTC)
                     else:
                         last_modified = AWARE_DATETIME_MIN
 
@@ -400,7 +400,7 @@ class AIStoreStorageProvider(BaseStorageProvider):
 
                 # The access time is not always present in the response.
                 if props.access_time:
-                    last_modified = dateutil_parser(props.access_time).astimezone(timezone.utc)
+                    last_modified = dateutil_parser(props.access_time).astimezone(UTC)
                 else:
                     last_modified = AWARE_DATETIME_MIN
 

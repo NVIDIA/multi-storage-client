@@ -22,7 +22,7 @@ import sys
 import tempfile
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from test_multistorageclient.unit.utils import tempdatastore
@@ -406,7 +406,7 @@ async def test_rustclient_with_refreshable_credentials(temp_data_store_type: typ
         credentials_provider = RefreshableTestCredentialsProvider(
             access_key=config_dict["credentials_provider"]["options"]["access_key"],
             secret_key=config_dict["credentials_provider"]["options"]["secret_key"],
-            expiration=(datetime.now(timezone.utc) + timedelta(seconds=605)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            expiration=(datetime.now(UTC) + timedelta(seconds=605)).strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
 
         rust_client = RustClient(
@@ -473,7 +473,7 @@ async def test_rustclient_with_refreshable_credentials_expect_error(
         credentials_provider = RefreshableTestCredentialsProvider(
             access_key=config_dict["credentials_provider"]["options"]["access_key"],
             secret_key=config_dict["credentials_provider"]["options"]["secret_key"],
-            expiration=(datetime.now(timezone.utc) + timedelta(seconds=599)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            expiration=(datetime.now(UTC) + timedelta(seconds=599)).strftime("%Y-%m-%dT%H:%M:%SZ"),
             refresh_error=True,
         )
 

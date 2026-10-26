@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 try:
@@ -95,7 +95,7 @@ class CloudFrontURLSigner(URLSigner):
                 )
 
         url = f"https://{self._domain}/{effective}"
-        expiry = datetime.now(timezone.utc) + timedelta(seconds=self._expires_in)
+        expiry = datetime.now(UTC) + timedelta(seconds=self._expires_in)
         epoch = int(expiry.timestamp())
 
         policy = json.dumps(

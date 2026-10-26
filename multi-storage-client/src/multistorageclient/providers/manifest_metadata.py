@@ -20,7 +20,7 @@ import logging
 import os
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ..types import (
@@ -278,7 +278,7 @@ class ManifestMetadataProvider(MetadataProvider):
             if base_path.startswith(os.sep):
                 manifest_base_path = os.sep + manifest_base_path
 
-        current_time = datetime.now(timezone.utc)
+        current_time = datetime.now(UTC)
         current_time_str = current_time.isoformat(timespec="seconds")
         manifest_folderpath = os.path.join(manifest_base_path, DEFAULT_MANIFEST_BASE_DIR, current_time_str)
 

@@ -20,7 +20,7 @@ import time
 from collections.abc import Iterator
 from concurrent.futures import CancelledError
 from contextlib import nullcontext
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import IO, Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -59,11 +59,9 @@ class MockBaseStorageProvider(BaseStorageProvider):
 
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         if not path.endswith("txt"):
-            return ObjectMetadata(
-                key=path, content_length=0, type="directory", last_modified=datetime.now(tz=timezone.utc)
-            )
+            return ObjectMetadata(key=path, content_length=0, type="directory", last_modified=datetime.now(tz=UTC))
         else:
-            return ObjectMetadata(key=path, content_length=0, type="file", last_modified=datetime.now(tz=timezone.utc))
+            return ObjectMetadata(key=path, content_length=0, type="file", last_modified=datetime.now(tz=UTC))
 
     def _list_objects(
         self,
@@ -102,7 +100,7 @@ class FailFastStorageProvider(MockBaseStorageProvider):
                 key="bucket/bad",
                 content_length=0,
                 type="directory",
-                last_modified=datetime.now(tz=timezone.utc),
+                last_modified=datetime.now(tz=UTC),
             )
 
 
@@ -167,9 +165,7 @@ def test_batch_activity_counts_executing_files_and_cleans_up(
     for path in local_paths:
         with open(path, "wb") as stream:
             stream.write(b"x")
-    metadata = [
-        ObjectMetadata(key=path, content_length=1, last_modified=datetime.now(tz=timezone.utc)) for path in remote_paths
-    ]
+    metadata = [ObjectMetadata(key=path, content_length=1, last_modified=datetime.now(tz=UTC)) for path in remote_paths]
     with pytest.raises(BatchTransferError) if fail else nullcontext():
         if operation == "download":
             provider.download_files(
@@ -209,7 +205,7 @@ def test_batch_notifications_report_cancellation_without_completion(tmp_path, op
     local_path = str(tmp_path / "file")
     with open(local_path, "wb") as stream:
         stream.write(b"x")
-    metadata = ObjectMetadata(key="file", content_length=1, last_modified=datetime.now(tz=timezone.utc))
+    metadata = ObjectMetadata(key="file", content_length=1, last_modified=datetime.now(tz=UTC))
 
     def transfer_callback(source_path, destination_path, state):
         events.append((source_path, destination_path, state))
@@ -265,7 +261,7 @@ def test_batch_callbacks_propagate_base_exceptions(tmp_path, backend, operation,
 
     local_path = tmp_path / "file"
     local_path.write_bytes(b"x")
-    metadata = ObjectMetadata(key="file", content_length=1, last_modified=datetime.now(tz=timezone.utc))
+    metadata = ObjectMetadata(key="file", content_length=1, last_modified=datetime.now(tz=UTC))
     with pytest.raises(pytest.fail.Exception) as caught:
         if operation == "download":
             provider.download_files(["file"], [str(local_path)], [metadata], transfer_callback=callback)
@@ -278,15 +274,9 @@ def test_batch_callbacks_propagate_base_exceptions(tmp_path, backend, operation,
 
 def test_list_objects_with_base_path():
     mock_objects = [
-        ObjectMetadata(
-            key="prefix/dir/file1.txt", content_length=0, type="file", last_modified=datetime.now(tz=timezone.utc)
-        ),
-        ObjectMetadata(
-            key="prefix/dir/file2.txt", content_length=0, type="file", last_modified=datetime.now(tz=timezone.utc)
-        ),
-        ObjectMetadata(
-            key="prefix/dir", content_length=0, type="directory", last_modified=datetime.now(tz=timezone.utc)
-        ),
+        ObjectMetadata(key="prefix/dir/file1.txt", content_length=0, type="file", last_modified=datetime.now(tz=UTC)),
+        ObjectMetadata(key="prefix/dir/file2.txt", content_length=0, type="file", last_modified=datetime.now(tz=UTC)),
+        ObjectMetadata(key="prefix/dir", content_length=0, type="directory", last_modified=datetime.now(tz=UTC)),
     ]
     provider = MockBaseStorageProvider(base_path="bucket", provider_name="mock")
     provider._list_objects = MagicMock(return_value=iter(mock_objects))
@@ -303,17 +293,15 @@ def test_list_objects_with_prefix_in_base_path():
             key="bucket/prefix/dir/file1.txt",
             content_length=0,
             type="file",
-            last_modified=datetime.now(tz=timezone.utc),
+            last_modified=datetime.now(tz=UTC),
         ),
         ObjectMetadata(
             key="bucket/prefix/dir/file2.txt",
             content_length=0,
             type="file",
-            last_modified=datetime.now(tz=timezone.utc),
+            last_modified=datetime.now(tz=UTC),
         ),
-        ObjectMetadata(
-            key="bucket/prefix/dir", content_length=0, type="directory", last_modified=datetime.now(tz=timezone.utc)
-        ),
+        ObjectMetadata(key="bucket/prefix/dir", content_length=0, type="directory", last_modified=datetime.now(tz=UTC)),
     ]
     provider = MockBaseStorageProvider(base_path="bucket/prefix", provider_name="mock")
     provider._list_objects = MagicMock(return_value=iter(mock_objects))
@@ -436,8 +424,7 @@ def test_download_files_threaded_reports_all_failed_indices():
 
     provider.download_file = Mock(side_effect=download_file)
     metadata = [
-        ObjectMetadata(key=path, content_length=1, last_modified=datetime.now(tz=timezone.utc))
-        for path in ["a", "b", "c"]
+        ObjectMetadata(key=path, content_length=1, last_modified=datetime.now(tz=UTC)) for path in ["a", "b", "c"]
     ]
 
     with pytest.raises(BatchTransferError) as exc_info:
@@ -474,9 +461,9 @@ def test_download_files_async_reports_failed_indices(error_type, multipart_thres
     rust_client = FakeRustClient()
     provider._rust_client = rust_client
     metadata = [
-        ObjectMetadata(key="remote-a", content_length=1, last_modified=datetime.now(tz=timezone.utc)),
-        ObjectMetadata(key="remote-b", content_length=1, last_modified=datetime.now(tz=timezone.utc)),
-        ObjectMetadata(key="remote-c", content_length=1, last_modified=datetime.now(tz=timezone.utc)),
+        ObjectMetadata(key="remote-a", content_length=1, last_modified=datetime.now(tz=UTC)),
+        ObjectMetadata(key="remote-b", content_length=1, last_modified=datetime.now(tz=UTC)),
+        ObjectMetadata(key="remote-c", content_length=1, last_modified=datetime.now(tz=UTC)),
     ]
 
     with pytest.raises(BatchTransferError) as exc_info:
@@ -513,8 +500,8 @@ def test_download_files_async_reports_preflight_failures():
     rust_client = FakeRustClient()
     provider._rust_client = rust_client
     metadata = [
-        ObjectMetadata(key="remote-a", content_length=1, last_modified=datetime.now(tz=timezone.utc)),
-        ObjectMetadata(key="remote-b", content_length=1, last_modified=datetime.now(tz=timezone.utc)),
+        ObjectMetadata(key="remote-a", content_length=1, last_modified=datetime.now(tz=UTC)),
+        ObjectMetadata(key="remote-b", content_length=1, last_modified=datetime.now(tz=UTC)),
     ]
 
     def fail_for_second_dir(path: str) -> None:
@@ -933,7 +920,7 @@ class MockParallelListingProvider(MockBaseStorageProvider):
 
 
 def _obj(key: str, obj_type: str = "file") -> ObjectMetadata:
-    return ObjectMetadata(key=key, content_length=0, type=obj_type, last_modified=datetime.now(tz=timezone.utc))
+    return ObjectMetadata(key=key, content_length=0, type=obj_type, last_modified=datetime.now(tz=UTC))
 
 
 class TestParallelListingHeap:
@@ -1048,9 +1035,9 @@ def test_download_files_threaded_with_metadata():
     remote_paths = ["file1.txt", "file2.txt", "file3.txt"]
     local_paths = ["/tmp/file1.txt", "/tmp/file2.txt", "/tmp/file3.txt"]
     meta = [
-        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime.now(tz=timezone.utc)),
+        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime.now(tz=UTC)),
         None,
-        ObjectMetadata(key="file3.txt", content_length=999999999, last_modified=datetime.now(tz=timezone.utc)),
+        ObjectMetadata(key="file3.txt", content_length=999999999, last_modified=datetime.now(tz=UTC)),
     ]
     provider.download_files(remote_paths, local_paths, metadata=meta, max_workers=4)
 
@@ -1098,8 +1085,8 @@ def test_download_files_async_with_metadata():
     remote_paths = ["small.txt", "large.txt", "unknown.txt"]
     local_paths = ["/tmp/small.txt", "/tmp/large.txt", "/tmp/unknown.txt"]
     meta = [
-        ObjectMetadata(key="small.txt", content_length=500, last_modified=datetime.now(tz=timezone.utc)),
-        ObjectMetadata(key="large.txt", content_length=5000, last_modified=datetime.now(tz=timezone.utc)),
+        ObjectMetadata(key="small.txt", content_length=500, last_modified=datetime.now(tz=UTC)),
+        ObjectMetadata(key="large.txt", content_length=5000, last_modified=datetime.now(tz=UTC)),
         None,
     ]
 
@@ -1122,7 +1109,7 @@ def test_download_files_async_with_metadata():
 def test_download_files_async_resolves_symlink_targets(tmp_path, supply_metadata, target_size):
     provider = MockBaseStorageProvider(base_path="bucket/prefix", provider_name="mock")
     provider._multipart_threshold = 1024
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     metadata = {
         "bucket/prefix/link.txt": ObjectMetadata(
             key="bucket/prefix/link.txt", content_length=0, last_modified=now, symlink_target="alias.txt"
@@ -1159,9 +1146,9 @@ def test_download_files_async_reports_symlink_resolution_failures(tmp_path, targ
     provider._rust_client = MagicMock(download=AsyncMock(return_value=1))
     metadata = [
         ObjectMetadata(
-            key="link.txt", content_length=0, last_modified=datetime.now(tz=timezone.utc), symlink_target="target.txt"
+            key="link.txt", content_length=0, last_modified=datetime.now(tz=UTC), symlink_target="target.txt"
         ),
-        ObjectMetadata(key="plain.txt", content_length=1, last_modified=datetime.now(tz=timezone.utc)),
+        ObjectMetadata(key="plain.txt", content_length=1, last_modified=datetime.now(tz=UTC)),
     ]
     provider._resolve_symlink_path = Mock(side_effect=target_error)
     destinations = [str(tmp_path / "link.txt"), str(tmp_path / "plain.txt")]
@@ -1379,7 +1366,7 @@ def test_object_metadata_symlink_target_field():
     metadata = ObjectMetadata(
         key="link.txt",
         content_length=0,
-        last_modified=datetime.now(tz=timezone.utc),
+        last_modified=datetime.now(tz=UTC),
         symlink_target="dir/target.txt",
     )
     assert metadata.symlink_target == "dir/target.txt"
@@ -1395,7 +1382,7 @@ def test_object_metadata_symlink_target_none_by_default():
     metadata = ObjectMetadata(
         key="file.txt",
         content_length=100,
-        last_modified=datetime.now(tz=timezone.utc),
+        last_modified=datetime.now(tz=UTC),
     )
     assert metadata.symlink_target is None
 
@@ -1420,7 +1407,7 @@ class SymlinkMockProvider(MockBaseStorageProvider):
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         if path in self._metadata:
             return self._metadata[path]
-        return ObjectMetadata(key=path, content_length=0, last_modified=datetime.now(tz=timezone.utc))
+        return ObjectMetadata(key=path, content_length=0, last_modified=datetime.now(tz=UTC))
 
     def _download_file(self, remote_path: str, f, metadata=None) -> int:
         data = self._get_object(remote_path)
@@ -1436,7 +1423,7 @@ class SymlinkMockProvider(MockBaseStorageProvider):
 
 
 def test_get_object_follows_symlink():
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     objects = {"target.txt": b"real content"}
     metadata = {
         "link.txt": ObjectMetadata(key="link.txt", content_length=0, last_modified=now, symlink_target="target.txt"),
@@ -1447,7 +1434,7 @@ def test_get_object_follows_symlink():
 
 
 def test_get_object_symlink_chain():
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     objects = {"final.txt": b"chain result"}
     metadata = {
         "link_a": ObjectMetadata(key="link_a", content_length=0, last_modified=now, symlink_target="link_b"),
@@ -1459,7 +1446,7 @@ def test_get_object_symlink_chain():
 
 
 def test_get_object_symlink_cycle_raises():
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     objects: dict[str, bytes] = {}
     metadata = {
         "a": ObjectMetadata(key="a", content_length=0, last_modified=now, symlink_target="b"),
@@ -1471,7 +1458,7 @@ def test_get_object_symlink_cycle_raises():
 
 
 def test_get_object_symlink_depth_limit():
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     objects = {"target.txt": b"deep"}
     metadata: dict[str, ObjectMetadata] = {}
     for i in range(50):
@@ -1488,7 +1475,7 @@ def test_get_object_symlink_depth_limit():
 
 
 def test_get_object_empty_file_not_symlink():
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     objects = {"empty.txt": b""}
     metadata = {
         "empty.txt": ObjectMetadata(key="empty.txt", content_length=0, last_modified=now),
@@ -1516,7 +1503,7 @@ class RecordingSymlinkMockProvider(SymlinkMockProvider):
 
 def test_download_file_passes_resolved_target_metadata():
     """The provider download must receive the target's metadata, not the symlink marker's."""
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     objects = {"target.txt": b"real content"}
     metadata = {
         "link.txt": ObjectMetadata(key="link.txt", content_length=0, last_modified=now, symlink_target="target.txt"),
@@ -1536,7 +1523,7 @@ def test_download_file_passes_resolved_target_metadata():
 
 def test_download_file_without_metadata_issues_single_head():
     """Resolving symlinks already fetches the metadata; it must be reused instead of HEAD-ing twice."""
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     metadata = {"plain.txt": ObjectMetadata(key="plain.txt", content_length=5, last_modified=now)}
     provider = RecordingSymlinkMockProvider(objects={"plain.txt": b"hello"}, metadata=metadata)
 
@@ -1547,7 +1534,7 @@ def test_download_file_without_metadata_issues_single_head():
 
 
 def test_download_file_follows_symlink():
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     objects = {"target.txt": b"real content"}
     metadata = {
         "link.txt": ObjectMetadata(key="link.txt", content_length=0, last_modified=now, symlink_target="target.txt"),

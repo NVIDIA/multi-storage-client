@@ -19,7 +19,7 @@ import posixpath
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import IO, Any, Literal, NamedTuple, Protocol
 
@@ -59,7 +59,7 @@ DEFAULT_RETRY_BACKOFF_MULTIPLIER = 2.0
 # This creates issues when doing datetime.astimezone(timezone.utc) since it assumes the local timezone for the naive datetime.
 # If the local timezone is offset behind UTC, it attempts to subtract off the offset which goes below the representable limit (i.e. an underflow).
 # A `ValueError: year 0 is out of range` is thrown as a result.
-AWARE_DATETIME_MIN = datetime.min.replace(tzinfo=timezone.utc)
+AWARE_DATETIME_MIN = datetime.min.replace(tzinfo=UTC)
 
 
 class SymlinkHandling(str, Enum):
@@ -134,7 +134,7 @@ class Credentials:
         expiry = dateutil_parser(self.expiration) if self.expiration else None
         if expiry is None:
             return False
-        return expiry <= datetime.now(tz=timezone.utc)
+        return expiry <= datetime.now(tz=UTC)
 
     def get_custom_field(self, key: str, default: Any = None) -> Any:
         """
@@ -205,7 +205,7 @@ class ObjectMetadata:
 
     def to_dict(self) -> dict:
         data = asdict(self)
-        data["last_modified"] = self.last_modified.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        data["last_modified"] = self.last_modified.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         return {k: v for k, v in data.items() if v is not None}
 
     @staticmethod

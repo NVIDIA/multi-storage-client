@@ -87,7 +87,7 @@ def mock_hvac():
 @pytest.fixture
 def valid_cert_data():
     """Fixture providing a valid (non-expired) self-signed certificate."""
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     cert_pem, key_pem = _generate_pem_cert(
         not_valid_before=now - datetime.timedelta(days=30),
         not_valid_after=now + datetime.timedelta(days=60),
@@ -99,7 +99,7 @@ def valid_cert_data():
 @pytest.fixture
 def expired_cert_data():
     """Fixture providing an expired self-signed certificate."""
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     cert_pem, key_pem = _generate_pem_cert(
         not_valid_before=now - datetime.timedelta(days=120),
         not_valid_after=now - datetime.timedelta(days=1),

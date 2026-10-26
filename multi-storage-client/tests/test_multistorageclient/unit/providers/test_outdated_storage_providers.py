@@ -15,7 +15,7 @@
 
 import queue
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import IO
 from unittest.mock import Mock
 
@@ -61,11 +61,9 @@ class OutdatedStorageProvider(BaseStorageProvider):
 
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         if not path.endswith("txt"):
-            return ObjectMetadata(
-                key=path, content_length=0, type="directory", last_modified=datetime.now(tz=timezone.utc)
-            )
+            return ObjectMetadata(key=path, content_length=0, type="directory", last_modified=datetime.now(tz=UTC))
         else:
-            return ObjectMetadata(key=path, content_length=0, type="file", last_modified=datetime.now(tz=timezone.utc))
+            return ObjectMetadata(key=path, content_length=0, type="file", last_modified=datetime.now(tz=UTC))
 
     def _list_objects(
         self,
@@ -82,10 +80,10 @@ class OutdatedStorageProvider(BaseStorageProvider):
         # Mock implementation that returns some test objects
         mock_objects = [
             ObjectMetadata(
-                key=f"{prefix}/file1.txt", content_length=100, type="file", last_modified=datetime.now(tz=timezone.utc)
+                key=f"{prefix}/file1.txt", content_length=100, type="file", last_modified=datetime.now(tz=UTC)
             ),
             ObjectMetadata(
-                key=f"{prefix}/file2.txt", content_length=200, type="file", last_modified=datetime.now(tz=timezone.utc)
+                key=f"{prefix}/file2.txt", content_length=200, type="file", last_modified=datetime.now(tz=UTC)
             ),
         ]
 

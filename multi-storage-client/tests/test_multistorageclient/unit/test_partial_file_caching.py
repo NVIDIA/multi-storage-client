@@ -17,7 +17,7 @@ import os
 import tempfile
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from multistorageclient import StorageClient, StorageClientConfig, _xattr
@@ -497,7 +497,7 @@ def test_partial_file_caching_cleanup() -> None:
 
         cache_manager = client._cache_manager
         assert cache_manager is not None
-        cache_manager._last_refresh_time = datetime.now(tz=timezone.utc) - timedelta(
+        cache_manager._last_refresh_time = datetime.now(tz=UTC) - timedelta(
             seconds=cache_manager._cache_refresh_interval + 1
         )
 

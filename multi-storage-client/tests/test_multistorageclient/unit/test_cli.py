@@ -21,7 +21,7 @@ import string
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -636,37 +636,31 @@ def test_ls_command_with_path_prefix():
 
     result = action._remove_path_prefix(
         "dir1/dir2",
-        ObjectMetadata(
-            key="dir1/dir2/file1.txt", type="file", last_modified=datetime.now(tz=timezone.utc), content_length=100
-        ),
+        ObjectMetadata(key="dir1/dir2/file1.txt", type="file", last_modified=datetime.now(tz=UTC), content_length=100),
     )
     assert result == "file1.txt"
 
     result = action._remove_path_prefix(
         "dir1/",
-        ObjectMetadata(
-            key="dir1/dir2/file1.txt", type="file", last_modified=datetime.now(tz=timezone.utc), content_length=100
-        ),
+        ObjectMetadata(key="dir1/dir2/file1.txt", type="file", last_modified=datetime.now(tz=UTC), content_length=100),
     )
     assert result == "dir2/file1.txt"
 
     result = action._remove_path_prefix(
         "/etc",
-        ObjectMetadata(key="etc/hosts", type="file", last_modified=datetime.now(tz=timezone.utc), content_length=100),
+        ObjectMetadata(key="etc/hosts", type="file", last_modified=datetime.now(tz=UTC), content_length=100),
     )
     assert result == "hosts"
 
     result = action._remove_path_prefix(
         "/etc/hosts",
-        ObjectMetadata(key="etc/hosts", type="file", last_modified=datetime.now(tz=timezone.utc), content_length=100),
+        ObjectMetadata(key="etc/hosts", type="file", last_modified=datetime.now(tz=UTC), content_length=100),
     )
     assert result == "/etc/hosts"
 
     result = action._remove_path_prefix(
         "dir1/dir2/file1.txt",
-        ObjectMetadata(
-            key="dir1/dir2/file1.txt", type="file", last_modified=datetime.now(tz=timezone.utc), content_length=100
-        ),
+        ObjectMetadata(key="dir1/dir2/file1.txt", type="file", last_modified=datetime.now(tz=UTC), content_length=100),
     )
     assert result == "dir1/dir2/file1.txt"
 
