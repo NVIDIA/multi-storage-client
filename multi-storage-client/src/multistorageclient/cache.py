@@ -21,7 +21,7 @@ import tempfile
 import threading
 import time
 from collections import OrderedDict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import xattr
@@ -60,7 +60,7 @@ class CacheManager:
         self._profile = profile
         self._cache_config = cache_config
         self._max_cache_size = cache_config.size_bytes()
-        self._last_refresh_time = datetime.now(tz=timezone.utc)
+        self._last_refresh_time = datetime.now(tz=UTC)
         self._cache_refresh_interval = cache_config.eviction_policy.refresh_interval
         self._cache_refresh_thread: threading.Thread | None = None
         self._cache_refresh_thread_lock = threading.Lock()
@@ -423,13 +423,13 @@ class CacheManager:
         try:
             # Skip eviction if policy is NO_EVICTION
             if self._cache_config.eviction_policy.policy.lower() == NO_EVICTION:
-                self._last_refresh_time = datetime.now(tz=timezone.utc)
+                self._last_refresh_time = datetime.now(tz=UTC)
                 return True
 
             # If the process acquires the lock, then proceed with the cache eviction
             with self._cache_refresh_lock_file.acquire(blocking=False):
                 self.evict_files()
-                self._last_refresh_time = datetime.now(tz=timezone.utc)
+                self._last_refresh_time = datetime.now(tz=UTC)
                 return True
         except Timeout:
             # If the process cannot acquire the lock, ignore and wait for the next turn
@@ -505,7 +505,7 @@ class CacheManager:
 
     def _should_refresh_cache(self) -> bool:
         """Check if enough time has passed since the last refresh."""
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         return (now - self._last_refresh_time).total_seconds() > self._cache_refresh_interval
 
     def _run_refresh_cache(self) -> None:

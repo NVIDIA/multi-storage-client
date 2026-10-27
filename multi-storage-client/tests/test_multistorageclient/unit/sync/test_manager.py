@@ -20,7 +20,7 @@ import shutil
 import sys
 import threading
 from contextlib import nullcontext
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -88,7 +88,7 @@ def test_sync_objects_signals_workers_and_raises_original_result_monitor_error(m
     provider = mock.Mock()
     provider.add_file.side_effect = failure
     monkeypatch.setattr(target_client, "_metadata_provider", provider, raising=False)
-    metadata = ObjectMetadata(key="file", content_length=1, last_modified=datetime.now(timezone.utc))
+    metadata = ObjectMetadata(key="file", content_length=1, last_modified=datetime.now(UTC))
 
     def worker(*args, **kwargs):
         result_queue, shutdown_event = args[7], args[9]
@@ -157,14 +157,10 @@ def test_sync_objects_commits_metadata_by_default(source_posix, target_posix, de
     target_client = MockStorageClient()
 
     source_files = [
-        ObjectMetadata(
-            key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
-        ),
+        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC)),
     ]
     target_files = [
-        ObjectMetadata(
-            key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 1, 0, 0, tzinfo=timezone.utc)
-        ),
+        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 1, 0, 0, tzinfo=UTC)),
     ]
 
     source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
@@ -201,14 +197,10 @@ def test_sync_objects_skips_commit_when_commit_metadata_false():
     target_client = MockStorageClient()
 
     source_files = [
-        ObjectMetadata(
-            key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
-        ),
+        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC)),
     ]
     target_files = [
-        ObjectMetadata(
-            key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 1, 0, 0, tzinfo=timezone.utc)
-        ),
+        ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, 1, 0, 0, tzinfo=UTC)),
     ]
 
     source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
@@ -369,7 +361,7 @@ def test_single_process_interrupt_preserves_active_staging(monkeypatch, tmp_path
     uploaded = []
     threads = []
     thread_class = threading.Thread
-    item = ObjectMetadata(key="large.bin", content_length=4, last_modified=datetime.now(timezone.utc))
+    item = ObjectMetadata(key="large.bin", content_length=4, last_modified=datetime.now(UTC))
     source = mock.Mock(_metadata_provider=None)
     target = mock.Mock(_metadata_provider=None)
     for client in (source, target):
@@ -442,8 +434,8 @@ class TestSyncObjectsDryrun:
         target_client = MockStorageClient()
 
         source_files = [
-            ObjectMetadata(key="a.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)),
-            ObjectMetadata(key="b.txt", content_length=200, last_modified=datetime(2025, 1, 2, tzinfo=timezone.utc)),
+            ObjectMetadata(key="a.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=UTC)),
+            ObjectMetadata(key="b.txt", content_length=200, last_modified=datetime(2025, 1, 2, tzinfo=UTC)),
         ]
 
         source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
@@ -475,7 +467,7 @@ class TestSyncObjectsDryrun:
         target_client = MockStorageClient()
 
         target_files = [
-            ObjectMetadata(key="old.txt", content_length=50, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)),
+            ObjectMetadata(key="old.txt", content_length=50, last_modified=datetime(2025, 1, 1, tzinfo=UTC)),
         ]
 
         source_client.list = lambda **kwargs: iter([])  # type: ignore
@@ -506,12 +498,12 @@ class TestSyncObjectsDryrun:
         target_client = MockStorageClient()
 
         source_files = [
-            ObjectMetadata(key="new.txt", content_length=100, last_modified=datetime(2025, 1, 2, tzinfo=timezone.utc)),
-            ObjectMetadata(key="same.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)),
+            ObjectMetadata(key="new.txt", content_length=100, last_modified=datetime(2025, 1, 2, tzinfo=UTC)),
+            ObjectMetadata(key="same.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=UTC)),
         ]
         target_files = [
-            ObjectMetadata(key="old.txt", content_length=50, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)),
-            ObjectMetadata(key="same.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)),
+            ObjectMetadata(key="old.txt", content_length=50, last_modified=datetime(2025, 1, 1, tzinfo=UTC)),
+            ObjectMetadata(key="same.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=UTC)),
         ]
 
         source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
@@ -542,10 +534,10 @@ class TestSyncObjectsDryrun:
         target_client = MockStorageClient()
 
         source_files = [
-            ObjectMetadata(key="file.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)),
+            ObjectMetadata(key="file.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=UTC)),
         ]
         target_files = [
-            ObjectMetadata(key="file.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)),
+            ObjectMetadata(key="file.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=UTC)),
         ]
 
         source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
@@ -615,14 +607,10 @@ class TestSyncObjectsDryrun:
         target_client = MockStorageClient()
 
         source_files = [
-            ObjectMetadata(
-                key="changed.txt", content_length=200, last_modified=datetime(2025, 1, 2, tzinfo=timezone.utc)
-            ),
+            ObjectMetadata(key="changed.txt", content_length=200, last_modified=datetime(2025, 1, 2, tzinfo=UTC)),
         ]
         target_files = [
-            ObjectMetadata(
-                key="changed.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)
-            ),
+            ObjectMetadata(key="changed.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=UTC)),
         ]
 
         source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
@@ -651,7 +639,7 @@ class TestSyncObjectsDryrun:
         target_client = MockStorageClient()
 
         target_files = [
-            ObjectMetadata(key="extra.txt", content_length=50, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)),
+            ObjectMetadata(key="extra.txt", content_length=50, last_modified=datetime(2025, 1, 1, tzinfo=UTC)),
         ]
 
         source_client.list = lambda **kwargs: iter([])  # type: ignore
@@ -679,7 +667,7 @@ class TestSyncObjectsDryrun:
 
         source_files = [
             ObjectMetadata(
-                key="data.bin", content_length=4096, last_modified=datetime(2025, 6, 15, 12, 30, 0, tzinfo=timezone.utc)
+                key="data.bin", content_length=4096, last_modified=datetime(2025, 6, 15, 12, 30, 0, tzinfo=UTC)
             ),
         ]
 
@@ -710,7 +698,7 @@ class TestSyncObjectsDryrun:
         target_client = MockStorageClient()
 
         source_files = [
-            ObjectMetadata(key="a.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)),
+            ObjectMetadata(key="a.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=UTC)),
         ]
 
         source_client.list = lambda **kwargs: iter(source_files)  # type: ignore
@@ -740,7 +728,7 @@ class TestSyncObjectsDryrun:
 def test_sync_progress_finalization_and_metadata_phase(monkeypatch, has_metadata_provider, commit_metadata):
     source = MockStorageClient()
     target = MockStorageClient()
-    item = ObjectMetadata(key="file", content_length=1, last_modified=datetime.now(timezone.utc))
+    item = ObjectMetadata(key="file", content_length=1, last_modified=datetime.now(UTC))
     monkeypatch.setattr(source, "list", lambda **kwargs: iter((item,)))
     monkeypatch.setattr(target, "list", lambda **kwargs: iter((item,)))
     if has_metadata_provider:

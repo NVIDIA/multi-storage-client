@@ -17,7 +17,7 @@ import multiprocessing
 import queue
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import cast
 from unittest import mock
 
@@ -51,7 +51,7 @@ class MockStorageClient:
 
 
 def _publish_results_past_pipe_capacity(result_queue, failing_operation):
-    metadata = ObjectMetadata(key="file", content_length=1, last_modified=datetime.now(timezone.utc))
+    metadata = ObjectMetadata(key="file", content_length=1, last_modified=datetime.now(UTC))
     snapshot = TransferSnapshot(1, (TransferActivity("path/" * 200, 0.0),))
     payload = snapshot if failing_operation == OperationType.PROGRESS else metadata
     result_queue.put((failing_operation, "worker", payload))
@@ -246,10 +246,8 @@ def test_result_monitor_refreshes_progress_while_producer_listing_blocks(monkeyp
     sleep_started = threading.Event()
     refresh_times = []
 
-    first = ObjectMetadata(key="file0.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc))
-    second = ObjectMetadata(
-        key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)
-    )
+    first = ObjectMetadata(key="file0.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=UTC))
+    second = ObjectMetadata(key="file1.txt", content_length=100, last_modified=datetime(2025, 1, 1, tzinfo=UTC))
 
     def slow_source_iter():
         yield first

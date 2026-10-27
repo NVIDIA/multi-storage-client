@@ -15,7 +15,7 @@
 
 import io
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -95,9 +95,7 @@ def test_small_rust_download_errors_are_translated(tmp_path, rust_error, expecte
     provider._rust_client = MagicMock()
     local_file = tmp_path / "data.bin"
     local_file.write_bytes(b"original")
-    metadata = ObjectMetadata(
-        key="bucket/key", content_length=7, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)
-    )
+    metadata = ObjectMetadata(key="bucket/key", content_length=7, last_modified=datetime(2025, 1, 1, tzinfo=UTC))
 
     with (
         patch("multistorageclient.providers.s3.run_async_rust_client_method", side_effect=rust_error),
@@ -118,9 +116,7 @@ def test_download_failure_cleans_staging_without_masking_error(tmp_path, transfe
     provider._multipart_threshold = 8 if transfer == "small_python" else 0
     destination = tmp_path / "data.bin"
     destination.write_bytes(b"original")
-    metadata = ObjectMetadata(
-        key="bucket/key", content_length=7, last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)
-    )
+    metadata = ObjectMetadata(key="bucket/key", content_length=7, last_modified=datetime(2025, 1, 1, tzinfo=UTC))
     download_error = (
         RetryableError("download failed")
         if transfer == "small_python"

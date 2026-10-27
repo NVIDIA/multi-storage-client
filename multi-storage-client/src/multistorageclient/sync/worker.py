@@ -24,7 +24,7 @@ import traceback
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import xattr
@@ -145,7 +145,7 @@ def update_posix_metadata(
         physical_metadata = ObjectMetadata(
             key=target_file_path,
             content_length=os.path.getsize(target_physical_path),
-            last_modified=datetime.fromtimestamp(os.path.getmtime(target_physical_path), tz=timezone.utc),
+            last_modified=datetime.fromtimestamp(os.path.getmtime(target_physical_path), tz=UTC),
             metadata=metadata_copy,
         )
         with target_client._metadata_provider_lock or contextlib.nullcontext():

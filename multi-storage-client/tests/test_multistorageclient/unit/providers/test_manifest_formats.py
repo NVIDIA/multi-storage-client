@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -41,13 +41,13 @@ def test_jsonl_format_round_trip():
         ObjectMetadata(
             key="file1.txt",
             content_length=100,
-            last_modified=datetime.now(timezone.utc),
+            last_modified=datetime.now(UTC),
             metadata={"tag": "value1"},
         ),
         ObjectMetadata(
             key="file2.txt",
             content_length=200,
-            last_modified=datetime.now(timezone.utc),
+            last_modified=datetime.now(UTC),
             metadata={"tag": "value2"},
         ),
     ]
@@ -74,13 +74,13 @@ def test_parquet_format_round_trip():
         ObjectMetadata(
             key="file1.txt",
             content_length=100,
-            last_modified=datetime.now(timezone.utc),
+            last_modified=datetime.now(UTC),
             metadata={"tag": "value1"},
         ),
         ObjectMetadata(
             key="file2.txt",
             content_length=200,
-            last_modified=datetime.now(timezone.utc),
+            last_modified=datetime.now(UTC),
             metadata={"tag": "value2"},
         ),
     ]

@@ -15,7 +15,7 @@
 
 import builtins
 import io
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -39,7 +39,7 @@ def test_large_stringio_download_decodes_as_utf8(azure_provider):
     stream = azure_provider._blob_service_client.get_blob_client.return_value.download_blob.return_value
     stream.readinto.side_effect = lambda fp: fp.write(payload)
     metadata = ObjectMetadata(
-        key="container/text.txt", content_length=len(payload), last_modified=datetime(2025, 1, 1, tzinfo=timezone.utc)
+        key="container/text.txt", content_length=len(payload), last_modified=datetime(2025, 1, 1, tzinfo=UTC)
     )
 
     text_encodings: list[str | None] = []

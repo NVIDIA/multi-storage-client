@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -39,7 +39,7 @@ def test_item_to_metadata_uses_last_commit_date(hf_provider):
     file_metadata = hf_provider._item_to_metadata(file_item)
     folder_metadata = hf_provider._item_to_metadata(folder_item)
 
-    expected = datetime(2025, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    expected = datetime(2025, 1, 2, 3, 4, 5, tzinfo=UTC)
     assert file_metadata.type == "file"
     assert file_metadata.content_length == 3
     assert file_metadata.etag == "blob1"

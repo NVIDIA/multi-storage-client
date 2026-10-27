@@ -14,17 +14,6 @@
       repo = "nixpkgs";
       ref = "refs/heads/nixos-unstable";
     };
-
-    # Python 3.10 (EOL October 2026) was dropped early for NixOS 26.05.
-    #
-    # https://github.com/NixOS/nixpkgs/pull/490538
-    nixpkgs-python310 = {
-      type = "github";
-      owner = "NixOS";
-      repo = "nixpkgs";
-      # Commit right before drop.
-      rev = "91e18d3c384a4c5998e720324425b88f53bbe6e4";
-    };
   };
 
   outputs =
@@ -38,12 +27,6 @@
       overlays = {
         # https://nixos.org/manual/nixpkgs/unstable#function-library-lib.fixedPoints.composeManyExtensions
         development = inputs.nixpkgs.lib.fixedPoints.composeManyExtensions [
-          (final: prev: {
-            # Python 3.10 (EOL October 2026) was dropped early for NixOS 26.05.
-            #
-            # https://github.com/NixOS/nixpkgs/pull/490538
-            inherit (inputs.nixpkgs-python310.legacyPackages.${final.stdenv.hostPlatform.system}) python310;
-          })
           (
             final: prev:
             # https://nixos.org/manual/nixpkgs/unstable#function-library-lib.attrsets.recursiveUpdate

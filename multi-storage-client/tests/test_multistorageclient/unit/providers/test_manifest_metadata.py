@@ -18,7 +18,7 @@ import os
 import tempfile
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -709,7 +709,7 @@ def test_manifest_metadata_realpath_for_write(temp_data_store_type: type[tempdat
         metadata = ObjectMetadata(
             key="existing_file.txt",
             content_length=1024,
-            last_modified=datetime.now(tz=timezone.utc),
+            last_modified=datetime.now(tz=UTC),
             content_type="text/plain",
             etag="abc123",
         )
@@ -792,7 +792,7 @@ def test_manifest_physical_path_tracking(temp_data_store_type: type[tempdatastor
         metadata = ObjectMetadata(
             key="storage/path/file.txt",  # This is the actual storage path
             content_length=1024,
-            last_modified=datetime.now(tz=timezone.utc),
+            last_modified=datetime.now(tz=UTC),
             content_type="text/plain",
             etag="abc123",
         )
@@ -828,7 +828,7 @@ def test_manifest_physical_path_tracking(temp_data_store_type: type[tempdatastor
         new_metadata = ObjectMetadata(
             key="storage/path/file-v2.txt",  # New physical path
             content_length=2048,
-            last_modified=datetime.now(tz=timezone.utc),
+            last_modified=datetime.now(tz=UTC),
             content_type="text/plain",
             etag="def456",
         )
@@ -862,7 +862,7 @@ def test_manifest_physical_path_tracking(temp_data_store_type: type[tempdatastor
         manifest_obj = ManifestObjectMetadata(
             key="direct/logical.txt",
             content_length=512,
-            last_modified=datetime.now(tz=timezone.utc),
+            last_modified=datetime.now(tz=UTC),
             content_type="text/plain",
             etag="xyz789",
             physical_path="direct/physical/path.txt",
@@ -902,7 +902,7 @@ def test_manifest_get_object_metadata_directory(temp_data_store_type: type[tempd
             writable=True,
         )
 
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
 
         provider.add_file(
             "models/v1/weights.bin",
@@ -989,7 +989,7 @@ def test_manifest_get_object_metadata_directory_pending(temp_data_store_type: ty
             writable=True,
         )
 
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
 
         # Directory only exists in pending adds (not yet committed)
         provider.add_file(
@@ -1050,7 +1050,7 @@ def _make_manifest_provider(files: dict[str, ManifestObjectMetadata]) -> Manifes
 
 
 def test_list_objects_includes_directory_without_trailing_slash():
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     provider = _make_manifest_provider(
         {
             "dataset/images/0001.jpg": ManifestObjectMetadata(
@@ -1069,7 +1069,7 @@ def test_list_objects_includes_directory_without_trailing_slash():
 
 
 def test_list_objects_uses_existing_directory_metadata_without_duplicate():
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     provider = _make_manifest_provider(
         {
             "dataset/images": ManifestObjectMetadata(
@@ -1118,7 +1118,7 @@ def test_list_objects_uses_existing_directory_metadata_without_duplicate():
 
 
 def test_list_objects_filters_synthetic_directories_by_directory_key():
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     provider = _make_manifest_provider(
         {
             "dataset/b/0001.txt": ManifestObjectMetadata(
@@ -1140,7 +1140,7 @@ def test_list_objects_filters_synthetic_directories_by_directory_key():
 
 
 def test_list_objects_excludes_existing_directories_when_not_requested():
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     provider = _make_manifest_provider(
         {
             "dataset/images": ManifestObjectMetadata(
@@ -1171,7 +1171,7 @@ def test_list_objects_excludes_existing_directories_when_not_requested():
 
 
 def test_realpath_follows_symlink_chain():
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     files = {
         "link_a": ManifestObjectMetadata(
             key="link_a", content_length=0, last_modified=now, symlink_target="link_b", physical_path="link_a"
@@ -1190,7 +1190,7 @@ def test_realpath_follows_symlink_chain():
 
 
 def test_realpath_symlink_cycle_raises():
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     files = {
         "a": ManifestObjectMetadata(
             key="a", content_length=0, last_modified=now, symlink_target="b", physical_path="a"

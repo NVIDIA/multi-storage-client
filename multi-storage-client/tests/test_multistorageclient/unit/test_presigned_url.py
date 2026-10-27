@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -631,7 +631,7 @@ class TestAzureStorageProviderPresign:
         assert "token=udk" in url
         default_cred_provider._blob_service_client.get_user_delegation_key.assert_called_once()
         # Delegation key should be requested for the maximum Azure-allowed lifetime (7 days).
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         key_expiry = default_cred_provider._blob_service_client.get_user_delegation_key.call_args.kwargs[
             "key_expiry_time"
         ]
@@ -656,7 +656,7 @@ class TestAzureStorageProviderPresign:
 
         # Simulate a cached delegation key that is about to expire (within refresh buffer).
         default_cred_provider._delegation_user_key = MagicMock()
-        default_cred_provider._delegation_signer_expiry = datetime.now(timezone.utc) + timedelta(minutes=2)
+        default_cred_provider._delegation_signer_expiry = datetime.now(UTC) + timedelta(minutes=2)
 
         default_cred_provider._generate_presigned_url("mycontainer/blob.bin")
 
@@ -689,5 +689,5 @@ class TestAzureStorageProviderPresign:
     def test_custom_expires_in(self, mock_sas, static_provider):
         static_provider._generate_presigned_url("c/b", signer_options={"expires_in": 900})
         expiry = mock_sas.call_args.kwargs["expiry"]
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         assert timedelta(seconds=850) <= (expiry - now) <= timedelta(seconds=950)

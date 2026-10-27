@@ -193,7 +193,7 @@ class VaultCertificateProvider(CertificateProvider):
         try:
             with open(cert_path, "rb") as f:
                 cert = x509.load_pem_x509_certificate(f.read())
-            now = datetime.datetime.now(datetime.timezone.utc)
+            now = datetime.datetime.now(datetime.UTC)
             return now >= cert.not_valid_after_utc
         except Exception:
             logger.debug("Failed to parse certificate expiry, treating as expired", exc_info=True)

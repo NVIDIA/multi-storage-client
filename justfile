@@ -80,19 +80,6 @@ setup-agent-tools *flags:
         echo "  Install with: pip install 'multi-storage-client[mcp]'"
     fi
 
-    # Verify Python >= 3.10 (required by fastmcp, the MCP server dependency)
-    if [[ -n "${MSC_CMD}" ]]; then
-        MSC_PYTHON="$(dirname "${MSC_CMD}")/python3"
-        if [[ -x "${MSC_PYTHON}" ]]; then
-            PY_VERSION=$("${MSC_PYTHON}" -c "import sys; print(f'{sys.version_info.minor}')" 2>/dev/null || echo "0")
-            if [[ "${PY_VERSION}" -lt 10 ]]; then
-                echo "WARNING: MCP server requires Python >= 3.10 (found 3.${PY_VERSION})"
-                echo "  Rebuild venv with: python3.10 -m venv .venv && .venv/bin/pip install 'multi-storage-client[mcp]'"
-                MSC_CMD=""
-            fi
-        fi
-    fi
-
     configure_mcp() {
         local config_file="$1"
         local msc_command="$2"

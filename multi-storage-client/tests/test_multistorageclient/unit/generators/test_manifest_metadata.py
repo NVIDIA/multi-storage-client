@@ -18,7 +18,7 @@ import os
 import random
 import re
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -81,7 +81,7 @@ def test_manifest_metadata(temp_data_store_type: type[tempdatastore.TemporaryDat
         )
 
         # Generate files.
-        placeholder_last_modified = datetime.now(tz=timezone.utc)
+        placeholder_last_modified = datetime.now(tz=UTC)
         expected_files_info = {
             key: ObjectMetadata(
                 key=key,
@@ -228,7 +228,7 @@ def test_manifest_metadata_parquet_format(temp_data_store_type: type[tempdatasto
             config=StorageClientConfig.from_dict(config_dict=storage_client_config_dict, profile=data_profile)
         )
 
-        placeholder_last_modified = datetime.now(tz=timezone.utc)
+        placeholder_last_modified = datetime.now(tz=UTC)
         expected_files_info = {
             key: ObjectMetadata(
                 key=key,

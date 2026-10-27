@@ -15,7 +15,7 @@
 
 import queue
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import cast
 from unittest.mock import MagicMock
 
@@ -32,7 +32,7 @@ def _make_metadata(key: str = "file.bin", size: int = 100) -> ObjectMetadata:
     return ObjectMetadata(
         key=key,
         content_length=size,
-        last_modified=datetime.now(timezone.utc),
+        last_modified=datetime.now(UTC),
         etag="abc123",
     )
 
@@ -182,7 +182,7 @@ def test_queue_backed_metadata_provider_replay_sees_unmutated_metadata():
     meta = ObjectMetadata(
         key="dest/file.txt",
         content_length=10,
-        last_modified=datetime.now(timezone.utc),
+        last_modified=datetime.now(UTC),
         metadata={"extra_int": "1", "extra_str": "group1"},
     )
     proxy.add_file("dest/file.txt", meta)

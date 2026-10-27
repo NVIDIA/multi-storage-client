@@ -62,7 +62,7 @@ class _QueueActor:
                     await self._queue.put(item)
                 else:
                     await asyncio.wait_for(self._queue.put(item), timeout=timeout)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 raise queue.Full("Queue is full")
 
     async def get(self, block: bool = True, timeout: float | None = None) -> Any:
@@ -77,7 +77,7 @@ class _QueueActor:
                     return await self._queue.get()
                 else:
                     return await asyncio.wait_for(self._queue.get(), timeout=timeout)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 raise queue.Empty("Queue is empty")
 
     def qsize(self) -> int:

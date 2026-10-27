@@ -15,7 +15,7 @@
 
 """end_at handling when a listing page mixes directory prefixes and objects (S3 and OCI)."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -24,7 +24,7 @@ import pytest
 from multistorageclient.providers.oci import OracleStorageProvider
 from multistorageclient.providers.s3 import S3StorageProvider, StaticS3CredentialsProvider
 
-LAST_MODIFIED = datetime(2025, 1, 1, tzinfo=timezone.utc)
+LAST_MODIFIED = datetime(2025, 1, 1, tzinfo=UTC)
 
 
 @pytest.fixture

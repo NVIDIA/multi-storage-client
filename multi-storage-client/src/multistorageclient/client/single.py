@@ -20,7 +20,7 @@ import os
 import threading
 from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import PurePosixPath
 from typing import IO, Any, cast
@@ -524,7 +524,7 @@ class SingleStorageClient(AbstractStorageClient):
         if not path or path == ".":  # empty path or '.' provided by the user
             if self._is_posix_file_storage_provider():
                 root = cast(PosixFileStorageProvider, self._storage_provider)._prepend_base_path("")
-                last_modified = datetime.fromtimestamp(os.path.getmtime(root), tz=timezone.utc)
+                last_modified = datetime.fromtimestamp(os.path.getmtime(root), tz=UTC)
             else:
                 last_modified = AWARE_DATETIME_MIN
             return ObjectMetadata(key="", type="directory", content_length=0, last_modified=last_modified)
@@ -715,7 +715,7 @@ class SingleStorageClient(AbstractStorageClient):
             obj_metadata = ObjectMetadata(
                 key=path,
                 content_length=0,
-                last_modified=datetime.now(tz=timezone.utc),
+                last_modified=datetime.now(tz=UTC),
                 symlink_target=ObjectMetadata.encode_symlink_target(path, target),
             )
             with self._metadata_provider_lock or contextlib.nullcontext():
