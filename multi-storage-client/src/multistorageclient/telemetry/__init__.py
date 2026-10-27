@@ -24,7 +24,6 @@ import multiprocessing.managers
 import multiprocessing.process
 import multiprocessing.util
 import os
-import sys
 import threading
 from collections.abc import Callable, Iterable
 from typing import Any, ClassVar, Literal
@@ -501,10 +500,14 @@ class TelemetryManager(multiprocessing.managers.BaseManager):
             writer.close()
 
         self._state.value = self._state.STARTED
-        finalizer_args: tuple[Any, ...] = (self._process, self._address, self._authkey, self._state, self._Client)
-        # Python 3.11 added a shutdown timeout to BaseManager's finalizer.
-        if sys.version_info >= (3, 11):
-            finalizer_args += (self._shutdown_timeout,)
+        finalizer_args = (
+            self._process,
+            self._address,
+            self._authkey,
+            self._state,
+            self._Client,
+            self._shutdown_timeout,
+        )
         self.shutdown = multiprocessing.util.Finalize(
             self, type(self)._finalize_manager, args=finalizer_args, exitpriority=0
         )
