@@ -30,6 +30,7 @@ from ..types import (
     SignerType,
     SourceVersionCheckMode,
     StorageProvider,
+    SuffixRange,
     SymlinkHandling,
     SyncResult,
 )
@@ -199,14 +200,14 @@ class StorageClient(AbstractStorageClient):
     def read(
         self,
         path: str,
-        byte_range: Range | None = None,
+        byte_range: Range | SuffixRange | None = None,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
     ) -> bytes:
         """
         Read bytes from a file at the specified logical path.
 
         :param path: The logical path of the object to read.
-        :param byte_range: Optional byte range to read (offset and length).
+        :param byte_range: Optional byte range to read (offset and length), or a suffix range to read the last bytes.
         :param check_source_version: Whether to check the source version of cached objects.
         :return: The content of the object as bytes.
         :raises FileNotFoundError: If the file at the specified path does not exist.

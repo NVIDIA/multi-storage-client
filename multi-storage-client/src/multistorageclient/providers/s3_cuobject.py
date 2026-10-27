@@ -35,7 +35,7 @@ from typing import IO, Any, cast
 
 from botocore.exceptions import ClientError
 
-from ..types import Range
+from ..types import Range, SuffixRange
 from ..utils import split_path, validate_attributes
 from ._cuobj import (
     RDMA_MAX_MEMORY_REG_SIZE,
@@ -109,9 +109,12 @@ class S3CuObjectStorageProvider(S3StorageProvider):
         self._rdma_engine = CuObjEngine()
         self._rdma_engine.install_hooks(self._s3_client)
 
-    def _get_object(self, path: str, byte_range: Range | None = None) -> bytes:
+    def _supports_suffix_range(self) -> bool:
+        return False
+
+    def _get_object(self, path: str, byte_range: Range | SuffixRange | None = None) -> bytes:
         bucket, key = split_path(path)
-        return bytes(self._rdma_get(path, bucket, key, byte_range))
+        return bytes(self._rdma_get(path, bucket, key, cast(Range | None, byte_range)))
 
     def _put_object(
         self,

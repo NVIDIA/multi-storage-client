@@ -32,7 +32,9 @@ This module provides the :py:class:`multistorageclient.contrib.async_fs.MultiSto
    )
 
 ``cat_file()``, ``read_bytes()``, and ``cat_ranges()`` honor the ``start`` and ``end`` byte offsets with
-Python slice semantics, so libraries such as Zarr read only the byte ranges they request.
+Python slice semantics, so libraries such as Zarr read only the byte ranges they request. A negative ``start``
+with no ``end`` (e.g. the last 4096 bytes) is read with a single suffix range request when the storage provider
+supports it, without first requesting the object metadata.
 
 *****
 Hydra

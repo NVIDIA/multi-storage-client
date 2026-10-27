@@ -26,7 +26,7 @@ from fsspec.asyn import AsyncFileSystem, _run_coros_in_chunks
 from ..client import StorageClient
 from ..file import ObjectFile, PosixFile
 from ..shortcuts import resolve_storage_client
-from ..types import MSC_PROTOCOL_NAME, Range
+from ..types import MSC_PROTOCOL_NAME, Range, SuffixRange
 
 _GLOBAL_THREAD_POOL = ThreadPoolExecutor(max_workers=int(os.getenv("MSC_MAX_WORKERS", "8")))
 
@@ -338,6 +338,8 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
 
         if start is None:
             start = 0
+        if start < 0 and end is None:
+            return storage_client.read(path, byte_range=SuffixRange(size=-start))
         if start < 0 or end is None or end < 0:
             start, end, _ = slice(start, end).indices(storage_client.info(path).content_length)
         if end <= start:

@@ -46,6 +46,7 @@ from ..types import (
     PreconditionFailedError,
     Range,
     RetryableError,
+    SuffixRange,
     SymlinkHandling,
 )
 from ..utils import (
@@ -439,14 +440,20 @@ class GoogleStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
 
-    def _get_object(self, path: str, byte_range: Range | None = None) -> bytes:
+    def _supports_suffix_range(self) -> bool:
+        return self._rust_client is None
+
+    def _get_object(self, path: str, byte_range: Range | SuffixRange | None = None) -> bytes:
         bucket, key = split_path(path)
         self._refresh_gcs_client_if_needed()
 
         def _invoke_api() -> bytes:
             bucket_obj = self._gcs_client.bucket(bucket)
             blob = bucket_obj.blob(key)
-            if byte_range:
+            if isinstance(byte_range, SuffixRange):
+                # Servers may ignore the range and return the whole object.
+                return blob.download_as_bytes(start=-byte_range.size, single_shot_download=True)[-byte_range.size :]
+            elif byte_range:
                 if self._rust_client:
                     return run_async_rust_client_method(self._rust_client, "get", key, byte_range)
                 else:

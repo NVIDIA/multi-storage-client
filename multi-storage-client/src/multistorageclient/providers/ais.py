@@ -35,6 +35,7 @@ from ..types import (
     CredentialsProvider,
     ObjectMetadata,
     Range,
+    SuffixRange,
     SymlinkHandling,
 )
 from ..utils import safe_makedirs, split_path, validate_attributes
@@ -222,9 +223,14 @@ class AIStoreStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
 
-    def _get_object(self, path: str, byte_range: Range | None = None) -> bytes:
+    def _supports_suffix_range(self) -> bool:
+        return True
+
+    def _get_object(self, path: str, byte_range: Range | SuffixRange | None = None) -> bytes:
         bucket, key = split_path(path)
-        if byte_range:
+        if isinstance(byte_range, SuffixRange):
+            bytes_range = f"bytes=-{byte_range.size}"
+        elif byte_range:
             bytes_range = f"bytes={byte_range.offset}-{byte_range.offset + byte_range.size - 1}"
         else:
             bytes_range = None
