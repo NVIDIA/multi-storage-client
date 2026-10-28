@@ -15,14 +15,17 @@
 
 import importlib.util
 import io
+import json
 import os
 import tempfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from typing import IO, Any, TypeVar
+from urllib.parse import quote
 
-from huggingface_hub import CommitOperationCopy, HfApi
+from huggingface_hub import CommitOperationCopy, HfApi, get_session
 from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError, RepositoryNotFoundError, RevisionNotFoundError
 from huggingface_hub.hf_api import RepoFile, RepoFolder
+from huggingface_hub.utils import build_hf_headers, hf_raise_for_status  # pyright: ignore[reportPrivateImportUsage]
 
 from ..telemetry import Telemetry
 from ..types import (
@@ -40,6 +43,11 @@ from .base import BaseStorageProvider
 _T = TypeVar("_T")
 
 PROVIDER = "huggingface"
+
+# The Hub refuses a paths-info request with more than 2,000 paths or a JSON body over 256,000 bytes.
+PATHS_INFO_MAX_PATHS = 2000
+PATHS_INFO_BODY_BUDGET_BYTES = 240_000
+PATHS_INFO_TIMEOUT_SECONDS = (10, 60)
 
 HF_TRANSFER_UNAVAILABLE_ERROR_MESSAGE = (
     "Fast transfer using 'hf_transfer' is enabled (HF_HUB_ENABLE_HF_TRANSFER=1) "
@@ -622,10 +630,11 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         :raises RuntimeError: If HuggingFace client is not initialized or API errors occur.
 
         .. note::
-            HuggingFace Hub API does not natively support pagination parameters.
-            This implementation fetches all items and uses cursor-based filtering,
-            which may impact performance for large repositories. The ordering is
-            directory-first, then files, with lexicographical ordering within each group.
+            The tree is listed without expanded metadata, which the Hub serves in pages of 1,000 entries.
+            As pages arrive, entries are collected into batches of up to 2,000, and the last commit of every
+            entry in a batch is fetched with a single ``paths-info`` request. Each batch is yielded as soon
+            as its metadata arrives. The ordering is directory-first, then files, with lexicographical
+            ordering within each group, so ``start_after`` and ``end_at`` are matched as exact keys.
         """
         if not self._hf_client:
             raise RuntimeError("HuggingFace client not initialized")
@@ -640,52 +649,86 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         except FileNotFoundError:
             pass
 
-        def _invoke_api():
-            dir_path = path.rstrip("/")
+        dir_path = path.rstrip("/")
 
+        # Pin one commit so the tree and paths-info requests see the same snapshot of a mutable branch or tag.
+        revision = self._translate_errors(
+            lambda: (
+                self._hf_client.repo_info(
+                    repo_id=self._repository_id, repo_type=self._repo_type, revision=self._repo_revision
+                ).sha
+            ),
+            "LIST",
+            self._repository_id,
+            path,
+        )
+        if revision is None:
+            raise RuntimeError(
+                f"Repository {self._repository_id} returned no commit SHA for revision '{self._repo_revision}'."
+            )
+
+        def _listed_paths() -> Iterator[str]:
+            # Use cursor-based pagination because HuggingFace returns items with
+            # directory-first ordering (not pure lexicographical).
+            seen_start = start_after is None
             try:
-                repo_items = self._hf_client.list_repo_tree(
+                for item in self._hf_client.list_repo_tree(
                     repo_id=self._repository_id,
                     path_in_repo=dir_path + "/" if dir_path else None,
                     repo_type=self._repo_type,
-                    revision=self._repo_revision,
-                    expand=True,
+                    revision=revision,
+                    expand=False,
                     recursive=not include_directories,
-                )
-                return list(repo_items)
+                ):
+                    if not seen_start:
+                        seen_start = item.path == start_after
+                        continue
+                    if isinstance(item, RepoFile) or (include_directories and isinstance(item, RepoFolder)):
+                        yield item.path
+                    if end_at is not None and item.path == end_at:
+                        return
             except EntryNotFoundError:
                 # Directory doesn't exist - return empty (matches POSIX behavior). A missing repository or
                 # revision is translated to FileNotFoundError by _translate_errors and propagates.
-                return []
+                return
 
-        items = self._translate_errors(_invoke_api, "LIST", self._repository_id, path)
+        batches = _paths_info_batches(_listed_paths())
 
-        # Use cursor-based pagination because HuggingFace returns items with
-        # directory-first ordering (not pure lexicographical).
-        seen_start = start_after is None
-        seen_end = False
+        def _invoke_api() -> list[RepoFile | RepoFolder] | None:
+            batch = next(batches, None)
+            if batch is None:
+                return None
+            items = self._get_paths_info(batch, revision)
+            return [items[item_path] for item_path in batch if item_path in items]
 
-        for item in items:
-            if seen_end:
-                break
+        while (items := self._translate_errors(_invoke_api, "LIST", self._repository_id, path)) is not None:
+            for item in items:
+                yield self._item_to_metadata(item)
 
-            metadata = self._item_to_metadata(item)
-            key = metadata.key
+    def _get_paths_info(self, paths: list[str], revision: str) -> dict[str, RepoFile | RepoFolder]:
+        """
+        Fetches the metadata and last commit of up to 2,000 paths with a single ``paths-info`` request.
 
-            if not seen_start:
-                if key == start_after:
-                    seen_start = True
-                continue
+        The request is sent as JSON, which lets each request carry up to 2,000 paths or 256 KB of data, more
+        than ``HfApi.get_paths_info`` allows.
 
-            should_yield = False
-            if include_directories and isinstance(item, RepoFolder) or isinstance(item, RepoFile):
-                should_yield = True
-
-            if should_yield:
-                yield metadata
-
-            if end_at is not None and key == end_at:
-                seen_end = True
+        :param paths: The paths to look up.
+        :param revision: The commit SHA to look the paths up at.
+        :return: The metadata of each path that exists, keyed by path.
+        """
+        endpoint = f"{self._hf_client.endpoint}/api/{self._repo_type}s/{self._repository_id}"
+        url = f"{endpoint}/paths-info/{quote(revision, safe='')}"
+        response = get_session().post(
+            url,
+            json={"paths": paths, "expand": True},
+            headers=build_hf_headers(token=self._hf_client.token),
+            timeout=PATHS_INFO_TIMEOUT_SECONDS,
+        )
+        hf_raise_for_status(response)
+        return {
+            entry["path"]: RepoFile(**entry) if entry["type"] == "file" else RepoFolder(**entry)
+            for entry in response.json()
+        }
 
     def _upload_file(self, remote_path: str, f: str | IO, attributes: dict[str, str] | None = None) -> int:
         """
@@ -865,3 +908,26 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         HuggingFace expects relative paths within repositories.
         """
         return path.lstrip("/")
+
+
+def _paths_info_batches(paths: Iterable[str]) -> Iterator[list[str]]:
+    """
+    Groups paths into batches that fit in a single ``paths-info`` request, yielding each one as soon as it is full.
+
+    :param paths: The paths to group, in order.
+    :return: An iterator over batches of at most 2,000 paths whose JSON body stays under the byte budget.
+    """
+    batch: list[str] = []
+    size = 0
+    for path in paths:
+        cost = len(json.dumps(path).encode()) + 2
+        if batch and size + cost > PATHS_INFO_BODY_BUDGET_BYTES:
+            yield batch
+            batch, size = [], 0
+        batch.append(path)
+        size += cost
+        if len(batch) == PATHS_INFO_MAX_PATHS:
+            yield batch
+            batch, size = [], 0
+    if batch:
+        yield batch
