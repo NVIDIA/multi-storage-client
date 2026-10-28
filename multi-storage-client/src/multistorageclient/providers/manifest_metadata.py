@@ -18,6 +18,7 @@ from __future__ import annotations  # Enables forward references in type hints
 import json
 import logging
 import os
+import posixpath
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -508,6 +509,12 @@ class ManifestMetadataProvider(MetadataProvider):
         return ResolvedPath(physical_path=logical_path, state=ResolvedPathState.UNTRACKED, profile=None)
 
     def add_file(self, path: str, metadata: ObjectMetadata) -> None:
+        """
+        Stages a file for the next manifest commit, preserving its storage class and symlink target.
+
+        :param path: The logical path to register in the manifest.
+        :param metadata: Object metadata whose key is the physical path, or manifest metadata with a matching logical path.
+        """
         if not self.is_writable():
             raise RuntimeError(f"Manifest update support not enabled in configuration. Attempted to add {path}.")
 
@@ -527,14 +534,28 @@ class ManifestMetadataProvider(MetadataProvider):
                 raise ValueError(f"Logical path mismatch: expected {path}, got {manifest_metadata.key}")
         else:
             # For backward compatibility, create a ManifestObjectMetadata from ObjectMetadata
+            symlink_target = metadata.symlink_target
+            if symlink_target and posixpath.dirname(metadata.key) != posixpath.dirname(path):
+                physical_target = ObjectMetadata.resolve_symlink_target(metadata.key, symlink_target)
+                logical_target = next(
+                    (
+                        key
+                        for key, entry in {**self._files, **self._pending_adds}.items()
+                        if entry.physical_path == physical_target
+                    ),
+                    physical_target,
+                )
+                symlink_target = ObjectMetadata.encode_symlink_target(path, logical_target)
             manifest_metadata = ManifestObjectMetadata(
                 key=path,  # Logical path (user-facing)
                 content_length=metadata.content_length,
                 last_modified=metadata.last_modified,
                 content_type=metadata.content_type,
                 etag=metadata.etag,
+                storage_class=metadata.storage_class,
                 metadata=metadata.metadata,
                 type=metadata.type,
+                symlink_target=symlink_target,
                 physical_path=metadata.key,  # Physical path (from storage provider)
             )
 
