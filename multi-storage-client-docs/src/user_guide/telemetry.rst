@@ -60,6 +60,11 @@ Telemetry can be configured with the ``opentelemetry`` dictionary in the MSC con
 
 This will automatically create telemetry provider instances which will spin up dedicated telemetry processes and local network ports (for IPC) as needed.
 
+MSC waits up to 60 seconds for a new telemetry process to announce its listening address.
+If startup fails or times out, MSC cleans up that child process. Storage operations log a warning and continue without metrics for that provider.
+Calling ``multistorageclient.telemetry.init()`` directly raises the startup error instead.
+This deadline covers process startup; it does not set a timeout for later telemetry connections or exports.
+
 If the default telemetry provider creation doesn't behave as desired, you can manually create a telemetry provider to use with storage client creation flows.
 
 .. code-block:: python
