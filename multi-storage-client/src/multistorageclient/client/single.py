@@ -759,7 +759,7 @@ class SingleStorageClient(AbstractStorageClient):
                         raise FileNotFoundError(f"The file at path '{virtual_path}' was not found.")
 
                     # Check if soft-delete is enabled
-                    if not self._metadata_provider.should_use_soft_delete():
+                    if not obj_metadata.symlink_target and not self._metadata_provider.should_use_soft_delete():
                         # Hard delete: remove both physical file and metadata
                         self._storage_provider.delete_object(resolved.physical_path)
 
@@ -797,7 +797,10 @@ class SingleStorageClient(AbstractStorageClient):
                 if not resolved.exists:
                     continue
                 metadata_paths_to_remove.add(path)
-                if not self._metadata_provider.should_use_soft_delete():
+                if (
+                    not self._metadata_provider.should_use_soft_delete()
+                    and not self._metadata_provider.get_object_metadata(path).symlink_target
+                ):
                     physical_paths_to_delete.append(resolved.physical_path)
             else:
                 physical_paths_to_delete.append(path)

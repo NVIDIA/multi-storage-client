@@ -536,9 +536,16 @@ class ManifestMetadataProvider(MetadataProvider):
             # For backward compatibility, create a ManifestObjectMetadata from ObjectMetadata
             symlink_target = metadata.symlink_target
             if symlink_target and posixpath.dirname(metadata.key) != posixpath.dirname(path):
-                symlink_target = ObjectMetadata.encode_symlink_target(
-                    path, ObjectMetadata.resolve_symlink_target(metadata.key, symlink_target)
+                physical_target = ObjectMetadata.resolve_symlink_target(metadata.key, symlink_target)
+                logical_target = next(
+                    (
+                        key
+                        for key, entry in {**self._files, **self._pending_adds}.items()
+                        if entry.physical_path == physical_target
+                    ),
+                    physical_target,
                 )
+                symlink_target = ObjectMetadata.encode_symlink_target(path, logical_target)
             manifest_metadata = ManifestObjectMetadata(
                 key=path,  # Logical path (user-facing)
                 content_length=metadata.content_length,

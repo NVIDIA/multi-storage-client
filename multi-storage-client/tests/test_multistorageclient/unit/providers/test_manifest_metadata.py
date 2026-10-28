@@ -304,6 +304,38 @@ def test_manifest_delete_many_missing_objects_is_idempotent():
         storage_client.delete_many([missing_path, existing_path, another_missing_path])
 
 
+def test_manifest_delete_symlink_keeps_target():
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        profile = "data_with_manifest"
+        profile_config_dict = temp_data_store.profile_config_dict() | {
+            "metadata_provider": {
+                "type": "manifest",
+                "options": {"manifest_path": DEFAULT_MANIFEST_BASE_DIR, "writable": True},
+            }
+        }
+        storage_client = StorageClient(
+            config=StorageClientConfig.from_dict(
+                config_dict={"profiles": {profile: profile_config_dict}},
+                profile=profile,
+            )
+        )
+        prefix = uuid.uuid4().hex
+        target_path = f"{prefix}/target.txt"
+        storage_client.write(path=target_path, body=b"payload")
+        for index, delete in enumerate((lambda p: storage_client.delete(p), lambda p: storage_client.delete_many([p]))):
+            link_path = f"{prefix}/link{index}.txt"
+            storage_client._metadata_provider.add_file(  # type: ignore[union-attr]
+                link_path,
+                ObjectMetadata(
+                    key=link_path, content_length=0, last_modified=datetime.now(tz=UTC), symlink_target="target.txt"
+                ),
+            )
+            storage_client.commit_metadata()
+            delete(link_path)
+            storage_client.commit_metadata()
+            assert storage_client.read(target_path) == b"payload"
+
+
 @pytest.mark.parametrize(
     argnames="temp_data_store_type",
     argvalues=[
@@ -858,8 +890,10 @@ def test_manifest_physical_path_tracking(temp_data_store_type: type[tempdatastor
             ),
         )
         assert provider.get_object_metadata("logical/moved/link.txt", include_pending=True).symlink_target == (
-            "../../storage/path/file.txt"
+            "../file.txt"
         )
+        provider.commit_updates()
+        assert provider.realpath("logical/moved/link.txt").physical_path == "storage/path/file.txt"
 
         # Test overwrite scenario
         new_metadata = ObjectMetadata(
