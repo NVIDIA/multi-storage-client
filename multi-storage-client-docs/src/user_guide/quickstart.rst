@@ -211,6 +211,10 @@ to remove that file if the transfer or final rename fails. Cleanup failures
 are logged without replacing the original error. An existing destination is
 replaced only after the staged download succeeds.
 
+Cloud listings translate provider errors when each page is fetched. A missing
+bucket or container raises ``FileNotFoundError``, including when the failure
+occurs after earlier results have already been yielded.
+
 Clients
 =======
 
