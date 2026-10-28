@@ -18,6 +18,7 @@ from __future__ import annotations  # Enables forward references in type hints
 import json
 import logging
 import os
+import posixpath
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -533,6 +534,11 @@ class ManifestMetadataProvider(MetadataProvider):
                 raise ValueError(f"Logical path mismatch: expected {path}, got {manifest_metadata.key}")
         else:
             # For backward compatibility, create a ManifestObjectMetadata from ObjectMetadata
+            symlink_target = metadata.symlink_target
+            if symlink_target and posixpath.dirname(metadata.key) != posixpath.dirname(path):
+                symlink_target = ObjectMetadata.encode_symlink_target(
+                    path, ObjectMetadata.resolve_symlink_target(metadata.key, symlink_target)
+                )
             manifest_metadata = ManifestObjectMetadata(
                 key=path,  # Logical path (user-facing)
                 content_length=metadata.content_length,
@@ -542,7 +548,7 @@ class ManifestMetadataProvider(MetadataProvider):
                 storage_class=metadata.storage_class,
                 metadata=metadata.metadata,
                 type=metadata.type,
-                symlink_target=metadata.symlink_target,
+                symlink_target=symlink_target,
                 physical_path=metadata.key,  # Physical path (from storage provider)
             )
 

@@ -848,6 +848,19 @@ def test_manifest_physical_path_tracking(temp_data_store_type: type[tempdatastor
         assert provider.get_object_metadata("logical/file.txt").storage_class == metadata.storage_class
         assert provider.realpath("logical/link.txt").physical_path == "storage/path/file.txt"
 
+        provider.add_file(
+            "logical/moved/link.txt",
+            ObjectMetadata(
+                key="storage/path/link.txt",
+                content_length=0,
+                last_modified=metadata.last_modified,
+                symlink_target="file.txt",
+            ),
+        )
+        assert provider.get_object_metadata("logical/moved/link.txt", include_pending=True).symlink_target == (
+            "../../storage/path/file.txt"
+        )
+
         # Test overwrite scenario
         new_metadata = ObjectMetadata(
             key="storage/path/file-v2.txt",  # New physical path
