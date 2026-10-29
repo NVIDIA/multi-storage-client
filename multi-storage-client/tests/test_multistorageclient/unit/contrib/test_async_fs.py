@@ -16,6 +16,7 @@
 import os
 import tempfile
 import uuid
+from unittest.mock import patch
 
 import fsspec
 import pytest
@@ -155,6 +156,36 @@ def test_async_fs_cat_file_byte_ranges(temp_data_store_type: type[tempdatastore.
             content[50:60],
             content[-5:],
         ]
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
+        [tempdatastore.TemporaryAWSS3Bucket],
+        [tempdatastore.TemporaryPOSIXDirectory],
+    ],
+)
+def test_async_fs_cat_file_suffix_range(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """cat_file with a negative start and no end reads the last bytes without a metadata request."""
+    with temp_data_store_type() as temp_data_store:
+        config.setup_msc_config(config_dict={"profiles": {"test": temp_data_store.profile_config_dict()}})
+
+        filesystem = fsspec.filesystem("msc")
+        file_path = "test/suffix-range.bin"
+        empty_file_path = "test/suffix-range-empty.bin"
+        content = bytes(range(100))
+        filesystem.pipe_file(file_path, content)
+        filesystem.pipe_file(empty_file_path, b"")
+
+        for start in [-1, -10, -99, -100, -101, -1000]:
+            assert filesystem.cat_file(file_path, start=start) == content[start:]
+            assert filesystem.cat_file(empty_file_path, start=start) == b""
+
+        storage_client, _ = filesystem.resolve_path_and_storage_client(file_path)
+        with patch.object(storage_client, "info", wraps=storage_client.info) as info:
+            assert filesystem.cat_file(file_path, start=-10) == content[-10:]
+            assert filesystem.cat_ranges([file_path], [-5], [None]) == [content[-5:]]
+            assert info.call_count == 0
 
 
 @pytest.mark.asyncio

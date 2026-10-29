@@ -45,6 +45,7 @@ from ..types import (
     Range,
     RetryableError,
     SignerType,
+    SuffixRange,
     SymlinkHandling,
 )
 from ..utils import (
@@ -570,8 +571,31 @@ class S3StorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
 
-    def _get_object(self, path: str, byte_range: Range | None = None) -> bytes:
+    def _supports_suffix_range(self) -> bool:
+        return self._rust_client is None
+
+    def _get_object(self, path: str, byte_range: Range | SuffixRange | None = None) -> bytes:
         bucket, key = split_path(path)
+
+        if isinstance(byte_range, SuffixRange):
+            suffix_range = byte_range
+
+            def _invoke_suffix_api() -> bytes | None:
+                try:
+                    response = self._s3_client.get_object(Bucket=bucket, Key=key, Range=f"bytes=-{suffix_range.size}")
+                except ClientError as error:
+                    # Raised for empty objects, or by servers without suffix range support.
+                    if error.response["ResponseMetadata"]["HTTPStatusCode"] == 416:
+                        return None
+                    raise
+                # Servers may ignore the range and return the whole object.
+                return response["Body"].read()[-suffix_range.size :]
+
+            return self._get_object_suffix(
+                path,
+                suffix_range,
+                lambda: self._translate_errors(_invoke_suffix_api, operation="GET", bucket=bucket, key=key),
+            )
 
         def _invoke_api() -> bytes:
             if byte_range:

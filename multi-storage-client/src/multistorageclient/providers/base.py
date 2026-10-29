@@ -47,6 +47,7 @@ from ..types import (
     RetryableError,
     SignerType,
     StorageProvider,
+    SuffixRange,
     SymlinkHandling,
 )
 from ..utils import (
@@ -708,17 +709,56 @@ class BaseStorageProvider(StorageProvider):
             f=lambda: self._put_object(path, body, if_match, if_none_match, provider_attributes),
         )
 
-    def get_object(self, path: str, byte_range: Range | None = None) -> bytes:
+    def get_object(self, path: str, byte_range: Range | SuffixRange | None = None) -> bytes:
+        """
+        Retrieves an object from the storage provider.
+
+        :param path: The path where the object is stored.
+        :param byte_range: Optional byte range to read. A :py:class:`multistorageclient.types.SuffixRange` is read
+            with a single request if the provider supports suffix ranges, else after an object metadata request.
+        :return: The content of the retrieved object.
+        """
         path = self._prepend_base_path(path)
+        if isinstance(byte_range, SuffixRange) and not self._supports_suffix_range():
+            suffix_range = byte_range
+            return self._emit_metrics(
+                operation=BaseStorageProvider._Operation.READ,
+                f=lambda: self._get_object_suffix_using_metadata(path, suffix_range),
+            )
         return self._emit_metrics(
             operation=BaseStorageProvider._Operation.READ,
             f=lambda: self._get_object_following_symlinks(path, byte_range),
         )
 
+    def _supports_suffix_range(self) -> bool:
+        """
+        :return: ``True`` if :py:meth:`_get_object` accepts a :py:class:`multistorageclient.types.SuffixRange`.
+        """
+        return False
+
+    def _get_object_suffix(self, path: str, byte_range: SuffixRange, get_suffix: Callable[[], bytes | None]) -> bytes:
+        """
+        Reads a suffix range with ``get_suffix`` (a single request), or after an object metadata request if it returns
+        ``None`` (e.g. HTTP 416 for empty objects or MSC symlink placeholders, which are empty objects).
+
+        The fallback runs outside of ``get_suffix``'s error translation, so its errors are translated once.
+        """
+        data = get_suffix()
+        if data is None:
+            return self._get_object_suffix_using_metadata(path, byte_range)
+        return data
+
+    def _get_object_suffix_using_metadata(self, path: str, byte_range: SuffixRange) -> bytes:
+        path, metadata = self._resolve_symlink_path(path)
+        offset = max(metadata.content_length - byte_range.size, 0)
+        if offset >= metadata.content_length:
+            return b""
+        return self._get_object(path, Range(offset=offset, size=metadata.content_length - offset))
+
     def _get_object_following_symlinks(
         self,
         path: str,
-        byte_range: Range | None = None,
+        byte_range: Range | SuffixRange | None = None,
         _depth: int = 0,
         _visited: set[str] | None = None,
     ) -> bytes:
@@ -1549,8 +1589,11 @@ class BaseStorageProvider(StorageProvider):
         """
 
     @abstractmethod
-    def _get_object(self, path: str, byte_range: Range | None = None) -> bytes:
-        pass
+    def _get_object(self, path: str, byte_range: Range | SuffixRange | None = None) -> bytes:
+        """
+        :param byte_range: Optional byte range to read. A :py:class:`multistorageclient.types.SuffixRange` is only
+            passed if :py:meth:`_supports_suffix_range` returns ``True``.
+        """
 
     @abstractmethod
     def _copy_object(self, src_path: str, dest_path: str) -> int:

@@ -280,6 +280,22 @@ class Range:
     size: int
 
 
+@dataclass
+class SuffixRange:
+    """
+    A data class that represents the last ``size`` bytes of an object for read operations.
+
+    Reads return the whole object if it is shorter than ``size``.
+    """
+
+    #: The number of bytes to read from the end of the object. Must be positive.
+    size: int
+
+    def __post_init__(self) -> None:
+        if self.size <= 0:
+            raise ValueError(f"SuffixRange size must be positive, got {self.size}")
+
+
 class StorageProvider(ABC):
     """
     Abstract base class for interacting with a storage provider.

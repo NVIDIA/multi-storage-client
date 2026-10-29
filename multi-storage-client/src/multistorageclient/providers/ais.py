@@ -35,6 +35,7 @@ from ..types import (
     CredentialsProvider,
     ObjectMetadata,
     Range,
+    SuffixRange,
     SymlinkHandling,
 )
 from ..utils import safe_makedirs, split_path, validate_attributes
@@ -222,9 +223,14 @@ class AIStoreStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
 
-    def _get_object(self, path: str, byte_range: Range | None = None) -> bytes:
+    def _supports_suffix_range(self) -> bool:
+        return True
+
+    def _get_object(self, path: str, byte_range: Range | SuffixRange | None = None) -> bytes:
         bucket, key = split_path(path)
-        if byte_range:
+        if isinstance(byte_range, SuffixRange):
+            bytes_range = f"bytes=-{byte_range.size}"
+        elif byte_range:
             bytes_range = f"bytes={byte_range.offset}-{byte_range.offset + byte_range.size - 1}"
         else:
             bytes_range = None
@@ -245,6 +251,30 @@ class AIStoreStorageProvider(BaseStorageProvider):
                     content.close()
             else:
                 raise TypeError(f"Unexpected read_all() return type: {type(content)}")
+
+        if isinstance(byte_range, SuffixRange):
+            suffix_size = byte_range.size
+
+            def _invoke_suffix_api() -> bytes | None:
+                try:
+                    data = _invoke_api()
+                except (AISError, HTTPError) as error:
+                    # Raised for empty objects (e.g. MSC symlinks).
+                    if isinstance(error, AISError):
+                        status_code = error.status_code
+                    else:
+                        status_code = error.response.status_code if error.response is not None else None
+                    if status_code == 416:
+                        return None
+                    raise
+                # Servers may ignore the range and return the whole object.
+                return data[-suffix_size:]
+
+            return self._get_object_suffix(
+                path,
+                byte_range,
+                lambda: self._translate_errors(_invoke_suffix_api, operation="GET", bucket=bucket, key=key),
+            )
 
         return self._translate_errors(_invoke_api, operation="GET", bucket=bucket, key=key)
 

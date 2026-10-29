@@ -24,11 +24,12 @@ import pytest
 from boto3.exceptions import S3UploadFailedError
 from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ClientError, IncompleteReadError, ReadTimeoutError, ResponseStreamingError
+from botocore.response import StreamingBody
 from botocore.stub import Stubber
 
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.providers.s3 import S3StorageProvider, StaticS3CredentialsProvider
-from multistorageclient.types import ObjectMetadata, PreconditionFailedError, RetryableError
+from multistorageclient.types import ObjectMetadata, PreconditionFailedError, RetryableError, SuffixRange
 from multistorageclient_rust import RustClient, RustClientError, RustRetryableError
 
 
@@ -310,6 +311,76 @@ def test_multipart_upload_error_translation(
         assert isinstance(exc_info.value.__cause__, S3UploadFailedError)
         assert isinstance(exc_info.value.__cause__.__context__, ClientError)
         assert exc_info.value.__cause__.__context__.response["ResponseMetadata"]["HTTPStatusCode"] == status_code
+        stubber.assert_no_pending_responses()
+
+
+@pytest.mark.parametrize(
+    ("content", "suffix_size"),
+    [(b"", 10), (b"0123456789", 4), (b"0123456789", 20)],
+)
+def test_suffix_range_unsatisfiable_falls_back_to_metadata(content: bytes, suffix_size: int) -> None:
+    provider = _create_s3_provider()
+    expected = content[-suffix_size:]
+    offset = len(content) - len(expected)
+
+    with Stubber(provider._s3_client) as stubber:
+        stubber.add_client_error(
+            "get_object",
+            service_error_code="InvalidRange",
+            http_status_code=416,
+            expected_params={"Bucket": "test-bucket", "Key": "test-key", "Range": f"bytes=-{suffix_size}"},
+        )
+        head_object_response = {
+            "ContentLength": len(content),
+            "LastModified": datetime(2025, 1, 1, tzinfo=UTC),
+            "ETag": '"etag"',
+        }
+        stubber.add_response("head_object", head_object_response, {"Bucket": "test-bucket", "Key": "test-key"})
+        if expected:
+            stubber.add_response(
+                "get_object",
+                {"Body": StreamingBody(io.BytesIO(expected), len(expected))},
+                expected_params={
+                    "Bucket": "test-bucket",
+                    "Key": "test-key",
+                    "Range": f"bytes={offset}-{len(content) - 1}",
+                },
+            )
+        else:
+            # Empty reads are checked for a symlink target.
+            stubber.add_response("head_object", head_object_response, {"Bucket": "test-bucket", "Key": "test-key"})
+        assert provider.get_object("test-bucket/test-key", byte_range=SuffixRange(size=suffix_size)) == expected
+        stubber.assert_no_pending_responses()
+
+
+@pytest.mark.parametrize(
+    ("status_code", "error_code", "expected_error"),
+    [(404, "NoSuchKey", FileNotFoundError), (503, "SlowDown", RetryableError)],
+)
+def test_suffix_range_fallback_errors_are_translated_once(
+    status_code: int, error_code: str, expected_error: type[Exception]
+) -> None:
+    """Errors of the metadata fallback keep their translation (e.g. retryable, not found), not a RuntimeError."""
+    provider = _create_s3_provider()
+
+    with Stubber(provider._s3_client) as stubber:
+        stubber.add_client_error(
+            "get_object",
+            service_error_code="InvalidRange",
+            http_status_code=416,
+            expected_params={"Bucket": "test-bucket", "Key": "test-key", "Range": "bytes=-10"},
+        )
+        stubber.add_client_error(
+            "head_object",
+            service_error_code=error_code,
+            http_status_code=status_code,
+            expected_params={"Bucket": "test-bucket", "Key": "test-key"},
+        )
+        if status_code == 404:
+            # A missing object is checked for being a directory.
+            stubber.add_response("list_objects_v2", {"KeyCount": 0})
+        with pytest.raises(expected_error):
+            provider.get_object("test-bucket/test-key", byte_range=SuffixRange(size=10))
         stubber.assert_no_pending_responses()
 
 

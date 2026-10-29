@@ -30,6 +30,7 @@ from ..types import (
     Range,
     SignerType,
     SourceVersionCheckMode,
+    SuffixRange,
     SymlinkHandling,
     SyncResult,
 )
@@ -168,7 +169,7 @@ class CompositeStorageClient(AbstractStorageClient):
     def read(
         self,
         path: str,
-        byte_range: Range | None = None,
+        byte_range: Range | SuffixRange | None = None,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
     ) -> bytes:
         resolved = self._metadata_provider.realpath(path)

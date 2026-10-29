@@ -29,7 +29,7 @@ import xattr
 
 from .. import _xattr
 from ..telemetry import Telemetry
-from ..types import AWARE_DATETIME_MIN, ObjectMetadata, Range, SymlinkHandling
+from ..types import AWARE_DATETIME_MIN, ObjectMetadata, Range, SuffixRange, SymlinkHandling
 from ..utils import (
     create_attribute_filter_evaluator,
     matches_attribute_filter_expression,
@@ -160,9 +160,16 @@ class PosixFileStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="PUT", path=path)
 
-    def _get_object(self, path: str, byte_range: Range | None = None) -> bytes:
+    def _supports_suffix_range(self) -> bool:
+        return True
+
+    def _get_object(self, path: str, byte_range: Range | SuffixRange | None = None) -> bytes:
         def _invoke_api() -> bytes:
-            if byte_range:
+            if isinstance(byte_range, SuffixRange):
+                with open(path, "rb") as f:
+                    f.seek(max(os.fstat(f.fileno()).st_size - byte_range.size, 0))
+                    return f.read()
+            elif byte_range:
                 with open(path, "rb") as f:
                     f.seek(byte_range.offset)
                     return f.read(byte_range.size)

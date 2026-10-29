@@ -46,6 +46,7 @@ from ..types import (
     PreconditionFailedError,
     Range,
     RetryableError,
+    SuffixRange,
     SymlinkHandling,
 )
 from ..utils import (
@@ -439,9 +440,33 @@ class GoogleStorageProvider(BaseStorageProvider):
 
         return self._translate_errors(_invoke_api, operation="PUT", bucket=bucket, key=key)
 
-    def _get_object(self, path: str, byte_range: Range | None = None) -> bytes:
+    def _supports_suffix_range(self) -> bool:
+        return self._rust_client is None
+
+    def _get_object(self, path: str, byte_range: Range | SuffixRange | None = None) -> bytes:
         bucket, key = split_path(path)
         self._refresh_gcs_client_if_needed()
+
+        if isinstance(byte_range, SuffixRange):
+            suffix_range = byte_range
+
+            def _invoke_suffix_api() -> bytes | None:
+                blob = self._gcs_client.bucket(bucket).blob(key)
+                try:
+                    data = blob.download_as_bytes(start=-suffix_range.size, single_shot_download=True)
+                except GoogleAPICallError as error:
+                    # Raised for empty objects (e.g. MSC symlinks).
+                    if error.code == 416:
+                        return None
+                    raise
+                # Servers may ignore the range and return the whole object.
+                return data[-suffix_range.size :]
+
+            return self._get_object_suffix(
+                path,
+                suffix_range,
+                lambda: self._translate_errors(_invoke_suffix_api, operation="GET", bucket=bucket, key=key),
+            )
 
         def _invoke_api() -> bytes:
             bucket_obj = self._gcs_client.bucket(bucket)

@@ -28,6 +28,7 @@ from typing import IO, Any, cast
 from ..config import StorageClientConfig
 from ..constants import DEFAULT_SYNC_BATCH_SIZE, MEMORY_LOAD_LIMIT
 from ..file import ObjectFile, PosixFile
+from ..providers.base import BaseStorageProvider
 from ..providers.posix_file import PosixFileStorageProvider
 from ..replica_manager import ReplicaManager
 from ..retry import batch_retry, retry
@@ -45,6 +46,7 @@ from ..types import (
     SignerType,
     SourceVersionCheckMode,
     StorageProvider,
+    SuffixRange,
     SymlinkHandling,
     SyncResult,
 )
@@ -190,6 +192,26 @@ class SingleStorageClient(AbstractStorageClient):
         :return: ``True`` if the storage provider is using the Rust client, ``False`` otherwise.
         """
         return getattr(self._storage_provider, "_rust_client", None) is not None
+
+    def _get_suffix_object_size(self, physical_path: str) -> int:
+        """
+        :return: The size of the object at a physical path, following symlinks of the storage provider.
+        """
+        if isinstance(self._storage_provider, BaseStorageProvider):
+            provider = self._storage_provider
+            _, metadata = provider._resolve_symlink_path(provider._prepend_base_path(physical_path))
+            return metadata.content_length
+        return self._storage_provider.get_object_metadata(physical_path).content_length
+
+    def _can_read_suffix_range(self) -> bool:
+        """
+        :return: ``True`` if a suffix range can be passed to the storage provider without knowing the object size.
+        """
+        return (
+            isinstance(self._storage_provider, BaseStorageProvider)
+            and not (self._is_cache_enabled() and self._cache_manager)
+            and not self._replica_manager
+        )
 
     def _read_from_replica_or_primary(self, path: str) -> bytes:
         """
@@ -431,20 +453,31 @@ class SingleStorageClient(AbstractStorageClient):
     def read(
         self,
         path: str,
-        byte_range: Range | None = None,
+        byte_range: Range | SuffixRange | None = None,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
     ) -> bytes:
         """
         Read bytes from a file at the specified logical path.
 
         :param path: The logical path of the object to read.
-        :param byte_range: Optional byte range to read (offset and length).
+        :param byte_range: Optional byte range to read (offset and length), or a suffix range to read the last bytes.
         :param check_source_version: Whether to check the source version of cached objects.
         :return: The content of the object as bytes.
         :raises FileNotFoundError: If the file at the specified path does not exist.
         """
         if self._metadata_provider:
             path = self._resolve_read_path(path)
+
+        if isinstance(byte_range, SuffixRange):
+            if self._can_read_suffix_range():
+                return cast(BaseStorageProvider, self._storage_provider).get_object(path, byte_range=byte_range)
+
+            # (the size of the physical object: the path is resolved, symlinks of the storage provider are followed)
+            content_length = self._get_suffix_object_size(path)
+            offset = max(content_length - byte_range.size, 0)
+            if offset >= content_length:
+                return b""
+            byte_range = Range(offset=offset, size=content_length - offset)
 
         # Handle caching logic
         if self._is_cache_enabled() and self._cache_manager:
