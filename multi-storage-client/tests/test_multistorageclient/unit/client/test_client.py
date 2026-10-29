@@ -428,7 +428,7 @@ def test_single_file_listing_applies_attribute_filter(
     metadata = ObjectMetadata(
         key="data/file.bin",
         content_length=1,
-        last_modified=datetime.now(tz=timezone.utc),
+        last_modified=datetime.now(tz=UTC),
         metadata={"kind": "actual"},
     )
     if metadata_backed:
