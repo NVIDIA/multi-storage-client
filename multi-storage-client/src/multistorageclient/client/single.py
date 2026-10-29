@@ -48,7 +48,15 @@ from ..types import (
     SymlinkHandling,
     SyncResult,
 )
-from ..utils import NullStorageClient, PatternMatcher, _invoke_batch_transfer, _transfer_notification, join_paths
+from ..utils import (
+    NullStorageClient,
+    PatternMatcher,
+    _invoke_batch_transfer,
+    _transfer_notification,
+    create_attribute_filter_evaluator,
+    join_paths,
+    matches_attribute_filter_expression,
+)
 from .types import AbstractStorageClient
 
 logger = logging.getLogger(__name__)
@@ -1288,7 +1296,11 @@ class SingleStorageClient(AbstractStorageClient):
             path, start_after, end_at, include_url_prefix, pattern_matcher
         )
         if single_file is not None:
-            yield single_file
+            evaluator = (
+                create_attribute_filter_evaluator(attribute_filter_expression) if attribute_filter_expression else None
+            )
+            if matches_attribute_filter_expression(single_file, evaluator):
+                yield single_file
             return
         if effective_path is None:
             return
