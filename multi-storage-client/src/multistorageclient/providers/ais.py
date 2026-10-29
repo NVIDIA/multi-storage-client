@@ -252,6 +252,30 @@ class AIStoreStorageProvider(BaseStorageProvider):
             else:
                 raise TypeError(f"Unexpected read_all() return type: {type(content)}")
 
+        if isinstance(byte_range, SuffixRange):
+            suffix_size = byte_range.size
+
+            def _invoke_suffix_api() -> bytes | None:
+                try:
+                    data = _invoke_api()
+                except (AISError, HTTPError) as error:
+                    # Raised for empty objects (e.g. MSC symlinks).
+                    if isinstance(error, AISError):
+                        status_code = error.status_code
+                    else:
+                        status_code = error.response.status_code if error.response is not None else None
+                    if status_code == 416:
+                        return None
+                    raise
+                # Servers may ignore the range and return the whole object.
+                return data[-suffix_size:]
+
+            return self._get_object_suffix(
+                path,
+                byte_range,
+                lambda: self._translate_errors(_invoke_suffix_api, operation="GET", bucket=bucket, key=key),
+            )
+
         return self._translate_errors(_invoke_api, operation="GET", bucket=bucket, key=key)
 
     def _copy_object(self, src_path: str, dest_path: str) -> int:

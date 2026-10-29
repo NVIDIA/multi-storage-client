@@ -724,6 +724,18 @@ class BaseStorageProvider(StorageProvider):
         """
         return False
 
+    def _get_object_suffix(self, path: str, byte_range: SuffixRange, get_suffix: Callable[[], bytes | None]) -> bytes:
+        """
+        Reads a suffix range with ``get_suffix`` (a single request), or after an object metadata request if it returns
+        ``None`` (e.g. HTTP 416 for empty objects or MSC symlink placeholders, which are empty objects).
+
+        The fallback runs outside of ``get_suffix``'s error translation, so its errors are translated once.
+        """
+        data = get_suffix()
+        if data is None:
+            return self._get_object_suffix_using_metadata(path, byte_range)
+        return data
+
     def _get_object_suffix_using_metadata(self, path: str, byte_range: SuffixRange) -> bytes:
         path, metadata = self._resolve_symlink_path(path)
         offset = max(metadata.content_length - byte_range.size, 0)

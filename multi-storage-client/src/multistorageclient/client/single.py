@@ -185,6 +185,16 @@ class SingleStorageClient(AbstractStorageClient):
         """
         return getattr(self._storage_provider, "_rust_client", None) is not None
 
+    def _get_suffix_object_size(self, physical_path: str) -> int:
+        """
+        :return: The size of the object at a physical path, following symlinks of the storage provider.
+        """
+        if isinstance(self._storage_provider, BaseStorageProvider):
+            provider = self._storage_provider
+            _, metadata = provider._resolve_symlink_path(provider._prepend_base_path(physical_path))
+            return metadata.content_length
+        return self._storage_provider.get_object_metadata(physical_path).content_length
+
     def _can_read_suffix_range(self) -> bool:
         """
         :return: ``True`` if a suffix range can be passed to the storage provider without knowing the object size.
@@ -447,20 +457,19 @@ class SingleStorageClient(AbstractStorageClient):
         :return: The content of the object as bytes.
         :raises FileNotFoundError: If the file at the specified path does not exist.
         """
+        if self._metadata_provider:
+            path = self._resolve_read_path(path)
+
         if isinstance(byte_range, SuffixRange):
             if self._can_read_suffix_range():
-                if self._metadata_provider:
-                    path = self._resolve_read_path(path)
                 return cast(BaseStorageProvider, self._storage_provider).get_object(path, byte_range=byte_range)
 
-            content_length = self.info(path).content_length
+            # (the size of the physical object: the path is resolved, symlinks of the storage provider are followed)
+            content_length = self._get_suffix_object_size(path)
             offset = max(content_length - byte_range.size, 0)
             if offset >= content_length:
                 return b""
             byte_range = Range(offset=offset, size=content_length - offset)
-
-        if self._metadata_provider:
-            path = self._resolve_read_path(path)
 
         # Handle caching logic
         if self._is_cache_enabled() and self._cache_manager:

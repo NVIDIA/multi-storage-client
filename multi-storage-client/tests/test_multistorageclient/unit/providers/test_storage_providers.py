@@ -22,11 +22,12 @@ import urllib.request
 import uuid
 from datetime import UTC, datetime
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from multistorageclient import StorageClient, StorageClientConfig, telemetry
+from multistorageclient.client.single import SingleStorageClient
 from multistorageclient.constants import MEMORY_LOAD_LIMIT
 from multistorageclient.providers.ais import AIStoreStorageProvider
 from multistorageclient.providers.ais_s3 import AIStoreS3StorageProvider
@@ -950,7 +951,8 @@ def test_read_suffix_range(
 
         if not with_cache and temp_data_store_type is not tempdatastore.TemporaryAIStoreS3Bucket:
             storage_client.make_symlink(f"{prefix}/link.bin", f"{prefix}/data.bin")
-            assert storage_client.read(f"{prefix}/link.bin", byte_range=SuffixRange(size=10)) == content[-10:]
+            for size in [10, 1000]:
+                assert storage_client.read(f"{prefix}/link.bin", byte_range=SuffixRange(size=size)) == content[-size:]
 
         with (
             patch.object(storage_provider, "_get_object", wraps=storage_provider._get_object) as get_object,
@@ -967,6 +969,51 @@ def test_read_suffix_range(
 
     with pytest.raises(ValueError):
         SuffixRange(size=0)
+
+
+def test_read_suffix_range_fallback_follows_symlinks():
+    """Without native suffix ranges in the client (here: replicas), the suffix is sized by the symlink target."""
+    with tempdatastore.TemporaryAWSS3Bucket() as temp_data_store:
+        profile = "data"
+        config_dict = {"profiles": {profile: temp_data_store.profile_config_dict()}}
+        storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
+        single = cast(SingleStorageClient, storage_client._delegate)
+        # (reads are served by the primary: no replica holds the objects)
+        single._replica_manager = MagicMock()
+        single._replica_manager.download_from_replica_or_primary.side_effect = lambda path, file_obj, storage_provider: (
+            file_obj.write(storage_provider.get_object(path))
+        )
+        assert not single._can_read_suffix_range()
+
+        prefix = uuid.uuid4().hex
+        content = bytes(range(100))
+        storage_client.write(f"{prefix}/data.bin", content)
+        storage_client.make_symlink(f"{prefix}/link.bin", f"{prefix}/data.bin")
+        for size in [10, 1000]:
+            assert storage_client.read(f"{prefix}/link.bin", byte_range=SuffixRange(size=size)) == content[-size:]
+
+
+@pytest.mark.parametrize("with_cache", [False, True])
+def test_read_suffix_range_with_metadata_provider(with_cache: bool):
+    """Suffix range reads of a manifest-backed profile resolve logical paths before reading (or sizing) the object."""
+    with tempdatastore.TemporaryPOSIXDirectory() as temp_data_store:
+        profile = "data"
+        profile_config = temp_data_store.profile_config_dict() | {
+            "metadata_provider": {"type": "manifest", "options": {"manifest_path": ".msc_manifests", "writable": True}}
+        }
+        config_dict = {"profiles": {profile: profile_config}}
+        if with_cache:
+            config_dict["cache"] = {"size": "10M", "cache_line_size": "1M", "location": tempfile.mkdtemp()}
+        storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
+
+        content = bytes(range(100))
+        storage_client.write("dir/data.bin", content)
+        storage_client.commit_metadata()
+
+        for size in [10, 1000]:
+            assert storage_client.read("dir/data.bin", byte_range=SuffixRange(size=size)) == content[-size:]
+        with pytest.raises(FileNotFoundError):
+            storage_client.read("missing.bin", byte_range=SuffixRange(size=10))
 
 
 @pytest.mark.parametrize(

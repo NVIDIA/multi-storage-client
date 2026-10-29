@@ -577,18 +577,28 @@ class S3StorageProvider(BaseStorageProvider):
     def _get_object(self, path: str, byte_range: Range | SuffixRange | None = None) -> bytes:
         bucket, key = split_path(path)
 
-        def _invoke_api() -> bytes:
-            if isinstance(byte_range, SuffixRange):
+        if isinstance(byte_range, SuffixRange):
+            suffix_range = byte_range
+
+            def _invoke_suffix_api() -> bytes | None:
                 try:
-                    response = self._s3_client.get_object(Bucket=bucket, Key=key, Range=f"bytes=-{byte_range.size}")
+                    response = self._s3_client.get_object(Bucket=bucket, Key=key, Range=f"bytes=-{suffix_range.size}")
                 except ClientError as error:
                     # Raised for empty objects, or by servers without suffix range support.
                     if error.response["ResponseMetadata"]["HTTPStatusCode"] == 416:
-                        return self._get_object_suffix_using_metadata(path, byte_range)
+                        return None
                     raise
                 # Servers may ignore the range and return the whole object.
-                return response["Body"].read()[-byte_range.size :]
-            elif byte_range:
+                return response["Body"].read()[-suffix_range.size :]
+
+            return self._get_object_suffix(
+                path,
+                suffix_range,
+                lambda: self._translate_errors(_invoke_suffix_api, operation="GET", bucket=bucket, key=key),
+            )
+
+        def _invoke_api() -> bytes:
+            if byte_range:
                 bytes_range = f"bytes={byte_range.offset}-{byte_range.offset + byte_range.size - 1}"
                 if self._rust_client:
                     response = run_async_rust_client_method(

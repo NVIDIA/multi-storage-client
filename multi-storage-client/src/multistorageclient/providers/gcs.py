@@ -447,13 +447,31 @@ class GoogleStorageProvider(BaseStorageProvider):
         bucket, key = split_path(path)
         self._refresh_gcs_client_if_needed()
 
+        if isinstance(byte_range, SuffixRange):
+            suffix_range = byte_range
+
+            def _invoke_suffix_api() -> bytes | None:
+                blob = self._gcs_client.bucket(bucket).blob(key)
+                try:
+                    data = blob.download_as_bytes(start=-suffix_range.size, single_shot_download=True)
+                except GoogleAPICallError as error:
+                    # Raised for empty objects (e.g. MSC symlinks).
+                    if error.code == 416:
+                        return None
+                    raise
+                # Servers may ignore the range and return the whole object.
+                return data[-suffix_range.size :]
+
+            return self._get_object_suffix(
+                path,
+                suffix_range,
+                lambda: self._translate_errors(_invoke_suffix_api, operation="GET", bucket=bucket, key=key),
+            )
+
         def _invoke_api() -> bytes:
             bucket_obj = self._gcs_client.bucket(bucket)
             blob = bucket_obj.blob(key)
-            if isinstance(byte_range, SuffixRange):
-                # Servers may ignore the range and return the whole object.
-                return blob.download_as_bytes(start=-byte_range.size, single_shot_download=True)[-byte_range.size :]
-            elif byte_range:
+            if byte_range:
                 if self._rust_client:
                     return run_async_rust_client_method(self._rust_client, "get", key, byte_range)
                 else:
