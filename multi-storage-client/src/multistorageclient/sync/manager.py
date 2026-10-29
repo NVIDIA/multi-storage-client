@@ -17,6 +17,8 @@ import importlib.util
 import json
 import logging
 import multiprocessing
+import multiprocessing.connection
+import multiprocessing.process
 import os
 import queue
 import signal
@@ -54,6 +56,12 @@ def _sync_worker_process_local(*args) -> None:
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     with worker_logging(args[7]):
         sync_worker_process(*args)
+
+
+def _describe_failed_workers(processes: list[multiprocessing.process.BaseProcess]) -> str:
+    return "Worker processes exited unexpectedly: " + ", ".join(
+        f"pid {process.pid} (exit code {process.exitcode})" for process in processes
+    )
 
 
 class SyncManager:
@@ -330,8 +338,33 @@ class SyncManager:
                         with progress.network_throughput(
                             {os.getpid()} | {p.pid for p in processes if p.pid is not None and p.is_alive()}
                         ):
-                            for process in processes:
-                                process.join()
+                            running = {process.sentinel: process for process in processes}
+                            while running:
+                                for sentinel in multiprocessing.connection.wait(list(running)):
+                                    running.pop(sentinel).join()
+                                failed = [process for process in processes if process.exitcode not in (None, 0)]
+                                if failed:
+                                    # A worker that dies can leave a shared queue locked, so the others might never
+                                    # finish; the cleanup below stops them. The result monitor gets a bounded wait to
+                                    # record results already queued, and metadata is committed only once it has stopped.
+                                    result_queue.put((OperationType.STOP, None, None))
+                                    result_monitor_thread.join(timeout=1.0)
+                                    if commit_metadata and not result_monitor_thread.is_alive():
+                                        self.target_client.commit_metadata()
+                                    files_added, files_deleted, bytes_added, bytes_deleted = (
+                                        result_monitor_thread.totals()
+                                    )
+                                    raise SyncError(
+                                        f"Errors in sync operation: {_describe_failed_workers(failed)}",
+                                        sync_result=SyncResult(
+                                            total_work_units=producer_thread.total_work_units,
+                                            total_files_added=files_added,
+                                            total_files_deleted=files_deleted,
+                                            total_bytes_added=bytes_added,
+                                            total_bytes_deleted=bytes_deleted,
+                                            total_time_seconds=time.time() - sync_start_time,
+                                        ),
+                                    )
                 elif execution_mode == ExecutionMode.RAY:
                     if not HAVE_RAY:
                         raise RuntimeError(

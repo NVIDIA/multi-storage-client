@@ -17,10 +17,12 @@ import json
 import os
 import queue
 import shutil
+import signal
 import sys
 import threading
 from contextlib import nullcontext
 from datetime import UTC, datetime
+from multiprocessing import get_context
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -29,6 +31,7 @@ from unittest import mock
 import pytest
 
 from multistorageclient.client import StorageClient
+from multistorageclient.config import StorageClientConfig
 from multistorageclient.sync import SyncManager
 from multistorageclient.sync import manager as manager_module
 from multistorageclient.sync import monitors as monitors_module
@@ -104,6 +107,142 @@ def test_sync_objects_signals_workers_and_raises_original_result_monitor_error(m
         manager.sync_objects(num_worker_processes=1)
 
     provider.add_file.assert_called_once_with("file", metadata)
+
+
+class _ExitsWhenUnpickled(MockStorageClient):
+    """A source client that ends any spawned worker process before the worker runs."""
+
+    def list(self, **kwargs):
+        return iter(ObjectMetadata(key=f"file{i}", content_length=1, last_modified=datetime.now(UTC)) for i in range(3))
+
+    def __reduce__(self):
+        return (os._exit, (3,))
+
+
+class _EmptyStorageClient(MockStorageClient):
+    def __init__(self):
+        self.commits = 0
+
+    def list(self, **kwargs):
+        return iter(())
+
+    def commit_metadata(self, prefix: str | None = None) -> None:
+        self.commits += 1
+
+
+@pytest.mark.parametrize(
+    argnames=["file_queue_size", "commit_metadata"],
+    # 0 is unbounded. A one-slot queue blocks the producer once the workers are gone.
+    argvalues=[(0, True), (1, False)],
+)
+def test_sync_objects_raises_when_worker_processes_exit_unexpectedly(monkeypatch, file_queue_size, commit_metadata):
+    source_client = _ExitsWhenUnpickled()
+    target_client = _EmptyStorageClient()
+    spawn = get_context("spawn")
+    queues = iter([spawn.Queue(maxsize=file_queue_size), spawn.Queue(), spawn.Queue()])
+    context = SimpleNamespace(Queue=lambda: next(queues), Event=spawn.Event, Process=spawn.Process)
+    monkeypatch.setattr(manager_module.multiprocessing, "get_context", mock.Mock(return_value=context))
+    manager = SyncManager(cast(StorageClient, source_client), "", cast(StorageClient, target_client), "")
+
+    with pytest.raises(SyncError, match=r"Worker processes exited unexpectedly: pid \d+ \(exit code 3\)") as exc_info:
+        manager.sync_objects(num_worker_processes=2, commit_metadata=commit_metadata)
+
+    assert exc_info.value.sync_result.total_files_added == 0
+    assert target_client.commits == int(commit_metadata)
+
+
+_release_metadata_provider = threading.Event()
+
+
+class _MetadataProviderThatStalls:
+    """Records a few files, then stalls the result monitor until the test releases it."""
+
+    def __init__(self):
+        self.added = 0
+
+    def add_file(self, path, metadata):
+        if self.added == 5:
+            _release_metadata_provider.wait(timeout=30)
+        self.added += 1
+
+
+class _TargetWithStallingMetadataProvider(_EmptyStorageClient):
+    def __init__(self):
+        super().__init__()
+        self._metadata_provider = _MetadataProviderThatStalls()
+
+
+def test_sync_objects_reports_consistent_totals_while_the_result_monitor_is_still_running(monkeypatch):
+    source_client = _ExitsWhenUnpickled()
+    target_client = _TargetWithStallingMetadataProvider()
+    spawn = get_context("spawn")
+    result_queue = spawn.Queue()
+    for i in range(20):
+        metadata = ObjectMetadata(key=f"copied{i}", content_length=7, last_modified=datetime.now(UTC))
+        result_queue.put((OperationType.ADD, f"copied{i}", metadata))
+    queues = iter([spawn.Queue(), result_queue, spawn.Queue()])
+    context = SimpleNamespace(Queue=lambda: next(queues), Event=spawn.Event, Process=spawn.Process)
+    monkeypatch.setattr(manager_module.multiprocessing, "get_context", mock.Mock(return_value=context))
+    manager = SyncManager(cast(StorageClient, source_client), "", cast(StorageClient, target_client), "")
+
+    try:
+        with pytest.raises(SyncError, match="Worker processes exited unexpectedly") as exc_info:
+            manager.sync_objects(num_worker_processes=2)
+    finally:
+        _release_metadata_provider.set()
+
+    result = exc_info.value.sync_result
+    assert (result.total_files_added, result.total_bytes_added) == (5, 35)
+    assert target_client.commits == 0
+
+
+class _KilledOnStart:
+    """A worker process that receives SIGKILL as soon as it starts, as from the system's out-of-memory killer."""
+
+    def __init__(self, process):
+        self._process = process
+
+    def start(self):
+        self._process.start()
+        os.kill(self._process.pid, signal.SIGKILL)
+
+    def __getattr__(self, name):
+        return getattr(self._process, name)
+
+
+def test_sync_objects_raises_as_soon_as_a_worker_process_is_killed(monkeypatch, tmp_path):
+    source_path, target_path = tmp_path / "source", tmp_path / "target"
+    source_path.mkdir()
+    target_path.mkdir()
+    (source_path / "file").write_bytes(b"data")
+    source_client, target_client = (
+        StorageClient(
+            StorageClientConfig.from_dict(
+                {"profiles": {name: {"storage_provider": {"type": "file", "options": {"base_path": str(path)}}}}},
+                profile=name,
+            )
+        )
+        for name, path in (("source", source_path), ("target", target_path))
+    )
+    spawn = get_context("spawn")
+    created = []
+
+    def create_process(**kwargs):
+        process = spawn.Process(**kwargs)
+        created.append(process)
+        return _KilledOnStart(process) if len(created) == 1 else process
+
+    context = SimpleNamespace(Queue=spawn.Queue, Event=spawn.Event, Process=create_process)
+    monkeypatch.setattr(manager_module.multiprocessing, "get_context", mock.Mock(return_value=context))
+    # Local-to-local syncs otherwise run in one process.
+    monkeypatch.setattr(manager_module, "calculate_worker_processes_and_threads", lambda *args: (2, 1))
+    manager = SyncManager(source_client, "", target_client, "")
+
+    with pytest.raises(SyncError, match=r"Worker processes exited unexpectedly: pid \d+ \(exit code -9\)"):
+        manager.sync_objects(num_worker_processes=2)
+
+    assert all(not process.is_alive() for process in created)
+    assert created[1].exitcode in (-signal.SIGTERM, -signal.SIGKILL)
 
 
 @pytest.mark.parametrize(
@@ -258,7 +397,7 @@ def test_network_sampling_scope_and_cleanup(monkeypatch, tmp_path, capsys, netwo
         monkeypatch.setattr(manager_module, "sync_worker_process", mock.Mock(side_effect=KeyboardInterrupt))
     if multiprocessing:
         queues = [mock.Mock(wraps=queue.Queue(), cancel_join_thread=mock.Mock()) for _ in range(3)]
-        processes = [mock.Mock(pid=101), mock.Mock(pid=102)]
+        processes = [mock.Mock(pid=101, exitcode=0), mock.Mock(pid=102, exitcode=0)]
         for process in processes:
             process.is_alive.return_value = True
             process.terminate.side_effect = lambda p=process: setattr(p.is_alive, "return_value", False)
@@ -289,6 +428,9 @@ def test_network_sampling_scope_and_cleanup(monkeypatch, tmp_path, capsys, netwo
 
         context.Process.side_effect = create_process
         monkeypatch.setattr(manager_module.multiprocessing, "get_context", mock.Mock(return_value=context))
+        monkeypatch.setattr(
+            manager_module.multiprocessing.connection, "wait", lambda objects, timeout=None: list(objects)
+        )
         expected_pids.update({101} if scenario == "exited_worker" else {101, 102})
     if scenario == "ray":
         ray = mock.Mock()
