@@ -55,10 +55,16 @@ class ResultMonitorThread(threading.Thread):
         self._metadata_provider = metadata_provider
         self._metadata_provider_lock = getattr(target_client, "_metadata_provider_lock", None)
         self.error = None
+        self._totals_lock = threading.Lock()
         self.total_files_added = 0
         self.total_files_deleted = 0
         self.total_bytes_added = 0
         self.total_bytes_deleted = 0
+
+    def totals(self) -> tuple[int, int, int, int]:
+        """Return files added, files deleted, bytes added, and bytes deleted, read together."""
+        with self._totals_lock:
+            return self.total_files_added, self.total_files_deleted, self.total_bytes_added, self.total_bytes_deleted
 
     def run(self):
         try:
@@ -89,15 +95,17 @@ class ResultMonitorThread(threading.Thread):
                     if self._metadata_provider:
                         with self._metadata_provider_lock or contextlib.nullcontext():
                             self._metadata_provider.add_file(target_file_path, physical_metadata)
-                    self.total_files_added += 1
-                    self.total_bytes_added += physical_metadata.content_length
+                    with self._totals_lock:
+                        self.total_files_added += 1
+                        self.total_bytes_added += physical_metadata.content_length
                     self.progress.update_progress()
                 elif op == OperationType.DELETE:
                     if self._metadata_provider:
                         with self._metadata_provider_lock or contextlib.nullcontext():
                             self._metadata_provider.remove_file(target_file_path)
-                    self.total_files_deleted += 1
-                    self.total_bytes_deleted += physical_metadata.content_length
+                    with self._totals_lock:
+                        self.total_files_deleted += 1
+                        self.total_bytes_deleted += physical_metadata.content_length
                     self.progress.update_progress()
         except Exception as e:
             self.error = e
