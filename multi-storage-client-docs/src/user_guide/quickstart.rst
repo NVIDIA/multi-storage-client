@@ -284,24 +284,27 @@ MSC supports concurrent copying of multiple files between different storage back
 
 Use :py:meth:`multistorageclient.StorageClient.sync_from` to copy files from one :py:class:`multistorageclient.StorageClient` to another. This is useful for duplicating data across storage backends or syncing environments (e.g., staging to production). This function uses multiple processes and threads to improve performance, which can be controlled by environment variables ``MSC_NUM_PROCESSES`` and ``MSC_NUM_THREADS_PER_PROCESS``.
 
+In the default local mode, sync runs in the calling process when it uses one worker process, and it always does when each client uses either the Rust client or the POSIX file storage provider. Otherwise MSC starts its worker processes with the ``spawn`` method, so a script that syncs files must guard its entry point with ``if __name__ == "__main__":``, as the examples below do. As soon as a worker process exits unexpectedly, for example because the system killed it for running out of memory or it failed during startup, ``sync_from`` stops the other workers and raises :py:class:`multistorageclient.types.SyncError` listing each failed worker's process ID and exit code. Files copied before then stay at the target, and their metadata is committed unless ``commit_metadata=False``.
+
 .. code-block:: python
    :linenos:
 
    from multistorageclient import StorageClient, StorageClientConfig
 
-   # Load two clients with different profiles
-   src_config = StorageClientConfig.from_file(profile="staging-data")
-   dst_config = StorageClientConfig.from_file(profile="prod-data")
-   src_client = StorageClient(config=src_config)
-   dst_client = StorageClient(config=dst_config)
+   if __name__ == "__main__":
+       # Load two clients with different profiles
+       src_config = StorageClientConfig.from_file(profile="staging-data")
+       dst_config = StorageClientConfig.from_file(profile="prod-data")
+       src_client = StorageClient(config=src_config)
+       dst_client = StorageClient(config=dst_config)
 
-   # Sync files in images/ from the staging bucket to the prod bucket
-   dst_client.sync_from(
-       source_client=src_client,
-       source_path="images/",
-       target_path="images/",
-       delete_unmatched_files=False
-   )
+       # Sync files in images/ from the staging bucket to the prod bucket
+       dst_client.sync_from(
+           source_client=src_client,
+           source_path="images/",
+           target_path="images/",
+           delete_unmatched_files=False
+       )
 
 If ``delete_unmatched_files`` is ``True``, any files in the target not found in the source will be deleted
 
@@ -315,9 +318,10 @@ The :py:meth:`multistorageclient.sync` shortcut provides a quick way to sync fil
 
    import multistorageclient as msc
 
-   # Sync data from one profile to another
-   msc.sync(
-       source_url="msc://staging-data/images/",
-       target_url="msc://prod-data/images/",
-       delete_unmatched_files=True
-   )
+   if __name__ == "__main__":
+       # Sync data from one profile to another
+       msc.sync(
+           source_url="msc://staging-data/images/",
+           target_url="msc://prod-data/images/",
+           delete_unmatched_files=True
+       )
