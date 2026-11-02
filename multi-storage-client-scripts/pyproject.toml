@@ -13,15 +13,15 @@ classifiers = [
 ]
 dependencies = [
     "multi-storage-client",
-    "dulwich>=1.2.19,<2",
-    "githubkit>=0.16.1,<1",
+    "dulwich>=1.2.20,<2",
+    "githubkit>=0.17,<1",
     "httpx-retries>=0.6,<1",
     "packaging>=26.3,<27"
 ]
 
 [dependency-groups]
 dev = [
-    "pytest>=9.1.1,<10"
+    "pytest>=9.2,<10"
 ]
 
 [project.scripts]
