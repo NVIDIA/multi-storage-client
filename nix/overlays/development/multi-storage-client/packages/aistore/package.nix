@@ -1,26 +1,26 @@
 {
-  buildGoModule,
+  buildGo127Module,
   fetchFromGitHub,
   lib,
   versionCheckHook,
 }:
 # https://nixos.org/manual/nixpkgs/unstable#ssec-language-go
-buildGoModule (finalAttrs: {
+buildGo127Module (finalAttrs: {
   pname = "aistore";
-  version = "1.5.1";
+  version = "1.5.2";
 
   src = fetchFromGitHub {
     owner = "NVIDIA";
     repo = "aistore";
     tag = "v${finalAttrs.version}";
-    hash = "sha256-yJnKhHGk3r6d6idc7kbM2XfYop1JGqZHjrT363f2nf0=";
+    hash = "sha256-nkC4+8sXoGG7hSKUJFd2GVjcBo10P65Up4X7sVt89Yw=";
   };
 
-  vendorHash = "sha256-5/6y9mdzo20jJc4A1dHTP6ezvgFjZ0wZE62CgpKbrSg=";
+  vendorHash = "sha256-vd4zA7iHEZ5+3OukBuB9Dg1+VBxqfGxN8NPwKttoBIs=";
 
   # Exclude `cmd/cli` and `cmd/ishard` which are separate Go modules.
   #
-  # https://github.com/NVIDIA/aistore/tree/v1.5.1/cmd
+  # https://github.com/NVIDIA/aistore/tree/v1.5.2/cmd
   subPackages = [
     "cmd/aisinit"
     "cmd/aisloader"
@@ -32,7 +32,7 @@ buildGoModule (finalAttrs: {
 
   # Needed for version strings.
   #
-  # https://github.com/NVIDIA/aistore/blob/v1.5.1/Makefile#L87
+  # https://github.com/NVIDIA/aistore/blob/v1.5.2/Makefile#L90
   ldflags = [
     "-X main.build=v${finalAttrs.version}"
     "-X main.buildtime=1970-01-01T00:00:00-00:00"
@@ -41,7 +41,7 @@ buildGoModule (finalAttrs: {
   tags = [
     # Monotonic time.
     #
-    # https://github.com/NVIDIA/aistore/blob/v1.5.1/Makefile#L99
+    # https://github.com/NVIDIA/aistore/blob/v1.5.2/Makefile#L102
     "mono"
   ];
 
