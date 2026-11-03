@@ -26,6 +26,7 @@ use tokio::task::JoinSet;
 const STATE_FORMAT: &str = "msc-download-v1";
 const STATE_SUFFIX: &str = ".msc-dl";
 const TEMP_FILE_RANDOM_LENGTH: usize = 6;
+const MERGE_BUFFER_SIZE: usize = 8 * 1024 * 1024;
 
 /// Resume metadata for retries against the same storage backend and bucket.
 #[derive(Debug, Deserialize, Serialize)]
@@ -281,6 +282,36 @@ async fn finish_chunk(tasks: &mut JoinSet<Result<(), StorageError>>) -> Result<(
     }
 }
 
+async fn merge_chunks(
+    dir: PathBuf,
+    state: Arc<DownloadState>,
+    state_lock: Option<Arc<same_file::Handle>>,
+    temporary_dir: Option<tempfile::TempDir>,
+) -> Result<(tempfile::TempPath, Option<tempfile::TempDir>), StorageError> {
+    tokio::task::spawn_blocking(move || {
+        // A cancelled waiter cannot stop this task, so it must retain the staging resources.
+        let _state_lock = state_lock;
+        let mut merged = tempfile::Builder::new()
+            .prefix("merged.")
+            .rand_bytes(TEMP_FILE_RANDOM_LENGTH)
+            .suffix(".tmp")
+            .tempfile_in(&dir)?;
+        let mut merged_size = 0;
+        for index in 0..state.size.div_ceil(state.chunk_size) {
+            let chunk = std::fs::File::open(dir.join(format!("{index:06}.chunk")))?;
+            let mut chunk = std::io::BufReader::with_capacity(MERGE_BUFFER_SIZE, chunk);
+            merged_size += std::io::copy(&mut chunk, merged.as_file_mut())?;
+        }
+        if merged_size != state.size {
+            return Err(invalid_state("Merged download has an unexpected length"));
+        }
+        merged.as_file().sync_all()?;
+        Ok((merged.into_temp_path(), temporary_dir))
+    })
+    .await
+    .map_err(|error| invalid_state(format!("Download merge task failed: {error}")))?
+}
+
 pub(crate) async fn download(
     store: Arc<dyn ObjectStore>,
     remote_path: Path,
@@ -374,18 +405,8 @@ pub(crate) async fn download(
         tasks.shutdown().await;
         return Err(error);
     }
-    let (mut merged, merged_path) = create_private_temp(&dir, "merged.")?;
-    let mut merged_size = 0;
-    for index in 0..count {
-        let mut chunk = fs::File::open(dir.join(format!("{index:06}.chunk"))).await?;
-        merged_size += tokio::io::copy(&mut chunk, &mut merged).await?;
-    }
-    if merged_size != state.size {
-        return Err(invalid_state("Merged download has an unexpected length"));
-    }
-    merged.flush().await?;
-    merged.sync_all().await?;
-    drop(merged);
+    let (merged_path, temporary_dir) =
+        merge_chunks(dir.clone(), Arc::clone(&state), state_lock.clone(), temporary_dir).await?;
     merged_path.persist(target).map_err(|error| error.error)?;
     let cleanup = if temporary_dir.is_some() {
         fs::remove_dir_all(&dir).await
@@ -405,6 +426,81 @@ pub(crate) async fn download(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelled_merge_keeps_staging_resources_until_task_finishes() {
+        use std::future::Future;
+        use std::task::{Context, Waker};
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            for disposable in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().to_path_buf();
+                std::fs::write(path.join("000000.chunk"), b"data").unwrap();
+                let lock = try_lock_state(&path).unwrap().unwrap();
+                let state = Arc::new(DownloadState {
+                    format: STATE_FORMAT.to_string(),
+                    key: "key".to_string(),
+                    size: 4,
+                    etag: Some("revision-1".to_string()),
+                    version: None,
+                    chunk_size: 4,
+                });
+                let (temporary_dir, _persistent_dir) = if disposable {
+                    (Some(dir), None)
+                } else {
+                    (None, Some(dir))
+                };
+                let (release, blocked) = std::sync::mpsc::channel();
+                let blocker = tokio::task::spawn_blocking(move || blocked.recv().unwrap());
+                let mut merge = Box::pin(merge_chunks(
+                    path.clone(),
+                    state,
+                    Some(Arc::new(lock)),
+                    temporary_dir,
+                ));
+                assert!(merge
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending());
+                drop(merge);
+                assert!(path.is_dir());
+                assert!(try_lock_state(&path).unwrap().is_none());
+                release.send(()).unwrap();
+                blocker.await.unwrap();
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    loop {
+                        if disposable {
+                            if !path.exists() {
+                                break;
+                            }
+                        } else if let Some(_lock) = try_lock_state(&path).unwrap() {
+                            if std::fs::read_dir(&path).unwrap().all(|entry| {
+                                !entry
+                                    .unwrap()
+                                    .file_name()
+                                    .to_string_lossy()
+                                    .starts_with("merged.")
+                            }) {
+                                break;
+                            }
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                if !disposable {
+                    assert_eq!(std::fs::read(path.join("000000.chunk")).unwrap(), b"data");
+                }
+            }
+        });
+    }
 
     #[test]
     fn directory_creator_rechecks_state_after_another_download() {

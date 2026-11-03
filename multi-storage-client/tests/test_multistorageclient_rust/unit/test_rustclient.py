@@ -976,18 +976,20 @@ async def test_rustclient_download_resume_remote_replacement(tmp_path):
         assert (tmp_path / ".download.msc-dl" / "000000.chunk").read_bytes() == server.body[:4]
 
 
+@pytest.mark.parametrize("chunk_size", [4, 8 * 1024 * 1024, 8 * 1024 * 1024 + 1])
 @pytest.mark.asyncio
-async def test_rustclient_download_resume_publication_failure(tmp_path):
+async def test_rustclient_download_resume_publication_failure(tmp_path, chunk_size):
     async with _DownloadServer() as server:
         server.fail_at = None
+        server.body = b"a" * chunk_size + b"b" * chunk_size + b"end"
         path = tmp_path / "download"
         path.mkdir()
         with pytest.raises(RuntimeError):
-            await server.client().download_multipart_to_file("key", str(path))
-        assert (tmp_path / ".download.msc-dl" / "000002.chunk").read_bytes() == server.body[8:]
+            await server.client(chunk_size).download_multipart_to_file("key", str(path))
+        assert (tmp_path / ".download.msc-dl" / "000002.chunk").read_bytes() == server.body[2 * chunk_size :]
         path.rmdir()
         server.requests.clear()
-        assert await server.client().download_multipart_to_file("key", str(path)) == len(server.body)
+        assert await server.client(chunk_size).download_multipart_to_file("key", str(path)) == len(server.body)
         assert server.requests == []
         assert path.read_bytes() == server.body
         assert not (tmp_path / ".download.msc-dl").exists()

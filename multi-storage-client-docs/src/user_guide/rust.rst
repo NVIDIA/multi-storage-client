@@ -212,9 +212,10 @@ saved in ``/data/.model.bin.msc-dl/``. No additional configuration is needed.
 
 After downloading all chunks, MSC merges them, atomically replaces the destination,
 and removes the state directory. An existing destination remains intact until
-publication. Merging requires approximately twice the object size in staging space,
-plus any existing destination. To discard progress, stop the download and remove
-its state directory.
+publication. Each merge runs in one blocking task with an 8 MiB buffered reader
+to reduce filesystem I/O overhead. Merging requires approximately twice the object
+size in staging space, plus any existing destination. To discard progress, stop the
+download and remove its state directory.
 
 Resume requires a usable ETag or object version; changed objects start fresh.
 Missing state metadata restarts the download in the same directory; invalid or
