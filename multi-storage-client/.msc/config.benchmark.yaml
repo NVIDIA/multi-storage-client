@@ -1,0 +1,19 @@
+profiles:
+  local-s3:
+    storage_provider:
+      type: s3
+      options:
+        endpoint_url: http://localhost:7070
+        region_name: us-east-1
+        base_path: msc-benchmark
+        multipart_threshold: 16777216
+        multipart_chunksize: 8388608
+        io_chunksize: 8388608
+        rust_client:
+          allow_http: true
+    credentials_provider:
+      type: S3Credentials
+      options:
+        access_key: access-key
+        secret_key: secret-key
+    caching_enabled: false

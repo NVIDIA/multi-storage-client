@@ -14,18 +14,27 @@
 # limitations under the License.
 
 import argparse
+import hashlib
+import importlib.metadata
 import json
+import math
 import os
 import shutil
 import statistics
+import tempfile
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import Manager, Pool
 from multiprocessing.managers import ListProxy
+from pathlib import Path
 from typing import Any
 
+from jsonschema import validate
+
+import multistorageclient as msc
 from multistorageclient import StorageClient, StorageClientConfig
-from multistorageclient.schema import BENCHMARK_SCHEMA, validate
+from multistorageclient.schema import BENCHMARK_SCHEMA
 
 # Default configuration
 DEFAULT_CONFIG = {
@@ -38,6 +47,131 @@ DEFAULT_CONFIG = {
 }
 
 DEFAULT_TEST_DIR = "/tmp/msc_benchmark"
+
+REPORT_SCHEMA = {
+    "type": "object",
+    "required": ["schema_version", "version", "profile", "workload", "results", "complete"],
+    "properties": {
+        "schema_version": {"const": 1},
+        "version": {"type": "string"},
+        "profile": {"type": "string"},
+        "workload": {"type": "object"},
+        "complete": {"const": True},
+        "results": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": {
+                "type": "array",
+                "minItems": 3,
+                "items": {
+                    "type": "object",
+                    "required": ["elapsed_seconds", "throughput_bytes_per_second"],
+                    "properties": {
+                        "elapsed_seconds": {"type": "number", "exclusiveMinimum": 0},
+                        "throughput_bytes_per_second": {"type": "number", "exclusiveMinimum": 0},
+                    },
+                },
+            },
+        },
+    },
+}
+
+
+def compare_reports(baseline: dict[str, Any], candidate: dict[str, Any], threshold: float) -> dict[str, float]:
+    """Compare schema-v1 file reports, rejecting incomplete or incompatible data.
+
+    Unknown additive report fields are allowed. Existing field meanings and units
+    remain stable within schema version 1. Throughput is bytes per second; return
+    cases whose median drops strictly beyond the fractional threshold.
+    """
+    for report in (baseline, candidate):
+        validate(instance=report, schema=REPORT_SCHEMA)
+    if baseline["workload"] != candidate["workload"] or baseline["profile"] != candidate["profile"]:
+        raise ValueError("Baseline and candidate workloads and profiles must match")
+    if baseline["results"].keys() != candidate["results"].keys():
+        raise ValueError("Baseline and candidate benchmark cases must match")
+    regressions = {}
+    for case, before in baseline["results"].items():
+        after = candidate["results"][case]
+        if len(before) != len(after):
+            raise ValueError("Baseline and candidate repetition counts must match")
+        for sample in [*before, *after]:
+            if not all(math.isfinite(sample[key]) for key in ("elapsed_seconds", "throughput_bytes_per_second")):
+                raise ValueError("Benchmark samples must be finite")
+        drop = 1 - statistics.median(s["throughput_bytes_per_second"] for s in after) / statistics.median(
+            s["throughput_bytes_per_second"] for s in before
+        )
+        if drop > threshold:
+            regressions[case] = drop
+    return regressions
+
+
+def run_file_benchmarks(
+    client: StorageClient, config: dict[str, Any], repeats: int, prefix: str
+) -> dict[str, list[dict[str, float]]]:
+    """Measure direct file transfers with one warmup and bounded memory.
+
+    Test sizes and thread counts use the existing benchmark workload config.
+    This mode uses one process and fresh remote keys for every sample. Timings
+    include completed downloads and multipart assembly. Generation, streaming
+    SHA-256 verification, and cleanup are outside timed sections.
+    """
+    if config["processes"] != [1] or repeats < 3:
+        raise ValueError("File-only reports require one process and at least three repetitions")
+    sizes = {size_to_bytes(size): count for size, count in config["test_object_sizes"].items()}
+    if not sizes or not config["threads"] or min(*sizes, *sizes.values(), *config["threads"]) < 1:
+        raise ValueError("Object sizes, counts, and thread counts must be positive")
+    results: dict[str, list[dict[str, float]]] = {}
+    with tempfile.TemporaryDirectory(prefix="msc-benchmark-") as directory:
+        root = Path(directory)
+        for size, count in sizes.items():
+            source = root / "source"
+            with source.open("wb") as stream:
+                remaining = size
+                while remaining:
+                    block = os.urandom(min(8 * 1024 * 1024, remaining))
+                    stream.write(block)
+                    remaining -= len(block)
+            with source.open("rb") as stream:
+                expected = hashlib.file_digest(stream, "sha256").hexdigest()
+            for threads in config["threads"]:
+                for repeat in range(-1, repeats):
+                    sample_prefix = f"{prefix.rstrip('/')}/file-benchmark-{uuid.uuid4().hex}".lstrip("/")
+                    keys = [f"{sample_prefix}/{i}" for i in range(count)]
+                    destinations = [root / f"download-{i}" for i in range(count)]
+                    print(f"{size} bytes x {count}, threads={threads}, sample={repeat + 1}", flush=True)
+                    try:
+                        with ThreadPoolExecutor(max_workers=threads) as executor:
+                            for operation in ("upload_file", "download_file"):
+                                paths = (
+                                    [str(source)] * count
+                                    if operation == "upload_file"
+                                    else list(map(str, destinations))
+                                )
+                                start = time.perf_counter()
+                                list(executor.map(getattr(client, operation), keys, paths))
+                                elapsed = time.perf_counter() - start
+                                case = f"{operation}/{size}/{count}/{threads}"
+                                if repeat >= 0:
+                                    results.setdefault(case, []).append(
+                                        {
+                                            "elapsed_seconds": elapsed,
+                                            "throughput_bytes_per_second": size * count / elapsed,
+                                        }
+                                    )
+                                if operation == "download_file":
+                                    for destination in destinations:
+                                        with destination.open("rb") as stream:
+                                            if hashlib.file_digest(stream, "sha256").hexdigest() != expected:
+                                                raise RuntimeError(f"Download checksum mismatch: {destination}")
+                                        destination.unlink()
+                    finally:
+                        for key in keys:
+                            try:
+                                client.delete(key)
+                            except FileNotFoundError:
+                                pass
+    return results
 
 
 def load_config(config_path: str | None) -> dict[str, Any]:
@@ -335,10 +469,34 @@ class BenchmarkRunner:
 
 
 def main() -> None:
+    """Run existing object benchmarks or uncached file-only release comparisons.
+
+    File-only mode supports --output-file JSON reports and --baseline-file
+    comparisons. Reports follow REPORT_SCHEMA version 1, with raw timings in
+    seconds and throughput in bytes per second. One warmup is discarded before
+    three measured repetitions. A drop above --threshold is checked again
+    against the same stored baseline before failing. MSC_PERF_OVERRIDE_REASON
+    accepts confirmed regressions only; transfer and report errors always fail.
+
+    For a small file workload, use --config .msc/benchmark.json with the
+    local-s3 profile from .msc/config.benchmark.yaml. Start the test storage
+    services and create its bucket first. For published releases without report
+    support, this CLI file can run inside uvx's released-package environment.
+    Use an uncontended machine and the same workload for relative comparisons.
+    """
     parser = argparse.ArgumentParser(description="Upload/Download performance tests with Multi-Storage Client")
     parser.add_argument("--prefix", type=str, default="", help="The path prefix to use for the test")
     parser.add_argument("--config", type=str, help="Path to configuration file")
     parser.add_argument("--profile", type=str, required=True, help="MSC profile to use")
+    parser.add_argument(
+        "--file-only",
+        action="store_true",
+        help="Measure direct, uncached file transfers (requires a one-process config)",
+    )
+    parser.add_argument("--output-file", type=Path, help="Write a schema-v1 JSON file-only benchmark report")
+    parser.add_argument("--baseline-file", type=Path, help="Fail on confirmed regressions against a JSON report")
+    parser.add_argument("--repeats", type=int, default=3, help="File-only measured repetitions after one warmup")
+    parser.add_argument("--threshold", type=float, default=float(os.getenv("MSC_PERF_THRESHOLD") or 0.10))
     parser.add_argument(
         "--include-file-tests",
         action="store_true",
@@ -351,6 +509,10 @@ def main() -> None:
         help=f"Directory for file-based tests (if --include-file-tests is used). This directory will be deleted after test finishes, do NOT specify a directory containing important files). Default: {DEFAULT_TEST_DIR}",
     )
     args = parser.parse_args()
+    if not 0 <= args.threshold < 1 or args.repeats < 3:
+        parser.error("threshold must be in [0, 1) and repeats at least 3")
+    if (args.output_file or args.baseline_file) and not args.file_only:
+        parser.error("JSON reports and comparisons require --file-only")
 
     # Load configuration
     config = load_config(args.config)
@@ -360,7 +522,49 @@ def main() -> None:
 
     # Initialize storage client
     storage_client_config = StorageClientConfig.from_file(profile=args.profile)
+    if args.file_only and storage_client_config.cache_manager is not None:
+        parser.error("File-only benchmarks require an uncached storage profile")
     storage_client = StorageClient(config=storage_client_config)
+
+    if args.file_only:
+        report = {
+            "schema_version": 1,
+            "version": importlib.metadata.version("multi-storage-client"),
+            "package_path": str(Path(msc.__file__).resolve()),
+            "profile": args.profile,
+            "workload": {**config, "repeats": args.repeats},
+            "results": {},
+            "complete": False,
+        }
+        if args.output_file:
+            args.output_file.parent.mkdir(parents=True, exist_ok=True)
+            args.output_file.write_text(json.dumps(report, indent=2))
+        baseline = json.loads(args.baseline_file.read_text()) if args.baseline_file else None
+        if baseline is not None:
+            validate(instance=baseline, schema=REPORT_SCHEMA)
+            if baseline["workload"] != report["workload"] or baseline["profile"] != report["profile"]:
+                raise ValueError("Baseline and candidate workloads and profiles must match")
+        report["results"] = run_file_benchmarks(storage_client, config, args.repeats, args.prefix)
+        report["complete"] = True
+        validate(instance=report, schema=REPORT_SCHEMA)
+        regressions = {}
+        reason = os.getenv("MSC_PERF_OVERRIDE_REASON", "").strip()
+        if baseline is not None:
+            regressions = compare_reports(baseline, report, args.threshold)
+            report.update(baseline_version=baseline["version"], initial_regressions=regressions)
+            if regressions:
+                confirmation = run_file_benchmarks(storage_client, config, args.repeats, args.prefix)
+                failures = compare_reports(baseline, {**report, "results": confirmation}, args.threshold)
+                regressions = {case: drop for case, drop in failures.items() if case in regressions}
+                report["confirmation_results"] = confirmation
+        report.update(regressions=regressions, threshold=args.threshold, override_reason=reason)
+        if args.output_file:
+            args.output_file.write_text(json.dumps(report, indent=2))
+        else:
+            print(json.dumps(report, indent=2))
+        if regressions and not reason:
+            raise SystemExit(f"Confirmed performance regressions: {regressions}")
+        return
 
     # Create and run the benchmark
     benchmark = BenchmarkRunner(
