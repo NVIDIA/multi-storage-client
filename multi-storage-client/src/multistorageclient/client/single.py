@@ -553,12 +553,16 @@ class SingleStorageClient(AbstractStorageClient):
             # No cache, no replicas - direct storage provider read
             return self._storage_provider.get_object(path, byte_range=byte_range)
 
-    def info(self, path: str, strict: bool = True) -> ObjectMetadata:
+    def info(self, path: str = "", strict: bool = True, include_root_properties: bool = False) -> ObjectMetadata:
         """
         Get metadata for a file at the specified path.
 
-        :param path: The logical path of the object.
+        :param path: The logical path of the object. An empty path or ``.`` refers to the root directory, whose
+            ``metadata`` field maps each storage backend name (the profile name, unless the profile has several storage
+            backends) to its storage provider's :py:meth:`StorageProvider.get_root_metadata`.
         :param strict: When ``True``, only return committed metadata. When ``False``, include pending changes.
+        :param include_root_properties: For the root directory, whether to include each storage location's
+            ``properties``, which a provider may look up over the network. Ignored for other paths.
         :return: ObjectMetadata containing file information (size, last modified, etc.).
         :raises FileNotFoundError: If the file at the specified path does not exist.
         """
@@ -568,7 +572,14 @@ class SingleStorageClient(AbstractStorageClient):
                 last_modified = datetime.fromtimestamp(os.path.getmtime(root), tz=UTC)
             else:
                 last_modified = AWARE_DATETIME_MIN
-            return ObjectMetadata(key="", type="directory", content_length=0, last_modified=last_modified)
+            location = self._storage_provider.get_root_metadata(include_properties=include_root_properties)
+            return ObjectMetadata(
+                key="",
+                type="directory",
+                content_length=0,
+                last_modified=last_modified,
+                metadata=None if location is None else {self.profile: location},
+            )
 
         if not self._metadata_provider:
             return self._storage_provider.get_object_metadata(path, strict=strict)

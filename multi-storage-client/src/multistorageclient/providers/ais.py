@@ -162,6 +162,9 @@ class AIStoreStorageProvider(BaseStorageProvider):
             )
         self.provider = provider
 
+    def _location_options(self) -> dict[str, Any]:
+        return {"provider": self.provider}
+
     def _translate_errors(
         self,
         func: Callable[[], _T],

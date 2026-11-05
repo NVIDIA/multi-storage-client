@@ -60,6 +60,12 @@ def verify_storage_provider(storage_client: msc.StorageClient, prefix: str) -> N
     body = b"A" * (16 * MB)
     text = '{"text":"✅ Unicode Test ✅"}'
 
+    # root directory describes the storage location
+    root = storage_client.info()
+    assert root.type == "directory"
+    assert root.metadata is not None
+    assert {"type", "options"} <= root.metadata[storage_client.profile].keys()
+
     # write file
     filename = f"{prefix}/testfile.bin"
     storage_client.write(filename, body)

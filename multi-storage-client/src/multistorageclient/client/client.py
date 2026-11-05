@@ -377,16 +377,20 @@ class StorageClient(AbstractStorageClient):
         """
         return self._delegate.is_empty(path)
 
-    def info(self, path: str, strict: bool = True) -> ObjectMetadata:
+    def info(self, path: str = "", strict: bool = True, include_root_properties: bool = False) -> ObjectMetadata:
         """
         Get metadata for a file at the specified path.
 
-        :param path: The logical path of the object.
+        :param path: The logical path of the object. An empty path or ``.`` refers to the root directory, whose
+            ``metadata`` field maps each storage backend name (the profile name, unless the profile has several storage
+            backends) to its storage provider's :py:meth:`StorageProvider.get_root_metadata`.
         :param strict: When ``True``, only return committed metadata. When ``False``, include pending changes.
+        :param include_root_properties: For the root directory, whether to include each storage location's
+            ``properties``, which a provider may look up over the network. Ignored for other paths.
         :return: ObjectMetadata containing file information (size, last modified, etc.).
         :raises FileNotFoundError: If the file at the specified path does not exist.
         """
-        return self._delegate.info(path, strict)
+        return self._delegate.info(path, strict, include_root_properties)
 
     def write(
         self,

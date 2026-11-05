@@ -48,6 +48,7 @@ PROVIDER = "huggingface"
 PATHS_INFO_MAX_PATHS = 2000
 PATHS_INFO_BODY_BUDGET_BYTES = 240_000
 PATHS_INFO_TIMEOUT_SECONDS = (10, 60)
+REPO_INFO_TIMEOUT_SECONDS = 60
 
 HF_TRANSFER_UNAVAILABLE_ERROR_MESSAGE = (
     "Fast transfer using 'hf_transfer' is enabled (HF_HUB_ENABLE_HF_TRANSFER=1) "
@@ -562,6 +563,47 @@ class HuggingFaceStorageProvider(BaseStorageProvider):
         :raises NotImplementedError: Always.
         """
         raise NotImplementedError("HuggingFace provider does not support symlink creation.")
+
+    def _location_options(self) -> dict[str, Any]:
+        return {
+            "repository_id": self._repository_id,
+            "repo_type": self._repo_type,
+            "repo_revision": self._repo_revision,
+        }
+
+    def _location_properties(self) -> dict[str, Any]:
+        """
+        Returns the commit the configured revision currently points to (``commit_sha``) and the licenses declared in
+        the repository card (``licenses``, when present).
+
+        The commit is resolved on each call. A branch or tag can move to a newer commit at any time,
+        so reads made afterwards aren't pinned to it.
+
+        :return: Details about the repository.
+        :raises RuntimeError: If HuggingFace client is not initialized or API errors occur.
+        :raises FileNotFoundError: If the repository or revision doesn't exist.
+        """
+        if not self._hf_client:
+            raise RuntimeError("HuggingFace client not initialized")
+
+        repo_info = self._translate_errors(
+            lambda: self._hf_client.repo_info(
+                repo_id=self._repository_id,
+                repo_type=self._repo_type,
+                revision=self._repo_revision,
+                timeout=REPO_INFO_TIMEOUT_SECONDS,
+            ),
+            "INFO",
+            self._repository_id,
+            "",
+        )
+
+        properties: dict[str, Any] = {"commit_sha": repo_info.sha}
+        # Repository cards declare either one license or a list of them.
+        card_license = getattr(repo_info.card_data, "license", None)
+        if card_license is not None:
+            properties["licenses"] = [card_license] if isinstance(card_license, str) else list(card_license)
+        return properties
 
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         """

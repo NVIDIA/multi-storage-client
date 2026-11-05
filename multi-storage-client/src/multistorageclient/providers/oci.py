@@ -108,6 +108,9 @@ class OracleStorageProvider(BaseStorageProvider):
         self._multipart_threshold = int(kwargs.get("multipart_threshold", MULTIPART_THRESHOLD))
         self._multipart_chunksize = int(kwargs.get("multipart_chunksize", MULTIPART_CHUNKSIZE))
 
+    def _location_options(self) -> dict[str, Any]:
+        return {"namespace": self._namespace}
+
     def _create_oci_client(self) -> ObjectStorageClient:
         config = oci.config.from_file()
         kwargs = {"retry_strategy": self._retry_strategy}

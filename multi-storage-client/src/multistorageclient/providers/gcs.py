@@ -192,6 +192,7 @@ class GoogleStorageProvider(BaseStorageProvider):
         self._io_chunksize = kwargs.get("io_chunksize", DEFAULT_IO_CHUNKSIZE)
         self._max_concurrency = kwargs.get("max_concurrency", PYTHON_MAX_CONCURRENCY)
         self._rust_client = None
+        self._rust_client_options: dict[str, Any] = {}
         if "rust_client" in kwargs:
             # Inherit the rust client options from the kwargs
             rust_client_options = copy.deepcopy(kwargs["rust_client"])
@@ -206,6 +207,15 @@ class GoogleStorageProvider(BaseStorageProvider):
             if "connect_timeout" in kwargs:
                 rust_client_options["connect_timeout"] = kwargs["connect_timeout"]
             self._rust_client = self._create_rust_client(rust_client_options)
+            if self._rust_client is not None:
+                self._rust_client_options = rust_client_options
+
+    def _location_options(self) -> dict[str, Any]:
+        return {
+            "project_id": self._project_id,
+            # The Rust client can read and write at a location of its own.
+            "rust_client": {"bucket": self._rust_client_options.get("bucket")},
+        }
 
     def _create_gcs_client(self) -> storage.Client:
         client_options = {}
