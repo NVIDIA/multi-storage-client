@@ -245,7 +245,7 @@ run-e2e-tests: prepare-toolchain
     HF_TOKEN=$(jq --raw-output ".HF_TOKEN" .aws/sandbox/multi-storage-client-beta.json) \
     PANOPTES_CLIENT_ID=$(jq --raw-output ".PANOPTES_CLIENT_ID" .aws/sandbox/multi-storage-client-beta.json) \
     PANOPTES_CLIENT_CREDENTIAL=$(jq --raw-output ".PANOPTES_CLIENT_CREDENTIAL" .aws/sandbox/multi-storage-client-beta.json) \
-    MSC_CONFIG=.msc/config.yaml \
+    MSC_CONFIG=.msc/config.e2e.yaml \
     PATH=.rclone:${PATH} \
     uv run pytest --durations 10 --junit-xml .reports/e2e/pytest.xml --numprocesses auto tests/test_multistorageclient/e2e
 
