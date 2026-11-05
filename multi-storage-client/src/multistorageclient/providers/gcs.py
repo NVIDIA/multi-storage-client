@@ -54,7 +54,7 @@ from ..utils import (
     split_path,
     validate_attributes,
 )
-from .base import BaseStorageProvider, _translate_iterator_errors
+from .base import BaseStorageProvider, _translate_iterator_errors, _without_url_credentials
 
 _T = TypeVar("_T")
 
@@ -192,6 +192,7 @@ class GoogleStorageProvider(BaseStorageProvider):
         self._io_chunksize = kwargs.get("io_chunksize", DEFAULT_IO_CHUNKSIZE)
         self._max_concurrency = kwargs.get("max_concurrency", PYTHON_MAX_CONCURRENCY)
         self._rust_client = None
+        self._rust_client_options: dict[str, Any] = {}
         if "rust_client" in kwargs:
             # Inherit the rust client options from the kwargs
             rust_client_options = copy.deepcopy(kwargs["rust_client"])
@@ -206,6 +207,19 @@ class GoogleStorageProvider(BaseStorageProvider):
             if "connect_timeout" in kwargs:
                 rust_client_options["connect_timeout"] = kwargs["connect_timeout"]
             self._rust_client = self._create_rust_client(rust_client_options)
+            if self._rust_client is not None:
+                self._rust_client_options = rust_client_options
+
+    def _location_options(self) -> dict[str, Any]:
+        return {
+            "project_id": self._project_id,
+            "endpoint_url": _without_url_credentials(self._endpoint_url),
+            # The Rust client can read and write at a location of its own.
+            "rust_client": {
+                "bucket": self._rust_client_options.get("bucket"),
+                "url": _without_url_credentials(self._rust_client_options.get("url")),
+            },
+        }
 
     def _create_gcs_client(self) -> storage.Client:
         client_options = {}

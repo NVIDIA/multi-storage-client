@@ -46,7 +46,7 @@ from ..types import (
     SymlinkHandling,
 )
 from ..utils import safe_makedirs, split_path, validate_attributes
-from .base import BaseStorageProvider, _translate_iterator_errors
+from .base import BaseStorageProvider, _translate_iterator_errors, _without_url_credentials
 
 _T = TypeVar("_T")
 
@@ -291,6 +291,10 @@ class AzureBlobStorageProvider(BaseStorageProvider):
         }
 
         self._blob_service_client = self._create_blob_service_client()
+
+    def _location_options(self) -> dict[str, Any]:
+        # A connection string's endpoint takes precedence over endpoint_url.
+        return {"endpoint_url": _without_url_credentials(self._blob_service_client.url)}
 
     def _create_blob_service_client(self) -> BlobServiceClient:
         """

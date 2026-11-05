@@ -17,9 +17,11 @@ from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
+from huggingface_hub.errors import RepositoryNotFoundError
 from huggingface_hub.hf_api import RepoFile, RepoFolder
 
-from multistorageclient.providers.huggingface import HuggingFaceStorageProvider
+from multistorageclient import StorageClient, StorageClientConfig
+from multistorageclient.providers.huggingface import REPO_INFO_TIMEOUT_SECONDS, HuggingFaceStorageProvider
 from multistorageclient.types import AWARE_DATETIME_MIN
 
 LAST_COMMIT = {"id": "c1", "title": "initial", "date": "2025-01-02T03:04:05.000Z"}
@@ -53,3 +55,65 @@ def test_item_to_metadata_without_last_commit_uses_sentinel(hf_provider):
     file_item = RepoFile(path="data/a.bin", size=3, oid="blob1", lfs=None, last_commit=None, security=None)
 
     assert hf_provider._item_to_metadata(file_item).last_modified == AWARE_DATETIME_MIN
+
+
+def test_root_info_reports_repository_commit_and_license():
+    """The root directory reports the commit the revision points to and the repository card's license."""
+    hf_client = MagicMock()
+    hf_client.repo_info.return_value.sha = "0123abc"
+    hf_client.repo_info.return_value.card_data.license = "apache-2.0"
+    options = {"repository_id": "org/repo", "repo_type": "dataset", "repo_revision": "v1", "base_path": ""}
+    config = {"profiles": {"hf": {"storage_provider": {"type": "huggingface", "options": options}}}}
+    with patch("multistorageclient.providers.huggingface.HfApi", return_value=hf_client):
+        client = StorageClient(StorageClientConfig.from_dict(config, profile="hf"))
+
+    expected = {
+        "type": "huggingface",
+        "options": {"base_path": "", "repository_id": "org/repo", "repo_type": "dataset", "repo_revision": "v1"},
+        "properties": {"commit_sha": "0123abc", "licenses": ["apache-2.0"]},
+    }
+    for metadata in (client.info(), client.info(""), client.info(".")):
+        assert metadata.type == "directory"
+        assert metadata.metadata == {"hf": expected}
+    hf_client.repo_info.assert_called_with(
+        repo_id="org/repo", repo_type="dataset", revision="v1", timeout=REPO_INFO_TIMEOUT_SECONDS
+    )
+
+    # The reported type and options are a valid storage provider config.
+    copy_config = {
+        "profiles": {"copy": {"storage_provider": {"type": expected["type"], "options": expected["options"]}}}
+    }
+    with patch("multistorageclient.providers.huggingface.HfApi", return_value=hf_client):
+        StorageClientConfig.from_dict(copy_config, profile="copy")
+
+
+def test_root_info_without_properties_skips_repository_lookup():
+    """Callers that only need the type and options can skip the network call to the Hub."""
+    hf_client = MagicMock()
+    options = {"repository_id": "org/repo", "repo_type": "dataset", "repo_revision": "v1", "base_path": ""}
+    config = {"profiles": {"hf": {"storage_provider": {"type": "huggingface", "options": options}}}}
+    with patch("multistorageclient.providers.huggingface.HfApi", return_value=hf_client):
+        client = StorageClient(StorageClientConfig.from_dict(config, profile="hf"))
+
+    assert client.info(include_root_properties=False).metadata == {"hf": {"type": "huggingface", "options": options}}
+    hf_client.repo_info.assert_not_called()
+
+
+def test_root_metadata_keeps_list_of_licenses(hf_provider):
+    """Dataset cards can declare a list of licenses instead of one."""
+    hf_provider._hf_client.repo_info.return_value.card_data.license = ["cc-by-4.0", "mit"]
+
+    assert hf_provider.get_root_metadata()["properties"]["licenses"] == ["cc-by-4.0", "mit"]
+
+
+def test_root_metadata_without_card_omits_licenses(hf_provider):
+    hf_provider._hf_client.repo_info.return_value.card_data = None
+
+    assert "licenses" not in hf_provider.get_root_metadata()["properties"]
+
+
+def test_root_metadata_missing_repository_raises(hf_provider):
+    hf_provider._hf_client.repo_info.side_effect = RepositoryNotFoundError("no such repository")
+
+    with pytest.raises(FileNotFoundError):
+        hf_provider.get_root_metadata()

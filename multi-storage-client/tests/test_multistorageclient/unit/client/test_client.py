@@ -1218,10 +1218,23 @@ def test_single_info_root_reports_base_path_mtime(tmp_path, monkeypatch):
     )
     client = SingleStorageClient(config)
 
-    for path in ("", "."):
-        metadata = client.info(path)
+    for metadata in (client.info(), client.info(""), client.info(".")):
         assert metadata.type == "directory"
         assert metadata.last_modified.timestamp() == 0.0
+        assert metadata.metadata == {"data": {"type": "file", "options": {"base_path": str(base_path)}}}
+
+
+def test_composite_info_root_reports_every_storage_backend(multi_backend_config):
+    """info("") on a multi-backend profile reports each storage backend's root metadata, keyed by backend name."""
+    client = StorageClient(multi_backend_config)
+
+    for metadata in (client.info(), client.info(""), client.info(".")):
+        assert metadata.type == "directory"
+        assert metadata.metadata == {
+            "loc1": {"type": "file", "options": {"base_path": "/tmp/loc1"}},
+            "loc2": {"type": "file", "options": {"base_path": "/tmp/loc2"}},
+            "loc2-backup": {"type": "file", "options": {"base_path": "/tmp/loc2-backup"}},
+        }
 
 
 def test_composite_client_list_with_url_prefix_does_not_mutate_metadata_provider_objects(multi_backend_config):

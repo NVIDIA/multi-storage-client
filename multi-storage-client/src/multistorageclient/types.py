@@ -540,6 +540,24 @@ class StorageProvider(ABC):
         """
         raise NotImplementedError(f"{type(self).__name__} does not support presigned URL generation.")
 
+    def get_root_metadata(self, include_properties: bool = True) -> dict[str, Any] | None:
+        """
+        Returns metadata about the storage location as a whole, which :py:meth:`multistorageclient.StorageClient.info`
+        reports in the ``metadata`` field of the root directory, keyed by storage backend name.
+
+        The built-in providers report:
+
+        * ``type``: The provider type, as in the configuration.
+        * ``options``: The configured options that identify the location, leaving out tuning options, credentials,
+          and unset options other than ``base_path``.
+        * ``properties``: Details the provider looks up about the location, when it has any, such as ``commit_sha`` and
+          ``licenses`` for HuggingFace.
+
+        :param include_properties: Whether to include ``properties``, which the provider may look up over the network.
+        :return: The metadata, or ``None`` if the provider has none to add.
+        """
+        return None
+
 
 class ResolvedPathState(str, Enum):
     """

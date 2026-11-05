@@ -236,6 +236,34 @@ Each profile in the configuration defines how to interact with storage services 
 Storage Providers
 =================
 
+``client.info()`` (or ``client.info("")`` and ``client.info(".")``) describes the storage locations behind a profile in
+the root directory's ``metadata`` field, keyed by storage backend name: the provider type (``type``) and the options
+that identify the location (``options``, without tuning options or credentials, and with unset options other than
+``base_path`` left out). ``type`` and ``options`` take the same form as a profile's ``storage_provider`` section.
+Providers can also report details they look up about the location (``properties``). Only ``huggingface`` does, with one
+network call, which ``client.info(include_root_properties=False)`` skips.
+
+Endpoint URLs are reported without user info, query strings or fragments, which can carry credentials such as an Azure
+SAS token. Bucket, container and repository names are reported as configured, so restrict access to root metadata as
+you would to the data it describes.
+
+A profile with one storage backend uses the profile name as the backend name, so ``client.profile`` looks it up. A
+profile with several storage backends (see :ref:`multi-backend-configuration`) reports each of them under its own
+name.
+
+.. code-block:: python
+   :caption: Example root metadata for an ``s3`` profile named ``imdb``.
+
+   client.info().metadata
+   # {"imdb": {"type": "s3", "options": {"base_path": "my-bucket/datasets/imdb", "region_name": "us-east-1"}}}
+
+   client.info().metadata[client.profile]["options"]["region_name"]
+   # "us-east-1"
+
+   # Any profile, including one with several storage backends.
+   for backend, location in client.info().metadata.items():
+       print(backend, location["type"], location["options"])
+
 The following storage provider types are supported:
 
 ``file``
@@ -575,6 +603,20 @@ Options: See parameters in :py:class:`multistorageclient.providers.huggingface.H
            repo_revision: my-repo-revision
            base_path: base-path
 
+Besides the provider type and options, the root directory's ``metadata`` field reports ``properties``: the commit the
+revision currently points to (``commit_sha``) and the licenses declared in the repository card (``licenses``, when
+present). The commit is looked up on each call, so a branch or tag can move to a newer commit before files are read.
+Pass ``include_root_properties=False`` to skip the lookup.
+
+.. code-block:: python
+   :caption: Example root metadata for a ``huggingface`` profile named ``hf-imdb``.
+
+   client.info().metadata
+   # {"hf-imdb": {"type": "huggingface",
+   #              "options": {"base_path": "", "repository_id": "stanfordnlp/imdb", "repo_type": "dataset",
+   #                          "repo_revision": "main"},
+   #              "properties": {"commit_sha": "e6281661ce1c48d982bc483cf8a173c1bbeb5d31", "licenses": ["other"]}}}
+
 .. note::
 
    The HuggingFace provider leverages HuggingFace Hub's built-in transfer mechanisms
@@ -645,6 +687,10 @@ Other storage provider operations continue to use the Python implementation:
 * :py:class:`multistorageclient.types.StorageProvider.get_object_metadata`
 * :py:class:`multistorageclient.types.StorageProvider.glob`
 * :py:class:`multistorageclient.types.StorageProvider.is_file`
+
+When ``rust_client`` sets where the Rust client reads and writes (``bucket``, ``region_name`` and ``endpoint_url`` for
+S3-compatible providers, or ``bucket`` and ``url`` for ``gcs``), the root directory's metadata reports those options
+under ``options.rust_client``.
 
 Metadata Providers
 ==================

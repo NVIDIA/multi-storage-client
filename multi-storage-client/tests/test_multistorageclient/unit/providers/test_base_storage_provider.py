@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
-from multistorageclient.providers.base import BaseStorageProvider
+from multistorageclient.providers.base import BaseStorageProvider, _without_url_credentials
 from multistorageclient.telemetry import Telemetry
 from multistorageclient.types import BatchTransferError, ObjectMetadata, Range, RetryableError, SymlinkHandling
 from multistorageclient_rust import RustRetryableError
@@ -573,6 +573,25 @@ def test_list_objects_with_empty_base_path():
 
     with pytest.raises(ValueError, match="The base_path cannot be empty when calling list_objects"):
         list(provider.list_objects(path=""))
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (None, None),
+        ("https://s3.example.com:9000/path", "https://s3.example.com:9000/path"),
+        ("https://user:fake-password@s3.example.com:9000/path", "https://s3.example.com:9000/path"),
+        (
+            "https://account.blob.core.windows.net/?sv=2024-11-04&sig=fake-test-value",
+            "https://account.blob.core.windows.net/",
+        ),
+        ("account.blob.core.windows.net/?sv=2024-11-04&sig=fake-test-value", "account.blob.core.windows.net/"),
+        ("user:fake-password@ais.example.com:51080", "ais.example.com:51080"),
+    ],
+)
+def test_without_url_credentials(url, expected):
+    """User info and query strings in URLs can carry credentials, such as a password or an Azure SAS token."""
+    assert _without_url_credentials(url) == expected
 
 
 def test_calculate_data_size_supports_buffer_protocol_result():

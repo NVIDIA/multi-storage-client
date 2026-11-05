@@ -39,7 +39,7 @@ from ..types import (
     SymlinkHandling,
 )
 from ..utils import safe_makedirs, split_path, validate_attributes
-from .base import BaseStorageProvider, _translate_iterator_errors
+from .base import BaseStorageProvider, _translate_iterator_errors, _without_url_credentials
 
 _T = TypeVar("_T")
 
@@ -161,6 +161,10 @@ class AIStoreStorageProvider(BaseStorageProvider):
                 endpoint=endpoint, retry_config=retry_config, timeout=timeout, skip_verify=skip_verify, ca_cert=ca_cert
             )
         self.provider = provider
+        self._endpoint = endpoint
+
+    def _location_options(self) -> dict[str, Any]:
+        return {"endpoint": _without_url_credentials(self._endpoint), "provider": self.provider}
 
     def _translate_errors(
         self,

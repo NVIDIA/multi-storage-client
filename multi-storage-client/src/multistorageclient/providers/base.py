@@ -28,6 +28,7 @@ from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, as_co
 from enum import Enum
 from functools import partial
 from typing import IO, Any, ClassVar, NamedTuple, TypeVar, cast
+from urllib.parse import urlsplit
 
 import opentelemetry.metrics as api_metrics
 import opentelemetry.util.types as api_types
@@ -77,6 +78,19 @@ def _translate_iterator_errors(
         if item is None:
             return
         yield item
+
+
+def _without_url_credentials(url: str | None) -> str | None:
+    """
+    Removes the user info, query and fragment from a URL, which can carry credentials (such as an Azure SAS token).
+    Handles URLs without a scheme, which some SDKs accept.
+    """
+    if not url:
+        return url
+    has_scheme = "://" in url
+    parts = urlsplit(url if has_scheme else f"//{url}")
+    stripped = parts._replace(netloc=parts.netloc.rpartition("@")[2], query="", fragment="").geturl()
+    return stripped if has_scheme else stripped.removeprefix("//")
 
 
 class _AsyncTransferItem(NamedTuple):
@@ -273,6 +287,43 @@ class BaseStorageProvider(StorageProvider):
 
     def __str__(self) -> str:
         return self._provider_name
+
+    def _location_options(self) -> dict[str, Any]:
+        """
+        Returns the configured options besides ``base_path`` that identify the storage location, leaving out tuning
+        options and credentials, including those in URLs. Unset options, including in nested options such as
+        ``rust_client``, are left out.
+        """
+        return {}
+
+    def _location_properties(self) -> dict[str, Any]:
+        """
+        Returns details the provider looks up about the storage location, beyond its configured options.
+        """
+        return {}
+
+    def get_root_metadata(self, include_properties: bool = True) -> dict[str, Any]:
+        """
+        Returns the provider type (``type``), the configured options that identify the storage location
+        (``options``, with unset options other than ``base_path`` left out), and the details the provider looks up
+        about it (``properties``, when it has any).
+
+        :param include_properties: Whether to look up and include ``properties``.
+        """
+        # Profiles require base_path, even when it's empty.
+        options: dict[str, Any] = {"base_path": self._base_path}
+        for name, value in self._location_options().items():
+            if isinstance(value, dict):
+                value = {key: nested_value for key, nested_value in value.items() if nested_value}
+            if value:
+                options[name] = value
+
+        metadata: dict[str, Any] = {"type": self._provider_name, "options": options}
+        if include_properties:
+            properties = self._location_properties()
+            if properties:
+                metadata["properties"] = properties
+        return metadata
 
     def __del__(self) -> None:
         """Destructor to ensure async telemetry is shutdown."""
