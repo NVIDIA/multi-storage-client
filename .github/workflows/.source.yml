@@ -181,6 +181,52 @@ jobs:
         working-directory: multi-storage-client-scripts
         run: |
           just build
+  check-benchmarks:
+    name: Check Benchmarks
+    needs:
+      - multi-storage-client
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        python-binary:
+          - python3.11
+          - python3.12
+          - python3.13
+          - python3.14
+      fail-fast: false
+    runs-on: linux-amd64-cpu16
+    defaults:
+      run:
+        shell: nix develop ${{ github.workspace }}#"\"${{ matrix.python-binary }}\"" --command bash -e {0}
+    steps:
+      # Checkout.
+      - uses: actions/checkout@v6.1.0
+      # Build cache.
+      - id: build-cache
+        uses: actions/cache@v5.1.0
+        with:
+          key: ${{ github.job }}-${{ matrix.python-binary }}-${{ hashFiles('flake.lock', 'flake.nix', 'nix/**/*', 'pyproject.toml', 'uv.lock', 'multi-storage-client/**/*') }}
+          path: |
+            -
+            multi-storage-client/.reports/benchmark/
+      # Install Nix.
+      - if: ${{ steps.build-cache.outputs.cache-hit != 'true' }}
+        uses: DeterminateSystems/determinate-nix-action@v3.24.2
+        with:
+          summarize: false
+      # Main.
+      - if: ${{ steps.build-cache.outputs.cache-hit != 'true' }}
+        working-directory: multi-storage-client
+        run: |
+          just python-binary=${{ matrix.python-binary }} run-benchmarks
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          if-no-files-found: error
+          name: ${{ github.job }} (${{ matrix.python-binary }})
+          path: |
+            -
+            multi-storage-client/.reports/benchmark/
   check-publish-release-inputs:
     name: Check Publish Release Inputs
     needs:
