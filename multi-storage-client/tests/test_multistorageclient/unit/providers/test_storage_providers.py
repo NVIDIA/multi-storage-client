@@ -735,6 +735,57 @@ def test_storage_with_base_path_contains_prefix(temp_data_store_type: type[tempd
 @pytest.mark.parametrize(
     argnames=["temp_data_store_type"],
     argvalues=[
+        [tempdatastore.TemporaryPOSIXDirectory],
+        [tempdatastore.TemporaryAWSS3Bucket],
+        [tempdatastore.TemporaryAzureBlobStorageContainer],
+        [tempdatastore.TemporaryGoogleCloudStorageBucket],
+        [tempdatastore.TemporaryGoogleCloudStorageS3Bucket],
+        [tempdatastore.TemporarySwiftStackBucket],
+        [tempdatastore.TemporaryAIStoreBucket],
+        [tempdatastore.TemporaryAIStoreS3Bucket],
+    ],
+)
+def test_info_root_describes_storage_location(temp_data_store_type: type[tempdatastore.TemporaryDataStore]):
+    """With the profile's credentials and URLs, the root directory's metadata describes the storage location."""
+    with temp_data_store_type() as temp_data_store:
+        profile = "data"
+        profile_dict = temp_data_store.profile_config_dict()
+        config_dict = {"profiles": {profile: profile_dict}}
+        url_options = {"endpoint_url", "endpoint"}
+
+        storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
+
+        for root in (storage_client.info(), storage_client.info(""), storage_client.info(".")):
+            assert root.type == "directory"
+            assert root.metadata is not None
+            location = root.metadata[profile]
+            assert location["type"] == profile_dict["storage_provider"]["type"]
+            # AIStore's skip_verify tunes the connection and doesn't identify the location.
+            assert "skip_verify" not in location["options"]
+            # URLs can carry credentials.
+            assert not url_options & location["options"].keys()
+
+        # The reported type and options, with the profile's credentials and URLs, reach the same data.
+        file_path = f"{uuid.uuid4()}.txt"
+        storage_client.write(path=file_path, body=b"\x00")
+        profile_options = profile_dict["storage_provider"]["options"]
+        copy_options = {
+            **location["options"],
+            **{name: profile_options[name] for name in url_options & profile_options.keys()},
+        }
+        copy_profile_dict = {"storage_provider": {"type": location["type"], "options": copy_options}}
+        if "credentials_provider" in profile_dict:
+            copy_profile_dict["credentials_provider"] = profile_dict["credentials_provider"]
+        copy_client = StorageClient(
+            config=StorageClientConfig.from_dict(config_dict={"profiles": {"copy": copy_profile_dict}}, profile="copy")
+        )
+        wait_for_is_file(storage_client=copy_client, path=file_path, is_file=True)
+        assert copy_client.read(path=file_path) == b"\x00"
+
+
+@pytest.mark.parametrize(
+    argnames=["temp_data_store_type"],
+    argvalues=[
         [tempdatastore.TemporaryAWSS3Bucket],
         [tempdatastore.TemporarySwiftStackBucket],
     ],
@@ -856,6 +907,9 @@ def test_storage_providers_with_rust_client_bucket_override(
         config_dict["profiles"][profile]["storage_provider"]["options"]["rust_client"]["bucket"] = bucket_name
 
         storage_client = StorageClient(config=StorageClientConfig.from_dict(config_dict=config_dict, profile=profile))
+        root_metadata = storage_client.info().metadata
+        assert root_metadata is not None
+        assert root_metadata[profile]["options"]["rust_client"] == {"bucket": bucket_name}
         file_extension = ".txt"
         # Path uses full bucket name, plus add a random string to avoid tests conflicts
         file_path_fragments = [bucket_name, f"{uuid.uuid4().hex}-prefix", "infix", f"suffix{file_extension}"]

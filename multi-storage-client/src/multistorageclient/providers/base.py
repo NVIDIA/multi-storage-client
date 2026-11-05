@@ -274,6 +274,43 @@ class BaseStorageProvider(StorageProvider):
     def __str__(self) -> str:
         return self._provider_name
 
+    def _location_options(self) -> dict[str, Any]:
+        """
+        Returns the configured options besides ``base_path`` that identify the storage location, leaving out tuning
+        options, credentials, and URLs (such as endpoints), which can carry credentials. Unset options, including in
+        nested options such as ``rust_client``, are left out.
+        """
+        return {}
+
+    def _location_properties(self) -> dict[str, Any]:
+        """
+        Returns details the provider looks up about the storage location, beyond its configured options.
+        """
+        return {}
+
+    def get_root_metadata(self, include_properties: bool = True) -> dict[str, Any]:
+        """
+        Returns the provider type (``type``), the configured options that identify the storage location
+        (``options``, with unset options other than ``base_path`` left out), and the details the provider looks up
+        about it (``properties``, when it has any).
+
+        :param include_properties: Whether to look up and include ``properties``.
+        """
+        # Profiles require base_path, even when it's empty.
+        options: dict[str, Any] = {"base_path": self._base_path}
+        for name, value in self._location_options().items():
+            if isinstance(value, dict):
+                value = {key: nested_value for key, nested_value in value.items() if nested_value}
+            if value:
+                options[name] = value
+
+        metadata: dict[str, Any] = {"type": self._provider_name, "options": options}
+        if include_properties:
+            properties = self._location_properties()
+            if properties:
+                metadata["properties"] = properties
+        return metadata
+
     def __del__(self) -> None:
         """Destructor to ensure async telemetry is shutdown."""
         if getattr(self, "_async_metrics_enabled", False) and getattr(self, "_metrics_worker", None) is not None:
