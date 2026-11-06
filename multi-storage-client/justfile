@@ -255,3 +255,13 @@ run-minimal-verification:
     if [[ -z "${CI:-}" ]]; then uv sync --python {{python-binary}}; else uv sync --locked --python {{python-binary}}; fi
     # Run minimal verification unit tests.
     uv run pytest tests/test_multistorageclient/unit/test_minimal.py
+
+# Compare uncached Rust file transfers with the latest stable published release.
+run-benchmarks: prepare-toolchain start-storage-systems && stop-storage-systems
+    # Make benchmark bucket.
+    AWS_ACCESS_KEY_ID=access-key AWS_SECRET_ACCESS_KEY=secret-key AWS_DEFAULT_REGION=us-east-1 aws --endpoint-url http://localhost:7070 s3 mb s3://msc-benchmark
+    # Run baseline benchmark.
+    MSC_CONFIG=.msc/config.benchmark.yaml uvx --from "multi-storage-client[boto3]@latest" --python {{python-binary}} msc-benchmark --config .msc/benchmark.json --file-only --output-file .reports/benchmark/baseline.json --profile local-s3
+    # Run local benchmark.
+    uv run --python {{python-binary}} maturin develop --release
+    MSC_CONFIG=.msc/config.benchmark.yaml uv run --python {{python-binary}} msc-benchmark --baseline-file .reports/benchmark/baseline.json --config .msc/benchmark.json --file-only --output-file .reports/benchmark/candidate.json --profile local-s3
