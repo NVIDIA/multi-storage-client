@@ -800,9 +800,15 @@ class SingleStorageClient(AbstractStorageClient):
                         raise FileNotFoundError(f"The file at path '{virtual_path}' was not found.")
 
                     # Check if soft-delete is enabled
-                    if not obj_metadata.symlink_target and not self._metadata_provider.should_use_soft_delete():
+                    if not self._metadata_provider.should_use_soft_delete():
                         # Hard delete: remove both physical file and metadata
-                        self._storage_provider.delete_object(resolved.physical_path)
+                        if obj_metadata.symlink_target:
+                            with contextlib.suppress(FileNotFoundError):
+                                self._storage_provider.delete_object(
+                                    getattr(obj_metadata, "physical_path", None) or path
+                                )
+                        else:
+                            self._storage_provider.delete_object(resolved.physical_path)
 
                     with self._metadata_provider_lock or contextlib.nullcontext():
                         self._metadata_provider.remove_file(virtual_path)
@@ -838,11 +844,12 @@ class SingleStorageClient(AbstractStorageClient):
                 if not resolved.exists:
                     continue
                 metadata_paths_to_remove.add(path)
-                if (
-                    not self._metadata_provider.should_use_soft_delete()
-                    and not self._metadata_provider.get_object_metadata(path).symlink_target
-                ):
-                    physical_paths_to_delete.append(resolved.physical_path)
+                if not self._metadata_provider.should_use_soft_delete():
+                    obj_metadata = self._metadata_provider.get_object_metadata(path)
+                    if obj_metadata.symlink_target:
+                        physical_paths_to_delete.append(getattr(obj_metadata, "physical_path", None) or path)
+                    else:
+                        physical_paths_to_delete.append(resolved.physical_path)
             else:
                 physical_paths_to_delete.append(path)
 

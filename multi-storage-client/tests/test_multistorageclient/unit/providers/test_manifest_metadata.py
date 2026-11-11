@@ -319,21 +319,31 @@ def test_manifest_delete_symlink_keeps_target():
                 profile=profile,
             )
         )
+        storage_provider = storage_client._storage_provider
+        assert storage_provider is not None
         prefix = uuid.uuid4().hex
         target_path = f"{prefix}/target.txt"
         storage_client.write(path=target_path, body=b"payload")
         for index, delete in enumerate((lambda p: storage_client.delete(p), lambda p: storage_client.delete_many([p]))):
             link_path = f"{prefix}/link{index}.txt"
+            physical_link_path = f"{prefix}/physical{index}.txt"
+            storage_provider.make_symlink(physical_link_path, target_path)
             storage_client._metadata_provider.add_file(  # type: ignore[union-attr]
                 link_path,
                 ObjectMetadata(
                     key=link_path, content_length=0, last_modified=datetime.now(tz=UTC), symlink_target="target.txt"
                 ),
             )
+            storage_client._metadata_provider.add_file(  # type: ignore[union-attr]
+                physical_link_path, storage_provider.get_object_metadata(physical_link_path)
+            )
             storage_client.commit_metadata()
             delete(link_path)
+            delete(physical_link_path)
             storage_client.commit_metadata()
             assert storage_client.read(target_path) == b"payload"
+            with pytest.raises(FileNotFoundError):
+                storage_provider.get_object_metadata(physical_link_path)
 
 
 @pytest.mark.parametrize(
