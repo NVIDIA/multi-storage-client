@@ -28,12 +28,12 @@ jobs:
     runs-on: linux-amd64-cpu16
     steps:
       # Checkout.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.1.0
         with:
           ref: refs/tags/${{ inputs.git_tag }}
       # Build cache.
       - id: build-cache
-        uses: actions/cache@v5
+        uses: actions/cache@v5.1.0
         with:
           key: ${{ github.job }}-${{ hashFiles('flake.lock', 'flake.nix', 'nix/**/*', 'pyproject.toml', 'uv.lock', 'multi-storage-client/**/*', 'multi-storage-client-docs/**/*') }}
           path: |
@@ -41,7 +41,7 @@ jobs:
             multi-storage-client-docs/dist/
       # Install Nix.
       - if: ${{ steps.build-cache.outputs.cache-hit != 'true' }}
-        uses: DeterminateSystems/determinate-nix-action@v3
+        uses: DeterminateSystems/determinate-nix-action@v3.24.2
         with:
           summarize: false
       # Main.
@@ -50,7 +50,7 @@ jobs:
         run: |
           just build
       - id: upload-pages-artifact
-        uses: actions/upload-pages-artifact@v5
+        uses: actions/upload-pages-artifact@v5.0.0
         with:
           path: multi-storage-client-docs/dist/
   publish-documentation:
@@ -66,9 +66,9 @@ jobs:
     runs-on: linux-amd64-cpu16
     steps:
       # Checkout.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.1.0
       # Install Nix.
-      - uses: DeterminateSystems/determinate-nix-action@v3
+      - uses: DeterminateSystems/determinate-nix-action@v3.24.2
         with:
           summarize: false
       # Main.

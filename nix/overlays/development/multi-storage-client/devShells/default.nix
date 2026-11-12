@@ -6,6 +6,8 @@
   curl,
   fake-gcs-server,
   gettext,
+  gh,
+  gh-actions-lock,
   git,
   git-lfs,
   gnused,
@@ -108,6 +110,9 @@ mkShell {
     google-cloud-sdk
     # OpenSSL.
     openssl
+    # GitHub CLI.
+    gh
+    gh-actions-lock
   ];
 
   shellHook =
@@ -142,6 +147,13 @@ mkShell {
       # https://openbao.org/docs/commands#environment-variables
       export VAULT_ADDR=https://prod.vault.nvidia.com
       export VAULT_NAMESPACE=ngc-multi-storage-client
+
+      # GitHub CLI.
+      #
+      # https://cli.github.com/manual/gh_help_environment
+      export GH_NO_UPDATE_NOTIFIER=true
+      export GH_NO_EXTENSION_UPDATE_NOTIFIER=true
+      export GH_TELEMETRY=false
 
       echo "❄️"
     '';

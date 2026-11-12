@@ -363,9 +363,8 @@ def test_network_sampling_scope_and_cleanup(monkeypatch, tmp_path, capsys, netwo
             processes[1].start.side_effect = KeyboardInterrupt
             processes[1].pid = None
             processes[1].is_alive.return_value = False
-        elif scenario in {"multi_interrupt", "ignore_sigterm"}:
-            if scenario == "ignore_sigterm":
-                processes[0].terminate.side_effect = None
+        elif scenario in {"multi_interrupt", "ignore_sigterm"} and scenario == "ignore_sigterm":
+            processes[0].terminate.side_effect = None
         context = mock.Mock()
         context.Queue.side_effect = queues
         context.Event.return_value = shutdown

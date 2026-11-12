@@ -24,7 +24,7 @@ jobs:
     permissions: {}
     runs-on: ubuntu-latest
     steps:
-      - uses: slackapi/slack-github-action@v2
+      - uses: slackapi/slack-github-action@v2.1.1
         with:
           payload-delimiter: _
           webhook: ${{ secrets.DISCUSSION_CREATED_WEBHOOK_URL }}
@@ -36,7 +36,7 @@ jobs:
     permissions: {}
     runs-on: ubuntu-latest
     steps:
-      - uses: slackapi/slack-github-action@v2
+      - uses: slackapi/slack-github-action@v2.1.1
         with:
           payload-delimiter: _
           webhook: ${{ secrets.ISSUE_OPENED_WEBHOOK_URL }}
@@ -48,7 +48,7 @@ jobs:
     permissions: {}
     runs-on: ubuntu-latest
     steps:
-      - uses: slackapi/slack-github-action@v2
+      - uses: slackapi/slack-github-action@v2.1.1
         with:
           payload-delimiter: _
           webhook: ${{ secrets.ISSUE_REOPENED_WEBHOOK_URL }}

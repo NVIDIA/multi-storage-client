@@ -21,10 +21,10 @@ jobs:
     runs-on: linux-amd64-cpu16
     steps:
       # Checkout.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.1.0
       # Build cache.
       - id: build-cache
-        uses: actions/cache@v5
+        uses: actions/cache@v5.1.0
         with:
           key: ${{ github.job }}-${{ hashFiles('.cachekeep', 'flake.lock', 'flake.nix', 'nix/**/*') }}
           path: |
@@ -32,7 +32,7 @@ jobs:
             .cachekeep
       # Install Nix.
       - if: ${{ steps.build-cache.outputs.cache-hit != 'true' }}
-        uses: DeterminateSystems/determinate-nix-action@v3
+        uses: DeterminateSystems/determinate-nix-action@v3.24.2
         with:
           summarize: false
       # Main.
@@ -47,10 +47,10 @@ jobs:
     runs-on: linux-amd64-cpu16
     steps:
       # Checkout.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.1.0
       # Build cache.
       - id: build-cache
-        uses: actions/cache@v5
+        uses: actions/cache@v5.1.0
         with:
           key: ${{ github.job }}-${{ hashFiles('.cachekeep', 'flake.lock', 'flake.nix', 'nix/**/*', 'multi-storage-explorer/**/*') }}
           path: |
@@ -58,7 +58,7 @@ jobs:
             .cachekeep
       # Install Nix.
       - if: ${{ steps.build-cache.outputs.cache-hit != 'true' }}
-        uses: DeterminateSystems/determinate-nix-action@v3
+        uses: DeterminateSystems/determinate-nix-action@v3.24.2
         with:
           summarize: false
       # Main.
@@ -84,10 +84,10 @@ jobs:
         shell: nix develop ${{ github.workspace }}#"\"${{ matrix.python-binary }}\"" --command bash -e {0}
     steps:
       # Checkout.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.1.0
       # Build cache.
       - id: build-cache
-        uses: actions/cache@v5
+        uses: actions/cache@v5.1.0
         with:
           key: ${{ github.job }}-${{ matrix.python-binary }}-${{ hashFiles('flake.lock', 'flake.nix', 'nix/**/*', 'pyproject.toml', 'uv.lock', 'multi-storage-explorer/**/*', 'multi-storage-client/**/*') }}
           path: |
@@ -96,7 +96,7 @@ jobs:
             multi-storage-client/dist/
       # Install Nix.
       - if: ${{ steps.build-cache.outputs.cache-hit != 'true' }}
-        uses: DeterminateSystems/determinate-nix-action@v3
+        uses: DeterminateSystems/determinate-nix-action@v3.24.2
         with:
           summarize: false
       # Main.
@@ -114,7 +114,7 @@ jobs:
         run: |
           git fetch --no-tags --depth=1 origin tag 1.0.0
           uv run msc-scripts check-api-compat
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.2
         with:
           if-no-files-found: error
           name: ${{ github.job }} (${{ matrix.python-binary }})
@@ -129,10 +129,10 @@ jobs:
     runs-on: linux-amd64-cpu16
     steps:
       # Checkout.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.1.0
       # Build cache.
       - id: build-cache
-        uses: actions/cache@v5
+        uses: actions/cache@v5.1.0
         with:
           key: ${{ github.job }}-${{ hashFiles('flake.lock', 'flake.nix', 'nix/**/*', 'pyproject.toml', 'uv.lock', 'multi-storage-client/**/*', 'multi-storage-client-docs/**/*') }}
           path: |
@@ -140,7 +140,7 @@ jobs:
             multi-storage-client-docs/dist/
       # Install Nix.
       - if: ${{ steps.build-cache.outputs.cache-hit != 'true' }}
-        uses: DeterminateSystems/determinate-nix-action@v3
+        uses: DeterminateSystems/determinate-nix-action@v3.24.2
         with:
           summarize: false
       # Main.
@@ -148,7 +148,7 @@ jobs:
         working-directory: multi-storage-client-docs
         run: |
           just build
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.2
         with:
           if-no-files-found: error
           name: ${{ github.job }}
@@ -162,10 +162,10 @@ jobs:
     runs-on: linux-amd64-cpu16
     steps:
       # Checkout.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.1.0
       # Build cache.
       - id: build-cache
-        uses: actions/cache@v5
+        uses: actions/cache@v5.1.0
         with:
           key: ${{ github.job }}-${{ hashFiles('.cachekeep', 'flake.lock', 'flake.nix', 'nix/**/*', 'pyproject.toml', 'uv.lock', 'multi-storage-client-scripts/**/*') }}
           path: |
@@ -173,7 +173,7 @@ jobs:
             .cachekeep
       # Install Nix.
       - if: ${{ steps.build-cache.outputs.cache-hit != 'true' }}
-        uses: DeterminateSystems/determinate-nix-action@v3
+        uses: DeterminateSystems/determinate-nix-action@v3.24.2
         with:
           summarize: false
       # Main.
@@ -194,9 +194,9 @@ jobs:
     runs-on: linux-amd64-cpu16
     steps:
       # Checkout.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.1.0
       # Install Nix.
-      - uses: DeterminateSystems/determinate-nix-action@v3
+      - uses: DeterminateSystems/determinate-nix-action@v3.24.2
         with:
           summarize: false
       # Main.
@@ -204,7 +204,7 @@ jobs:
       # All `actions/upload-artifact` paths must include a `-` path to preserve workspace structure.
       #
       # https://github.com/actions/upload-artifact/issues/174
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.2
         with:
           merge-multiple: true
       - working-directory: multi-storage-client-scripts

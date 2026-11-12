@@ -23,9 +23,9 @@ jobs:
     runs-on: linux-amd64-cpu16
     steps:
       # Checkout.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.1.0
       # Install Nix.
-      - uses: DeterminateSystems/determinate-nix-action@v3
+      - uses: DeterminateSystems/determinate-nix-action@v3.24.2
         with:
           summarize: false
       # Main.
@@ -35,7 +35,7 @@ jobs:
       # All `actions/upload-artifact` paths must include a `-` path to preserve workspace structure.
       #
       # https://github.com/actions/upload-artifact/issues/174
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v8.0.2
         with:
           merge-multiple: true
       - working-directory: multi-storage-client-scripts
