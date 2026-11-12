@@ -14,8 +14,9 @@
 // limitations under the License.
 
 use chrono::{DateTime, Utc};
-use object_store::aws::{AmazonS3Builder, Checksum};
-use object_store::gcp::GoogleCloudStorageBuilder;
+use object_store::aws::{AmazonS3, AmazonS3Builder, Checksum};
+use object_store::gcp::{GoogleCloudStorage, GoogleCloudStorageBuilder};
+use object_store::list::{PaginatedListOptions, PaginatedListStore};
 use object_store::RetryConfig;
 use object_store::BackoffConfig;
 use object_store::{
@@ -47,6 +48,7 @@ use aws_config::BehaviorVersion;
 
 mod credentials;
 mod download;
+mod metadata;
 #[cfg(feature = "rdma")]
 mod cuobj;
 mod types;
@@ -91,6 +93,17 @@ fn extract_status_code(err: &object_store::Error) -> Option<u16> {
         _ => {}
     }
 
+    let mut source = err.source();
+    while let Some(error) = source {
+        // object_store's list errors hide the HTTP status inside a private retry error.
+        if let Some(status) = error.to_string()
+            .strip_prefix("Server returned non-2xx status code: ")
+            .and_then(|message| message.split_whitespace().next())
+            .and_then(|status| StatusCode::from_bytes(status.as_bytes()).ok()) {
+            return Some(status.as_u16());
+        }
+        source = error.source();
+    }
     None
 }
 
@@ -269,13 +282,15 @@ fn create_store(
     py_credentials_provider: Option<Py<PyAny>>,
     max_pool_connections: usize,
     retry_config: Option<&RustRetryConfig>,
-) -> PyResult<Arc<dyn ObjectStore>> {
-    let store = match provider {
+) -> PyResult<(Arc<dyn ObjectStore>, Arc<dyn PaginatedListStore>)> {
+    let (store, paginated_store): (Arc<dyn ObjectStore>, Arc<dyn PaginatedListStore>) = match provider {
         "s3" | "s8k" | "gcs_s3" => {
-            build_s3_store(configs, py_credentials_provider, retry_config)?
+            let store = build_s3_store(configs, py_credentials_provider, retry_config)?;
+            (store.clone(), store)
         }
         "gcs" => {
-            build_gcs_store(configs, py_credentials_provider, retry_config)?
+            let store = build_gcs_store(configs, py_credentials_provider, retry_config)?;
+            (store.clone(), store)
         }
         _ => {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -286,7 +301,7 @@ fn create_store(
     };
 
     let limited_store = LimitStore::new(store, max_pool_connections);
-    Ok(Arc::new(limited_store))
+    Ok((Arc::new(limited_store), paginated_store))
 }
 
 /// Load AWS credentials provider from the default credential chain
@@ -358,10 +373,10 @@ fn build_s3_store<'a>(
     configs: Option<&'a HashMap<String, ConfigValue>>,
     py_credentials_provider: Option<Py<PyAny>>,
     retry_config: Option<&RustRetryConfig>,
-) -> PyResult<Arc<dyn ObjectStore>> {
+) -> PyResult<Arc<AmazonS3>> {
     // TODO: Add support for other configuration fields of AmazonS3Builder, full list here:
     // https://docs.rs/object_store/latest/src/object_store/aws/builder.rs.html#123
-    let mut builder = AmazonS3Builder::new();
+    let mut builder = AmazonS3Builder::new().with_http_connector(metadata::MetadataConnector);
 
     let configs = configs.ok_or_else(|| {
         StorageError::ConfigError("Configuration dictionary is required for S3 provider.".to_string())
@@ -452,7 +467,7 @@ fn build_gcs_store<'a>(
     configs: Option<&'a HashMap<String, ConfigValue>>,
     py_credentials_provider: Option<Py<PyAny>>,
     retry_config: Option<&RustRetryConfig>,
-) -> PyResult<Arc<dyn ObjectStore>> {
+) -> PyResult<Arc<GoogleCloudStorage>> {
     let mut builder = GoogleCloudStorageBuilder::new();
 
     let configs = configs.ok_or_else(|| {
@@ -555,12 +570,19 @@ impl ConfigValue {
 #[pyclass]
 pub struct RustClient {
     store: Arc<dyn ObjectStore>,
+    paginated_store: Arc<dyn PaginatedListStore>,
+    listing_semaphore: Arc<Semaphore>,
     max_concurrency: usize,
     multipart_chunksize: usize,
 }
 
 #[pymethods]
 impl RustClient {
+    #[staticmethod]
+    fn supports_path(path: &str) -> bool {
+        Path::parse(path).is_ok_and(|parsed| parsed.as_ref() == path)
+    }
+
     #[new]
     #[pyo3(signature = (provider="s3", configs=None, credentials_provider=None, retry=None))]
     fn new(
@@ -612,7 +634,7 @@ impl RustClient {
             }
         }
 
-        let store = create_store(
+        let (store, paginated_store) = create_store(
             &provider,
             Some(&configs_map),
             credentials_provider,
@@ -622,6 +644,8 @@ impl RustClient {
 
         Ok(Self {
             store,
+            paginated_store,
+            listing_semaphore: Arc::new(Semaphore::new(max_pool_connections)),
             max_concurrency,
             multipart_chunksize,
         })
@@ -678,6 +702,38 @@ impl RustClient {
                 Ok(PyBytes::new(data))
             })
         }
+    }
+
+    fn head<'p>(&self, py: Python<'p>, path: &str) -> PyResult<Bound<'p, PyAny>> {
+        let store = Arc::clone(&self.store);
+        let path = parse_path(path)?;
+        future_into_py(py, async move {
+            let result = store.get_opts(&path, object_store::GetOptions::default().with_head(true))
+                .await.map_err(StorageError::from)?;
+            metadata::from_head(result).map_err(PyErr::from)
+        })
+    }
+
+    fn is_dir<'p>(&self, py: Python<'p>, path: &str) -> PyResult<Bound<'p, PyAny>> {
+        let store = Arc::clone(&self.paginated_store);
+        let semaphore = Arc::clone(&self.listing_semaphore);
+        let path = parse_path(path)?;
+        let prefix = if path.as_ref().is_empty() { String::new() } else { format!("{path}/") };
+        future_into_py(py, async move {
+            let _permit = semaphore.acquire().await.unwrap();
+            let options = PaginatedListOptions {
+                delimiter: Some("/".into()),
+                max_keys: Some(1),
+                ..Default::default()
+            };
+            let page = store.list_paginated(Some(&prefix), options).await.map_err(|error| {
+                match error {
+                    object_store::Error::InvalidPath { source } => StorageError::InvalidPathError(source.to_string()),
+                    error => StorageError::from(error),
+                }
+            })?;
+            Ok(!page.result.objects.is_empty() || !page.result.common_prefixes.is_empty())
+        })
     }
 
     #[pyo3(signature = (local_path, remote_path, attributes=None))]
@@ -1071,6 +1127,7 @@ impl RustClient {
 fn multistorageclient_rust(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustClient>()?;
     m.add_class::<ObjectMetadata>()?;
+    m.add_class::<types::HeadResult>()?;
     m.add_class::<ListResult>()?;
     m.add_class::<RustRetryConfig>()?;
     m.add("RustRetryableError", _py.get_type::<RustRetryableError>())?;

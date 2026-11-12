@@ -21,7 +21,7 @@ from typing import Any
 from aistore.botocore_patch import botocore  # noqa: F401
 
 from ..telemetry import Telemetry
-from ..types import AWARE_DATETIME_MIN, CredentialsProvider, ObjectMetadata
+from ..types import AWARE_DATETIME_MIN, CredentialsProvider, ObjectMetadata, RetryableError
 from .s3 import S3StorageProvider, StaticS3CredentialsProvider
 
 PROVIDER = "ais_s3"
@@ -85,13 +85,17 @@ class AIStoreS3StorageProvider(S3StorageProvider):
         if self._ais_credentials_provider:
             self._s3_client.meta.events.register("before-send.s3.*", self._inject_auth_header)
 
+    def _can_use_rust_metadata(self, bucket: str, key: str) -> bool:
+        # JWT authorization is injected only by the boto3 event hook.
+        return not self._ais_credentials_provider and super()._can_use_rust_metadata(bucket, key)
+
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         """
         Override to handle AIStore S3 API quirk where HEAD requests on directory-like paths return 400.
         """
         try:
             return super()._get_object_metadata(path, strict=strict)
-        except RuntimeError as error:
+        except (RuntimeError, RetryableError) as error:
             # AIStore returns 400 for invalid HEAD requests (e.g., directory-like paths)
             # Treat this the same as FileNotFoundError and check if it's a directory
             if strict and "status_code: 400" in str(error):

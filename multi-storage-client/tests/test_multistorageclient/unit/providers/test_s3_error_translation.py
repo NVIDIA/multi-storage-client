@@ -252,12 +252,23 @@ def test_storage_client_write_denied(tmp_path: Path, use_rust: bool, operation: 
         rust_client = MagicMock(spec=RustClient)
         rust_client.put = AsyncMock(side_effect=rust_error)
         rust_client.upload = AsyncMock(side_effect=rust_error)
+        rust_client.head = AsyncMock(
+            return_value=MagicMock(
+                object_metadata=MagicMock(
+                    content_length=len(b"existing"), last_modified="2025-01-01T00:00:00+00:00", etag=None
+                ),
+                content_type=None,
+                storage_class=None,
+                metadata={},
+            )
+        )
 
         async def download(key: str, local_path: str) -> None:
             Path(local_path).write_bytes(b"existing")
 
         rust_client.download = AsyncMock(side_effect=download)
         provider._rust_client = rust_client
+        provider._rust_bucket = "test-bucket"
         if operation != "copy":
             error = rust_error
             denied_call = rust_client.upload if operation in ("upload_file", "ab") else rust_client.put
