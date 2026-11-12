@@ -30,6 +30,10 @@ Key:
 ├── multi-storage-client
 │   └── ...
 │
+│   # Client Rust package.
+├── multi-storage-client-rust
+│   └── ...
+│
 │   # Client documentation.
 ├── multi-storage-client-docs
 │   └── ...

@@ -142,6 +142,24 @@ multi-storage-client:
       junit: multi-storage-client/.reports/unit/pytest.xml
   coverage: '/TOTAL.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
 
+multi-storage-client-rust:
+  extends:
+    - .default
+  rules:
+    - changes:
+        - flake.lock
+        - flake.nix
+        - nix/**/*
+        - multi-storage-client-rust/**/*
+    - when: manual
+      allow_failure: true
+  script:
+    - |
+      nix develop --command bash -c "
+        cd multi-storage-client-rust &&
+        just build
+      "
+
 multi-storage-client-docs:
   extends:
     - .default

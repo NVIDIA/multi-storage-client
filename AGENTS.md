@@ -12,6 +12,9 @@ multi-storage-client/          Python + Rust library (core)
   rust/                          Rust performance layer (maturin + PyO3)
   tests/                         Test suite (unit, integration, e2e)
   pyproject.toml                 Python project config (maturin build backend)
+multi-storage-client-rust/     Native Rust library and benchmark (POSIX/S3)
+  src/                          Provider-neutral client and adapters
+  tests/                        Rust unit, HTTP and emulator tests
 multi-storage-explorer/        Explorer web UI
 multi-storage-client-docs/     Sphinx documentation
   src/                           Doc source (rst files)
@@ -27,6 +30,13 @@ Multi-language project: **Python** (core) + **Rust** (performance).
 - **Python ↔ Rust bindings** — via maturin/PyO3. Python calls Rust through the `multistorageclient_rust` module. Rust exposes functions via `#[pyfunction]` and `#[pyclass]`. Type hints live in `multi-storage-client/src/multistorageclient_rust/multistorageclient_rust.pyi`.
 - **Credential management** — supports multiple auth methods per cloud provider.
 - **Error handling** — translates provider-specific errors to unified exceptions.
+
+The independent `multi-storage-client-rust` package has its own Cargo.lock and
+Rust toolchain. It reuses the root Nix environment and is not part of the Python
+accelerator dependency graph. Run its recipes with
+`just multi-storage-client-rust/build`, `just multi-storage-client-rust/run-integration-tests`,
+`just multi-storage-client-rust/run-e2e-tests`, and
+`just multi-storage-client-rust/run-benchmarks` from the repository root.
 
 ## Cross-Language Sync Points
 

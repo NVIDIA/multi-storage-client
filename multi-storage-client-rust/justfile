@@ -1,0 +1,106 @@
+#
+# Just configuration.
+#
+# https://just.systems/man/en
+#
+
+# Prefer Apple UUID headers over transitive libuuid headers in the Nix shell.
+export CFLAGS := if os() == "macos" { if env("IN_NIX_SHELL", "") != "" { "-isystem " + env("SDKROOT") + "/usr/include " + env("CFLAGS", "") } else { env("CFLAGS", "") } } else { env("CFLAGS", "") }
+
+# List recipes.
+help:
+    just --list
+
+# Prepare the toolchain.
+prepare-toolchain:
+    rustup show active-toolchain
+
+# Run static analysis (format, lint).
+analyze: prepare-toolchain
+    if [[ -z "${CI:-}" ]]; then cargo fmt --all; else cargo fmt --all -- --check; fi
+    cargo clippy --locked --all-targets --all-features -- -D warnings
+
+# Stop storage systems.
+stop-storage-systems:
+    # Stop storage systems.
+    #
+    # Azurite's process commands are `node` instead of `azurite`. Find by port instead.
+    for PID in $(lsof -i :10000-10002 -c aisnode -c fake-gcs-server -c versitygw -t); do kill -s KILL $PID; done
+    # Remove sandbox directories.
+    -rm -rf .{aistore,azurite,fake-gcs-server,versitygw}/sandbox
+
+# Start storage systems.
+start-storage-systems: stop-storage-systems
+    # Create sandbox directories.
+    mkdir --parents .{aistore,azurite,fake-gcs-server,versitygw}/sandbox
+    # Set up AIStore cluster (config generation).
+    .aistore/prepare_sandbox.sh
+
+    # Ports used by storage systems:
+    # - AIStore         -> 51080 (proxy), 51081 (target)
+    # - Azurite         -> 10000-10002
+    # - fake-gcs-server -> 4443
+    # - versitygw       -> 7070
+
+    # Start an AIStore proxy.
+    cd .aistore/sandbox/0 && aisnode -config="config/ais.json" -local_config="config/ais_local.json" -role=proxy -ntargets=1 > log/stdout.log 2>&1 &
+    # Wait for the proxy to be ready before starting the target.
+    timeout 30s bash -c 'until curl -sf "http://localhost:51080/v1/daemon?what=snode" >/dev/null 2>&1; do sleep 0.5; done' || { echo "ERROR: AIStore proxy failed to start"; exit 1; }
+    # Start an AIStore target.
+    cd .aistore/sandbox/1 && aisnode -config="config/ais.json" -local_config="config/ais_local.json" -role=target > log/stdout.log 2>&1 &
+    # Wait for the target to join the cluster.
+    timeout 30s bash -c 'until [ $(curl -s "http://localhost:51080/v1/cluster?what=smap" 2>/dev/null | grep -o "\"daemon_type\":\"target\"" | wc -l) -ge 1 ]; do sleep 0.5; done' || { echo "ERROR: AIStore target failed to join"; exit 1; }
+
+    # Start Azurite.
+    cd .azurite/sandbox && azurite --disableTelemetry --inMemoryPersistence --silent --skipApiVersionCheck &
+
+    # Start fake-gcs-server.
+    cd .fake-gcs-server/sandbox && TZ="UTC" fake-gcs-server -backend memory -log-level error -scheme http &
+
+    # Start versitygw.
+    cd .versitygw/sandbox && versitygw --access root-access-key --health /health --iam-dir . --quiet --secret root-secret-key posix . &
+
+    # Wait for the AIStore cluster to be operational by creating a bucket and deleting it.
+    timeout 60s bash -c 'until curl -sf -X POST "http://localhost:51080/v1/buckets/msc-readiness-check?provider=ais" -H "Content-Type: application/json" -d "{\"action\":\"create-bck\"}" >/dev/null 2>&1; do sleep 1; done' || { echo "ERROR: AIStore cluster not operational"; exit 1; }
+    curl -sf -X DELETE "http://localhost:51080/v1/buckets/msc-readiness-check?provider=ais" -H "Content-Type: application/json" -d '{"action":"destroy-bck"}' >/dev/null 2>&1 || true
+
+    # Wait for Azurite.
+    timeout 30s bash -c "until netcat --zero localhost 10000; do sleep 1; done"
+
+    # Wait for fake-gcs-server.
+    timeout 30s bash -c "until curl --fail --output /dev/null --silent http://localhost:4443/_internal/healthcheck; do sleep 1; done"
+
+    # Wait for versitygw.
+    timeout 30s bash -c "until curl --fail --output /dev/null --silent http://localhost:7070/health; do sleep 1; done"
+    # Create a user (for credentials refresh tests. Root user is hidden from credentials APIs).
+    versitygw admin --access root-access-key --endpoint-url http://localhost:7070 --secret root-secret-key create-user --access access-key --role admin --secret secret-key
+
+# Run unit tests.
+run-unit-tests: prepare-toolchain
+    cargo test --locked --all-features --lib --bins
+    cargo test --locked --all-features --doc
+    cargo test --locked --no-default-features --lib --bins
+
+# Run integration tests.
+run-integration-tests: prepare-toolchain start-storage-systems && stop-storage-systems
+    # Make integration tests bucket.
+    AWS_ACCESS_KEY_ID=access-key AWS_SECRET_ACCESS_KEY=secret-key AWS_DEFAULT_REGION=us-east-1 aws --endpoint-url http://localhost:7070 s3 mb s3://msc-rust-tests
+    # Run integration tests.
+    cargo test --locked --all-features --test posix_integration --test storage_client_api --test s3_native_http --test s3_listing_http
+    MSC_S3_TEST_ENDPOINT=http://localhost:7070 MSC_S3_TEST_BUCKET=msc-rust-tests MSC_S3_TEST_ACCESS_KEY=access-key MSC_S3_TEST_SECRET_KEY=secret-key cargo test --locked --all-features --test s3_integration --test s3_http_errors -- --ignored --skip endpoint_environment_child_probe --test-threads=1
+    cargo test --locked --no-default-features --test posix_integration --test storage_client_api
+
+# Build and test.
+build: analyze run-unit-tests run-integration-tests
+    cargo build --locked --all-features
+
+# Run E2E tests against the MSC_E2E_PROFILE backend from the normal MSC config.
+run-e2e-tests: prepare-toolchain
+    cargo test --locked --all-features --test e2e -- --ignored --test-threads=1
+
+# Run benchmark CLI tests and POSIX/S3 benchmark smoke tests.
+run-benchmarks: prepare-toolchain start-storage-systems && stop-storage-systems
+    cargo test --locked --all-features --test benchmark_cli
+    cargo test --locked --no-default-features --test benchmark_cli
+    scripts/smoke-posix.sh
+    MSC_S3_TEST_ENDPOINT=http://localhost:7070 MSC_S3_TEST_BUCKET=msc-rust-tests MSC_S3_TEST_ACCESS_KEY=access-key MSC_S3_TEST_SECRET_KEY=secret-key cargo test --locked --all-features --test benchmark_cli -- --ignored --exact benchmark_s3_multiprocess_file_transfers_and_cleanup
