@@ -31,7 +31,13 @@ default:
 Source:
   extends:
     - .child
+  inherit:
+    variables: false
+  variables:
+    MSC_SOURCE_COMPARE_TO: $CI_MERGE_REQUEST_DIFF_BASE_SHA
   trigger:
+    forward:
+      yaml_variables: true
     include: .gitlab/pipelines/.source.yml
 
 Beta:

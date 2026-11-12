@@ -60,3 +60,6 @@ CLAUDE.md
 
 # Local cuObject SDK copy for the optional MSC `rdma` feature (never committed)
 multi-storage-client/rust/vendor/
+
+# Native Rust client build output.
+multi-storage-client-rust/target/

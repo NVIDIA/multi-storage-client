@@ -69,10 +69,13 @@ nix:
   extends:
     - .default
   rules:
+    - if: '$MSC_SOURCE_COMPARE_TO == null || $MSC_SOURCE_COMPARE_TO == "" || $MSC_SOURCE_COMPARE_TO == "0000000000000000000000000000000000000000"'
     - changes:
-        - flake.lock
-        - flake.nix
-        - nix/**/*
+        compare_to: $MSC_SOURCE_COMPARE_TO
+        paths:
+          - flake.lock
+          - flake.nix
+          - nix/**/*
     - when: manual
       allow_failure: true
   script:
@@ -86,11 +89,14 @@ multi-storage-explorer:
   extends:
     - .default
   rules:
+    - if: '$MSC_SOURCE_COMPARE_TO == null || $MSC_SOURCE_COMPARE_TO == "" || $MSC_SOURCE_COMPARE_TO == "0000000000000000000000000000000000000000"'
     - changes:
-        - flake.lock
-        - flake.nix
-        - nix/**/*
-        - multi-storage-explorer/**/*
+        compare_to: $MSC_SOURCE_COMPARE_TO
+        paths:
+          - flake.lock
+          - flake.nix
+          - nix/**/*
+          - multi-storage-explorer/**/*
     - when: manual
       allow_failure: true
   script:
@@ -104,14 +110,17 @@ multi-storage-client:
   extends:
     - .default
   rules:
+    - if: '$MSC_SOURCE_COMPARE_TO == null || $MSC_SOURCE_COMPARE_TO == "" || $MSC_SOURCE_COMPARE_TO == "0000000000000000000000000000000000000000"'
     - changes:
-        - flake.lock
-        - flake.nix
-        - nix/**/*
-        - pyproject.toml
-        - uv.lock
-        - multi-storage-explorer/**/*
-        - multi-storage-client/**/*
+        compare_to: $MSC_SOURCE_COMPARE_TO
+        paths:
+          - flake.lock
+          - flake.nix
+          - nix/**/*
+          - pyproject.toml
+          - uv.lock
+          - multi-storage-explorer/**/*
+          - multi-storage-client/**/*
     - when: manual
       allow_failure: true
   parallel:
@@ -142,18 +151,44 @@ multi-storage-client:
       junit: multi-storage-client/.reports/unit/pytest.xml
   coverage: '/TOTAL.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
 
+multi-storage-client-rust:
+  extends:
+    - .default
+  rules:
+    - if: '$MSC_SOURCE_COMPARE_TO == null || $MSC_SOURCE_COMPARE_TO == "" || $MSC_SOURCE_COMPARE_TO == "0000000000000000000000000000000000000000"'
+    - changes:
+        compare_to: $MSC_SOURCE_COMPARE_TO
+        paths:
+          - flake.lock
+          - flake.nix
+          - nix/**/*
+          - multi-storage-client-rust/**/*
+          - multi-storage-client/justfile
+          - multi-storage-client/.aistore/**/*
+    - when: manual
+      allow_failure: true
+  script:
+    - |
+      nix develop --command bash -c "
+        cd multi-storage-client-rust &&
+        just build
+      "
+
 multi-storage-client-docs:
   extends:
     - .default
   rules:
+    - if: '$MSC_SOURCE_COMPARE_TO == null || $MSC_SOURCE_COMPARE_TO == "" || $MSC_SOURCE_COMPARE_TO == "0000000000000000000000000000000000000000"'
     - changes:
-        - flake.lock
-        - flake.nix
-        - nix/**/*
-        - pyproject.toml
-        - uv.lock
-        - multi-storage-client/**/*
-        - multi-storage-client-docs/**/*
+        compare_to: $MSC_SOURCE_COMPARE_TO
+        paths:
+          - flake.lock
+          - flake.nix
+          - nix/**/*
+          - pyproject.toml
+          - uv.lock
+          - multi-storage-client/**/*
+          - multi-storage-client-docs/**/*
     - when: manual
       allow_failure: true
   script:
@@ -172,13 +207,16 @@ multi-storage-client-scripts:
   extends:
     - .default
   rules:
+    - if: '$MSC_SOURCE_COMPARE_TO == null || $MSC_SOURCE_COMPARE_TO == "" || $MSC_SOURCE_COMPARE_TO == "0000000000000000000000000000000000000000"'
     - changes:
-        - flake.lock
-        - flake.nix
-        - nix/**/*
-        - pyproject.toml
-        - uv.lock
-        - multi-storage-client-scripts/**/*
+        compare_to: $MSC_SOURCE_COMPARE_TO
+        paths:
+          - flake.lock
+          - flake.nix
+          - nix/**/*
+          - pyproject.toml
+          - uv.lock
+          - multi-storage-client-scripts/**/*
     - when: manual
       allow_failure: true
   script:

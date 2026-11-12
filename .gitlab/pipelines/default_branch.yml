@@ -31,7 +31,13 @@ default:
 Source:
   extends:
     - .child
+  inherit:
+    variables: false
+  variables:
+    MSC_SOURCE_COMPARE_TO: $CI_COMMIT_BEFORE_SHA
   trigger:
+    forward:
+      yaml_variables: true
     include: .gitlab/pipelines/.source.yml
 
 Beta:
@@ -39,6 +45,18 @@ Beta:
     - .child
   needs:
     - Source
+  rules:
+    - changes:
+        - flake.lock
+        - flake.nix
+        - nix/**/*
+        - pyproject.toml
+        - uv.lock
+        - multi-storage-client/**/*
+        - multi-storage-explorer/**/*
+        - .gitlab/pipelines/.beta.yml
+    - when: manual
+      allow_failure: true
   environment:
     name: Beta
     action: start
