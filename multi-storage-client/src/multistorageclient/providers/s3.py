@@ -363,6 +363,14 @@ class S3StorageProvider(BaseStorageProvider):
         if self._verify is not None:
             options["verify"] = self._verify
 
+        if self._signature_version:
+            signature_config = botocore.config.Config(  # pyright: ignore[reportAttributeAccessIssue]
+                signature_version=botocore.UNSIGNED
+                if self._signature_version == "UNSIGNED"
+                else self._signature_version
+            )
+            options["config"] = options["config"].merge(signature_config)
+
         if self._credentials_provider:
             creds = self._fetch_credentials()
             if creds.get("expiry_time"):
@@ -383,14 +391,6 @@ class S3StorageProvider(BaseStorageProvider):
                 options["aws_secret_access_key"] = creds["secret_key"]
                 if creds["token"]:
                     options["aws_session_token"] = creds["token"]
-
-        if self._signature_version:
-            signature_config = botocore.config.Config(  # pyright: ignore[reportAttributeAccessIssue]
-                signature_version=botocore.UNSIGNED
-                if self._signature_version == "UNSIGNED"
-                else self._signature_version
-            )
-            options["config"] = options["config"].merge(signature_config)
 
         # Fallback to standard credential chain.
         session = boto3.Session(profile_name=self._profile_name)
