@@ -15,6 +15,7 @@
 
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -29,7 +30,7 @@ from multistorageclient.providers.azure import (
 )
 from multistorageclient.providers.s3 import S3StorageProvider, S3URLSigner
 from multistorageclient.signers import CloudFrontURLSigner, URLSigner
-from multistorageclient.types import CredentialsProvider, ResolvedPath, ResolvedPathState, SignerType
+from multistorageclient.types import Credentials, CredentialsProvider, ResolvedPath, ResolvedPathState, SignerType
 
 # ---------------------------------------------------------------------------
 # S3URLSigner
@@ -251,6 +252,53 @@ class TestCloudFrontURLSigner:
 
 
 class TestS3StorageProviderPresign:
+    @pytest.mark.parametrize("refreshable", [False, True], ids=["static", "refreshable"])
+    @pytest.mark.parametrize(
+        "options,expected_signature",
+        [
+            ({}, "s3v4"),
+            ({"signature_version": "s3v4"}, "s3v4"),
+            ({"signature_version": "s3"}, "s3"),
+            ({"signature_version": "UNSIGNED"}, "UNSIGNED"),
+        ],
+        ids=["default", "sigv4", "sigv2", "unsigned"],
+    )
+    def test_presign_signature_with_credentials(self, monkeypatch, tmp_path, refreshable, options, expected_signature):
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "config"))
+        monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "credentials"))
+        credentials_provider = MagicMock(spec=CredentialsProvider)
+        credentials_provider.get_credentials.return_value = Credentials(
+            access_key="test-access-key",
+            secret_key="test-secret-key",
+            token="test-session-token",
+            expiration=(datetime.now(UTC) + timedelta(hours=2)).isoformat() if refreshable else None,
+        )
+        provider = S3StorageProvider(
+            region_name="us-east-1",
+            endpoint_url="https://storage.example.invalid",
+            base_path="test-bucket/prefix",
+            credentials_provider=credentials_provider,
+            **options,
+        )
+
+        url = urlsplit(provider.generate_presigned_url("folder/a_small", signer_options={"expires_in": 900}))
+        query = parse_qs(url.query)
+
+        assert url.path == "/test-bucket/prefix/folder/a_small"
+        if expected_signature == "s3v4":
+            assert query["X-Amz-Algorithm"] == ["AWS4-HMAC-SHA256"]
+            assert query["X-Amz-Signature"]
+            assert query["X-Amz-Security-Token"] == ["test-session-token"]
+            assert query["X-Amz-Expires"] == ["900"]
+            assert "AWSAccessKeyId" not in query
+        elif expected_signature == "s3":
+            assert query["AWSAccessKeyId"] == ["test-access-key"]
+            assert query["Signature"]
+            assert query["x-amz-security-token"] == ["test-session-token"]
+            assert "X-Amz-Algorithm" not in query
+        else:
+            assert query == {}
+
     @pytest.fixture
     def s3_provider(self):
         with (
