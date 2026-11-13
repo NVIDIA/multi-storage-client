@@ -71,7 +71,7 @@ def test_resolve_storage_client(file_storage_config):
     assert p7 == "tmp/data/object.bin"
 
     _, p8 = msc.resolve_storage_client("./workspace/datasets")
-    assert p8 == os.path.realpath("workspace/datasets")
+    assert p8 == os.path.abspath("workspace/datasets")
 
     # Multithreading test to verify the storage_client instance is the same
     tempdirs = []
@@ -300,6 +300,25 @@ def test_make_symlink_posix(file_storage_config):
         assert os.readlink(link_path) == "target.txt"
         with open(link_path) as f:
             assert f.read() == "symlink target content"
+
+
+def test_relative_path_to_symlink(file_storage_config, tmp_path, monkeypatch):
+    (tmp_path / "ckpt-100.pt").write_bytes(b"ckpt-100")
+    (tmp_path / "ckpt-200.pt").write_bytes(b"ckpt-200")
+    (tmp_path / "latest").symlink_to("ckpt-100.pt")
+    monkeypatch.chdir(tmp_path)
+
+    _, path = msc.resolve_storage_client("latest")
+    assert path == os.path.join(os.getcwd(), "latest")
+
+    msc.make_symlink("latest", "ckpt-200.pt")
+    assert os.readlink(tmp_path / "latest") == "ckpt-200.pt"
+    assert not (tmp_path / "ckpt-100.pt").is_symlink()
+    assert (tmp_path / "ckpt-100.pt").read_bytes() == b"ckpt-100"
+
+    msc.delete("latest")
+    assert not os.path.lexists(tmp_path / "latest")
+    assert (tmp_path / "ckpt-200.pt").read_bytes() == b"ckpt-200"
 
 
 @pytest.mark.parametrize(

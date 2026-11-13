@@ -179,7 +179,7 @@ def _resolve_non_msc_url(url: str) -> tuple[str, str]:
 
     # Translate relative paths to absolute paths
     if not protocol:
-        return RESERVED_POSIX_PROFILE_NAME, os.path.realpath(url)
+        return RESERVED_POSIX_PROFILE_NAME, os.path.abspath(url)
 
     # Validate the protocol is supported
     if protocol not in SUPPORTED_IMPLICIT_PROFILE_PROTOCOLS:
