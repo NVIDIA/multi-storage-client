@@ -487,13 +487,12 @@ class SingleStorageClient(AbstractStorageClient):
                     # Fetch metadata for source version checking (if needed)
                     metadata = None
                     source_version = None
-                    if check_source_version == SourceVersionCheckMode.ENABLE:
+                    if check_source_version == SourceVersionCheckMode.ENABLE or (
+                        check_source_version == SourceVersionCheckMode.INHERIT
+                        and self._cache_manager.check_source_version()
+                    ):
                         metadata = self._storage_provider.get_object_metadata(path)
                         source_version = metadata.etag
-                    elif check_source_version == SourceVersionCheckMode.INHERIT:
-                        if self._cache_manager.check_source_version():
-                            metadata = self._storage_provider.get_object_metadata(path)
-                            source_version = metadata.etag
 
                     # Optimization: For full-file reads (offset=0, size >= file_size), cache whole file instead of chunking
                     # This avoids creating many small chunks when the user requests the entire file.

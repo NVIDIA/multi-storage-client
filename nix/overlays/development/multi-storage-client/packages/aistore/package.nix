@@ -1,11 +1,11 @@
 {
-  buildGo127Module,
+  buildGoModule,
   fetchFromGitHub,
   lib,
   versionCheckHook,
 }:
 # https://nixos.org/manual/nixpkgs/unstable#ssec-language-go
-buildGo127Module (finalAttrs: {
+buildGoModule (finalAttrs: {
   pname = "aistore";
   version = "1.5.2";
 
