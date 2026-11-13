@@ -18,6 +18,7 @@ import io
 import logging
 import os
 import tempfile
+import threading
 from collections.abc import Callable, Iterator
 from typing import IO, Any, TypeVar
 
@@ -216,15 +217,20 @@ class S3StorageProvider(BaseStorageProvider):
         self._verify = verify
 
         self._signature_version = kwargs.get("signature_version", "s3v4")
-        self._s3_client = self._create_s3_client(
-            request_checksum_calculation=kwargs.get("request_checksum_calculation"),
-            response_checksum_validation=kwargs.get("response_checksum_validation"),
-            max_pool_connections=kwargs.get("max_pool_connections", MAX_POOL_CONNECTIONS),
-            connect_timeout=kwargs.get("connect_timeout", DEFAULT_CONNECT_TIMEOUT),
-            read_timeout=kwargs.get("read_timeout", DEFAULT_READ_TIMEOUT),
-            retries=kwargs.get("retries"),
-            s3=kwargs.get("s3"),
-        )
+        self._boto3_client: Any = None
+        self._s3_client_lock = threading.Lock()
+        self._s3_client_pid = os.getpid()
+        self._s3_client_options: dict[str, Any] = {
+            "request_checksum_calculation": kwargs.get("request_checksum_calculation"),
+            "response_checksum_validation": kwargs.get("response_checksum_validation"),
+            "max_pool_connections": kwargs.get("max_pool_connections", MAX_POOL_CONNECTIONS),
+            "connect_timeout": kwargs.get("connect_timeout", DEFAULT_CONNECT_TIMEOUT),
+            "read_timeout": kwargs.get("read_timeout", DEFAULT_READ_TIMEOUT),
+            "retries": kwargs.get("retries"),
+            "s3": kwargs.get("s3"),
+        }
+        if "rust_client" not in kwargs:
+            self._s3_client = self._create_s3_client(**self._s3_client_options)
         self._transfer_config = TransferConfig(
             multipart_threshold=int(kwargs.get("multipart_threshold", MULTIPART_THRESHOLD)),
             max_concurrency=int(kwargs.get("max_concurrency", PYTHON_MAX_CONCURRENCY)),
@@ -239,6 +245,7 @@ class S3StorageProvider(BaseStorageProvider):
         self._checksum_algorithm: str | None = self._validate_checksum_algorithm(kwargs.get("checksum_algorithm"))
 
         self._rust_client = None
+        self._rust_bucket: str | None = None
         if "rust_client" in kwargs:
             # Inherit the rust client options from the kwargs
             rust_client_options = kwargs["rust_client"]
@@ -268,6 +275,23 @@ class S3StorageProvider(BaseStorageProvider):
                     )
                 rust_client_options["checksum_algorithm"] = "sha256"
             self._rust_client = self._create_rust_client(rust_client_options)
+
+    @property
+    def _s3_client(self) -> Any:
+        if self._boto3_client is None:
+            if self._s3_client_pid != os.getpid():
+                # A forked child cannot release a lock held by another parent thread.
+                self._s3_client_lock = threading.Lock()
+                self._s3_client_pid = os.getpid()
+            # Rust-only reads avoid loading a separate set of botocore models per backend.
+            with self._s3_client_lock:
+                if self._boto3_client is None:
+                    self._boto3_client = self._create_s3_client(**self._s3_client_options)
+        return self._boto3_client
+
+    @_s3_client.setter
+    def _s3_client(self, client: Any) -> None:
+        self._boto3_client = client
 
     @staticmethod
     def _validate_checksum_algorithm(value: str | None) -> str | None:
@@ -394,6 +418,7 @@ class S3StorageProvider(BaseStorageProvider):
         if "bucket" not in configs:
             bucket, _ = split_path(self._base_path)
             configs["bucket"] = bucket
+        self._rust_bucket = configs["bucket"]
 
         if "max_pool_connections" not in configs:
             configs["max_pool_connections"] = MAX_POOL_CONNECTIONS
@@ -680,6 +705,16 @@ class S3StorageProvider(BaseStorageProvider):
         key_desc = "(" + "|".join(str(len(keys)) for keys in by_bucket.values()) + " keys)"
         self._translate_errors(_invoke_api, operation="DELETE_MANY", bucket=bucket_desc, key=key_desc)
 
+    def _can_use_rust_metadata(self, bucket: str, key: str) -> bool:
+        # S3 keys must retain segments that the Rust store rejects or strips.
+        return (
+            self._rust_client is not None
+            and self._verify is None
+            and bucket == self._rust_bucket
+            and not self._is_directory_bucket(bucket)
+            and RustClient.supports_path(key)
+        )
+
     def _is_dir(self, path: str) -> bool:
         # Ensure the path ends with '/' to mimic a directory
         path = self._append_delimiter(path)
@@ -687,6 +722,12 @@ class S3StorageProvider(BaseStorageProvider):
         bucket, key = split_path(path)
 
         def _invoke_api() -> bool:
+            if self._can_use_rust_metadata(bucket, key.removesuffix("/")):
+                try:
+                    return run_async_rust_client_method(self._rust_client, "is_dir", key)
+                except ValueError:
+                    # A valid prefix can contain children whose keys Rust cannot represent.
+                    pass
             # List objects with the given prefix
             response = self._s3_client.list_objects_v2(Bucket=bucket, Prefix=key, MaxKeys=1, Delimiter="/")
 
@@ -730,6 +771,20 @@ class S3StorageProvider(BaseStorageProvider):
         else:
 
             def _invoke_api() -> ObjectMetadata:
+                if self._can_use_rust_metadata(bucket, key):
+                    result = run_async_rust_client_method(self._rust_client, "head", key)
+                    object_metadata = result.object_metadata
+                    return ObjectMetadata(
+                        key=path,
+                        type="file",
+                        content_length=object_metadata.content_length,
+                        content_type=result.content_type,
+                        last_modified=dateutil_parse(object_metadata.last_modified),
+                        etag=object_metadata.etag.strip('"') if object_metadata.etag is not None else None,
+                        storage_class=result.storage_class,
+                        metadata=result.metadata,
+                        symlink_target=result.metadata.get("msc-symlink-target"),
+                    )
                 response = self._s3_client.head_object(Bucket=bucket, Key=key)
                 user_metadata = response.get("Metadata")
                 symlink_target = user_metadata.get("msc-symlink-target") if user_metadata else None

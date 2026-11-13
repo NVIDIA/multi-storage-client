@@ -14,6 +14,7 @@
 // limitations under the License.
 
 use pyo3::prelude::*;
+use std::collections::HashMap;
 
 #[pyclass(from_py_object, get_all, set_all)]
 #[derive(Clone, Debug, Default)]
@@ -41,6 +42,15 @@ impl ObjectMetadata {
             etag,
         }
     }
+}
+
+#[pyclass(from_py_object, get_all, set_all)]
+#[derive(Clone, Debug)]
+pub struct HeadResult {
+    pub object_metadata: ObjectMetadata,
+    pub content_type: Option<String>,
+    pub storage_class: Option<String>,
+    pub metadata: HashMap<String, String>,
 }
 
 #[pyclass(from_py_object, get_all, set_all)]

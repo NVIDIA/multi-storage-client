@@ -11,6 +11,27 @@ Overview
 Due to Python's Global Interpreter Lock (GIL), achieving optimal multi-threading performance within a single Python process can be challenging, especially for I/O-intensive storage operations.
 The MSC Rust Client addresses this limitation by implementing critical storage operations in Rust, which can run concurrently without GIL restrictions.
 
+For S3 providers with Rust enabled, MSC creates the boto3 client only when an
+operation needs it. Object metadata lookups and file reads use Rust, preserving
+user metadata and symbolic links without initializing boto3. Directory checks and
+missing-file probes also use Rust. Ordinary listings, copies, deletes, and other
+Python fallback operations, including large downloads into file-like objects, can still
+initialize boto3. The first such operation pays the client initialization cost;
+subsequent operations reuse that client. S3 providers without Rust enabled still
+initialize boto3 immediately.
+
+When a profile explicitly sets ``verify``, object metadata and directory checks
+continue using boto3 to preserve that verification policy. Metadata lookups for
+non-S3 providers retain their existing implementation.
+Keys that Rust cannot represent unchanged, including empty, ``.`` and ``..``
+path segments, also use boto3 for metadata and directory probes. Directory probes
+also fall back if Rust cannot represent a child key returned by the listing.
+Probes for a bucket different from the Rust client's configured bucket use boto3
+so the request continues targeting the requested bucket.
+S3 Express directory buckets and JWT-authenticated AIStore S3 providers also keep
+metadata and directory probes on boto3 to preserve their endpoint and authentication
+requirements.
+
 
 ***************************
 Supported Storage Providers
@@ -105,7 +126,6 @@ These operations cover most of the I/O operations when using MSC, regardless of 
 * :py:class:`multistorageclient.types.StorageProvider.list_objects`
 * :py:class:`multistorageclient.types.StorageProvider.copy_object`
 * :py:class:`multistorageclient.types.StorageProvider.delete_object`
-* :py:class:`multistorageclient.types.StorageProvider.get_object_metadata`
 * :py:class:`multistorageclient.types.StorageProvider.glob`
 * :py:class:`multistorageclient.types.StorageProvider.is_file`
 

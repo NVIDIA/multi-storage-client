@@ -36,6 +36,10 @@ class RustClient:
     """
     RustClient provides asynchronous methods for interacting with an object storage backend (e.g., S3).
     """
+    @staticmethod
+    def supports_path(path: str) -> bool:
+        """Return whether the Rust store can represent this key unchanged."""
+
     def __init__(
         self,
         provider: str = "s3",
@@ -61,6 +65,12 @@ class RustClient:
         :param credentials_provider: Credentials provider for the provider (e.g., StaticS3CredentialsProvider).
         :param retry: Retry configuration for the Rust client.
         """
+
+    async def head(self, path: str) -> HeadResult:
+        """Retrieve object metadata without downloading the object body."""
+
+    async def is_dir(self, path: str) -> bool:
+        """Check whether a directory prefix contains an object, stopping at the first result."""
 
     async def put(
         self, path: str, data: bytes | memoryview | bytearray, attributes: dict[str, str] | None = ...
@@ -223,6 +233,14 @@ class ObjectMetadata:
     last_modified: str  # in RFC 3339 format
     object_type: str  # "object" or "directory"
     etag: str | None
+
+class HeadResult:
+    """Object metadata and response attributes returned by a HEAD request."""
+
+    object_metadata: ObjectMetadata
+    content_type: str | None
+    storage_class: str | None
+    metadata: dict[str, str]
 
 class ListResult:
     """
