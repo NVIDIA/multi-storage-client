@@ -45,6 +45,9 @@ class StreamingWriter:
         """Return the number of bytes accepted so far."""
 
     def flush(self) -> None:
+        """Raise errors from parts that already finished, without waiting for running parts."""
+
+    def sync(self) -> None:
         """Wait for all submitted parts. Does not publish the object."""
 
     def close(self) -> None:

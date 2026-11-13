@@ -179,7 +179,9 @@ Streaming files differ from buffered files in these ways:
 * They are forward-only. ``seekable()`` is ``False``; ``tell()`` and seeking to the current position work, other
   seeks and ``truncate()`` raise :py:class:`io.UnsupportedOperation`. ``fileno()`` raises
   :py:class:`io.UnsupportedOperation` instead of returning a temporary file descriptor.
-* ``flush()`` and ``fsync()`` wait for submitted parts and raise their errors. Only ``close()`` publishes the object.
+* ``flush()`` raises errors from parts that already finished but does not wait, because serializers such as
+  ``torch.save`` flush after every record. ``fsync()`` waits for every submitted part. Only ``close()`` publishes
+  the object.
 * Leaving a ``with`` block because of an exception, or calling ``discard()``, aborts the multipart upload without
   publishing. An existing object at the same path is left unchanged. A file that is garbage-collected without being
   closed is also aborted, so close streaming files explicitly or use a ``with`` block.

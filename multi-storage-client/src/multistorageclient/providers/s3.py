@@ -210,6 +210,9 @@ class _RustStreamingWriter(StreamingObjectWriter):
     def flush(self) -> None:
         self._call(self._native.flush)
 
+    def sync(self) -> None:
+        self._call(self._native.sync)
+
     def close(self) -> int:
         def _close() -> int:
             self._call(self._native.close)

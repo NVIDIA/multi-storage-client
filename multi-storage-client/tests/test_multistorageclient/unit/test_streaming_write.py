@@ -106,6 +106,7 @@ def test_streaming_write_uploads_before_close_without_whole_object_calls():
                 for offset in range(0, len(data), MiB):
                     f.write(data[offset : offset + MiB])
                 f.flush()
+                f.fsync()
                 flushed = _stats(f)
         assert flushed["completed_bytes"] == 8 * PART
         assert flushed["inflight_parts"] == 0

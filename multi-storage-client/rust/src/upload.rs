@@ -23,6 +23,7 @@
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -397,8 +398,23 @@ impl StreamCore {
         Ok(())
     }
 
-    /// Waits for every submitted part. A partial part stays buffered; nothing is published.
+    /// Collects parts that already finished and raises their errors, without waiting for running parts.
+    ///
+    /// Serializers such as `torch.save` flush after every record, so waiting here would serialize the upload.
     pub async fn flush(&mut self) -> Result<(), StreamError> {
+        self.ensure_open()?;
+        let finished = match self.writer.as_mut() {
+            Some(writer) => writer.poll_for_capacity(&mut Context::from_waker(Waker::noop()), 0),
+            None => Poll::Ready(Ok(())),
+        };
+        if let Poll::Ready(Err(err)) = finished {
+            return Err(self.fail(err.into()).await);
+        }
+        Ok(())
+    }
+
+    /// Waits for every submitted part. A partial part stays buffered; nothing is published.
+    pub async fn sync(&mut self) -> Result<(), StreamError> {
         self.ensure_open()?;
         if let Some(writer) = self.writer.as_mut() {
             let start = Instant::now();
@@ -757,12 +773,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_flush_drains_without_publishing() {
+    async fn test_sync_drains_without_publishing() {
         let target = TestTarget::new(Faults::default(), None);
         let mut core = StreamCore::new(target.clone(), config(8, 4));
         let data = payload(20);
         core.write_all(&data).await.unwrap();
-        core.flush().await.unwrap();
+        core.sync().await.unwrap();
         let stats = core.stats();
         assert_eq!(stats.inflight_parts, 0);
         assert_eq!(stats.completed_bytes, 16);
@@ -997,5 +1013,34 @@ mod tests {
         assert_eq!(target.aborts.load(Ordering::SeqCst), 1);
         assert_eq!(target.parts_done_at_abort.load(Ordering::SeqCst), 3);
         assert_eq!(core.stats().inflight_parts, 0);
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_flush_does_not_wait_but_surfaces_finished_failures() {
+        let gate = Arc::new(Semaphore::new(0));
+        let target = TestTarget::new(Faults::default(), Some(gate.clone()));
+        let mut core = StreamCore::new(target.clone(), config(8, 4));
+        core.write_all(&payload(24)).await.unwrap();
+        tokio::time::timeout(Duration::from_millis(100), core.flush())
+            .await
+            .expect("flush must not wait for running parts")
+            .unwrap();
+        assert_eq!(core.stats().inflight_parts, 3);
+        gate.add_permits(3);
+        core.sync().await.unwrap();
+        core.close().await.unwrap();
+        assert_eq!(target.read().await.unwrap(), payload(24));
+
+        let target = TestTarget::new(
+            Faults {
+                fail_part: Some(0),
+                ..Default::default()
+            },
+            None,
+        );
+        let mut core = StreamCore::new(target.clone(), config(8, 4));
+        core.write_all(&payload(8)).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(matches!(core.flush().await, Err(StreamError::Store(_))));
+        assert!(matches!(core.flush().await, Err(StreamError::Failed(_))));
     }
 }

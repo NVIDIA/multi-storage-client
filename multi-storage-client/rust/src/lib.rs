@@ -1254,9 +1254,14 @@ impl StreamingWriter {
         Ok(guard.as_ref().map(StreamCore::accepted).unwrap_or(0))
     }
 
-    /// Wait for all submitted parts. Does not publish the object.
+    /// Raise errors from parts that already finished, without waiting for running parts.
     fn flush(&self, py: Python<'_>) -> PyResult<()> {
         self.run(py, |core| Box::pin(core.flush()))
+    }
+
+    /// Wait for all submitted parts. Does not publish the object.
+    fn sync(&self, py: Python<'_>) -> PyResult<()> {
+        self.run(py, |core| Box::pin(core.sync()))
     }
 
     /// Upload the remainder and publish the object.

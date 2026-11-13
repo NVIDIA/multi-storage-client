@@ -323,6 +323,12 @@ class StreamingObjectWriter(ABC):
     @abstractmethod
     def flush(self) -> None:
         """
+        Raise errors from parts that already finished, without waiting for parts still uploading.
+        """
+
+    @abstractmethod
+    def sync(self) -> None:
+        """
         Wait for submitted parts and surface their errors. Buffered bytes that do not fill a part stay buffered,
         and the object is not published.
         """

@@ -239,6 +239,10 @@ class _StreamingFile(IOBase):
         if not self.closed:
             self._writer.flush()
 
+    def sync(self) -> None:
+        if not self.closed:
+            self._writer.sync()
+
     def close(self) -> None:
         if self.closed:
             return
@@ -718,7 +722,7 @@ class ObjectFile(IOBase, IO):
         return self._file.truncate(size)
 
     def flush(self) -> None:
-        """Wait for submitted streaming parts and surface their errors. Does nothing for buffered writes."""
+        """Raise errors from streaming parts that already finished, without waiting. Does nothing for buffered writes."""
         if self._streaming:
             self._file.flush()
 
@@ -823,7 +827,8 @@ class ObjectFile(IOBase, IO):
 
     def fsync(self) -> None:
         """Wait for submitted streaming parts. The object is published only by :py:meth:`close`."""
-        self.flush()
+        if self._stream is not None:
+            self._stream.sync()
 
     def discard(self) -> None:
         """Abort a streaming upload without publishing it. Does nothing for buffered writes."""
