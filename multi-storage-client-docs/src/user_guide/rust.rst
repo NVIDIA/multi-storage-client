@@ -186,6 +186,9 @@ Streaming files differ from buffered files in these ways:
 * Errors are sticky: after a failed upload, every later ``write()``, ``flush()`` and ``close()`` raises. A failure
   while completing the multipart upload is reported as ambiguous, because the service may have committed the object
   before the response was lost.
+* Each request is retried by the Rust client's ``retry`` settings. Unlike buffered writes, MSC cannot re-upload the
+  whole object after a retryable failure, because the written bytes are no longer held; the caller must write the
+  file again.
 * A writer belongs to the process that opened it. Forked children that use MSC must not inherit Rust I/O that the
   parent already started, as with other Rust client operations.
 
