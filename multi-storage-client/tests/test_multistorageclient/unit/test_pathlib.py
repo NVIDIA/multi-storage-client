@@ -199,7 +199,7 @@ def test_shutil_rmtree(file_storage_config):
 
 def test_relative_path():
     path = msc.Path("./workspace/datasets/file.txt")
-    assert path.as_posix() == os.path.realpath("./workspace/datasets/file.txt")
+    assert path.as_posix() == os.path.abspath("./workspace/datasets/file.txt")
 
 
 @pytest.mark.parametrize(
