@@ -646,6 +646,33 @@ Other storage provider operations continue to use the Python implementation:
 * :py:class:`multistorageclient.types.StorageProvider.glob`
 * :py:class:`multistorageclient.types.StorageProvider.is_file`
 
+``rust_client.streaming_write``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Streams binary writes opened with ``mode="wb"`` through a bounded multipart upload instead of buffering the whole
+object until ``close()``. Supported for S3-compatible providers. See :doc:`/user_guide/rust` for the file semantics.
+
+* ``enabled`` (default: ``false``): Enable streaming writes.
+* ``part_size_bytes`` (default: ``67108864``, minimum ``5242880``): Multipart part size.
+* ``max_inflight_parts`` (default: ``8``): Parts uploading at once before writes block.
+* ``max_object_size_bytes`` (optional): Largest expected object. Raises the part size if needed to stay within
+  10,000 parts. Writes beyond ``10,000 * part_size_bytes`` fail before the bytes are accepted.
+
+.. code-block:: yaml
+   :caption: Example streaming write configuration.
+
+   profiles:
+     my-profile:
+       storage_provider:
+         type: s3
+         options:
+           base_path: my-bucket
+           rust_client:
+             streaming_write:
+               enabled: true
+               part_size_bytes: 67108864
+               max_inflight_parts: 8
+
 Metadata Providers
 ==================
 

@@ -126,7 +126,21 @@ PROFILE_SCHEMA = {
                         "type": "object",
                         "properties": {
                             "base_path": {"type": "string", "minLength": 0},
-                            "rust_client": {"type": "object"},
+                            "rust_client": {
+                                "type": "object",
+                                "properties": {
+                                    "streaming_write": {
+                                        "type": "object",
+                                        "properties": {
+                                            "enabled": {"type": "boolean"},
+                                            "part_size_bytes": {"type": "integer", "minimum": 5242880},
+                                            "max_inflight_parts": {"type": "integer", "minimum": 1},
+                                            "max_object_size_bytes": {"type": "integer", "minimum": 0},
+                                        },
+                                        "additionalProperties": False,
+                                    },
+                                },
+                            },
                             "rdma": {
                                 "type": "object",
                                 "properties": {

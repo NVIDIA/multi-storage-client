@@ -18,7 +18,7 @@ import contextlib
 import logging
 import os
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from io import BytesIO
@@ -46,6 +46,7 @@ from ..types import (
     SignerType,
     SourceVersionCheckMode,
     StorageProvider,
+    StreamingObjectWriter,
     SuffixRange,
     SymlinkHandling,
     SyncResult,
@@ -348,6 +349,27 @@ class SingleStorageClient(AbstractStorageClient):
             obj_metadata.metadata = (obj_metadata.metadata or {}) | attributes
         with self._metadata_provider_lock or contextlib.nullcontext():
             self._metadata_provider.add_file(virtual_path, obj_metadata)
+
+    def _open_streaming_writer(
+        self, path: str, attributes: dict[str, Any] | None = None
+    ) -> tuple[StreamingObjectWriter, Callable[[], None] | None] | None:
+        """
+        Open a streaming writer when the storage provider enables streaming writes.
+
+        :param path: The logical path of the object to write.
+        :param attributes: The attributes to add to the object.
+        :return: The writer and an optional callback to run after it publishes the object, or ``None`` when
+            streaming writes are not enabled.
+        """
+        provider = self._storage_provider
+        if not isinstance(provider, BaseStorageProvider) or not provider.supports_streaming_write():
+            return None
+        if self._metadata_provider:
+            physical_path = self._resolve_write_path(path)
+            # Attributes belong to logical metadata, so physical writes get none and registration stores them.
+            writer = provider.open_streaming_writer(physical_path, attributes=None)
+            return writer, lambda: self._register_written_file(path, physical_path, attributes)
+        return provider.open_streaming_writer(path, attributes), None
 
     def _register_written_files(
         self,
@@ -1073,6 +1095,7 @@ class SingleStorageClient(AbstractStorageClient):
                 check_source_version=check_source_version,
                 attributes=attributes,
                 prefetch_file=prefetch_file,
+                streaming_writer=self._open_streaming_writer(path, attributes) if mode == "wb" else None,
             )
 
     def get_posix_path(self, path: str) -> str | None:

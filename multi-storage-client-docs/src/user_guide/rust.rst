@@ -147,6 +147,51 @@ offending metadata key instead of panicking. A direct ``RustClient`` call raises
 provider calls include the cause in their error message.
 
 
+****************
+Streaming Writes
+****************
+
+By default, a file opened with ``mode="wb"`` on object storage buffers the whole object in memory and uploads it on
+``close()``. With ``rust_client.streaming_write`` enabled, binary writes instead stream through a bounded multipart
+upload: each full part uploads while the caller keeps writing, and the Rust client blocks the writer once
+``max_inflight_parts`` parts are in flight. Memory held per open file stays below
+``(max_inflight_parts + 1) * part_size_bytes``. Objects smaller than one part are written with a single request on
+``close()``.
+
+.. code-block:: yaml
+   :caption: S3 configuration with streaming writes.
+
+   profiles:
+     my-profile:
+       storage_provider:
+         type: s3
+         options:
+           base_path: my-bucket
+           rust_client:
+             streaming_write:
+               enabled: true
+               part_size_bytes: 67108864     # 64MiB
+               max_inflight_parts: 8
+               max_object_size_bytes: 1099511627776  # Optional: raises part size to stay within 10,000 parts.
+
+Streaming files differ from buffered files in these ways:
+
+* They are forward-only. ``seekable()`` is ``False``; ``tell()`` and seeking to the current position work, other
+  seeks and ``truncate()`` raise :py:class:`io.UnsupportedOperation`. ``fileno()`` raises
+  :py:class:`io.UnsupportedOperation` instead of returning a temporary file descriptor.
+* ``flush()`` and ``fsync()`` wait for submitted parts and raise their errors. Only ``close()`` publishes the object.
+* Leaving a ``with`` block because of an exception, or calling ``discard()``, aborts the multipart upload without
+  publishing. An existing object at the same path is left unchanged. A file that is garbage-collected without being
+  closed is also aborted, so close streaming files explicitly or use a ``with`` block.
+* Errors are sticky: after a failed upload, every later ``write()``, ``flush()`` and ``close()`` raises. A failure
+  while completing the multipart upload is reported as ambiguous, because the service may have committed the object
+  before the response was lost.
+* A writer belongs to the process that opened it. Forked children that use MSC must not inherit Rust I/O that the
+  parent already started, as with other Rust client operations.
+
+Streaming writes are supported by the ``s3``, ``s8k`` (without ``infer_content_type``), ``gcs_s3`` and ``ais_s3``
+providers, except S3 directory buckets. Text (``"w"``) and append (``"a"``, ``"ab"``) modes keep the buffered behavior.
+
 ********************
 Performance Benefits
 ********************

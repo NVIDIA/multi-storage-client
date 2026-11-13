@@ -28,13 +28,14 @@ use object_store::limit::LimitStore;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule};
 use pyo3::{Py, PyAny};
+use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyException;
 use pyo3_async_runtimes::tokio::future_into_py;
 use pyo3_bytes::PyBytes;
 use std::collections::{HashMap, VecDeque};
 use std::error::Error as StdError;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::Duration;
 use thiserror::Error;
 use tokio::fs;
@@ -52,9 +53,11 @@ mod metadata;
 #[cfg(feature = "rdma")]
 mod cuobj;
 mod types;
+mod upload;
 
 use credentials::{AwsCredentialsProvider, AwsSdkCredentialsProvider, GcpCredentialsProvider};
 use types::{ByteRangeLike, ListResult, ObjectMetadata, RustRetryConfig};
+use upload::{StoreTarget, StreamConfig, StreamCore, StreamError};
 
 pyo3::create_exception!(multistorageclient_rust, RustRetryableError, PyException);
 pyo3::create_exception!(multistorageclient_rust, RustClientError, PyException);
@@ -205,6 +208,9 @@ fn multipart_safe_chunk_size(object_size: u64, requested_chunk_size: usize) -> R
         .min(S3_MAX_PART_SIZE_BYTES as usize);
     Ok(part_size)
 }
+
+// Streaming writers wait this long for in-flight parts before cancelling them on abort.
+const STREAM_ABORT_DRAIN_TIMEOUT_SECS: u64 = 60;
 
 // Connection timeout settings
 const DEFAULT_CONNECT_TIMEOUT: u64 = 60;
@@ -877,6 +883,49 @@ impl RustClient {
         })
     }
 
+    #[pyo3(signature = (remote_path, part_size=None, max_inflight_parts=None, max_object_size=None, attributes=None))]
+    fn open_streaming_writer(
+        &self,
+        remote_path: &str,
+        part_size: Option<usize>,
+        max_inflight_parts: Option<usize>,
+        max_object_size: Option<u64>,
+        attributes: Option<HashMap<String, String>>,
+    ) -> PyResult<StreamingWriter> {
+        let path = parse_path(remote_path)?;
+        let requested = part_size.unwrap_or(self.multipart_chunksize);
+        if requested < S3_MIN_PART_SIZE_BYTES || requested as u64 > S3_MAX_PART_SIZE_BYTES {
+            return Err(StorageError::ConfigError(format!(
+                "part_size must be between {} and {} bytes, got {}",
+                S3_MIN_PART_SIZE_BYTES, S3_MAX_PART_SIZE_BYTES, requested
+            ))
+            .into());
+        }
+        let part_size = match max_object_size {
+            Some(size) => multipart_safe_chunk_size(size, requested)?,
+            None => requested,
+        };
+        let max_inflight_parts = max_inflight_parts.unwrap_or(self.max_concurrency);
+        if max_inflight_parts == 0 {
+            return Err(StorageError::ConfigError("max_inflight_parts must be at least 1".to_string()).into());
+        }
+        let target = StoreTarget {
+            store: Arc::clone(&self.store),
+            path,
+            attributes: upload_attributes(attributes)?,
+        };
+        let config = StreamConfig {
+            part_size,
+            max_inflight_parts,
+            max_parts: S3_MAX_MULTIPART_PARTS,
+            abort_drain_timeout: Duration::from_secs(STREAM_ABORT_DRAIN_TIMEOUT_SECS),
+        };
+        Ok(StreamingWriter {
+            core: Mutex::new(Some(StreamCore::new(Arc::new(target), config))),
+            pid: std::process::id(),
+        })
+    }
+
     #[pyo3(signature = (remote_path, local_path, multipart_chunksize=None, max_concurrency=None))]
     fn download_multipart_to_file<'p>(
         &self,
@@ -1123,9 +1172,156 @@ impl RustClient {
     }
 }
 
+impl From<StreamError> for PyErr {
+    fn from(err: StreamError) -> PyErr {
+        match err {
+            StreamError::Closed | StreamError::Limit(_) => pyo3::exceptions::PyValueError::new_err(err.to_string()),
+            StreamError::Store(err) => StorageError::from(err).into(),
+            StreamError::Failed(_) | StreamError::AmbiguousCompletion(_) => {
+                pyo3::exceptions::PyRuntimeError::new_err(err.to_string())
+            }
+        }
+    }
+}
+
+/// Forward-only writer that streams one object through a bounded multipart upload.
+#[pyclass(module = "multistorageclient_rust")]
+pub struct StreamingWriter {
+    core: Mutex<Option<StreamCore>>,
+    pid: u32,
+}
+
+impl StreamingWriter {
+    fn lock(&self) -> PyResult<MutexGuard<'_, Option<StreamCore>>> {
+        if std::process::id() != self.pid {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "StreamingWriter was created in process {} and cannot be used in process {}",
+                self.pid,
+                std::process::id()
+            )));
+        }
+        match self.core.try_lock() {
+            Ok(guard) => Ok(guard),
+            Err(TryLockError::Poisoned(poisoned)) => Ok(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) => Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "StreamingWriter does not support concurrent calls",
+            )),
+        }
+    }
+
+    fn run<T, F>(&self, py: Python<'_>, f: F) -> PyResult<T>
+    where
+        T: Send,
+        F: for<'a> FnOnce(&'a mut StreamCore) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, StreamError>> + Send + 'a>>
+            + Send,
+    {
+        let mut guard = self.lock()?;
+        let core = guard.as_mut().ok_or(StreamError::Closed)?;
+        let runtime = pyo3_async_runtimes::tokio::get_runtime();
+        Ok(py.detach(|| runtime.block_on(f(core)))?)
+    }
+}
+
+#[pymethods]
+impl StreamingWriter {
+    /// Copy ``data`` into the stream, blocking while the in-flight part budget is full.
+    fn write(&self, py: Python<'_>, data: PyBuffer<u8>) -> PyResult<usize> {
+        if !data.is_c_contiguous() {
+            return Err(pyo3::exceptions::PyValueError::new_err("StreamingWriter.write requires a C-contiguous buffer"));
+        }
+        // SAFETY: `data` keeps the exporter's buffer alive, and bytes are only read while attached to the interpreter.
+        let bytes = unsafe { std::slice::from_raw_parts(data.buf_ptr() as *const u8, data.len_bytes()) };
+        let mut guard = self.lock()?;
+        let core = guard.as_mut().ok_or(StreamError::Closed)?;
+        let runtime = pyo3_async_runtimes::tokio::get_runtime();
+        let mut offset = 0;
+        while offset < bytes.len() {
+            match core.accept(&bytes[offset..]) {
+                Ok(n) => offset += n,
+                Err(err @ StreamError::Limit(_)) => return Err(py.detach(|| runtime.block_on(core.fail(err))).into()),
+                Err(err) => return Err(err.into()),
+            }
+            if core.part_ready() {
+                py.detach(|| runtime.block_on(core.submit_part()))?;
+            }
+        }
+        Ok(bytes.len())
+    }
+
+    /// Number of bytes accepted so far.
+    fn tell(&self) -> PyResult<u64> {
+        let guard = self.lock()?;
+        Ok(guard.as_ref().map(StreamCore::accepted).unwrap_or(0))
+    }
+
+    /// Wait for all submitted parts. Does not publish the object.
+    fn flush(&self, py: Python<'_>) -> PyResult<()> {
+        self.run(py, |core| Box::pin(core.flush()))
+    }
+
+    /// Upload the remainder and publish the object.
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
+        self.run(py, |core| Box::pin(core.close()))
+    }
+
+    /// Cancel in-flight parts and abort the multipart upload without publishing.
+    fn abort(&self, py: Python<'_>) -> PyResult<()> {
+        self.run(py, |core| Box::pin(core.abort()))
+    }
+
+    /// Return stream counters as a dictionary.
+    fn stats<'p>(&self, py: Python<'p>) -> PyResult<Bound<'p, PyDict>> {
+        let guard = self.lock()?;
+        let stats = guard.as_ref().map(StreamCore::stats).unwrap_or_default();
+        let dict = PyDict::new(py);
+        dict.set_item("accepted_bytes", stats.accepted_bytes)?;
+        dict.set_item("submitted_bytes", stats.submitted_bytes)?;
+        dict.set_item("completed_bytes", stats.completed_bytes)?;
+        dict.set_item("retained_bytes", stats.retained_bytes)?;
+        dict.set_item("peak_retained_bytes", stats.peak_retained_bytes)?;
+        dict.set_item("parts_submitted", stats.parts_submitted)?;
+        dict.set_item("parts_completed", stats.parts_completed)?;
+        dict.set_item("inflight_parts", stats.inflight_parts)?;
+        dict.set_item("peak_inflight_parts", stats.peak_inflight_parts)?;
+        dict.set_item("capacity_wait_ns", stats.capacity_wait_ns)?;
+        dict.set_item("first_part_submit_ns", stats.first_part_submit_ns)?;
+        dict.set_item("first_part_complete_ns", stats.first_part_complete_ns)?;
+        dict.set_item("close_complete_ns", stats.close_complete_ns)?;
+        dict.set_item("part_size", stats.part_size)?;
+        dict.set_item("max_inflight_parts", stats.max_inflight_parts)?;
+        dict.set_item("multipart", stats.multipart)?;
+        dict.set_item("completion_attempted", stats.completion_attempted)?;
+        dict.set_item("abort_attempted", stats.abort_attempted)?;
+        dict.set_item("abort_failed", stats.abort_failed)?;
+        dict.set_item("state", stats.state)?;
+        Ok(dict)
+    }
+}
+
+impl Drop for StreamingWriter {
+    fn drop(&mut self) {
+        let core = match self.core.get_mut() {
+            Ok(core) => core.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        };
+        let Some(mut core) = core else { return };
+        if std::process::id() != self.pid {
+            // The parent's runtime threads do not exist after fork.
+            std::mem::forget(core);
+            return;
+        }
+        if core.is_open() {
+            pyo3_async_runtimes::tokio::get_runtime().spawn(async move {
+                let _ = core.abort().await;
+            });
+        }
+    }
+}
+
 #[pymodule]
 fn multistorageclient_rust(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustClient>()?;
+    m.add_class::<StreamingWriter>()?;
     m.add_class::<ObjectMetadata>()?;
     m.add_class::<types::HeadResult>()?;
     m.add_class::<ListResult>()?;

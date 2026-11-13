@@ -34,7 +34,7 @@ from .cache import CacheManager
 from .constants import MEMORY_LOAD_LIMIT
 from .instrumentation.utils import file_metrics
 from .providers.base import BaseStorageProvider
-from .types import Range, SourceVersionCheckMode
+from .types import Range, SourceVersionCheckMode, StreamingObjectWriter
 from .utils import _ensure_bytes, safe_makedirs, validate_attributes
 
 if TYPE_CHECKING:
@@ -184,6 +184,87 @@ class RemoteFileReader(IO[bytes]):
 
 
 # pylint: disable=abstract-method
+class _StreamingFile(IOBase):
+    """
+    Forward-only binary file backed by a :py:class:`StreamingObjectWriter`.
+
+    Close publishes the object; a failed close keeps raising. The finalizer aborts instead of publishing.
+    """
+
+    def __init__(self, writer: StreamingObjectWriter, on_close: Callable[[], None] | None, name: str):
+        self._writer = writer
+        self._on_close = on_close
+        self._name = name
+        self._published = False
+        self._aborted = False
+
+    @property
+    def closed(self) -> bool:
+        return self._published or self._aborted
+
+    @property
+    def mode(self) -> str:
+        return "wb"
+
+    def readable(self) -> bool:
+        return False
+
+    def writable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+    def write(self, b: Any) -> int:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        return self._writer.write(b)
+
+    def tell(self) -> int:
+        return self._writer.tell()
+
+    def seek(self, offset: int, whence: int = os.SEEK_SET) -> int:
+        position = self._writer.tell()
+        if (whence == os.SEEK_SET and offset == position) or (whence in (os.SEEK_CUR, os.SEEK_END) and offset == 0):
+            return position
+        raise io.UnsupportedOperation(f"Streaming writes to {self._name} are forward-only; seek is not supported.")
+
+    def truncate(self, size: int | None = None) -> int:
+        raise io.UnsupportedOperation(f"Streaming writes to {self._name} do not support truncate.")
+
+    def fileno(self) -> int:
+        raise io.UnsupportedOperation(f"Streaming writes to {self._name} have no file descriptor.")
+
+    def flush(self) -> None:
+        if not self.closed:
+            self._writer.flush()
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self._writer.close()
+        if self._on_close:
+            self._on_close()
+        self._published = True
+
+    def abort(self) -> None:
+        if self.closed:
+            return
+        self._aborted = True
+        self._writer.abort()
+
+    def __del__(self) -> None:
+        if self.closed:
+            return
+        logger.warning(
+            "Streaming write to %s was not closed; aborting the upload instead of publishing it.", self._name
+        )
+        try:
+            self.abort()
+        except Exception:
+            logger.warning("Failed to abort the streaming upload to %s.", self._name, exc_info=True)
+
+
 class ObjectFile(IOBase, IO):
     """
     A file-like object that handles remote file access with asynchronous downloads.
@@ -194,7 +275,9 @@ class ObjectFile(IOBase, IO):
     `seek`, or `tell`) will block until the download is complete.
 
     For files opened in write mode ('wb'), the class writes locally to a specified path and uploads the file
-    to the remote storage when the file is closed.
+    to the remote storage when the file is closed. When the storage provider enables streaming writes, 'wb'
+    files are forward-only instead: parts upload while data is written, close publishes the object, and leaving
+    a ``with`` block by an exception (or calling :py:meth:`discard`) aborts the upload without publishing.
     """
 
     _file: IO
@@ -205,6 +288,7 @@ class ObjectFile(IOBase, IO):
 
     _local_path: str | None = None
     _attributes: dict[str, Any] | None = None
+    _stream: _StreamingFile | None = None
 
     def __init__(
         self,
@@ -217,6 +301,7 @@ class ObjectFile(IOBase, IO):
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
         attributes: dict[str, Any] | None = None,
         prefetch_file: bool | None = None,
+        streaming_writer: tuple[StreamingObjectWriter, Callable[[], None] | None] | None = None,
     ):
         """
         Initialize the ObjectFile instance.
@@ -230,12 +315,17 @@ class ObjectFile(IOBase, IO):
         :param check_source_version: Whether to check the source version of cached objects.
         :param attributes: The attributes to add to the file if a new file is created.
         :param prefetch_file: If True, downloads the entire file to cache in the background for faster subsequent reads. If False, uses RemoteFileReader for streaming reads without caching. If None, inherits from cache configuration.
+        :param streaming_writer: A writer and an optional callback to run after it publishes the object. Only valid
+            with mode 'wb', which then streams the object instead of buffering it until close.
         """
         if mode not in ("r", "w", "rb", "wb", "a", "ab"):
             raise ValueError(f'Invalid mode "{mode}", only "w", "r", "a", "wb", "rb" and "ab" are supported.')
 
         if not remote_path:
             raise ValueError('Missing parameter "remote_path"')
+
+        if streaming_writer is not None and mode != "wb":
+            raise ValueError(f'Streaming writes require mode "wb", got "{mode}".')
 
         self._mode = mode
         self._storage_client = storage_client
@@ -246,6 +336,7 @@ class ObjectFile(IOBase, IO):
         self._open_files = []
         self._download_error: Exception | None = None
         self._check_source_version = check_source_version
+        self._streaming_writer = streaming_writer
 
         if disable_read_cache:
             self._cache_manager = None
@@ -321,10 +412,20 @@ class ObjectFile(IOBase, IO):
         if attributes:
             self._attributes = attributes
 
+    @property
+    def _streaming(self) -> bool:
+        return self._stream is not None
+
     def _create_fileobj(self) -> None:
         """
         Create a file-like object depends on the mode.
         """
+        if self._streaming_writer is not None:
+            writer, on_close = self._streaming_writer
+            self._stream = _StreamingFile(writer, on_close, self._remote_path)
+            self._file = cast(IO, self._stream)
+            return
+
         if self._mode in ("rb", "wb", "ab"):
             self._file = BytesIO()
         else:
@@ -563,7 +664,19 @@ class ObjectFile(IOBase, IO):
         exc_value: BaseException | None,
         traceback: types.TracebackType | None,
     ) -> None:
+        if exc_type is not None and self._streaming:
+            try:
+                self.discard()
+            except Exception:
+                logger.warning("Failed to abort the streaming upload to %s.", self._remote_path, exc_info=True)
+            return
         self.close()
+
+    def __del__(self) -> None:
+        if self._streaming:
+            # The streaming file's own finalizer aborts; never publish from garbage collection.
+            return
+        super().__del__()
 
     @property
     def mode(self) -> str:
@@ -605,7 +718,9 @@ class ObjectFile(IOBase, IO):
         return self._file.truncate(size)
 
     def flush(self) -> None:
-        pass
+        """Wait for submitted streaming parts and surface their errors. Does nothing for buffered writes."""
+        if self._streaming:
+            self._file.flush()
 
     def readinto(self, b: Any) -> int:
         """Read bytes into ``b`` and return the number of bytes read."""
@@ -645,7 +760,9 @@ class ObjectFile(IOBase, IO):
         """
         Upload the file to object store.
         """
-        if self._mode in ("w", "wb"):
+        if self._streaming:
+            self._file.close()
+        elif self._mode in ("w", "wb"):
             self._file.seek(0)
             self._storage_client.upload_file(self._remote_path, self._file, attributes=self._attributes)
         elif self._mode in ("a", "ab"):
@@ -705,10 +822,13 @@ class ObjectFile(IOBase, IO):
             raise ValueError("resolve_filesystem_path operation not supported in write mode")
 
     def fsync(self) -> None:
-        pass
+        """Wait for submitted streaming parts. The object is published only by :py:meth:`close`."""
+        self.flush()
 
     def discard(self) -> None:
-        pass
+        """Abort a streaming upload without publishing it. Does nothing for buffered writes."""
+        if self._stream is not None:
+            self._stream.abort()
 
 
 class PosixFile(IOBase, IO):

@@ -62,6 +62,8 @@ class S8KStorageProvider(S3StorageProvider):
         kwargs["retries"] = kwargs.get("retries", {}) | {"mode": "legacy"}
 
         super().__init__(*args, **kwargs)
+        if self._infer_content_type and self._streaming_write is not None:
+            raise ValueError("rust_client.streaming_write cannot be combined with infer_content_type.")
 
         # override the provider name from "s3"
         self._provider_name = PROVIDER

@@ -296,6 +296,58 @@ class SuffixRange:
             raise ValueError(f"SuffixRange size must be positive, got {self.size}")
 
 
+class StreamingObjectWriter(ABC):
+    """
+    Forward-only writer that streams one object to a storage provider.
+
+    Accepted bytes are owned by the writer once :py:meth:`write` returns. The object is published only by a
+    successful :py:meth:`close`; :py:meth:`abort` discards it without touching any existing object at the path.
+    A failure is sticky: every later call except :py:meth:`abort` raises.
+    """
+
+    @abstractmethod
+    def write(self, data: Any) -> int:
+        """
+        Append bytes from a buffer-protocol object, blocking while the in-flight upload budget is full.
+
+        :param data: A bytes-like object.
+        :return: The number of bytes accepted.
+        """
+
+    @abstractmethod
+    def tell(self) -> int:
+        """
+        :return: The number of bytes accepted so far.
+        """
+
+    @abstractmethod
+    def flush(self) -> None:
+        """
+        Wait for submitted parts and surface their errors. Buffered bytes that do not fill a part stay buffered,
+        and the object is not published.
+        """
+
+    @abstractmethod
+    def close(self) -> int:
+        """
+        Upload the remaining bytes and publish the object. Repeated calls after success do nothing.
+
+        :return: The object size in bytes.
+        """
+
+    @abstractmethod
+    def abort(self) -> None:
+        """
+        Cancel in-flight uploads and discard the object without publishing it.
+        """
+
+    @abstractmethod
+    def stats(self) -> dict[str, Any]:
+        """
+        :return: Transfer counters such as accepted, submitted and completed bytes, and peak retained bytes.
+        """
+
+
 class StorageProvider(ABC):
     """
     Abstract base class for interacting with a storage provider.
