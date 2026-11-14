@@ -1,0 +1,73 @@
+#
+# Just configuration.
+#
+# https://just.systems/man/en
+#
+
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+# Prefer Apple UUID headers over transitive libuuid headers in the Nix shell.
+export CFLAGS := if os() == "macos" { if env("IN_NIX_SHELL", "") != "" { "-isystem " + env("SDKROOT") + "/usr/include " + env("CFLAGS", "") } else { env("CFLAGS", "") } } else { env("CFLAGS", "") }
+
+# Shared S3 simulator configuration.
+export MSC_S3_TEST_ENDPOINT := "http://localhost:7070"
+export MSC_S3_TEST_BUCKET := "msc-rust-tests"
+export MSC_S3_TEST_ACCESS_KEY := "access-key"
+export MSC_S3_TEST_SECRET_KEY := "secret-key"
+
+# List recipes.
+help:
+    just --list
+
+# Prepare the toolchain.
+prepare-toolchain:
+    rustup show active-toolchain
+
+# Run static analysis (format, lint).
+analyze: prepare-toolchain
+    if [[ -z "${CI:-}" ]]; then cargo fmt --all; else cargo fmt --all -- --check; fi
+    cargo clippy --locked --all-targets --all-features -- -D warnings
+
+# Stop storage systems.
+stop-storage-systems:
+    just ../multi-storage-client/stop-storage-systems
+
+# Start storage systems.
+start-storage-systems:
+    just ../multi-storage-client/start-storage-systems
+    AWS_ACCESS_KEY_ID="${MSC_S3_TEST_ACCESS_KEY}" AWS_SECRET_ACCESS_KEY="${MSC_S3_TEST_SECRET_KEY}" AWS_DEFAULT_REGION=us-east-1 aws --endpoint-url "${MSC_S3_TEST_ENDPOINT}" s3 mb "s3://${MSC_S3_TEST_BUCKET}"
+
+# Run unit tests.
+run-unit-tests: prepare-toolchain
+    cargo test --locked --all-features --lib --bins
+    cargo test --locked --all-features --doc
+    cargo test --locked --no-default-features --lib --bins
+
+# Run integration tests with local storage simulators.
+run-integration-tests: prepare-toolchain
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap 'just stop-storage-systems' EXIT
+    just start-storage-systems
+    cargo test --locked --all-features --test posix_integration --test storage_client_api --test s3_native_http --test s3_listing_http
+    cargo test --locked --all-features --test s3_integration --test s3_http_errors -- --ignored --skip endpoint_environment_child_probe --test-threads=1
+    cargo test --locked --no-default-features --test posix_integration --test storage_client_api
+
+# Build and test.
+build: analyze run-unit-tests run-integration-tests
+    cargo build --locked --all-features
+
+# Run E2E tests against the MSC_E2E_PROFILE backend from the normal MSC config.
+run-e2e-tests: prepare-toolchain
+    cargo test --locked --all-features --test e2e -- --ignored --test-threads=1
+
+# Run benchmark CLI tests and POSIX/S3 benchmark smoke tests.
+run-benchmarks: prepare-toolchain
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo test --locked --all-features --test benchmark_cli
+    cargo test --locked --no-default-features --test benchmark_cli
+    bash scripts/smoke-posix.sh
+    trap 'just stop-storage-systems' EXIT
+    just start-storage-systems
+    cargo test --locked --all-features --test benchmark_cli -- --ignored --exact benchmark_s3_multiprocess_file_transfers_and_cleanup

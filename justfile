@@ -23,6 +23,10 @@ multi-storage-explorer:
 multi-storage-client: multi-storage-explorer
     just python-binary={{python-binary}} multi-storage-client/build
 
+# Build the native Rust library and benchmark.
+multi-storage-client-rust:
+    just multi-storage-client-rust/build
+
 # Build multi-storage-client-docs.
 multi-storage-client-docs: multi-storage-client
     just python-binary={{python-binary}} multi-storage-client-docs/build
@@ -32,7 +36,7 @@ multi-storage-client-scripts:
     just python-binary={{python-binary}} multi-storage-client-scripts/build
 
 # Release build.
-build: nix multi-storage-explorer multi-storage-client multi-storage-client-docs multi-storage-client-scripts
+build: nix multi-storage-explorer multi-storage-client multi-storage-client-rust multi-storage-client-docs multi-storage-client-scripts
 
 # Generate tool-specific rules and MCP config from .agents/ (canonical source).
 # Skills in .agents/skills/ are discovered natively by most tools (Cursor,
