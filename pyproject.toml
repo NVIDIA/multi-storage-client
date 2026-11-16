@@ -19,6 +19,10 @@ unfixable = []
 python-downloads = "never"
 python-preference = "only-system"
 resolution = "lowest-direct"
+constraint-dependencies = [
+    "dnspython>=2.9.2",
+    "soupsieve>=4.1.1"
+]
 
 [tool.uv.sources]
 multi-storage-client = { workspace = true }
