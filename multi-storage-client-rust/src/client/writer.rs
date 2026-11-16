@@ -70,7 +70,7 @@ impl ObjectWriter {
     pub async fn finish(mut self) -> Result<ObjectMetadata> {
         self.file.flush().await?;
         self.client
-            .upload_file(&self.path, &self.file, self.written, &self.options)
+            .upload_open_file(&self.path, &self.file, self.written, &self.options)
             .await
     }
 

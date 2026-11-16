@@ -39,7 +39,7 @@ have cancellation and join handles owned by the final shared state.
 - `read_range(path, ByteRange, ReadOptions) -> Bytes`;
 - `reader(path, ReadOptions) -> ObjectReader` implementing
   `tokio::io::AsyncRead + AsyncSeek` for sequential and random-access reads;
-- `download_to(remote, local, options)`;
+- `download_file(remote, local, options)`;
 - `info(path, options) -> ObjectMetadata`;
 - `is_file(path)` and `is_empty(prefix)`;
 - `list(options) -> Stream<Result<ObjectMetadata>>`;
@@ -47,7 +47,7 @@ have cancellation and join handles owned by the final shared state.
 - `presigned_url` only when the provider capability exists.
 
 `read` enforces a configurable maximum in-memory object size or requires an
-explicit opt-out. Large objects use `reader` or `download_to`.
+explicit opt-out. Large objects use `reader` or `download_file`.
 
 `ObjectReader` is the Rust-native file-read handle. It supports Tokio's
 `AsyncReadExt` and `AsyncSeekExt` helpers without text modes or Python file
@@ -63,16 +63,24 @@ provider contract. Reader behavior is detailed in 005.
 - `write(path, Bytes, WriteOptions) -> ObjectMetadata`;
 - `writer(path, size_hint, WriteOptions) -> ObjectWriter` implementing
   `tokio::io::AsyncWrite` when streaming writes are supported;
-- `upload_from(remote, local, options)`;
+- `upload_file(remote, local, options)`;
+- `upload_file_with_callback(remote, local, options, callback)`;
 - `copy(source, destination, options)`;
 - `delete(path, recursive, options)`;
 - `delete_many(paths, options) -> BatchResult`;
 - `make_symlink(path, target)` when supported; and
 - `commit_metadata()`.
 
-Batch upload/download conveniences use bounded concurrency and preserve item
-indices in partial errors. `delete_many` treats a missing object as success,
-matching the idempotent MSC behavior.
+File transfer methods take the remote key first and local path second, matching
+Python and distinguishing them from byte and handle APIs. There are no batch
+upload/download wrappers. Applications can compose individual futures with
+`futures::StreamExt::buffer_unordered`, choosing their own concurrency bound,
+cancellation policy, and partial-failure handling. Async operations alone do
+not supply those policies.
+
+`delete_many` retains native backend batch deletion because it can reduce actual
+network requests. It preserves input indices and treats a missing object as
+success, matching the idempotent MSC behavior.
 
 `ObjectWriter` is sequential, not `AsyncSeek`. `write_all` accepts bytes under
 bounded backpressure; `flush` drains buffered bytes without publishing the
@@ -177,12 +185,12 @@ resume cursor so retries do not repeat rejected records.
 
 ## File transfers
 
-`download_to` writes a temporary file in the destination filesystem, validates
+`download_file` writes a temporary file in the destination filesystem, validates
 the expected length/version when available, optionally applies mtime and
 attributes, then atomically renames. Cancellation and errors remove the temp
 file.
 
-`upload_from` streams from the file and uses multipart upload when warranted.
+`upload_file` streams from the file and uses multipart upload when warranted.
 It never reads the whole file into memory. Symlink behavior is explicit in
 options and defaults to following only safe internal links.
 
@@ -227,8 +235,8 @@ meter; telemetry configuration is initialized explicitly through the helper in
   and abort awaits cleanup without leaking transfer permits.
 - Listing tests cover root, ordering, pagination boundaries, directories, glob,
   and partial stream errors.
-- Batch tests verify bounded concurrency, stable indices, partial success, and
-  retry-only-failed behavior.
+- Batch deletion tests verify native request chunking, stable indices, partial
+  success, and retry-only-failed behavior.
 - File transfer tests prove bounded memory, atomic destination publication, and
   temp cleanup.
 - Cloned clients can perform concurrent operations without a global lock.

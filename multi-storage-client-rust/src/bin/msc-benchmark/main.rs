@@ -55,7 +55,7 @@ struct Args {
     /// Profile-relative prefix for a unique directory of test objects.
     #[arg(long, default_value = "")]
     prefix: String,
-    /// Include `upload_from` and `download_to` tests.
+    /// Include `upload_file` and `download_file` tests.
     #[arg(long)]
     include_file_tests: bool,
     /// Parent for a temporary file-test directory; existing contents are preserved.

@@ -14,16 +14,14 @@
 // limitations under the License.
 
 //! Metadata, bounded reads, seekable handles, and atomic downloads.
-use super::{ObjectReader, StorageClient, record_transfer, require_file, stable_conditions};
+use super::{ObjectReader, StorageClient, require_file, stable_conditions};
 use crate::{
-    BatchResult, ByteRange, ErrorKind, GetConditions, InfoOptions, ListOptions, MscError,
-    ObjectKind, ObjectMetadata, ObjectPath, ReadOptions, Result,
+    ByteRange, ErrorKind, GetConditions, InfoOptions, ListOptions, MscError, ObjectKind,
+    ObjectMetadata, ObjectPath, ReadOptions, Result,
 };
 use bytes::{Bytes, BytesMut};
 use futures::{StreamExt, stream};
-use std::path::{Path, PathBuf};
-
-pub(super) const DOWNLOAD_CONCURRENCY: usize = 32;
+use std::path::Path;
 
 impl StorageClient {
     pub(super) async fn read_metadata(
@@ -350,12 +348,12 @@ impl StorageClient {
         ))
     }
 
-    /// Create missing parent directories, stream to a temporary sibling, validate
-    /// length/version, and atomically rename.
+    /// Download `remote` to `local`, creating missing parent directories and
+    /// atomically publishing a temporary sibling after length/version validation.
     ///
     /// # Errors
     /// Returns path, provider, failed-condition, integrity, or local-file errors.
-    pub async fn download_to(
+    pub async fn download_file(
         &self,
         remote: impl AsRef<str>,
         local: impl AsRef<Path>,
@@ -402,36 +400,5 @@ impl StorageClient {
             }
         }
         Ok(Box::pin(stream::empty()))
-    }
-
-    /// Download files with at most 32 concurrent transfers per backend.
-    /// Failure keys refer to remote objects; indices refer to the original input order.
-    ///
-    /// # Errors
-    /// Item errors are returned in `BatchResult::failed`, preserving input indices.
-    pub async fn download_many(
-        &self,
-        files: &[(ObjectPath, PathBuf)],
-        options: ReadOptions,
-    ) -> Result<BatchResult> {
-        let mut transfers =
-            stream::iter(files.iter().enumerate().map(|(index, (remote, local))| {
-                let options = options.clone();
-                async move {
-                    (
-                        index,
-                        remote.clone(),
-                        self.download_to(&remote, &local, options).await,
-                    )
-                }
-            }))
-            .buffer_unordered(DOWNLOAD_CONCURRENCY);
-        let mut result = BatchResult::default();
-        while let Some((index, source, outcome)) = transfers.next().await {
-            record_transfer(&mut result, index, source, None, outcome);
-        }
-        result.succeeded.sort_unstable();
-        result.failed.sort_by_key(|failure| failure.index);
-        Ok(result)
     }
 }

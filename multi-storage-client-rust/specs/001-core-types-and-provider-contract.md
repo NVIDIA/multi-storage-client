@@ -134,9 +134,11 @@ The object-safe `StorageProvider: Send + Sync` contract supports:
 equivalent normalized conditions. A provider must fail with
 `PreconditionFailed`, not silently ignore an unsupported requested condition.
 
-The primitive `get`/`put` streams are the canonical data path. Convenience
-upload/download helpers belong in `StorageClient` so all providers inherit
-consistent temporary-file, retry, and progress behavior.
+The primitive `get`/`put` streams are the canonical data path. Single-file
+`upload_file`/`download_file` methods belong in `StorageClient` so all providers
+inherit consistent temporary-file, retry, and progress behavior. Applications
+own scheduling across multiple file transfers; native batch deletion remains
+a provider capability.
 
 The internal metadata primitive remains `head`; the public client names this
 operation `info()`. A provider decorator from 011 maps it to the metric

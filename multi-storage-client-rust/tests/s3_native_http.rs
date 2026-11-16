@@ -421,7 +421,7 @@ async fn historical_reads_obtain_size_and_etag_from_the_requested_version() {
     let directory = tempfile::tempdir().unwrap();
     let output = directory.path().join("download");
     let metadata = client
-        .download_to("a", &output, options.clone())
+        .download_file("a", &output, options.clone())
         .await
         .unwrap();
     assert_eq!(metadata.content_length, 4);

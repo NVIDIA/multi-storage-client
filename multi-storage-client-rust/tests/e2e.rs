@@ -58,11 +58,31 @@ async fn configured_backend_round_trip() {
                 .unwrap(),
             "native"
         );
+        let directory = tempfile::tempdir().unwrap();
+        let local_source = directory.path().join("source");
+        let local_destination = directory.path().join("downloaded");
+        tokio::fs::write(&local_source, &payload).await.unwrap();
+        client
+            .upload_file(&source, &local_source, WriteOptions::default())
+            .await
+            .unwrap();
         client
             .copy(&source, &destination, CopyOptions::default())
             .await
             .unwrap();
         assert_eq!(client.read(&destination).await.unwrap(), payload);
+        client
+            .download_file(
+                &destination,
+                &local_destination,
+                ReadOptions {
+                    max_in_memory_bytes: 1,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(tokio::fs::read(local_destination).await.unwrap(), payload);
         let objects = client
             .list(ListOptions {
                 prefix: ObjectPath::new(&prefix).unwrap(),

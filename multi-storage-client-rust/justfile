@@ -100,6 +100,8 @@ run-e2e-tests: prepare-toolchain
 
 # Run benchmark CLI tests and POSIX/S3 benchmark smoke tests.
 run-benchmarks: prepare-toolchain start-storage-systems && stop-storage-systems
+    # Make benchmark bucket.
+    AWS_ACCESS_KEY_ID=access-key AWS_SECRET_ACCESS_KEY=secret-key AWS_DEFAULT_REGION=us-east-1 aws --endpoint-url http://localhost:7070 s3 mb s3://msc-rust-tests
     cargo test --locked --all-features --test benchmark_cli
     cargo test --locked --no-default-features --test benchmark_cli
     scripts/smoke-posix.sh

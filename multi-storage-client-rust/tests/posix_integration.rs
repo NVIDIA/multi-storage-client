@@ -715,7 +715,7 @@ async fn replacing_download_staging_cannot_truncate_or_publish_an_unrelated_file
         )
         .await
         .unwrap();
-    let mut download = Box::pin(client.download_to("source", &target, ReadOptions::default()));
+    let mut download = Box::pin(client.download_file("source", &target, ReadOptions::default()));
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(100), &mut download)
             .await

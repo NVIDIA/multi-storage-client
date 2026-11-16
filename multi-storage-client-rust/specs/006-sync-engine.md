@@ -177,7 +177,7 @@ The executor selects the safest efficient path from capabilities:
 1. same compatible backend: server-side copy;
 2. POSIX to POSIX: bounded streaming copy with optional metadata preservation;
 3. POSIX to remote: streaming/multipart upload;
-4. remote to POSIX: atomic `download_to`;
+4. remote to POSIX: atomic `download_file`;
 5. remote to remote: bounded producer/consumer stream or multipart pipe;
 6. temporary-file fallback only when retry/SDK constraints require replay.
 

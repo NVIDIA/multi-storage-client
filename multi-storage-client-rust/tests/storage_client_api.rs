@@ -702,7 +702,7 @@ async fn file_downloads_create_missing_parents_and_preserve_destinations_on_fail
         .unwrap();
     let target = directory.path().join("downloads/data/downloaded.bin");
     let metadata = client
-        .download_to(
+        .download_file(
             "file",
             &target,
             ReadOptions {
@@ -716,7 +716,7 @@ async fn file_downloads_create_missing_parents_and_preserve_destinations_on_fail
     assert_eq!(std::fs::read(&target).unwrap(), body);
     assert_eq!(
         client
-            .download_to("missing", &target, ReadOptions::default())
+            .download_file("missing", &target, ReadOptions::default())
             .await
             .unwrap_err()
             .kind,
@@ -727,7 +727,7 @@ async fn file_downloads_create_missing_parents_and_preserve_destinations_on_fail
     wrong_version.value.push_str("-stale");
     assert_eq!(
         client
-            .download_to(
+            .download_file(
                 "file",
                 &target,
                 ReadOptions {
@@ -751,7 +751,7 @@ async fn file_downloads_create_missing_parents_and_preserve_destinations_on_fail
     let missing_target = directory.path().join("uncreated/deep/file");
     assert_eq!(
         client
-            .download_to("missing", &missing_target, ReadOptions::default())
+            .download_file("missing", &missing_target, ReadOptions::default())
             .await
             .unwrap_err()
             .kind,
@@ -776,7 +776,7 @@ async fn invalid_download_destinations_preserve_existing_data_and_remove_tempora
     std::fs::write(&parent_file, b"retained parent").unwrap();
     assert!(
         client
-            .download_to("file", parent_file.join("child"), ReadOptions::default())
+            .download_file("file", parent_file.join("child"), ReadOptions::default())
             .await
             .is_err()
     );
@@ -787,7 +787,7 @@ async fn invalid_download_destinations_preserve_existing_data_and_remove_tempora
     std::fs::write(target.join("retained"), b"original child").unwrap();
     assert!(
         client
-            .download_to("file", &target, ReadOptions::default())
+            .download_file("file", &target, ReadOptions::default())
             .await
             .is_err()
     );
@@ -811,7 +811,7 @@ async fn uploads_reject_missing_directory_and_symlink_sources_without_mutation()
         BTreeMap::new()
     };
     let uploaded = client
-        .upload_from(
+        .upload_file(
             "nested/uploaded",
             &source,
             WriteOptions {
@@ -826,7 +826,7 @@ async fn uploads_reject_missing_directory_and_symlink_sources_without_mutation()
     assert_eq!(client.read("nested/uploaded").await.unwrap(), "uploaded");
     assert_eq!(
         client
-            .upload_from(
+            .upload_file(
                 "nested/uploaded",
                 directory.path().join("missing"),
                 WriteOptions::default()
@@ -838,7 +838,7 @@ async fn uploads_reject_missing_directory_and_symlink_sources_without_mutation()
     );
     assert_eq!(
         client
-            .upload_from("nested/uploaded", directory.path(), WriteOptions::default())
+            .upload_file("nested/uploaded", directory.path(), WriteOptions::default())
             .await
             .unwrap_err()
             .kind,
@@ -848,7 +848,7 @@ async fn uploads_reject_missing_directory_and_symlink_sources_without_mutation()
     std::os::unix::fs::symlink(&source, &link).unwrap();
     assert_eq!(
         client
-            .upload_from("nested/uploaded", &link, WriteOptions::default())
+            .upload_file("nested/uploaded", &link, WriteOptions::default())
             .await
             .unwrap_err()
             .kind,
@@ -859,94 +859,30 @@ async fn uploads_reject_missing_directory_and_symlink_sources_without_mutation()
 }
 
 #[tokio::test]
-async fn batches_keep_original_indices_and_allow_independent_partial_success() {
-    let (directory, client) = fixture().await;
-    let source = directory.path().join("source");
-    std::fs::write(&source, b"payload").unwrap();
-    let missing = directory.path().join("missing");
-    let mut uploads = (0..40)
-        .map(|index| (key(&format!("batch/{index:03}")), source.clone()))
+async fn batch_delete_preserves_indices_and_treats_missing_objects_as_success() {
+    let (_directory, client) = fixture().await;
+    let mut paths = (0..40)
+        .map(|index| key(&format!("batch/{index:03}")))
         .collect::<Vec<_>>();
-    uploads[1].1.clone_from(&missing);
-    uploads[35].1.clone_from(&missing);
-    let result = client
-        .upload_many(&uploads, WriteOptions::default())
-        .await
-        .unwrap();
-    let expected = (0..40)
-        .filter(|index| ![1, 35].contains(index))
-        .collect::<Vec<_>>();
-    assert_eq!(result.succeeded, expected);
-    assert_eq!(
-        result
-            .failed
-            .iter()
-            .map(|item| item.index)
-            .collect::<Vec<_>>(),
-        [1, 35]
-    );
-    for failed in &result.failed {
-        assert_eq!(failed.source, uploads[failed.index].0);
-        assert_eq!(failed.destination.as_ref(), Some(&failed.source));
-        assert_eq!(failed.error.kind, ErrorKind::NotFound);
-    }
-    let downloads = uploads
-        .iter()
-        .map(|(remote, _)| {
-            (
-                remote.clone(),
-                directory
-                    .path()
-                    .join("downloads/deep")
-                    .join(remote.as_str()),
+    for path in [&paths[0], &paths[39]] {
+        client
+            .write(
+                path,
+                Bytes::from_static(b"payload"),
+                WriteOptions::default(),
             )
-        })
-        .collect::<Vec<_>>();
-    let downloaded = client
-        .download_many(&downloads, ReadOptions::default())
-        .await
-        .unwrap();
-    assert_eq!(downloaded.succeeded, expected);
-    assert_eq!(
-        downloaded
-            .failed
-            .iter()
-            .map(|item| item.index)
-            .collect::<Vec<_>>(),
-        [1, 35]
-    );
-    for index in downloaded.succeeded {
-        assert_eq!(std::fs::read(&downloads[index].1).unwrap(), b"payload");
-    }
-    let mut deleted = uploads
-        .into_iter()
-        .map(|(remote, _)| remote)
-        .collect::<Vec<_>>();
-    deleted.insert(0, key("missing"));
-    for _ in 0..2 {
-        let result = client
-            .delete_many(&deleted, DeleteOptions::default())
             .await
             .unwrap();
-        assert_eq!(result.succeeded, (0..deleted.len()).collect::<Vec<_>>());
+    }
+    paths.insert(0, key("missing"));
+    for _ in 0..2 {
+        let result = client
+            .delete_many(&paths, DeleteOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(result.succeeded, (0..paths.len()).collect::<Vec<_>>());
         assert!(result.failed.is_empty());
     }
-    assert!(
-        client
-            .upload_many(&[], WriteOptions::default())
-            .await
-            .unwrap()
-            .succeeded
-            .is_empty()
-    );
-    assert!(
-        client
-            .download_many(&[], ReadOptions::default())
-            .await
-            .unwrap()
-            .failed
-            .is_empty()
-    );
     assert!(
         client
             .delete_many(&[], DeleteOptions::default())
@@ -1359,7 +1295,7 @@ fn replacing_named_spools_cannot_change_writer_or_snapshot_uploads() {
         let callback =
             std::sync::Arc::new(|_: multi_storage_client::TransferProgress| replace_named_spools());
         client
-            .upload_from_with_callback("snapshot", source, WriteOptions::default(), Some(callback))
+            .upload_file_with_callback("snapshot", source, WriteOptions::default(), Some(callback))
             .await
             .unwrap();
         assert_eq!(client.read("snapshot").await.unwrap(), "old");
@@ -1380,7 +1316,7 @@ async fn direct_file_upload_retains_its_open_source_and_rejects_in_place_changes
         }
     });
     client
-        .upload_from_with_callback("anchored", &source, WriteOptions::default(), Some(callback))
+        .upload_file_with_callback("anchored", &source, WriteOptions::default(), Some(callback))
         .await
         .unwrap();
     assert_eq!(client.read("anchored").await.unwrap(), "old");
@@ -1389,7 +1325,7 @@ async fn direct_file_upload_retains_its_open_source_and_rejects_in_place_changes
         std::fs::write(&path, b"changed size").unwrap();
     });
     let error = client
-        .upload_from_with_callback("changed", source, WriteOptions::default(), Some(callback))
+        .upload_file_with_callback("changed", source, WriteOptions::default(), Some(callback))
         .await
         .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Integrity);

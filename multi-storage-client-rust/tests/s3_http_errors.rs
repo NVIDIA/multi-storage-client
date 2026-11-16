@@ -1646,7 +1646,7 @@ async fn idle_read_timeout_retries_stalled_body_without_publishing_partial_data(
     let started = std::time::Instant::now();
     let error = tokio::time::timeout(
         Duration::from_secs(5),
-        client.download_to("object", &destination, ReadOptions::default()),
+        client.download_file("object", &destination, ReadOptions::default()),
     )
     .await
     .expect("three local GET attempts must finish within five seconds")
@@ -1847,7 +1847,7 @@ async fn truncated_http_get_is_retried_without_publishing_partial_data() {
         .await
         .unwrap();
     let error = client
-        .download_to("object", &destination, ReadOptions::default())
+        .download_file("object", &destination, ReadOptions::default())
         .await
         .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Unavailable);
@@ -1933,7 +1933,7 @@ async fn unconditional_mutations_use_the_profile_budget_without_metadata_heads()
                 let path = directory.path().join("source");
                 std::fs::write(&path, b"data").unwrap();
                 client
-                    .upload_from("object", path, WriteOptions::default())
+                    .upload_file("object", path, WriteOptions::default())
                     .await
                     .unwrap();
             }

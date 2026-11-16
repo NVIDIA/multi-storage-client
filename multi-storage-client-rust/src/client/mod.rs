@@ -30,9 +30,9 @@ pub use reader::ObjectReader;
 pub use writer::ObjectWriter;
 
 use crate::{
-    BatchFailure, BatchResult, ErrorKind, GetConditions, MscError, ObjectKind, ObjectMetadata,
-    ObjectPath, PresignMethod, ProviderCapabilities, ProviderRegistry, Result, RetryPolicy,
-    StorageProvider, config::ResolvedConfig,
+    ErrorKind, GetConditions, MscError, ObjectKind, ObjectMetadata, ObjectPath, PresignMethod,
+    ProviderCapabilities, ProviderRegistry, Result, RetryPolicy, StorageProvider,
+    config::ResolvedConfig,
 };
 use std::{future::Future, sync::Arc, time::Duration};
 
@@ -293,22 +293,4 @@ fn stable_conditions(metadata: &ObjectMetadata, requested: &GetConditions) -> Ge
         conditions.version.clone_from(&metadata.source_version);
     }
     conditions
-}
-
-fn record_transfer(
-    batch: &mut BatchResult,
-    index: usize,
-    source: ObjectPath,
-    destination: Option<ObjectPath>,
-    outcome: Result<ObjectMetadata>,
-) {
-    match outcome {
-        Ok(_) => batch.succeeded.push(index),
-        Err(error) => batch.failed.push(BatchFailure {
-            index,
-            source,
-            destination,
-            error,
-        }),
-    }
 }

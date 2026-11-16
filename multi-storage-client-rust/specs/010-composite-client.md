@@ -57,7 +57,7 @@ child silently.
 
 ## Read behavior
 
-For `read`, `read_range`, `reader`, `download_to`, and presigned URL:
+For `read`, `read_range`, `reader`, `download_file`, and presigned URL:
 
 1. resolve the logical path in parent metadata;
 2. require state `Exists`, child profile, and physical key;
@@ -69,8 +69,9 @@ Range, conditions, cancellation, and streaming semantics are preserved. The
 parent does not materialize a whole object simply because it routed across a
 child boundary.
 
-Batch downloads group resolved items by child to use child concurrency while
-preserving original result indices and aggregate failures.
+Applications compose individual file downloads and own their concurrency,
+cancellation, and partial-failure policies. The parent routes each operation
+without introducing a batch-download API.
 
 Presigned URLs come from the resolved child and are supported only when that
 child can sign the requested operation.
@@ -144,7 +145,7 @@ physical objects.
   logical metadata from the parent routing provider.
 - Listing/glob use only parent metadata and remain globally lexical.
 - Logical metadata never leaks physical key in normal output.
-- Batch downloads group by child while preserving input order and failures.
+- Independently scheduled file downloads route to their exact child and key.
 - Child cache/retry/credentials are used; no parent duplicate layer appears.
 - Every mutation fails before any child call.
 - Composite works as sync source and is rejected as sync target.

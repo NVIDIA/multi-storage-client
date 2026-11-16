@@ -281,11 +281,11 @@ async fn transfer(
             let local = directory.join(name);
             let metadata = if matches!(phase, Phase::UploadFile) {
                 client
-                    .upload_from(&file_object, local, WriteOptions::default())
+                    .upload_file(&file_object, local, WriteOptions::default())
                     .await?
             } else {
                 client
-                    .download_to(&file_object, local, ReadOptions::default())
+                    .download_file(&file_object, local, ReadOptions::default())
                     .await?
             };
             validate_length(metadata.content_length, job.size_bytes)?;

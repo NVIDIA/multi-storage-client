@@ -16,8 +16,13 @@ built-in `file`, `s3`, and `s8k` adapters or application-owned factories.
 Client clones share the provider, connection pools, and cleanup owners.
 
 The client provides info, byte/range/suffix/streaming reads, seekable readers,
-byte writes, spooled writers, upload_from, download_to, ordered listings,
-exact-key deletion, copy, symlinks, presigning, and bounded batch file operations.
+byte writes, spooled writers, `upload_file`, `download_file`, ordered listings,
+exact-key deletion, native batch deletion, copy, symlinks, and presigning.
+File transfer methods take the remote key before the local path, matching Python.
+`upload_file_with_callback` adds progress reporting to a single file upload.
+Applications compose individual transfers with bounded concurrency and own
+cancellation and partial-failure handling. The client exposes `delete_many`
+because providers can reduce network calls with native batch deletion.
 Optional provider operations retain documented Unsupported defaults. Capabilities
 describe optional behavior; requested conditions are enforced or explicitly
 rejected before mutation. Errors carry typed kinds and retry eligibility.

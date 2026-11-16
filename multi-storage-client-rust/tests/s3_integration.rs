@@ -869,7 +869,7 @@ async fn configured_s8k_client_crud_listing_and_seekable_reader() {
                 .write(path, body.clone(), options.clone())
                 .await
                 .unwrap(),
-            client.upload_from(path, &local, options).await.unwrap(),
+            client.upload_file(path, &local, options).await.unwrap(),
         ] {
             assert_eq!(
                 metadata
@@ -1155,7 +1155,7 @@ async fn configured_object_contract(client: StorageClient, prefix: &str) {
 
 #[tokio::test]
 #[ignore = "requires local storage simulators; run just run-integration-tests"]
-async fn configured_storage_client_writer_file_transfers_and_batches() {
+async fn configured_storage_client_writer_and_file_transfers() {
     let client = configured_client("facade/files").await;
     let mut writer = client
         .writer("finished", Some(6 * 1024 * 1024), WriteOptions::default())
@@ -1207,19 +1207,35 @@ async fn configured_storage_client_writer_file_transfers_and_batches() {
     }
     file.flush().await.unwrap();
     drop(file);
+    let attributes = BTreeMap::from([("source".into(), "local-file".into())]);
     assert_eq!(
         client
-            .upload_from("uploaded", &source, WriteOptions::default())
+            .upload_file(
+                "uploaded",
+                &source,
+                WriteOptions {
+                    attributes: attributes.clone(),
+                    ..Default::default()
+                }
+            )
             .await
             .unwrap()
             .content_length,
         6 * 1024 * 1024
     );
+    assert_eq!(
+        client
+            .info("uploaded", InfoOptions::default())
+            .await
+            .unwrap()
+            .attributes,
+        attributes
+    );
     let destination = directory.path().join("destination");
     tokio::fs::write(&destination, b"original").await.unwrap();
     assert_eq!(
         client
-            .download_to("missing", &destination, ReadOptions::default())
+            .download_file("missing", &destination, ReadOptions::default())
             .await
             .unwrap_err()
             .kind,
@@ -1227,7 +1243,14 @@ async fn configured_storage_client_writer_file_transfers_and_batches() {
     );
     assert_eq!(tokio::fs::read(&destination).await.unwrap(), b"original");
     client
-        .download_to("uploaded", &destination, ReadOptions::default())
+        .download_file(
+            "uploaded",
+            &destination,
+            ReadOptions {
+                max_in_memory_bytes: 1,
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
     let downloaded = tokio::fs::read(&destination).await.unwrap();
@@ -1236,56 +1259,14 @@ async fn configured_storage_client_writer_file_transfers_and_batches() {
     drop(downloaded);
     assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 2);
 
-    let small = directory.path().join("small");
-    tokio::fs::write(&small, b"batch-content").await.unwrap();
-    let uploads = [
-        (key("batch/one"), small.clone()),
-        (key("batch/missing"), directory.path().join("absent-source")),
-        (key("batch/three"), small),
-    ];
-    let uploaded = client
-        .upload_many(&uploads, WriteOptions::default())
-        .await
-        .unwrap();
-    assert_eq!(uploaded.succeeded, [0, 2]);
-    assert_eq!(uploaded.failed.len(), 1);
-    assert_eq!(uploaded.failed[0].index, 1);
-    assert_eq!(uploaded.failed[0].destination, Some(key("batch/missing")));
-    let downloads = [
-        (key("batch/one"), directory.path().join("one")),
-        (key("batch/missing"), directory.path().join("missing")),
-        (key("batch/three"), directory.path().join("three")),
-    ];
-    let downloaded = client
-        .download_many(&downloads, ReadOptions::default())
-        .await
-        .unwrap();
-    assert_eq!(downloaded.succeeded, [0, 2]);
-    assert_eq!(downloaded.failed.len(), 1);
-    assert_eq!(downloaded.failed[0].index, 1);
-    assert_eq!(downloaded.failed[0].source, key("batch/missing"));
-    assert_eq!(
-        tokio::fs::read(&downloads[0].1).await.unwrap(),
-        b"batch-content"
-    );
-    assert_eq!(
-        tokio::fs::read(&downloads[2].1).await.unwrap(),
-        b"batch-content"
-    );
-    assert!(!downloads[1].1.exists());
     let cloned = client.clone();
-    let (first, third) = tokio::join!(client.read("batch/one"), cloned.read("batch/three"));
-    assert_eq!(first.unwrap(), third.unwrap());
-    let deleted = client
-        .delete_many(
-            &[key("batch/one"), key("batch/three")],
-            DeleteOptions::default(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(deleted.succeeded, [0, 1]);
-    assert!(deleted.failed.is_empty());
-    assert!(client.is_empty("batch").await.unwrap());
+    let range = ByteRange::new(0, 16).unwrap();
+    let (finished, uploaded) = tokio::join!(
+        client.read_range("finished", range, ReadOptions::default()),
+        cloned.read_range("uploaded", range, ReadOptions::default()),
+    );
+    assert_eq!(finished.unwrap(), Bytes::from(vec![42; 16]));
+    assert_eq!(uploaded.unwrap(), Bytes::from(vec![42; 16]));
     assert!(client.is_file("uploaded").await.unwrap());
     client.shutdown().await.unwrap();
     assert_eq!(multipart_upload_count().await, 0);
@@ -1809,82 +1790,26 @@ async fn configured_storage_client_presigned_put_get_and_expiration_boundaries()
 
 #[tokio::test]
 #[ignore = "requires local storage simulators; run just run-integration-tests"]
-async fn configured_storage_client_batch_transfers_and_delete_chunk_indices() {
+async fn configured_storage_client_delete_many_preserves_chunk_indices() {
     let client = configured_client("facade/batch-boundaries").await;
-    let directory = tempfile::tempdir().unwrap();
-    let source = directory.path().join("source");
-    tokio::fs::write(&source, b"batch content").await.unwrap();
-    let paths: Vec<_> = (0..100)
-        .map(|index| key(&format!("batch/file-{index:04}")))
-        .collect();
-    let uploads: Vec<_> = paths
-        .iter()
-        .map(|path| (path.clone(), source.clone()))
-        .collect();
-    let attributes = BTreeMap::from([("batch".into(), "100-files".into())]);
-    let uploaded = client
-        .upload_many(
-            &uploads,
-            WriteOptions {
-                attributes: attributes.clone(),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(uploaded.succeeded, (0..100).collect::<Vec<_>>());
-    assert!(uploaded.failed.is_empty());
-    let listed = client_listing(
-        &client,
-        ListOptions {
-            include_attributes: true,
-            ..Default::default()
-        },
-    )
-    .await;
-    assert_eq!(
-        listed
-            .iter()
-            .map(|item| item.key.clone())
-            .collect::<Vec<_>>(),
-        paths
-    );
-    assert!(
-        listed
-            .iter()
-            .all(|item| item.attributes == attributes && item.content_length == 13)
-    );
-    let downloads: Vec<_> = paths
-        .iter()
-        .enumerate()
-        .map(|(index, path)| {
-            (
-                path.clone(),
-                directory.path().join(format!("download-{index:04}")),
+    let first = key("existing-first");
+    let last = key("existing-last");
+    for path in [&first, &last] {
+        client
+            .write(
+                path,
+                Bytes::from_static(b"content"),
+                WriteOptions::default(),
             )
-        })
-        .collect();
-    let downloaded = client
-        .download_many(
-            &downloads,
-            ReadOptions {
-                max_in_memory_bytes: 1,
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(downloaded.succeeded, (0..100).collect::<Vec<_>>());
-    assert!(downloaded.failed.is_empty());
-    for (_, local) in &downloads {
-        assert_eq!(tokio::fs::read(local).await.unwrap(), b"batch content");
+            .await
+            .unwrap();
     }
     let mut deletion_keys: Vec<_> = (0..1002)
         .map(|index| key(&format!("missing-{index:04}")))
         .collect();
-    deletion_keys[..100].clone_from_slice(&paths);
-    deletion_keys[999] = paths[0].clone();
-    deletion_keys[1000] = paths[99].clone();
+    deletion_keys[0] = first.clone();
+    deletion_keys[999] = last;
+    deletion_keys[1000] = first;
     deletion_keys[1001] = ObjectPath::default();
     for _ in 0..2 {
         let deleted = client
@@ -1899,22 +1824,6 @@ async fn configured_storage_client_batch_transfers_and_delete_chunk_indices() {
         assert_eq!(deleted.failed[0].error.kind, ErrorKind::InvalidPath);
         assert!(client.is_empty("").await.unwrap());
     }
-    assert!(
-        client
-            .upload_many(&[], WriteOptions::default())
-            .await
-            .unwrap()
-            .succeeded
-            .is_empty()
-    );
-    assert!(
-        client
-            .download_many(&[], ReadOptions::default())
-            .await
-            .unwrap()
-            .succeeded
-            .is_empty()
-    );
     assert!(
         client
             .delete_many(&[], DeleteOptions::default())

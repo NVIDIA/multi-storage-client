@@ -14,16 +14,14 @@
 // limitations under the License.
 
 //! Replayable uploads, sequential writers, and object mutations.
-use super::{
-    ObjectWriter, StorageClient, nonroot_path, record_transfer, require_file, stable_conditions,
-};
+use super::{ObjectWriter, StorageClient, nonroot_path, require_file, stable_conditions};
 use crate::{
-    BatchResult, CopyOptions, ErrorKind, InfoOptions, MscError, ObjectMetadata, ObjectPath,
-    PutResult, Result, WriteOptions,
+    CopyOptions, ErrorKind, InfoOptions, MscError, ObjectMetadata, ObjectPath, PutResult, Result,
+    WriteOptions,
 };
 use bytes::Bytes;
-use futures::{StreamExt, stream};
-use std::path::{Path, PathBuf};
+use futures::stream;
+use std::path::Path;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 impl StorageClient {
@@ -72,20 +70,20 @@ impl StorageClient {
         ObjectWriter::new(self.clone(), nonroot_path(path)?, options).await
     }
 
-    /// Upload a regular local file from its anchored, replayable file handle.
+    /// Upload a regular local file to `remote` from its anchored, replayable file handle.
     ///
     /// Memory stays bounded; no whole-file temporary copy is created.
     /// The final source component is opened without following symlinks.
     ///
     /// # Errors
     /// Returns path, local-file, unsupported-symlink, upload, or metadata errors.
-    pub async fn upload_from(
+    pub async fn upload_file(
         &self,
         remote: impl AsRef<str>,
         local: impl AsRef<Path>,
         options: WriteOptions,
     ) -> Result<ObjectMetadata> {
-        self.upload_from_with_callback(remote, local, options, None)
+        self.upload_file_with_callback(remote, local, options, None)
             .await
     }
 
@@ -93,7 +91,7 @@ impl StorageClient {
     ///
     /// # Errors
     /// Returns source-file, upload, condition or metadata errors.
-    pub async fn upload_from_with_callback(
+    pub async fn upload_file_with_callback(
         &self,
         remote: impl AsRef<str>,
         local: impl AsRef<Path>,
@@ -124,22 +122,22 @@ impl StorageClient {
                 "upload source must be a regular file",
             ));
         }
-        self.upload_file_with_callback(&path, &source, metadata.len(), &options, callback)
+        self.upload_open_file_with_callback(&path, &source, metadata.len(), &options, callback)
             .await
     }
 
-    pub(super) async fn upload_file(
+    pub(super) async fn upload_open_file(
         &self,
         remote: &ObjectPath,
         local: &tokio::fs::File,
         length: u64,
         options: &WriteOptions,
     ) -> Result<ObjectMetadata> {
-        self.upload_file_with_callback(remote, local, length, options, None)
+        self.upload_open_file_with_callback(remote, local, length, options, None)
             .await
     }
 
-    async fn upload_file_with_callback(
+    async fn upload_open_file_with_callback(
         &self,
         remote: &ObjectPath,
         local: &tokio::fs::File,
@@ -194,38 +192,6 @@ impl StorageClient {
             })
             .await?;
         self.metadata_after_put(remote, result).await
-    }
-
-    /// Upload files with at most 32 concurrent transfers. Failure keys refer
-    /// to the remote object; indices refer to the original input order.
-    ///
-    /// # Errors
-    /// Item errors are returned in `BatchResult::failed`, preserving input indices.
-    pub async fn upload_many(
-        &self,
-        files: &[(ObjectPath, PathBuf)],
-        options: WriteOptions,
-    ) -> Result<BatchResult> {
-        let mut transfers =
-            stream::iter(files.iter().enumerate().map(|(index, (remote, local))| {
-                let options = options.clone();
-                async move {
-                    (
-                        index,
-                        remote.clone(),
-                        self.upload_from(remote, local, options).await,
-                    )
-                }
-            }))
-            .buffer_unordered(32);
-        let mut result = BatchResult::default();
-        while let Some((index, source, outcome)) = transfers.next().await {
-            let destination = Some(source.clone());
-            record_transfer(&mut result, index, source, destination, outcome);
-        }
-        result.succeeded.sort_unstable();
-        result.failed.sort_by_key(|failure| failure.index);
-        Ok(result)
     }
 
     /// Copy an object using the provider or a bounded streaming fallback.
