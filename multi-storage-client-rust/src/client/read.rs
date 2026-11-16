@@ -350,6 +350,7 @@ impl StorageClient {
 
     /// Download `remote` to `local`, creating missing parent directories and
     /// atomically publishing a temporary sibling after length/version validation.
+    /// Large generation-pinned objects use the provider's multipart transfer settings.
     ///
     /// # Errors
     /// Returns path, provider, failed-condition, integrity, or local-file errors.

@@ -59,15 +59,15 @@ pub struct S3Options {
     #[serde(default)]
     pub ca_certificate: Option<PathBuf>,
     /// Multipart selection threshold in bytes; defaults to 8 MiB. Objects up to
-    /// and including the threshold use a single PUT, as in MSC Python; larger
-    /// unconditional objects use multipart.
+    /// and including the threshold use single-request transfers, as in MSC Python.
+    /// Larger unconditional uploads and generation-pinned file downloads use multipart.
     #[serde(default = "default_threshold")]
     pub multipart_threshold: u64,
-    /// Multipart part size in bytes; defaults to 8 MiB. Each non-final part must
-    /// satisfy S3's minimum 5 MiB size.
+    /// Multipart upload/download part size in bytes; defaults to 8 MiB.
+    /// The shared setting satisfies S3 uploads' minimum 5 MiB part size.
     #[serde(default = "default_part_size", alias = "multipart_chunksize")]
     pub part_size: u64,
-    /// Maximum simultaneous multipart part uploads; defaults to four.
+    /// Maximum simultaneous parts per multipart upload or download; defaults to four.
     #[serde(default = "default_concurrency", alias = "max_concurrency")]
     pub multipart_concurrency: usize,
     /// Connection timeout in milliseconds; defaults to 10,000.

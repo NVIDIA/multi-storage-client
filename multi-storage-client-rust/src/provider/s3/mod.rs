@@ -676,6 +676,45 @@ impl StorageProvider for S3Provider {
         }
         Ok(bytes.freeze())
     }
+    fn download_part_config(&self, size: u64) -> Option<(u64, usize)> {
+        (size > self.options.multipart_threshold)
+            .then_some((self.options.part_size, self.options.multipart_concurrency))
+    }
+    async fn get_download_part(
+        &self,
+        key: &ObjectPath,
+        range: ByteRange,
+        conditions: &GetConditions,
+        total_size: u64,
+    ) -> Result<ByteStream> {
+        let mut options = self.get_options(conditions)?;
+        options.range = Some((range.offset..range.end()?).into());
+        let result = self
+            .store
+            .get_opts(&self.path(key)?, options.clone())
+            .await
+            .map_err(|error| translate(error, "download_part", key.as_str()))?;
+        if result.range != (range.offset..range.end()?)
+            || result.meta.size != total_size
+            || options
+                .version
+                .as_ref()
+                .is_some_and(|version| result.meta.version.as_ref() != Some(version))
+            || options
+                .if_match
+                .as_ref()
+                .is_some_and(|etag| concrete_etag(etag) && result.meta.e_tag.as_ref() != Some(etag))
+        {
+            return Err(MscError::new(
+                ErrorKind::Integrity,
+                "S3 download part differs from the pinned object or requested range",
+            ));
+        }
+        let key = key.clone();
+        Ok(Box::pin(result.into_stream().map(move |chunk| {
+            chunk.map_err(|error| translate(error, "download_part", key.as_str()))
+        })))
+    }
     async fn get_suffix(
         &self,
         key: &ObjectPath,
@@ -953,5 +992,5 @@ fn bucket_endpoint(endpoint: Option<String>, bucket: &str, options: &S3Options) 
 
 fn concrete_etag(value: &str) -> bool {
     let value = value.trim();
-    !value.is_empty() && value != "*" && !value.contains(',')
+    !value.is_empty() && value != "*" && !value.starts_with("W/") && !value.contains(',')
 }

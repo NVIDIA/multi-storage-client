@@ -571,7 +571,14 @@ async fn native_copy_metadata_override_retains_standard_content_properties() {
 async fn unstable_versions_invalid_keys_and_metadata_reject_before_requests() {
     let server = Server::new(vec![]).await;
     let provider = server.provider();
-    for token in ["version:null", "version:", "etag:*", "etag:  ", "etag:a,b"] {
+    for token in [
+        "version:null",
+        "version:",
+        "etag:*",
+        "etag:  ",
+        "etag:a,b",
+        "etag:W/\"weak\"",
+    ] {
         let version = multi_storage_client::SourceVersion {
             scope: provider.backend_fingerprint(),
             value: token.into(),

@@ -67,10 +67,28 @@ may retain those settings for other profiles. Unsupported behavior fails when
 the affected profile is selected, while supported physical profiles remain usable. Factory and capability boundaries
 allow future adapters without importing those runtimes now.
 
-The reference client parallel-download checkpoint implementation depends on
-cache filesystem state. This subset uses its bounded streaming atomic-download
-path for all file downloads, without persistent checkpoints. This is an
-intentional behavior change. Provider-level S3 range recovery is retained.
+Large S3 file downloads adapt the accelerator's bounded range planning and
+generation validation without its persistent checkpoints or cache filesystem
+state. `download_file` streams objects at or below `multipart_threshold` and
+downloads larger objects with at most `multipart_concurrency` range requests.
+The existing S3 settings are shared with uploads: native defaults remain 8 MiB
+threshold, 8 MiB parts, and concurrency 4. Python defaults are 64 MiB, 32 MiB,
+and 8; callers can select those values with the existing options and aliases
+`multipart_chunksize` and `max_concurrency`. No configuration schema changes.
+
+One metadata lookup selects the requested historical version or observed ETag.
+Each part is pinned to that generation and validates its response range, total
+size, generation, and streamed length. Missing usable generation identifiers
+fall back to streaming. Each part owns one client retry budget, without SDK
+retries, adaptive resumes, or an enclosing whole-file retry. Ordinary byte,
+streaming, and seekable reads retain their existing S3 range recovery.
+
+Parts stream bounded chunks directly to offsets in one private staging file.
+Unix uses positioned writes; other platforms protect the seek cursor with a
+mutex. Completion validates the final length and synchronizes the file before
+atomic publication. Dropped requests cancel immediately; outstanding blocking
+filesystem work retains staging ownership until it completes, including after
+failure or cancellation. No whole object or whole part is buffered in memory.
 Cache read overrides and staged metadata options are removed from public types.
 Recursive client deletion is explicitly unsupported; exact-key deletion remains
 idempotent. Benchmark metadata commit and telemetry phases are removed.

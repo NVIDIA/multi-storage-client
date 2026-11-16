@@ -78,7 +78,8 @@ Typed options include:
 - endpoint URL;
 - virtual-hosted versus path-style addressing;
 - TLS verification/CA settings;
-- multipart threshold, part size, and concurrency;
+- multipart threshold, part size, and concurrency, shared by file downloads
+  and uploads;
 - connect/read/pool timeouts;
 - checksum algorithm; and
 - user agent.
@@ -90,6 +91,10 @@ is configured.
 ### Behavior
 
 - GET and exact range GET stream data and validate response lengths.
+- File downloads above the threshold use generation-pinned range streams,
+  validate range/total size/ETag/version without per-part HEAD, and leave part
+  retries to the client. This path bypasses adaptive stream resumes and SDK
+  retries so the client retry policy remains the only part-attempt budget.
 - PUT selects single-part or multipart while respecting S3's 5 MiB minimum
   non-final part, 10,000-part maximum, and maximum part size.
 - Aborted/cancelled multipart uploads are cleaned up.
@@ -202,8 +207,10 @@ cloud conditional or multipart behavior.
 
 - POSIX, S3/S3-compatible, native GCS, and Azure adapters pass the same
   provider-neutral suite.
-- S3 multipart tests cover exact boundary sizes, 10,000-part resizing,
-  cancellation, and partial failure cleanup.
+- S3 multipart upload tests cover exact boundary sizes, 10,000-part resizing,
+  cancellation, and partial failure cleanup. File-download tests cover threshold
+  selection, bounded/reordered ranges, single metadata lookup, version/ETag
+  pinning, response integrity, per-part retry budgets, and atomic cleanup.
 - Provider capability flags match observed behavior in contract tests.
 - Config options reject invalid combinations before network I/O.
 - Disabled providers fail with an actionable feature message.

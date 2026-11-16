@@ -102,6 +102,22 @@ pub trait StorageProvider: Send + Sync {
         range: ByteRange,
         conditions: &GetConditions,
     ) -> Result<Bytes>;
+    /// Return `(part_size, concurrency)` when a file should use multipart downloads.
+    /// Providers opt in only when they support generation-pinned range streams.
+    fn download_part_config(&self, _size: u64) -> Option<(u64, usize)> {
+        None
+    }
+    /// Open one file-download range attempt, without nested retries or resumes.
+    /// The caller supplies the observed total size and validates the streamed length.
+    async fn get_download_part(
+        &self,
+        _key: &ObjectPath,
+        _range: ByteRange,
+        _conditions: &GetConditions,
+        _total_size: u64,
+    ) -> Result<ByteStream> {
+        Err(MscError::unsupported("multipart file downloads"))
+    }
     /// Read the last bytes of an object. Native cloud adapters use one ranged GET.
     /// The default resolves metadata and falls back to an offset range.
     async fn get_suffix(

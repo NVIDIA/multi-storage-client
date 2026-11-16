@@ -1284,6 +1284,41 @@ async fn client_listing(client: &StorageClient, options: ListOptions) -> Vec<Obj
 
 #[tokio::test]
 #[ignore = "requires local storage simulators; run just run-integration-tests"]
+async fn configured_file_downloads_cover_multipart_boundaries() {
+    let client = configured_client("facade/download-boundaries").await;
+    let directory = tempfile::tempdir().unwrap();
+    let destination = directory.path().join("download");
+    let part = 5 * 1024 * 1024;
+    for size in [0, part, part + 1, 2 * part, 2 * part + 1] {
+        let bytes = Bytes::from(
+            (0..size)
+                .map(|index| u8::try_from(index % 251).unwrap())
+                .collect::<Vec<_>>(),
+        );
+        client
+            .write("object", bytes.clone(), WriteOptions::default())
+            .await
+            .unwrap();
+        let metadata = client
+            .download_file(
+                "object",
+                &destination,
+                ReadOptions {
+                    max_in_memory_bytes: 1,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(metadata.content_length, size);
+        assert_eq!(tokio::fs::read(&destination).await.unwrap(), bytes);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+    client.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires local storage simulators; run just run-integration-tests"]
 async fn configured_storage_client_stream_conditions_and_literal_url_keys() {
     let client = configured_client("facade/stream-conditions").await;
     let path = "日本語//%28sici%29+ spaces?#✅.bin";

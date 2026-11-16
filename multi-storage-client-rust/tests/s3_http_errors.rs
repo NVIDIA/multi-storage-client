@@ -1989,3 +1989,542 @@ async fn ordinary_reads_and_streams_use_one_get_each() {
     assert_eq!(chunks.concat(), b"data");
     assert_eq!(server.count(), 2);
 }
+
+mod parallel_downloads {
+    use super::*;
+    use std::{collections::BTreeMap, sync::Mutex};
+
+    const PART: u64 = 5 * 1024 * 1024;
+
+    #[derive(Clone, Copy)]
+    enum Mode {
+        Normal,
+        Reordered,
+        Transient { status: u16, failures: usize },
+        Changed,
+        WrongEtag,
+        WrongVersion,
+        WrongSize,
+        WrongRange,
+        Truncated,
+        Stalled,
+        Historical,
+        Unpinned,
+        VersionOnly,
+        WeakEtag,
+    }
+    #[derive(Clone)]
+    struct Request {
+        head: bool,
+        range: Option<(u64, u64)>,
+        if_match: Option<String>,
+        historical: bool,
+    }
+    struct State {
+        size: u64,
+        mode: Mode,
+        requests: Mutex<Vec<Request>>,
+        active: AtomicUsize,
+        peak: AtomicUsize,
+        completed: Mutex<Vec<u64>>,
+    }
+    struct Active(Arc<State>);
+    impl Drop for Active {
+        fn drop(&mut self) {
+            self.0.active.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+    struct Server {
+        endpoint: String,
+        state: Arc<State>,
+        task: JoinHandle<()>,
+    }
+    impl Server {
+        async fn start(size: u64, mode: Mode) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let state = Arc::new(State {
+                size,
+                mode,
+                requests: Mutex::new(Vec::new()),
+                active: AtomicUsize::new(0),
+                peak: AtomicUsize::new(0),
+                completed: Mutex::new(Vec::new()),
+            });
+            let shared = state.clone();
+            let task = tokio::spawn(async move {
+                let mut connections = JoinSet::new();
+                loop {
+                    tokio::select! {
+                        result = listener.accept() => {
+                            let (socket, _) = result.unwrap();
+                            connections.spawn(serve_part(socket, shared.clone()));
+                        }
+                        result = connections.join_next(), if !connections.is_empty() => { result.unwrap().unwrap(); }
+                    }
+                }
+            });
+            Self {
+                endpoint,
+                state,
+                task,
+            }
+        }
+        fn provider(&self, threshold: u64, concurrency: usize) -> S3Provider {
+            S3Provider::new(
+                S3Options {
+                    base_path: "bucket".into(),
+                    endpoint_url: Some(self.endpoint.clone()),
+                    multipart_threshold: threshold,
+                    part_size: PART,
+                    multipart_concurrency: concurrency,
+                    read_timeout_ms: 3000,
+                    idle_read_timeout_ms: 1000,
+                    low_speed_limit: 1_000_000,
+                    low_speed_time_ms: 20,
+                    ..Default::default()
+                },
+                Some(AwsCredentials {
+                    access_key_id: SecretString::new(ACCESS),
+                    secret_access_key: SecretString::new(SECRET),
+                    session_token: None,
+                    expires_at: None,
+                }),
+            )
+            .unwrap()
+        }
+        fn client(&self, threshold: u64, concurrency: usize) -> StorageClient {
+            StorageClient::from_provider(Arc::new(self.provider(threshold, concurrency)))
+                .with_retry_policy(part_retry_policy(3))
+                .unwrap()
+        }
+        fn attempts(&self) -> BTreeMap<u64, usize> {
+            let mut counts = BTreeMap::new();
+            for request in self.state.requests.lock().unwrap().iter() {
+                if let Some((start, _)) = request.range {
+                    *counts.entry(start).or_default() += 1;
+                }
+            }
+            counts
+        }
+    }
+    impl Drop for Server {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    fn pattern(offset: u64, length: usize) -> Vec<u8> {
+        (offset..offset + length as u64)
+            .map(|index| u8::try_from(index % 251).unwrap())
+            .collect()
+    }
+    fn record_request(headers: &str, state: &State) -> (Request, usize) {
+        let header = |wanted: &str| {
+            headers
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(name, _)| name.eq_ignore_ascii_case(wanted))
+                .map(|(_, value)| value.trim().to_owned())
+        };
+        let range = header("range").map(|value| {
+            let (start, end) = value
+                .strip_prefix("bytes=")
+                .unwrap()
+                .split_once('-')
+                .unwrap();
+            (
+                start.parse::<u64>().unwrap(),
+                end.parse::<u64>().unwrap() + 1,
+            )
+        });
+        let head = headers.starts_with("HEAD ");
+        let historical = headers.lines().next().unwrap().contains("versionId=old");
+        let request = Request {
+            head,
+            range,
+            if_match: header("if-match"),
+            historical,
+        };
+        let mut requests = state.requests.lock().unwrap();
+        let attempt = requests
+            .iter()
+            .filter(|previous| previous.range == range && !previous.head)
+            .count()
+            + 1;
+        requests.push(request.clone());
+        (request, attempt)
+    }
+    fn source_headers(state: &State, historical: bool) -> (u64, &'static str, &'static str) {
+        let size = if matches!(state.mode, Mode::Historical) && !historical {
+            state.size + 7
+        } else {
+            state.size
+        };
+        let etag = match state.mode {
+            Mode::Unpinned | Mode::VersionOnly => "",
+            Mode::WeakEtag => "ETag: W/\"source\"\r\n",
+            Mode::Historical if !historical => "ETag: \"current\"\r\n",
+            _ => "ETag: \"source\"\r\n",
+        };
+        let version = if matches!(state.mode, Mode::VersionOnly | Mode::WrongVersion) {
+            "x-amz-version-id: old\r\n"
+        } else if matches!(state.mode, Mode::Historical) {
+            if historical {
+                "x-amz-version-id: old\r\n"
+            } else {
+                "x-amz-version-id: current\r\n"
+            }
+        } else {
+            ""
+        };
+        (size, etag, version)
+    }
+    async fn serve_part(mut socket: TcpStream, state: Arc<State>) {
+        let input = read_headers(&mut socket).await;
+        if input.is_empty() {
+            return;
+        }
+        let headers = String::from_utf8(input).unwrap();
+        let (
+            Request {
+                head,
+                range,
+                historical,
+                ..
+            },
+            attempt,
+        ) = record_request(&headers, &state);
+        let (size, etag, version) = source_headers(&state, historical);
+        let version = if !head && matches!(state.mode, Mode::WrongVersion) {
+            "x-amz-version-id: replacement\r\n"
+        } else {
+            version
+        };
+        if head {
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {size}\r\n{etag}{version}Last-Modified: Tue, 06 Oct 2026 12:00:00 GMT\r\n\r\n"
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+            return;
+        }
+        let (start, end) = range.unwrap_or((0, size));
+        let _active = range.map(|_| {
+            let active = state.active.fetch_add(1, Ordering::SeqCst) + 1;
+            state.peak.fetch_max(active, Ordering::SeqCst);
+            Active(state.clone())
+        });
+        if range.is_some() && start == PART {
+            let status = match state.mode {
+                Mode::Transient { status, failures } if attempt <= failures => Some(status),
+                Mode::Changed => Some(412),
+                _ => None,
+            };
+            if let Some(status) = status {
+                let response = format!(
+                    "HTTP/1.1 {status} Failure\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                return;
+            }
+        }
+        let etag = if range.is_some() && matches!(state.mode, Mode::WrongEtag) {
+            "ETag: \"replacement\"\r\n"
+        } else {
+            etag
+        };
+        let total = if matches!(state.mode, Mode::WrongSize) {
+            size + 1
+        } else {
+            size
+        };
+        let range_start = if matches!(state.mode, Mode::WrongRange) {
+            start + 1
+        } else {
+            start
+        };
+        let content_range = range.map_or_else(String::new, |_| {
+            format!("Content-Range: bytes {range_start}-{}/{total}\r\n", end - 1)
+        });
+        let status = if range.is_some() { 206 } else { 200 };
+        let response = format!(
+            "HTTP/1.1 {status} OK\r\nConnection: close\r\nContent-Length: {}\r\n{content_range}{etag}{version}Last-Modified: Tue, 06 Oct 2026 12:00:00 GMT\r\n\r\n",
+            end - start
+        );
+        if socket.write_all(response.as_bytes()).await.is_err() {
+            return;
+        }
+        if matches!(state.mode, Mode::Stalled) {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            return;
+        }
+        if range.is_some() && start == 0 && matches!(state.mode, Mode::Reordered) {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+        if matches!(state.mode, Mode::Truncated) {
+            let _ = socket.write_all(&pattern(start, 8)).await;
+            return;
+        }
+        let mut offset = start;
+        while offset < end {
+            let length = usize::try_from((end - offset).min(64 * 1024)).unwrap();
+            if socket.write_all(&pattern(offset, length)).await.is_err() {
+                return;
+            }
+            offset += length as u64;
+        }
+        state.completed.lock().unwrap().push(start);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local TCP binding; run just run-integration-tests"]
+    async fn multipart_download_thresholds_boundaries_and_single_metadata_lookup() {
+        for size in [0, PART - 1, PART, PART + 1, 2 * PART, 2 * PART + 1] {
+            let server = Server::start(
+                size,
+                if size == 2 * PART {
+                    Mode::VersionOnly
+                } else {
+                    Mode::Normal
+                },
+            )
+            .await;
+            let client = server.client(PART, 2);
+            let directory = tempfile::tempdir().unwrap();
+            let destination = directory.path().join("download");
+            client
+                .download_file(
+                    "object",
+                    &destination,
+                    ReadOptions {
+                        max_in_memory_bytes: 1,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                tokio::fs::read(destination).await.unwrap(),
+                pattern(0, usize::try_from(size).unwrap())
+            );
+            let requests = server.state.requests.lock().unwrap();
+            assert_eq!(requests.iter().filter(|request| request.head).count(), 1);
+            let ranges = requests
+                .iter()
+                .filter(|request| request.range.is_some())
+                .count();
+            assert_eq!(
+                ranges as u64,
+                if size > PART { size.div_ceil(PART) } else { 0 }
+            );
+            assert!(
+                requests
+                    .iter()
+                    .filter(|request| request.range.is_some())
+                    .all(|request| if size == 2 * PART {
+                        request.historical
+                    } else {
+                        request.if_match.as_deref() == Some("\"source\"")
+                    })
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local TCP binding; run just run-integration-tests"]
+    async fn multipart_download_completes_out_of_order_with_bounded_concurrency() {
+        for concurrency in [1, 2] {
+            let server = Server::start(2 * PART + 11, Mode::Reordered).await;
+            let directory = tempfile::tempdir().unwrap();
+            let destination = directory.path().join("download");
+            server
+                .client(PART, concurrency)
+                .download_file("object", &destination, ReadOptions::default())
+                .await
+                .unwrap();
+            assert_eq!(
+                std::fs::read(destination).unwrap(),
+                pattern(0, usize::try_from(server.state.size).unwrap())
+            );
+            assert_eq!(server.state.peak.load(Ordering::SeqCst), concurrency);
+            if concurrency == 2 {
+                assert_ne!(server.state.completed.lock().unwrap()[0], 0);
+            }
+            assert!(server.attempts().values().all(|attempts| *attempts == 1));
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local TCP binding; run just run-integration-tests"]
+    async fn multipart_download_retries_only_the_failed_part_with_one_budget() {
+        for status in [429, 500, 503] {
+            let server = Server::start(
+                2 * PART + 11,
+                Mode::Transient {
+                    status,
+                    failures: 1,
+                },
+            )
+            .await;
+            let directory = tempfile::tempdir().unwrap();
+            let destination = directory.path().join("download");
+            server
+                .client(PART, 2)
+                .download_file("object", &destination, ReadOptions::default())
+                .await
+                .unwrap();
+            assert_eq!(
+                std::fs::read(destination).unwrap(),
+                pattern(0, usize::try_from(server.state.size).unwrap())
+            );
+            assert_eq!(
+                server.attempts(),
+                BTreeMap::from([(0, 1), (PART, 2), (2 * PART, 1)])
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local TCP binding; run just run-integration-tests"]
+    async fn multipart_download_failure_preserves_destination_and_removes_staging() {
+        for mode in [
+            Mode::Transient {
+                status: 503,
+                failures: 10,
+            },
+            Mode::Changed,
+            Mode::WrongEtag,
+            Mode::WrongVersion,
+            Mode::WrongSize,
+            Mode::WrongRange,
+            Mode::Truncated,
+        ] {
+            let server = Server::start(2 * PART + 11, mode).await;
+            let directory = tempfile::tempdir().unwrap();
+            let destination = directory.path().join("download");
+            std::fs::write(&destination, b"original").unwrap();
+            let error = server
+                .client(PART, 2)
+                .download_file("object", &destination, ReadOptions::default())
+                .await
+                .unwrap_err();
+            let expected = match mode {
+                Mode::Changed => ErrorKind::PreconditionFailed,
+                Mode::Transient { .. } | Mode::Truncated => ErrorKind::Unavailable,
+                _ => ErrorKind::Integrity,
+            };
+            assert_eq!(error.kind, expected, "{error}");
+            assert!(server.attempts().values().all(|attempts| *attempts <= 3));
+            assert_eq!(std::fs::read(&destination).unwrap(), b"original");
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while std::fs::read_dir(directory.path()).unwrap().count() != 1 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            if matches!(mode, Mode::Transient { .. }) {
+                assert_eq!(server.attempts()[&PART], 3);
+            }
+            if matches!(mode, Mode::Changed) {
+                assert_eq!(server.attempts()[&PART], 1);
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local TCP binding; run just run-integration-tests"]
+    async fn multipart_download_historical_version_pins_metadata_and_every_part() {
+        let server = Server::start(2 * PART + 13, Mode::Historical).await;
+        let provider = server.provider(PART, 2);
+        let version = multi_storage_client::SourceVersion {
+            scope: provider.backend_fingerprint(),
+            value: "version:old".into(),
+        };
+        let client = StorageClient::from_provider(Arc::new(provider));
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("download");
+        client
+            .download_file(
+                "object",
+                &destination,
+                ReadOptions {
+                    conditions: GetConditions {
+                        version: Some(version),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(destination).unwrap(),
+            pattern(0, usize::try_from(server.state.size).unwrap())
+        );
+        let requests = server.state.requests.lock().unwrap();
+        assert_eq!(requests.iter().filter(|request| request.head).count(), 1);
+        assert!(requests.iter().all(|request| request.historical));
+        assert!(
+            requests
+                .iter()
+                .filter(|request| !request.head)
+                .all(|request| request.if_match.as_deref() == Some("\"source\""))
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local TCP binding; run just run-integration-tests"]
+    async fn multipart_download_without_a_usable_generation_streams_instead() {
+        for mode in [Mode::Unpinned, Mode::WeakEtag] {
+            let server = Server::start(2 * PART + 1, mode).await;
+            let directory = tempfile::tempdir().unwrap();
+            let destination = directory.path().join("download");
+            server
+                .client(PART, 2)
+                .download_file("object", &destination, ReadOptions::default())
+                .await
+                .unwrap();
+            assert_eq!(
+                std::fs::read(destination).unwrap(),
+                pattern(0, usize::try_from(server.state.size).unwrap())
+            );
+            assert!(server.attempts().is_empty());
+            assert_eq!(server.state.requests.lock().unwrap().len(), 2);
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local TCP binding; run just run-integration-tests"]
+    async fn cancelling_multipart_download_preserves_destination_and_cleans_staging() {
+        let server = Server::start(2 * PART + 11, Mode::Stalled).await;
+        let client = server.client(PART, 2);
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("download");
+        std::fs::write(&destination, b"original").unwrap();
+        let mut download =
+            Box::pin(client.download_file("object", &destination, ReadOptions::default()));
+        tokio::select! {
+            result = &mut download => panic!("download completed before cancellation: {result:?}"),
+            () = async {
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    while server.state.peak.load(Ordering::SeqCst) < 2 {
+                        tokio::task::yield_now().await;
+                    }
+                }).await.unwrap();
+            } => {}
+        }
+        drop(download);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while std::fs::read_dir(directory.path()).unwrap().count() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read(destination).unwrap(), b"original");
+        let attempts = server.attempts();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(server.attempts(), attempts);
+    }
+}

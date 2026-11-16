@@ -185,10 +185,30 @@ resume cursor so retries do not repeat rejected records.
 
 ## File transfers
 
-`download_file` writes a temporary file in the destination filesystem, validates
-the expected length/version when available, optionally applies mtime and
-attributes, then atomically renames. Cancellation and errors remove the temp
-file.
+`download_file(remote, local, options)` obtains metadata once for the requested
+generation. It streams objects at or below the provider's multipart threshold
+and automatically uses bounded concurrent ranges above it when the provider
+supports generation-pinned range streams. S3 shares its existing threshold,
+part size, and concurrency settings between uploads and downloads. Providers
+without this support, or objects without a usable generation identifier,
+stream instead. `ReadOptions.max_in_memory_bytes` limits byte APIs, not file
+size, part size, or network chunk size.
+
+Every range uses the requested historical version or observed strong ETag.
+Responses must match the requested bounds, observed total size and generation,
+and exact streamed part length. No per-part HEAD is required. Each failed part
+restarts only its range within the existing client retry policy, with no SDK
+retries, adaptive resumes, or enclosing whole-file retry. Small streamed files
+retain their existing whole-stream retry behavior.
+
+Parts stream chunks directly to disjoint offsets in a private temporary file
+on the destination filesystem, without an unprotected shared seek cursor or
+whole-part buffering. After all parts validate, the client checks final length,
+synchronizes the file, and atomically renames it. Failure or cancellation
+preserves any existing destination, cancels outstanding range futures, and
+retains staging ownership for outstanding blocking filesystem work until it
+finishes. Temporary staging is then removed. Checkpoints and persistent cache
+state are outside this implementation.
 
 `upload_file` streams from the file and uses multipart upload when warranted.
 It never reads the whole file into memory. Symlink behavior is explicit in
@@ -237,8 +257,10 @@ meter; telemetry configuration is initialized explicitly through the helper in
   and partial stream errors.
 - Batch deletion tests verify native request chunking, stable indices, partial
   success, and retry-only-failed behavior.
-- File transfer tests prove bounded memory, atomic destination publication, and
-  temp cleanup.
+- File transfer tests cover empty/threshold/part boundaries, bounded request
+  concurrency, out-of-order completion, retries and exhaustion, source changes,
+  historical versions, atomic publication, and cleanup after failure or
+  cancellation, including queued blocking writes retaining staging ownership.
 - Cloned clients can perform concurrent operations without a global lock.
 - `info()` returns object/synthetic-root metadata; no public `head()` alias is
   required.

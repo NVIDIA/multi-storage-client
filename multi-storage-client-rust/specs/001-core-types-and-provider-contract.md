@@ -123,6 +123,8 @@ The object-safe `StorageProvider: Send + Sync` contract supports:
 - `head(key)`;
 - `get(key, conditions) -> byte stream`;
 - `get_range(key, range, conditions) -> Bytes`;
+- optional `download_part_config(size) -> (part_size, concurrency)` and
+  `get_download_part(key, range, conditions, total_size) -> byte stream`;
 - `put(key, byte stream, size, options) -> PutResult`;
 - `delete(key, conditions)` and `delete_many`;
 - `copy(source, destination, options)` when supported;
@@ -139,6 +141,14 @@ The primitive `get`/`put` streams are the canonical data path. Single-file
 inherit consistent temporary-file, retry, and progress behavior. Applications
 own scheduling across multiple file transfers; native batch deletion remains
 a provider capability.
+
+Multipart file downloads are opt-in through `download_part_config`, which
+defaults to `None`. An opting-in provider must stream generation-pinned ranges
+and validate response bounds, total size, and version/ETag against the supplied
+conditions and metadata, without another metadata lookup. `get_download_part`
+represents one attempt with no SDK retries or stream resumes. The client bounds
+concurrency, validates streamed lengths, and retries failed parts. Providers
+without this support retain the canonical streaming file-download path.
 
 The internal metadata primitive remains `head`; the public client names this
 operation `info()`. A provider decorator from 011 maps it to the metric
