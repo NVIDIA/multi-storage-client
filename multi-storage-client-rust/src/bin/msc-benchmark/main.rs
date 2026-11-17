@@ -316,7 +316,10 @@ fn prepare_files(
     let active = count.min(u64::try_from(concurrency)?);
     let mut requirements = Vec::new();
     let local_copies = if args.include_file_tests {
-        count.checked_add(active).ok_or("file count overflow")?
+        count
+            .checked_mul(2)
+            .and_then(|copies| copies.checked_add(active))
+            .ok_or("file count overflow")?
     } else {
         0
     };

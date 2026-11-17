@@ -268,7 +268,7 @@ async fn transfer(
                 .await?;
         }
         Phase::Download => {
-            let bytes = client.read(&object).await?;
+            let bytes = client.read(&object, ReadOptions::default()).await?;
             validate_length(bytes.len() as u64, job.size_bytes)?;
         }
         Phase::UploadFile | Phase::DownloadFile => {
@@ -279,16 +279,16 @@ async fn transfer(
                 )
             })?;
             let local = directory.join(name);
-            let metadata = if matches!(phase, Phase::UploadFile) {
+            if matches!(phase, Phase::UploadFile) {
                 client
-                    .upload_file(&file_object, local, WriteOptions::default())
-                    .await?
+                    .upload_file(&file_object, &local, WriteOptions::default())
+                    .await?;
             } else {
                 client
-                    .download_file(&file_object, local, ReadOptions::default())
-                    .await?
-            };
-            validate_length(metadata.content_length, job.size_bytes)?;
+                    .download_file(&file_object, &local, ReadOptions::default())
+                    .await?;
+            }
+            validate_length(tokio::fs::metadata(&local).await?.len(), job.size_bytes)?;
         }
         Phase::Delete => {
             let object_result = client
@@ -313,7 +313,7 @@ fn validate_length(actual: u64, expected: u64) -> multi_storage_client::Result<(
     if actual != expected {
         return Err(MscError::new(
             ErrorKind::Integrity,
-            "downloaded object size differs from benchmark configuration",
+            "transferred object size differs from benchmark configuration",
         ));
     }
     Ok(())
@@ -427,7 +427,11 @@ mod tests {
                 active: AtomicUsize::new(0),
                 maximum: AtomicUsize::new(0),
             });
-            let client = StorageClient::from_provider(provider.clone());
+            let client =
+                multi_storage_client::StorageClientBuilder::from_provider(provider.clone())
+                    .build()
+                    .await
+                    .unwrap();
             let job = Job {
                 profile: "test".into(),
                 storage_config: None,

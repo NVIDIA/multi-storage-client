@@ -17,144 +17,58 @@
 //!
 //! Clients are cheap to clone and share providers and cleanup owners.
 //! Applications own the Tokio runtime and await [`StorageClient::shutdown`].
+mod api;
 mod builder;
 mod delete;
 mod download;
 mod listing;
 mod read;
-mod reader;
 mod write;
-mod writer;
-
-pub use reader::ObjectReader;
-pub use writer::ObjectWriter;
 
 use crate::{
-    ErrorKind, GetConditions, MscError, ObjectKind, ObjectMetadata, ObjectPath, PresignMethod,
-    ProviderCapabilities, ProviderRegistry, Result, RetryPolicy, StorageProvider,
-    config::ResolvedConfig,
+    ErrorKind, GetConditions, MscError, ObjectKind, ObjectMetadata, ObjectPath, ProviderRegistry,
+    Result, RetryPolicy, StorageProvider,
 };
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc};
 
 const DEFAULT_MEMORY_LIMIT: u64 = 64 * 1024 * 1024;
-const DEFAULT_READ_BUFFER: usize = 1024 * 1024;
 
 tokio::task_local! {
     static PROVIDER_RETRY_POLICY: RetryPolicy;
 }
+
 #[cfg(feature = "s3")]
 pub(crate) fn current_provider_retry_policy() -> Option<RetryPolicy> {
     PROVIDER_RETRY_POLICY.try_with(Clone::clone).ok()
 }
-#[derive(Clone)]
+
 struct ClientState {
     provider: Arc<dyn StorageProvider>,
     retry: RetryPolicy,
     max_in_memory_bytes: u64,
-    read_buffer_size: usize,
 }
+
 /// A cheap-to-clone client for a physical storage namespace.
 /// All operations take profile-relative keys. Providers apply `base_path` once.
 #[derive(Clone)]
 pub struct StorageClient {
     state: Arc<ClientState>,
 }
+
 /// Select a profile, provider registry, retry policy and bounded read settings.
 pub struct StorageClientBuilder {
-    config: ResolvedConfig,
-    profile: String,
+    source: builder::ClientSource,
     registry: ProviderRegistry,
+    retry: Option<RetryPolicy>,
     max_in_memory_bytes: u64,
-    read_buffer_size: usize,
-}
-impl StorageClientBuilder {
-    /// Supply custom storage factories; register matching tags with the loader
-    /// as well so configuration validation recognizes them.
-    #[must_use]
-    pub fn with_provider_registry(mut self, registry: ProviderRegistry) -> Self {
-        self.registry = registry;
-        self
-    }
-
-    /// Explicitly raise the bounded `read` limit, or use `u64::MAX` to opt out.
-    #[must_use]
-    pub fn with_max_in_memory_bytes(mut self, maximum: u64) -> Self {
-        self.max_in_memory_bytes = maximum;
-        self
-    }
-
-    /// Set the seekable reader's range-buffer size in bytes; defaults to 1 MiB.
-    /// An absent [`crate::ReadOptions::buffer_size`] inherits this setting; supplied
-    /// positive per-call sizes override it.
-    /// Zero is rejected when [`Self::build`] is called.
-    #[must_use]
-    pub fn with_read_buffer_size(mut self, bytes: usize) -> Self {
-        self.read_buffer_size = bytes;
-        self
-    }
 }
 
 impl StorageClient {
-    /// Select a profile. Construction and credentials are deferred until build.
-    #[must_use]
-    pub fn builder(config: ResolvedConfig, profile: impl Into<String>) -> StorageClientBuilder {
-        StorageClientBuilder {
-            config,
-            profile: profile.into(),
-            registry: ProviderRegistry::default(),
-            max_in_memory_bytes: DEFAULT_MEMORY_LIMIT,
-            read_buffer_size: DEFAULT_READ_BUFFER,
-        }
-    }
-    /// Wrap an application-supplied provider with the default client retry policy.
-    #[must_use]
-    pub fn from_provider(provider: Arc<dyn StorageProvider>) -> Self {
-        Self {
-            state: Arc::new(ClientState {
-                provider,
-                retry: RetryPolicy::default(),
-                max_in_memory_bytes: DEFAULT_MEMORY_LIMIT,
-                read_buffer_size: DEFAULT_READ_BUFFER,
-            }),
-        }
-    }
-    /// Set the operation retry budget on this clone.
-    ///
-    /// # Errors
-    /// Returns invalid retry settings.
-    pub fn with_retry_policy(self, retry: RetryPolicy) -> Result<Self> {
-        retry.validate()?;
-        let mut state = (*self.state).clone();
-        state.retry = retry;
-        Ok(Self {
-            state: Arc::new(state),
-        })
-    }
-    /// Describe optional provider behavior.
-    #[must_use]
-    pub fn capabilities(&self) -> ProviderCapabilities {
-        self.state.provider.capabilities()
-    }
-    /// Return a non-secret backend identity.
-    #[must_use]
-    pub fn backend_fingerprint(&self) -> String {
-        self.state.provider.backend_fingerprint()
-    }
-    /// Return the physical prefix for diagnostics. Operations remain profile-relative.
-    #[must_use]
-    pub fn physical_root(&self) -> ObjectPath {
-        self.state.provider.physical_root()
-    }
     /// Whether this client uses POSIX storage.
-    #[must_use]
-    pub fn is_posix(&self) -> bool {
+    pub(crate) fn is_posix_file_storage_provider(&self) -> bool {
         self.state.provider.is_posix()
     }
-    /// Whether this provider advertises no streaming writes.
-    #[must_use]
-    pub fn is_read_only(&self) -> bool {
-        !self.capabilities().streaming_writes
-    }
+
     async fn retry<T, F, Fut>(&self, safe: bool, operation: F) -> Result<T>
     where
         F: FnMut() -> Fut,
@@ -215,50 +129,8 @@ impl StorageClient {
         )
         .await;
     }
-
-    /// Generate a URL when the requested GET/PUT presigning capability exists.
-    ///
-    /// # Errors
-    /// Returns path, unsupported-operation, expiration, or presigning errors.
-    pub async fn presigned_url(
-        &self,
-        path: impl AsRef<str>,
-        method: PresignMethod,
-        expires: Duration,
-    ) -> Result<String> {
-        let mut path = nonroot_path(path)?;
-        let supported = match method {
-            PresignMethod::Get => self.capabilities().presigned_get,
-            PresignMethod::Put => self.capabilities().presigned_put,
-        };
-        if !supported {
-            return Err(MscError::unsupported("presigned URLs"));
-        }
-        if method == PresignMethod::Get && self.capabilities().symlinks {
-            match self.info(&path, crate::InfoOptions::default()).await {
-                Ok(metadata) => {
-                    require_file(&metadata)?;
-                    path = metadata.key;
-                }
-                Err(error) if error.kind == ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
-            }
-        }
-        self.retry(true, || {
-            self.state.provider.presigned_url(&path, method, expires)
-        })
-        .await
-    }
-
-    /// Drain provider-owned cleanup, including cancelled multipart uploads.
-    /// Call this on success and failure while the Tokio runtime is alive.
-    ///
-    /// # Errors
-    /// Returns cleanup or task-join failures. Calling it again can retry cleanup.
-    pub async fn shutdown(&self) -> Result<()> {
-        self.state.provider.shutdown().await
-    }
 }
+
 fn nonroot_path(path: impl AsRef<str>) -> Result<ObjectPath> {
     let path = ObjectPath::new(path)?;
     if path.is_root() {

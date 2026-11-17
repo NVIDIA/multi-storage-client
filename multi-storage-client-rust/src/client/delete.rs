@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Exact-key, idempotent deletion and bounded partial-result batches.
+//! Exact-key deletion and bounded partial-result batches.
 use super::{StorageClient, nonroot_path};
 use crate::{BatchFailure, BatchResult, DeleteOptions, ErrorKind, MscError, ObjectPath, Result};
 use futures::{StreamExt, stream};
@@ -21,12 +21,7 @@ use futures::{StreamExt, stream};
 const DELETE_BATCH_SIZE: usize = 1000;
 
 impl StorageClient {
-    /// Delete one exact key, treating missing objects as success.
-    /// Recursive deletion is outside the foundation subset.
-    ///
-    /// # Errors
-    /// Returns invalid keys, unsupported recursion/conditions, or provider errors.
-    pub async fn delete(
+    pub(super) async fn delete_impl(
         &self,
         path: impl AsRef<str>,
         recursive: bool,
@@ -38,19 +33,28 @@ impl StorageClient {
             ));
         }
         let path = nonroot_path(path)?;
+        self.retry(true, || async {
+            if let Some(version) = &options.version {
+                self.state.provider.head_version(&path, version).await
+            } else {
+                self.state.provider.head(&path).await
+            }
+        })
+        .await?;
+        self.delete_exact(&path, &options).await
+    }
+
+    async fn delete_exact(&self, path: &ObjectPath, options: &DeleteOptions) -> Result<()> {
         self.retry_mutation(|| async {
-            match self.state.provider.delete(&path, &options).await {
+            match self.state.provider.delete(path, options).await {
                 Err(error) if error.kind == ErrorKind::NotFound => Ok(()),
                 result => result,
             }
         })
         .await
     }
-    /// Delete in bounded batches while preserving original input indices.
-    ///
-    /// # Errors
-    /// Returns invalid provider batch responses. Item errors appear in the batch result.
-    pub async fn delete_many(
+
+    pub(super) async fn delete_many_impl(
         &self,
         paths: &[ObjectPath],
         options: DeleteOptions,
@@ -58,15 +62,15 @@ impl StorageClient {
         let mut output = BatchResult::default();
         for (chunk_index, chunk) in paths.chunks(DELETE_BATCH_SIZE).enumerate() {
             let offset = chunk_index * DELETE_BATCH_SIZE;
-            if !self.capabilities().batch_delete {
+            if !self.state.provider.capabilities().batch_delete {
                 let options = &options;
                 let mut deletes = stream::iter(chunk.iter().cloned().enumerate().map(
                     |(index, path)| async move {
-                        (
-                            offset + index,
-                            path.clone(),
-                            self.delete(&path, false, options.clone()).await,
-                        )
+                        let result = match nonroot_path(&path) {
+                            Ok(path) => self.delete_exact(&path, options).await,
+                            Err(error) => Err(error),
+                        };
+                        (offset + index, path, result)
                     },
                 ))
                 .buffer_unordered(32);

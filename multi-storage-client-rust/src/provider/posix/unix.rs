@@ -44,7 +44,7 @@ const ATTR_NAME: &str = "user.json";
 
 /// Descriptor-anchored POSIX storage with atomic publication, bounded I/O, and
 /// contained relative symlinks. Supported on Unix; clones share the root and
-/// concurrency limit. Construct a client with [`crate::StorageClient::from_provider`]
+/// concurrency limit. Construct a client with [`crate::StorageClientBuilder::from_provider`]
 /// or select the `file` provider in configuration.
 #[derive(Clone)]
 pub struct PosixProvider {
@@ -665,17 +665,6 @@ impl StorageProvider for PosixProvider {
         let this = self.clone();
         let key = key.clone();
         blocking(move || this.metadata(&key)).await
-    }
-    async fn open_posix_file(
-        &self,
-        key: &ObjectPath,
-        conditions: &GetConditions,
-    ) -> Result<tokio::fs::File> {
-        let this = self.clone();
-        let key = key.clone();
-        let conditions = conditions.clone();
-        let (file, _) = blocking(move || this.open_read(&key, &conditions)).await?;
-        Ok(tokio::fs::File::from_std(file))
     }
     async fn get(&self, key: &ObjectPath, conditions: &GetConditions) -> Result<ByteStream> {
         let permit = self

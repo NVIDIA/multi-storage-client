@@ -391,7 +391,7 @@ fn failed_transfers_exit_nonzero_and_report_no_successful_bytes_or_latency() {
 fn benchmark_s3_multiprocess_file_transfers_and_cleanup() {
     use futures::StreamExt;
     use multi_storage_client::{
-        ConfigLoader, DeleteOptions, ListOptions, StorageClient, WriteOptions,
+        ConfigLoader, DeleteOptions, ListOptions, ReadOptions, StorageClient, WriteOptions,
     };
     let fixture = Fixture::new();
     fixture.config(&json!({"processes":[1,2],"threads":[2],"test_object_sizes":{"8MB":3}}));
@@ -464,7 +464,10 @@ fn benchmark_s3_multiprocess_file_transfers_and_cleanup() {
         );
         assert!(objects.next().await.is_none());
         assert_eq!(
-            client.read("benchmark/sentinel").await.unwrap(),
+            client
+                .read("benchmark/sentinel", ReadOptions::default())
+                .await
+                .unwrap(),
             "keep remote data"
         );
         client

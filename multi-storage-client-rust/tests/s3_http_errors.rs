@@ -26,7 +26,8 @@ use std::{
 
 use multi_storage_client::{
     ByteRange, CopyOptions, CopyScope, DeleteOptions, ErrorKind, GetConditions, InfoOptions,
-    MscError, ObjectPath, ReadOptions, RetryPolicy, StorageClient, StorageProvider, WriteOptions,
+    MscError, ObjectPath, ReadOptions, RetryPolicy, StorageClient, StorageClientBuilder,
+    StorageProvider, WriteOptions,
     credentials::{AwsCredentials, SecretString},
     provider::s3::{S3Options, S3Provider},
 };
@@ -818,8 +819,8 @@ async fn read_request_body(
     Some(body)
 }
 
-fn client(provider: S3Provider) -> StorageClient {
-    StorageClient::from_provider(Arc::new(provider))
+async fn client(provider: S3Provider) -> StorageClient {
+    StorageClientBuilder::from_provider(Arc::new(provider))
         .with_retry_policy(RetryPolicy {
             max_attempts: 3,
             initial_delay_ms: 0,
@@ -827,6 +828,9 @@ fn client(provider: S3Provider) -> StorageClient {
             multiplier: 2.0,
             jitter: false,
         })
+        .unwrap()
+        .build()
+        .await
         .unwrap()
 }
 
@@ -1279,9 +1283,9 @@ async fn single_put_is_never_duplicated_by_low_speed_hedging() {
 #[ignore = "requires local TCP binding; run just run-integration-tests"]
 async fn throttled_get_resumes_remaining_range_on_another_connection() {
     let server = FailureServer::start(Behavior::ThrottledGets { slow: 1 }, 0).await;
-    let client = client(server.low_speed_provider(1024, 100));
+    let client = client(server.low_speed_provider(1024, 100)).await;
     let started = std::time::Instant::now();
-    let bytes = client.read("object").await.unwrap();
+    let bytes = client.read("object", ReadOptions::default()).await.unwrap();
     let elapsed = started.elapsed();
     client.shutdown().await.unwrap();
     assert_eq!(bytes.as_ref(), throttled_object().as_slice());
@@ -1301,9 +1305,9 @@ async fn throttled_get_resumes_remaining_range_on_another_connection() {
 #[ignore = "requires local TCP binding; run just run-integration-tests"]
 async fn repeatedly_throttled_get_keeps_resuming_with_backoff() {
     let server = FailureServer::start(Behavior::ThrottledGets { slow: 4 }, 0).await;
-    let client = client(server.low_speed_provider(1024, 100));
+    let client = client(server.low_speed_provider(1024, 100)).await;
     let started = std::time::Instant::now();
-    let bytes = client.read("object").await.unwrap();
+    let bytes = client.read("object", ReadOptions::default()).await.unwrap();
     let elapsed = started.elapsed();
     client.shutdown().await.unwrap();
     assert_eq!(bytes.as_ref(), throttled_object().as_slice());
@@ -1458,7 +1462,7 @@ async fn multipart_part_disconnect_obeys_profile_attempt_limit_and_aborts() {
 
 #[tokio::test]
 #[ignore = "requires local TCP binding; run just run-integration-tests"]
-async fn multipart_parts_use_each_cloned_clients_programmatic_retry_budget() {
+async fn multipart_parts_use_each_clients_configured_retry_budget() {
     let server = FailureServer::start(
         Behavior::MultipartPartDisconnected {
             failures: usize::MAX,
@@ -1469,12 +1473,17 @@ async fn multipart_parts_use_each_cloned_clients_programmatic_retry_budget() {
     let provider = server
         .multipart_provider(2000, 200, part_retry_policy(3))
         .await;
-    let first = StorageClient::from_provider(provider)
+    let first = StorageClientBuilder::from_provider(provider.clone())
         .with_retry_policy(part_retry_policy(1))
+        .unwrap()
+        .build()
+        .await
         .unwrap();
-    let second = first
-        .clone()
+    let second = StorageClientBuilder::from_provider(provider)
         .with_retry_policy(part_retry_policy(2))
+        .unwrap()
+        .build()
+        .await
         .unwrap();
     let mut previous = 0;
     for (client, expected_requests) in [(&first, 3), (&second, 4), (&first, 3)] {
@@ -1621,12 +1630,18 @@ async fn ordinary_put_waits_for_response_beyond_read_idle_window_without_replay(
                 Ok(bytes::Bytes::from_static(b"data"))
             })),
             Some(4),
-            &WriteOptions::default(),
+            &WriteOptions {
+                attributes: std::collections::BTreeMap::from([("OWNER".into(), "test".into())]),
+                ..Default::default()
+            },
         )
         .await
         .unwrap();
     provider.shutdown().await.unwrap();
     assert_eq!(result.etag.as_deref(), Some("\"test-etag\""));
+    let metadata = result.metadata.as_ref().unwrap();
+    assert!(metadata.last_modified.is_none());
+    assert_eq!(metadata.attributes["owner"], "test");
     assert!(started.elapsed() >= Duration::from_millis(200));
     assert_eq!(
         server.count(),
@@ -1639,7 +1654,7 @@ async fn ordinary_put_waits_for_response_beyond_read_idle_window_without_replay(
 #[ignore = "requires local TCP binding; run just run-integration-tests"]
 async fn idle_read_timeout_retries_stalled_body_without_publishing_partial_data() {
     let server = FailureServer::start(Behavior::StalledGetBody, 0).await;
-    let client = client(server.provider_timeouts(1000, 50));
+    let client = client(server.provider_timeouts(1000, 50)).await;
     let directory = tempfile::tempdir().unwrap();
     let destination = directory.path().join("existing.bin");
     tokio::fs::write(&destination, b"original").await.unwrap();
@@ -1670,9 +1685,9 @@ async fn idle_read_timeout_retries_stalled_body_without_publishing_partial_data(
 #[ignore = "requires local TCP binding; run just run-integration-tests"]
 async fn idle_read_timeout_resets_when_response_body_keeps_progressing() {
     let server = FailureServer::start(Behavior::SlowSteadyGetBody, 0).await;
-    let client = client(server.provider_timeouts(1000, 50));
+    let client = client(server.provider_timeouts(1000, 50)).await;
     let started = std::time::Instant::now();
-    let bytes = client.read("object").await.unwrap();
+    let bytes = client.read("object", ReadOptions::default()).await.unwrap();
     assert_eq!(bytes.as_ref(), b"data");
     assert!(
         started.elapsed() > Duration::from_millis(50),
@@ -1745,7 +1760,7 @@ async fn real_http_client_owns_the_three_attempt_budget_and_stops_on_success() {
         (403, ErrorKind::PermissionDenied, 1),
     ] {
         let server = FailureServer::start(Behavior::Failure(status), 0).await;
-        let client = client(server.provider(1000));
+        let client = client(server.provider(1000)).await;
         let error = client
             .info("object", InfoOptions::default())
             .await
@@ -1765,7 +1780,7 @@ async fn real_http_client_owns_the_three_attempt_budget_and_stops_on_success() {
         client.shutdown().await.unwrap();
     }
     let server = FailureServer::start(Behavior::RecoverAfterTwoFailures, 0).await;
-    let client = client(server.provider(1000));
+    let client = client(server.provider(1000)).await;
     let metadata = client.info("object", InfoOptions::default()).await.unwrap();
     assert_eq!(metadata.content_length, 4);
     assert_eq!(metadata.etag.as_deref(), Some("\"test-etag\""));
@@ -1813,7 +1828,7 @@ async fn python_s8k_profile_retries_http_429_with_the_client_attempt_budget() {
 #[ignore = "requires local TCP binding; run just run-integration-tests"]
 async fn real_transport_timeouts_are_retryable_and_exhaust_the_same_budget() {
     let server = FailureServer::start(Behavior::Timeout, 0).await;
-    let client = client(server.provider(50));
+    let client = client(server.provider(50)).await;
     let error = tokio::time::timeout(
         Duration::from_secs(3),
         client.info("object", InfoOptions::default()),
@@ -1834,8 +1849,11 @@ async fn real_transport_timeouts_are_retryable_and_exhaust_the_same_budget() {
 #[ignore = "requires local TCP binding; run just run-integration-tests"]
 async fn truncated_http_get_is_retried_without_publishing_partial_data() {
     let server = FailureServer::start(Behavior::TruncatedGet, 0).await;
-    let client = client(server.provider(1000));
-    let error = client.read("object").await.unwrap_err();
+    let client = client(server.provider(1000)).await;
+    let error = client
+        .read("object", ReadOptions::default())
+        .await
+        .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Unavailable);
     assert!(error.retryable);
     assert_redacted(&error);
@@ -1880,14 +1898,17 @@ async fn multipart_parts_retry_transient_http_statuses_with_one_upload_id() {
             0,
         )
         .await;
-        let client = StorageClient::from_provider(
+        let client = StorageClientBuilder::from_provider(
             server
                 .multipart_provider(2000, 200, part_retry_policy(3))
                 .await,
         )
         .with_retry_policy(part_retry_policy(3))
+        .unwrap()
+        .build()
+        .await
         .unwrap();
-        let result = client
+        client
             .write(
                 "object",
                 bytes::Bytes::from(vec![42; 8 * 1024 * 1024]),
@@ -1895,7 +1916,6 @@ async fn multipart_parts_retry_transient_http_statuses_with_one_upload_id() {
             )
             .await
             .unwrap();
-        assert_eq!(result.content_length, 8 * 1024 * 1024);
         assert_eq!(
             server.count(),
             4,
@@ -1906,41 +1926,33 @@ async fn multipart_parts_retry_transient_http_statuses_with_one_upload_id() {
 
 #[tokio::test]
 #[ignore = "requires local TCP binding; run just run-integration-tests"]
-async fn unconditional_mutations_use_the_profile_budget_without_metadata_heads() {
-    for operation in ["write", "upload", "delete"] {
+async fn unconditional_writes_use_the_profile_budget_without_metadata_heads() {
+    for operation in ["write", "upload"] {
         let server = FailureServer::start(Behavior::RecoverAfterTwoFailures, 0).await;
-        let client = client(server.provider(1000));
-        match operation {
-            "write" => {
-                let metadata = client
-                    .write(
-                        "object",
-                        bytes::Bytes::from_static(b"data"),
-                        WriteOptions {
-                            attributes: std::collections::BTreeMap::from([(
-                                "OWNER".into(),
-                                "test".into(),
-                            )]),
-                            ..WriteOptions::default()
-                        },
-                    )
-                    .await
-                    .unwrap();
-                assert_eq!(metadata.attributes["owner"], "test");
-            }
-            "upload" => {
-                let directory = tempfile::tempdir().unwrap();
-                let path = directory.path().join("source");
-                std::fs::write(&path, b"data").unwrap();
-                client
-                    .upload_file("object", path, WriteOptions::default())
-                    .await
-                    .unwrap();
-            }
-            _ => client
-                .delete("object", false, DeleteOptions::default())
+        let client = client(server.provider(1000)).await;
+        if operation == "write" {
+            client
+                .write(
+                    "object",
+                    bytes::Bytes::from_static(b"data"),
+                    WriteOptions {
+                        attributes: std::collections::BTreeMap::from([(
+                            "OWNER".into(),
+                            "test".into(),
+                        )]),
+                        ..WriteOptions::default()
+                    },
+                )
                 .await
-                .unwrap(),
+                .unwrap();
+        } else {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("source");
+            std::fs::write(&path, b"data").unwrap();
+            client
+                .upload_file("object", path, WriteOptions::default())
+                .await
+                .unwrap();
         }
         assert_eq!(
             server.count(),
@@ -1954,7 +1966,7 @@ async fn unconditional_mutations_use_the_profile_budget_without_metadata_heads()
 #[ignore = "requires local TCP binding; run just run-integration-tests"]
 async fn conditional_retry_conflicts_report_an_ambiguous_outcome() {
     let server = FailureServer::start(Behavior::FailureThenPrecondition, 0).await;
-    let client = client(server.provider(1000));
+    let client = client(server.provider(1000)).await;
     let error = client
         .write(
             "object",
@@ -1973,21 +1985,14 @@ async fn conditional_retry_conflicts_report_an_ambiguous_outcome() {
 
 #[tokio::test]
 #[ignore = "requires local TCP binding; run just run-integration-tests"]
-async fn ordinary_reads_and_streams_use_one_get_each() {
-    use futures::TryStreamExt;
+async fn ordinary_reads_use_one_get() {
     let server = FailureServer::start(Behavior::Success, 0).await;
-    let client = client(server.provider(1000));
-    assert_eq!(client.read("object").await.unwrap(), "data");
+    let client = client(server.provider(1000)).await;
+    assert_eq!(
+        client.read("object", ReadOptions::default()).await.unwrap(),
+        "data"
+    );
     assert_eq!(server.count(), 1);
-    let chunks = client
-        .read_stream("object", ReadOptions::default())
-        .await
-        .unwrap()
-        .try_collect::<Vec<_>>()
-        .await
-        .unwrap();
-    assert_eq!(chunks.concat(), b"data");
-    assert_eq!(server.count(), 2);
 }
 
 mod parallel_downloads {
@@ -2070,33 +2075,20 @@ mod parallel_downloads {
                 task,
             }
         }
-        fn provider(&self, threshold: u64, concurrency: usize) -> S3Provider {
-            S3Provider::new(
-                S3Options {
-                    base_path: "bucket".into(),
-                    endpoint_url: Some(self.endpoint.clone()),
-                    multipart_threshold: threshold,
-                    part_size: PART,
-                    multipart_concurrency: concurrency,
-                    read_timeout_ms: 3000,
-                    idle_read_timeout_ms: 1000,
-                    low_speed_limit: 1_000_000,
-                    low_speed_time_ms: 20,
-                    ..Default::default()
-                },
-                Some(AwsCredentials {
-                    access_key_id: SecretString::new(ACCESS),
-                    secret_access_key: SecretString::new(SECRET),
-                    session_token: None,
-                    expires_at: None,
-                }),
-            )
-            .unwrap()
+        fn provider(&self, threshold: u64, part_size: u64, concurrency: usize) -> S3Provider {
+            provider_at(&self.endpoint, threshold, part_size, concurrency)
         }
-        fn client(&self, threshold: u64, concurrency: usize) -> StorageClient {
-            StorageClient::from_provider(Arc::new(self.provider(threshold, concurrency)))
-                .with_retry_policy(part_retry_policy(3))
-                .unwrap()
+        async fn client(&self, threshold: u64, concurrency: usize) -> StorageClient {
+            StorageClientBuilder::from_provider(Arc::new(self.provider(
+                threshold,
+                PART,
+                concurrency,
+            )))
+            .with_retry_policy(part_retry_policy(3))
+            .unwrap()
+            .build()
+            .await
+            .unwrap()
         }
         fn attempts(&self) -> BTreeMap<u64, usize> {
             let mut counts = BTreeMap::new();
@@ -2112,6 +2104,59 @@ mod parallel_downloads {
         fn drop(&mut self) {
             self.task.abort();
         }
+    }
+
+    fn provider_at(
+        endpoint: &str,
+        threshold: u64,
+        part_size: u64,
+        concurrency: usize,
+    ) -> S3Provider {
+        S3Provider::new(
+            S3Options {
+                base_path: "bucket".into(),
+                endpoint_url: Some(endpoint.to_owned()),
+                multipart_threshold: threshold,
+                part_size,
+                multipart_concurrency: concurrency,
+                read_timeout_ms: 3000,
+                idle_read_timeout_ms: 1000,
+                low_speed_limit: 1_000_000,
+                low_speed_time_ms: 20,
+                ..Default::default()
+            },
+            Some(AwsCredentials {
+                access_key_id: SecretString::new(ACCESS),
+                secret_access_key: SecretString::new(SECRET),
+                session_token: None,
+                expires_at: None,
+            }),
+        )
+        .unwrap()
+    }
+    async fn wait_checkpoint_idle(path: &std::path::Path) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(path.join("lock"))
+                    .unwrap();
+                if file.try_lock().is_ok() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !std::fs::read_dir(path).unwrap().any(|e| e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp"))
+        );
     }
 
     fn pattern(offset: u64, length: usize) -> Vec<u8> {
@@ -2289,7 +2334,7 @@ mod parallel_downloads {
                 },
             )
             .await;
-            let client = server.client(PART, 2);
+            let client = server.client(PART, 2).await;
             let directory = tempfile::tempdir().unwrap();
             let destination = directory.path().join("download");
             client
@@ -2297,7 +2342,7 @@ mod parallel_downloads {
                     "object",
                     &destination,
                     ReadOptions {
-                        max_in_memory_bytes: 1,
+                        max_in_memory_bytes: Some(1),
                         ..Default::default()
                     },
                 )
@@ -2339,6 +2384,7 @@ mod parallel_downloads {
             let destination = directory.path().join("download");
             server
                 .client(PART, concurrency)
+                .await
                 .download_file("object", &destination, ReadOptions::default())
                 .await
                 .unwrap();
@@ -2370,6 +2416,7 @@ mod parallel_downloads {
             let destination = directory.path().join("download");
             server
                 .client(PART, 2)
+                .await
                 .download_file("object", &destination, ReadOptions::default())
                 .await
                 .unwrap();
@@ -2386,7 +2433,7 @@ mod parallel_downloads {
 
     #[tokio::test]
     #[ignore = "requires local TCP binding; run just run-integration-tests"]
-    async fn multipart_download_failure_preserves_destination_and_removes_staging() {
+    async fn multipart_download_failure_preserves_destination_and_checkpoint() {
         for mode in [
             Mode::Transient {
                 status: 503,
@@ -2405,6 +2452,7 @@ mod parallel_downloads {
             std::fs::write(&destination, b"original").unwrap();
             let error = server
                 .client(PART, 2)
+                .await
                 .download_file("object", &destination, ReadOptions::default())
                 .await
                 .unwrap_err();
@@ -2416,13 +2464,9 @@ mod parallel_downloads {
             assert_eq!(error.kind, expected, "{error}");
             assert!(server.attempts().values().all(|attempts| *attempts <= 3));
             assert_eq!(std::fs::read(&destination).unwrap(), b"original");
-            tokio::time::timeout(Duration::from_secs(3), async {
-                while std::fs::read_dir(directory.path()).unwrap().count() != 1 {
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .unwrap();
+            let checkpoint = directory.path().join(".download.msc-dl");
+            wait_checkpoint_idle(&checkpoint).await;
+            assert!(checkpoint.join("state.json").is_file());
             if matches!(mode, Mode::Transient { .. }) {
                 assert_eq!(server.attempts()[&PART], 3);
             }
@@ -2436,12 +2480,15 @@ mod parallel_downloads {
     #[ignore = "requires local TCP binding; run just run-integration-tests"]
     async fn multipart_download_historical_version_pins_metadata_and_every_part() {
         let server = Server::start(2 * PART + 13, Mode::Historical).await;
-        let provider = server.provider(PART, 2);
+        let provider = server.provider(PART, PART, 2);
         let version = multi_storage_client::SourceVersion {
             scope: provider.backend_fingerprint(),
             value: "version:old".into(),
         };
-        let client = StorageClient::from_provider(Arc::new(provider));
+        let client = StorageClientBuilder::from_provider(Arc::new(provider))
+            .build()
+            .await
+            .unwrap();
         let directory = tempfile::tempdir().unwrap();
         let destination = directory.path().join("download");
         client
@@ -2482,6 +2529,7 @@ mod parallel_downloads {
             let destination = directory.path().join("download");
             server
                 .client(PART, 2)
+                .await
                 .download_file("object", &destination, ReadOptions::default())
                 .await
                 .unwrap();
@@ -2496,9 +2544,9 @@ mod parallel_downloads {
 
     #[tokio::test]
     #[ignore = "requires local TCP binding; run just run-integration-tests"]
-    async fn cancelling_multipart_download_preserves_destination_and_cleans_staging() {
+    async fn cancelling_multipart_download_preserves_destination_and_checkpoint() {
         let server = Server::start(2 * PART + 11, Mode::Stalled).await;
-        let client = server.client(PART, 2);
+        let client = server.client(PART, 2).await;
         let directory = tempfile::tempdir().unwrap();
         let destination = directory.path().join("download");
         std::fs::write(&destination, b"original").unwrap();
@@ -2515,16 +2563,205 @@ mod parallel_downloads {
             } => {}
         }
         drop(download);
-        tokio::time::timeout(Duration::from_secs(3), async {
-            while std::fs::read_dir(directory.path()).unwrap().count() != 1 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
+        let checkpoint = directory.path().join(".download.msc-dl");
+        wait_checkpoint_idle(&checkpoint).await;
+        assert!(checkpoint.join("state.json").is_file());
         assert_eq!(std::fs::read(destination).unwrap(), b"original");
         let attempts = server.attempts();
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(server.attempts(), attempts);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local TCP binding; run just run-integration-tests"]
+    async fn multipart_download_reuses_completed_parts_and_saved_partition() {
+        let server = Server::start(
+            2 * PART + 11,
+            Mode::Transient {
+                status: 503,
+                failures: 3,
+            },
+        )
+        .await;
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("download");
+        std::fs::write(&destination, b"original").unwrap();
+        assert!(
+            server
+                .client(PART, 1)
+                .await
+                .download_file("object", &destination, ReadOptions::default())
+                .await
+                .is_err()
+        );
+        let checkpoint = directory.path().join(".download.msc-dl");
+        wait_checkpoint_idle(&checkpoint).await;
+        assert_eq!(std::fs::read(&destination).unwrap(), b"original");
+        assert_eq!(
+            std::fs::metadata(checkpoint.join("000000.chunk"))
+                .unwrap()
+                .len(),
+            PART
+        );
+        let client =
+            StorageClientBuilder::from_provider(Arc::new(server.provider(PART, 2 * PART, 1)))
+                .with_retry_policy(part_retry_policy(3))
+                .unwrap()
+                .build()
+                .await
+                .unwrap();
+        client
+            .download_file("object", &destination, ReadOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            pattern(0, usize::try_from(server.state.size).unwrap())
+        );
+        assert_eq!(
+            server.attempts(),
+            BTreeMap::from([(0, 1), (PART, 4), (2 * PART, 1)])
+        );
+        assert!(!checkpoint.exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&destination)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local TCP binding; run just run-integration-tests"]
+    async fn multipart_download_resumes_after_process_restart() {
+        if let Ok(endpoint) = std::env::var("MSC_NATIVE_RESUME_CHILD_ENDPOINT") {
+            let destination = std::env::var("MSC_NATIVE_RESUME_CHILD_DESTINATION").unwrap();
+            let client = StorageClientBuilder::from_provider(Arc::new(provider_at(
+                &endpoint, PART, PART, 1,
+            )))
+            .with_retry_policy(part_retry_policy(3))
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+            assert!(
+                client
+                    .download_file("object", destination, ReadOptions::default())
+                    .await
+                    .is_err()
+            );
+            std::process::exit(0);
+        }
+        let server = Server::start(
+            2 * PART + 11,
+            Mode::Transient {
+                status: 503,
+                failures: 3,
+            },
+        )
+        .await;
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("download");
+        std::fs::write(&destination, b"original").unwrap();
+        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "parallel_downloads::multipart_download_resumes_after_process_restart",
+                "--nocapture",
+            ])
+            .env("MSC_NATIVE_RESUME_CHILD_ENDPOINT", &server.endpoint)
+            .env("MSC_NATIVE_RESUME_CHILD_DESTINATION", &destination)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let checkpoint = directory.path().join(".download.msc-dl");
+        assert!(checkpoint.join("000000.chunk").is_file());
+        server
+            .client(PART, 2)
+            .await
+            .download_file("object", &destination, ReadOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            pattern(0, usize::try_from(server.state.size).unwrap())
+        );
+        assert_eq!(server.attempts()[&0], 1);
+        assert!(!checkpoint.exists());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local TCP binding; run just run-integration-tests"]
+    async fn resumed_download_still_enforces_read_conditions_and_publication() {
+        let server = Server::start(
+            PART + 11,
+            Mode::Transient {
+                status: 503,
+                failures: 3,
+            },
+        )
+        .await;
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("download");
+        std::fs::write(&destination, b"original").unwrap();
+        let client = server.client(PART, 1).await;
+        assert!(
+            client
+                .download_file("object", &destination, ReadOptions::default())
+                .await
+                .is_err()
+        );
+        let checkpoint = directory.path().join(".download.msc-dl");
+        wait_checkpoint_idle(&checkpoint).await;
+        let before = server.attempts();
+        let error = client
+            .download_file(
+                "object",
+                &destination,
+                ReadOptions {
+                    conditions: GetConditions {
+                        if_none_match: Some("\"source\"".into()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::NotModified);
+        assert_eq!(server.attempts(), before);
+        assert!(checkpoint.join("000000.chunk").is_file());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"original");
+        std::fs::remove_file(&destination).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        assert!(
+            client
+                .download_file("object", &destination, ReadOptions::default())
+                .await
+                .is_err()
+        );
+        assert!(checkpoint.join("000000.chunk").is_file());
+        assert!(checkpoint.join("000001.chunk").is_file());
+        std::fs::remove_dir(&destination).unwrap();
+        let requests = server.attempts();
+        client
+            .download_file("object", &destination, ReadOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(server.attempts(), requests);
+        assert!(!checkpoint.exists());
     }
 }

@@ -29,14 +29,17 @@ use std::panic::{AssertUnwindSafe, resume_unwind};
 async fn configured_backend_round_trip() {
     let profile = std::env::var("MSC_E2E_PROFILE")
         .expect("set MSC_E2E_PROFILE and configure that profile through MSC_CONFIG");
-    let client = StorageClient::builder(ConfigLoader::new().load().unwrap(), profile)
+    let config = ConfigLoader::new().load().unwrap();
+    let profile_config = config.profile(&profile).unwrap();
+    let provider = profile_config.storage_provider.as_ref().unwrap();
+    assert_ne!(
+        provider.provider_type, "file",
+        "E2E tests require a remote backend profile"
+    );
+    let client = StorageClient::builder(config, profile)
         .build()
         .await
         .unwrap();
-    assert!(
-        !client.is_posix(),
-        "E2E tests require a remote backend profile"
-    );
     let prefix = format!("msc-native-e2e-{}", uuid::Uuid::new_v4());
     let source = ObjectPath::new(format!("{prefix}/source")).unwrap();
     let destination = ObjectPath::new(format!("{prefix}/copy")).unwrap();
@@ -46,13 +49,18 @@ async fn configured_backend_round_trip() {
             .write(&source, payload.clone(), WriteOptions::default())
             .await
             .unwrap();
-        assert_eq!(client.read(&source).await.unwrap(), payload);
+        assert_eq!(
+            client.read(&source, ReadOptions::default()).await.unwrap(),
+            payload
+        );
         assert_eq!(
             client
-                .read_range(
+                .read(
                     &source,
-                    ByteRange::new(5, 6).unwrap(),
-                    ReadOptions::default()
+                    ReadOptions {
+                        range: Some((ByteRange::new(5, 6).unwrap()).into()),
+                        ..ReadOptions::default()
+                    }
                 )
                 .await
                 .unwrap(),
@@ -70,13 +78,19 @@ async fn configured_backend_round_trip() {
             .copy(&source, &destination, CopyOptions::default())
             .await
             .unwrap();
-        assert_eq!(client.read(&destination).await.unwrap(), payload);
+        assert_eq!(
+            client
+                .read(&destination, ReadOptions::default())
+                .await
+                .unwrap(),
+            payload
+        );
         client
             .download_file(
                 &destination,
                 &local_destination,
                 ReadOptions {
-                    max_in_memory_bytes: 1,
+                    max_in_memory_bytes: Some(1),
                     ..Default::default()
                 },
             )

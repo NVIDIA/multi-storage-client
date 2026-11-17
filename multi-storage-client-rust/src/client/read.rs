@@ -13,15 +13,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Metadata, bounded reads, seekable handles, and atomic downloads.
-use super::{ObjectReader, StorageClient, require_file, stable_conditions};
+//! Metadata, byte reads, and conditional ranges.
+use super::{StorageClient, require_file, stable_conditions};
 use crate::{
     ByteRange, ErrorKind, GetConditions, InfoOptions, ListOptions, MscError, ObjectKind,
     ObjectMetadata, ObjectPath, ReadOptions, Result,
 };
 use bytes::{Bytes, BytesMut};
-use futures::{StreamExt, stream};
-use std::path::Path;
+use futures::StreamExt;
 
 impl StorageClient {
     pub(super) async fn read_metadata(
@@ -30,13 +29,13 @@ impl StorageClient {
         conditions: &GetConditions,
     ) -> Result<ObjectMetadata> {
         if let Some(version) = &conditions.version
-            && !self.is_posix()
+            && !self.is_posix_file_storage_provider()
         {
             return self
                 .retry(true, || self.state.provider.head_version(path, version))
                 .await;
         }
-        let metadata = self.info(path, InfoOptions::default()).await?;
+        let metadata = self.info(path, InfoOptions { strict: false }).await?;
         if conditions
             .version
             .as_ref()
@@ -49,36 +48,13 @@ impl StorageClient {
         }
         Ok(metadata)
     }
-    /// Open an anchored native read-only POSIX file.
-    /// The returned handle supports asynchronous reading and seeking. Closing it
-    /// releases its descriptor; remote storage returns `Unsupported`.
-    ///
-    /// # Errors
-    /// Returns missing files, invalid paths, unsupported providers, or changed generations.
-    #[cfg(unix)]
-    pub async fn open_posix_file(&self, path: impl AsRef<str>) -> Result<tokio::fs::File> {
-        if !self.is_posix() {
-            return Err(MscError::unsupported("native POSIX file handles"));
-        }
-        let metadata = self.info(path, InfoOptions::default()).await?;
-        require_file(&metadata)?;
-        self.state
-            .provider
-            .open_posix_file(
-                &metadata.key,
-                &stable_conditions(&metadata, &GetConditions::default()),
-            )
-            .await
-    }
-    /// Resolve metadata, optionally following at most eight symlink hops.
-    ///
-    /// # Errors
-    /// Returns invalid paths, missing objects, symlink cycles, or provider errors.
-    pub async fn info(
+
+    pub(super) async fn info_impl(
         &self,
         path: impl AsRef<str>,
         options: InfoOptions,
     ) -> Result<ObjectMetadata> {
+        let directory_hint = path.as_ref().ends_with('/') && !self.is_posix_file_storage_provider();
         let mut path = ObjectPath::new(path)?;
         if path.is_root() {
             return Ok(ObjectMetadata::directory(path));
@@ -91,8 +67,10 @@ impl StorageClient {
                     "symlink cycle detected",
                 ));
             }
-            let metadata = self.retry(true, || self.state.provider.head(&path)).await?;
-            if metadata.kind != ObjectKind::Symlink || !options.follow_symlinks {
+            let metadata = self
+                .lookup_metadata(&path, options.strict, directory_hint)
+                .await?;
+            if metadata.kind != ObjectKind::Symlink {
                 return Ok(metadata);
             }
             if hop == 8 {
@@ -109,23 +87,44 @@ impl StorageClient {
         unreachable!("bounded symlink resolution")
     }
 
-    /// Test whether a path resolves to a regular object. Missing objects return false.
-    ///
-    /// # Errors
-    /// Returns path, symlink-resolution, or provider errors other than missing objects.
-    pub async fn is_file(&self, path: impl AsRef<str>) -> Result<bool> {
-        match self.info(path, InfoOptions::default()).await {
+    async fn lookup_metadata(
+        &self,
+        path: &ObjectPath,
+        strict: bool,
+        directory_hint: bool,
+    ) -> Result<ObjectMetadata> {
+        self.retry(true, || async {
+            let missing = if directory_hint {
+                MscError::new(ErrorKind::NotFound, "directory does not exist").context(
+                    "info",
+                    self.state.provider.name(),
+                    path.as_str(),
+                )
+            } else {
+                match self.state.provider.head(path).await {
+                    Ok(metadata) => return Ok(metadata),
+                    Err(error) if error.kind == ErrorKind::NotFound && strict => error,
+                    Err(error) => return Err(error),
+                }
+            };
+            if self.state.provider.virtual_directory_exists(path).await? {
+                Ok(ObjectMetadata::directory(path.clone()))
+            } else {
+                Err(missing)
+            }
+        })
+        .await
+    }
+
+    pub(super) async fn is_file_impl(&self, path: impl AsRef<str>) -> Result<bool> {
+        match self.info(path, InfoOptions { strict: false }).await {
             Ok(metadata) => Ok(metadata.kind == ObjectKind::File),
             Err(error) if error.kind == ErrorKind::NotFound => Ok(false),
             Err(error) => Err(error),
         }
     }
 
-    /// Test whether any keys start with the normalized lexical prefix.
-    ///
-    /// # Errors
-    /// Returns invalid paths or listing errors.
-    pub async fn is_empty(&self, prefix: impl AsRef<str>) -> Result<bool> {
+    pub(super) async fn is_empty_impl(&self, prefix: impl AsRef<str>) -> Result<bool> {
         let mut listing = self
             .list(ListOptions {
                 prefix: ObjectPath::new(prefix)?,
@@ -135,33 +134,18 @@ impl StorageClient {
         Ok(listing.next().await.transpose()?.is_none())
     }
 
-    /// Read a small object. Large transfers should use a reader or download.
-    ///
-    /// # Errors
-    /// Returns path, provider, size-limit, version-condition, or integrity errors.
-    pub async fn read(&self, path: impl AsRef<str>) -> Result<Bytes> {
-        self.read_with_options(
-            path,
-            ReadOptions {
-                max_in_memory_bytes: self.state.max_in_memory_bytes,
-                buffer_size: Some(self.state.read_buffer_size),
-                ..ReadOptions::default()
-            },
-        )
-        .await
-    }
-
     /// Read with explicit conditions and an in-memory size limit.
     ///
     /// # Errors
     /// Returns path, provider, size-limit, version-condition, or integrity errors.
-    pub async fn read_with_options(
+    pub(super) async fn read_with_options_impl(
         &self,
         path: impl AsRef<str>,
         options: ReadOptions,
     ) -> Result<Bytes> {
         let path = ObjectPath::new(path)?;
-        let resolve_first = self.is_posix() || options.conditions != GetConditions::default();
+        let resolve_first =
+            self.is_posix_file_storage_provider() || options.conditions != GetConditions::default();
         let (key, conditions, expected) = if resolve_first {
             let metadata = self.read_metadata(&path, &options.conditions).await?;
             require_file(&metadata)?;
@@ -174,17 +158,26 @@ impl StorageClient {
             (path.clone(), options.conditions.clone(), None)
         };
         let bytes = self
-            .read_bytes(&key, &conditions, options.max_in_memory_bytes, expected)
+            .read_bytes(
+                &key,
+                &conditions,
+                options
+                    .max_in_memory_bytes
+                    .unwrap_or(self.state.max_in_memory_bytes),
+                expected,
+            )
             .await?;
-        if bytes.is_empty() && !resolve_first && self.capabilities().symlinks {
-            let metadata = self.info(&path, InfoOptions::default()).await?;
+        if bytes.is_empty() && !resolve_first && self.state.provider.capabilities().symlinks {
+            let metadata = self.info(&path, InfoOptions { strict: false }).await?;
             require_file(&metadata)?;
             if metadata.key != path {
                 return self
                     .read_bytes(
                         &metadata.key,
                         &stable_conditions(&metadata, &options.conditions),
-                        options.max_in_memory_bytes,
+                        options
+                            .max_in_memory_bytes
+                            .unwrap_or(self.state.max_in_memory_bytes),
                         Some(metadata.content_length),
                     )
                     .await;
@@ -232,7 +225,7 @@ impl StorageClient {
     ///
     /// # Errors
     /// Returns invalid paths/ranges, size-limit, unsupported-range, or provider errors.
-    pub async fn read_range(
+    pub(super) async fn read_range_impl(
         &self,
         path: impl AsRef<str>,
         range: impl Into<crate::ReadRange> + Send,
@@ -240,20 +233,26 @@ impl StorageClient {
     ) -> Result<Bytes> {
         let range = match range.into() {
             crate::ReadRange::Bounded(range) => range,
-            crate::ReadRange::Suffix(range) => return self.read_suffix(path, range, options).await,
+            crate::ReadRange::Suffix(range) => {
+                return self.read_suffix_impl(path, range, options).await;
+            }
         };
         range.end()?;
         let path = ObjectPath::new(path)?;
         if range.length == 0 {
             return Ok(Bytes::new());
         }
-        if range.length > options.max_in_memory_bytes {
+        if range.length
+            > options
+                .max_in_memory_bytes
+                .unwrap_or(self.state.max_in_memory_bytes)
+        {
             return Err(MscError::new(
                 ErrorKind::Unsupported,
                 "range exceeds the in-memory read limit",
             ));
         }
-        if self.is_posix() || options.conditions != GetConditions::default() {
+        if self.is_posix_file_storage_provider() || options.conditions != GetConditions::default() {
             let metadata = self.read_metadata(&path, &options.conditions).await?;
             require_file(&metadata)?;
             self.range_with_conditions(&metadata.key, range, &options.conditions)
@@ -262,8 +261,8 @@ impl StorageClient {
             let bytes = self
                 .range_with_conditions(&path, range, &options.conditions)
                 .await?;
-            if bytes.is_empty() && self.capabilities().symlinks {
-                let metadata = self.info(&path, InfoOptions::default()).await?;
+            if bytes.is_empty() && self.state.provider.capabilities().symlinks {
+                let metadata = self.info(&path, InfoOptions { strict: false }).await?;
                 if metadata.key != path {
                     return self
                         .range_with_conditions(&metadata.key, range, &options.conditions)
@@ -278,19 +277,23 @@ impl StorageClient {
     ///
     /// # Errors
     /// Returns path, memory-limit, condition, or provider errors.
-    pub async fn read_suffix(
+    pub(super) async fn read_suffix_impl(
         &self,
         path: impl AsRef<str>,
         range: crate::SuffixRange,
         options: ReadOptions,
     ) -> Result<Bytes> {
-        if range.length() > options.max_in_memory_bytes {
+        if range.length()
+            > options
+                .max_in_memory_bytes
+                .unwrap_or(self.state.max_in_memory_bytes)
+        {
             return Err(MscError::unsupported(
                 "suffix exceeds the in-memory read limit",
             ));
         }
         let path = super::nonroot_path(path)?;
-        if !self.capabilities().ranged_reads {
+        if !self.state.provider.capabilities().ranged_reads {
             return Err(MscError::unsupported("suffix reads"));
         }
         self.retry(true, || {
@@ -301,105 +304,18 @@ impl StorageClient {
         .await
     }
 
-    pub(super) async fn range_with_conditions(
+    async fn range_with_conditions(
         &self,
         path: &ObjectPath,
         range: ByteRange,
         conditions: &GetConditions,
     ) -> Result<Bytes> {
-        if !self.capabilities().ranged_reads {
+        if !self.state.provider.capabilities().ranged_reads {
             return Err(MscError::unsupported("ranged reads"));
         }
         self.retry(true, || {
             self.state.provider.get_range(path, range, conditions)
         })
         .await
-    }
-
-    /// Create a seekable handle pinned to the observed object generation.
-    ///
-    /// # Errors
-    /// Returns invalid buffer sizes/paths, unsupported ranges, or metadata errors.
-    pub async fn reader(
-        &self,
-        path: impl AsRef<str>,
-        options: ReadOptions,
-    ) -> Result<ObjectReader> {
-        let path = ObjectPath::new(path)?;
-        let buffer_size = options.buffer_size.unwrap_or(self.state.read_buffer_size);
-        if !self.capabilities().ranged_reads {
-            return Err(MscError::unsupported("seekable readers"));
-        }
-        if buffer_size == 0 {
-            return Err(MscError::new(
-                ErrorKind::InvalidConfig,
-                "reader buffer size must be positive",
-            ));
-        }
-        let metadata = self.read_metadata(&path, &options.conditions).await?;
-        require_file(&metadata)?;
-        let conditions = stable_conditions(&metadata, &options.conditions);
-        Ok(ObjectReader::new(
-            self.clone(),
-            metadata.key,
-            conditions,
-            metadata.content_length,
-            buffer_size as u64,
-        ))
-    }
-
-    /// Download `remote` to `local`, creating missing parent directories and
-    /// atomically publishing a temporary sibling after length/version validation.
-    /// Large generation-pinned objects use the provider's multipart transfer settings.
-    ///
-    /// # Errors
-    /// Returns path, provider, failed-condition, integrity, or local-file errors.
-    pub async fn download_file(
-        &self,
-        remote: impl AsRef<str>,
-        local: impl AsRef<Path>,
-        options: ReadOptions,
-    ) -> Result<ObjectMetadata> {
-        self.download_atomic(remote, local.as_ref(), options).await
-    }
-
-    /// Open a bounded provider stream, resolving symlinks when needed.
-    ///
-    /// # Errors
-    /// Returns logical symlink-resolution or provider-open errors.
-    pub async fn read_stream(
-        &self,
-        path: impl AsRef<str>,
-        options: ReadOptions,
-    ) -> Result<crate::ByteStream> {
-        let path = ObjectPath::new(path)?;
-        if self.is_posix() || options.conditions != GetConditions::default() {
-            let metadata = self.read_metadata(&path, &options.conditions).await?;
-            require_file(&metadata)?;
-            let conditions = stable_conditions(&metadata, &options.conditions);
-            return self
-                .retry(true, || self.state.provider.get(&metadata.key, &conditions))
-                .await;
-        }
-        let mut body = self
-            .retry(true, || self.state.provider.get(&path, &options.conditions))
-            .await?;
-        while let Some(chunk) = body.next().await {
-            if chunk.as_ref().is_ok_and(bytes::Bytes::is_empty) {
-                continue;
-            }
-            return Ok(Box::pin(stream::once(async move { chunk }).chain(body)));
-        }
-        if self.capabilities().symlinks {
-            let metadata = self.info(&path, InfoOptions::default()).await?;
-            require_file(&metadata)?;
-            if metadata.key != path {
-                let conditions = stable_conditions(&metadata, &options.conditions);
-                return self
-                    .retry(true, || self.state.provider.get(&metadata.key, &conditions))
-                    .await;
-            }
-        }
-        Ok(Box::pin(stream::empty()))
     }
 }

@@ -29,10 +29,11 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
 futures = "0.3"
 getrandom = "0.4"
-globset = "0.4"
 http = { version = "1", optional = true }
 http-body-util = { version = "0.1", optional = true }
 jmespath = { version = "0.5", features = ["sync"] }
+log = "0.4"
+same-file = "1"
 uuid = { version = "1", features = ["v4"] }
 object_store = { version = "=0.14.2", optional = true, default-features = false }
 quick-xml = { version = "0.38", optional = true, features = ["serialize"] }

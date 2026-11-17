@@ -20,12 +20,13 @@
 use bytes::Bytes;
 use futures::TryStreamExt;
 use multi_storage_client::{
-    ByteRange, ConfigLoader, DeleteOptions, ErrorKind, GetConditions, InfoOptions, ListOptions,
-    MscError, ObjectKind, ObjectPath, PresignMethod, ReadOptions, StorageClient, WriteOptions,
+    ByteRange, ByteStream, ConfigLoader, DeleteOptions, ErrorKind, GetConditions, InfoOptions,
+    ListOptions, MetadataStream, ObjectKind, ObjectMetadata, ObjectPath, ProviderCapabilities,
+    PutResult, ReadOptions, Result, StorageClient, StorageClientBuilder, StorageProvider,
+    WriteOptions,
 };
 use serde_json::json;
-use std::{collections::BTreeMap, io::SeekFrom, path::Path, time::Duration};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use std::{collections::BTreeMap, path::Path};
 
 fn key(value: &str) -> ObjectPath {
     ObjectPath::new(value).unwrap()
@@ -77,8 +78,6 @@ async fn keys(client: &StorageClient, options: ListOptions) -> Vec<String> {
 #[tokio::test]
 async fn empty_missing_and_directory_objects_have_distinct_public_behavior() {
     let (directory, client) = fixture().await;
-    assert!(client.is_posix());
-    assert!(!client.is_read_only());
     assert_eq!(
         client.info("", InfoOptions::default()).await.unwrap().kind,
         ObjectKind::Directory
@@ -97,13 +96,21 @@ async fn empty_missing_and_directory_objects_have_distinct_public_behavior() {
             ErrorKind::NotFound
         );
         assert_eq!(
-            client.read(path).await.unwrap_err().kind,
+            client
+                .read(path, ReadOptions::default())
+                .await
+                .unwrap_err()
+                .kind,
             ErrorKind::NotFound
         );
     }
     assert!(!directory.path().join("storage/missing").exists());
-    let metadata = client
+    client
         .write("nested/empty", Bytes::new(), WriteOptions::default())
+        .await
+        .unwrap();
+    let metadata = client
+        .info("nested/empty", InfoOptions::default())
         .await
         .unwrap();
     assert_eq!(metadata.content_length, 0);
@@ -111,26 +118,28 @@ async fn empty_missing_and_directory_objects_have_distinct_public_behavior() {
     assert!(metadata.source_version.is_some());
     assert!(client.is_file("nested/empty/").await.unwrap());
     assert!(!client.is_file("nested").await.unwrap());
+    assert_eq!(
+        client
+            .info("nested", InfoOptions { strict: false })
+            .await
+            .unwrap()
+            .kind,
+        ObjectKind::Directory
+    );
     assert!(!client.is_empty("nested/empty").await.unwrap());
-    assert!(client.read("nested/empty").await.unwrap().is_empty());
-    let mut reader = client
-        .reader("nested/empty", ReadOptions::default())
-        .await
-        .unwrap();
-    assert!(reader.is_empty());
-    assert_eq!(reader.len(), 0);
-    assert_eq!(reader.read(&mut [0; 1]).await.unwrap(), 0);
+    assert!(
+        client
+            .read("nested/empty", ReadOptions::default())
+            .await
+            .unwrap()
+            .is_empty()
+    );
     for path in ["", "nested"] {
         assert_eq!(
-            client.read(path).await.unwrap_err().kind,
-            ErrorKind::InvalidPath
-        );
-        assert_eq!(
             client
-                .reader(path, ReadOptions::default())
+                .read(path, ReadOptions::default())
                 .await
-                .err()
-                .unwrap()
+                .unwrap_err()
                 .kind,
             ErrorKind::InvalidPath
         );
@@ -150,7 +159,7 @@ async fn normalized_unicode_keys_and_replacement_attributes_round_trip() {
     } else {
         BTreeMap::new()
     };
-    let written = client
+    client
         .write(
             "α//sp ace%?#.txt/",
             body.clone(),
@@ -161,9 +170,19 @@ async fn normalized_unicode_keys_and_replacement_attributes_round_trip() {
         )
         .await
         .unwrap();
+    let written = client
+        .info("α//sp ace%?#.txt/", InfoOptions::default())
+        .await
+        .unwrap();
     assert_eq!(written.key, key("α/sp ace%?#.txt"));
     assert_eq!(written.attributes, attrs);
-    assert_eq!(client.read("α/sp ace%?#.txt").await.unwrap(), body);
+    assert_eq!(
+        client
+            .read("α/sp ace%?#.txt", ReadOptions::default())
+            .await
+            .unwrap(),
+        body
+    );
     let listing = client
         .list(ListOptions {
             include_attributes: true,
@@ -181,7 +200,7 @@ async fn normalized_unicode_keys_and_replacement_attributes_round_trip() {
     } else {
         BTreeMap::new()
     };
-    let replacement = client
+    client
         .write(
             "α/sp ace%?#.txt",
             Bytes::from_static(b"new"),
@@ -192,9 +211,19 @@ async fn normalized_unicode_keys_and_replacement_attributes_round_trip() {
         )
         .await
         .unwrap();
+    let replacement = client
+        .info("α/sp ace%?#.txt", InfoOptions::default())
+        .await
+        .unwrap();
     assert_ne!(written.source_version, replacement.source_version);
     assert_eq!(replacement.attributes, replacement_attrs);
-    assert_eq!(client.read("α/sp ace%?#.txt").await.unwrap(), "new");
+    assert_eq!(
+        client
+            .read("α/sp ace%?#.txt", ReadOptions::default())
+            .await
+            .unwrap(),
+        "new"
+    );
     client
         .write("α/sp ace%?#.txt", Bytes::new(), WriteOptions::default())
         .await
@@ -213,7 +242,7 @@ async fn normalized_unicode_keys_and_replacement_attributes_round_trip() {
 #[tokio::test]
 async fn ranges_clip_at_eof_and_enforce_memory_and_generation_conditions() {
     let (_directory, client) = fixture().await;
-    let metadata = client
+    client
         .write(
             "file",
             Bytes::from_static(b"0123456789"),
@@ -221,6 +250,7 @@ async fn ranges_clip_at_eof_and_enforce_memory_and_generation_conditions() {
         )
         .await
         .unwrap();
+    let metadata = client.info("file", InfoOptions::default()).await.unwrap();
     for (offset, length, expected) in [
         (0, 1, "0"),
         (3, 4, "3456"),
@@ -231,10 +261,12 @@ async fn ranges_clip_at_eof_and_enforce_memory_and_generation_conditions() {
     ] {
         assert_eq!(
             client
-                .read_range(
+                .read(
                     "file",
-                    ByteRange::new(offset, length).unwrap(),
-                    ReadOptions::default()
+                    ReadOptions {
+                        range: Some((ByteRange::new(offset, length).unwrap()).into()),
+                        ..ReadOptions::default()
+                    }
                 )
                 .await
                 .unwrap(),
@@ -243,10 +275,12 @@ async fn ranges_clip_at_eof_and_enforce_memory_and_generation_conditions() {
     }
     assert!(
         client
-            .read_range(
+            .read(
                 "missing",
-                ByteRange::new(0, 0).unwrap(),
-                ReadOptions::default()
+                ReadOptions {
+                    range: Some((ByteRange::new(0, 0).unwrap()).into()),
+                    ..ReadOptions::default()
+                }
             )
             .await
             .unwrap()
@@ -254,13 +288,18 @@ async fn ranges_clip_at_eof_and_enforce_memory_and_generation_conditions() {
     );
     assert_eq!(
         client
-            .read_range(
+            .read(
                 "file",
-                ByteRange {
-                    offset: u64::MAX,
-                    length: 1
-                },
-                ReadOptions::default()
+                ReadOptions {
+                    range: Some(
+                        (ByteRange {
+                            offset: u64::MAX,
+                            length: 1
+                        })
+                        .into()
+                    ),
+                    ..ReadOptions::default()
+                }
             )
             .await
             .unwrap_err()
@@ -269,11 +308,27 @@ async fn ranges_clip_at_eof_and_enforce_memory_and_generation_conditions() {
     );
     assert_eq!(
         client
-            .read_range(
+            .read(
                 "file",
-                ByteRange::new(0, 4).unwrap(),
                 ReadOptions {
-                    max_in_memory_bytes: 3,
+                    range: Some((ByteRange::new(0, 4).unwrap()).into()),
+                    ..ReadOptions {
+                        max_in_memory_bytes: Some(3),
+                        ..ReadOptions::default()
+                    }
+                }
+            )
+            .await
+            .unwrap_err()
+            .kind,
+        ErrorKind::Unsupported
+    );
+    assert_eq!(
+        client
+            .read(
+                "file",
+                ReadOptions {
+                    max_in_memory_bytes: Some(9),
                     ..ReadOptions::default()
                 }
             )
@@ -284,24 +339,10 @@ async fn ranges_clip_at_eof_and_enforce_memory_and_generation_conditions() {
     );
     assert_eq!(
         client
-            .read_with_options(
+            .read(
                 "file",
                 ReadOptions {
-                    max_in_memory_bytes: 9,
-                    ..ReadOptions::default()
-                }
-            )
-            .await
-            .unwrap_err()
-            .kind,
-        ErrorKind::Unsupported
-    );
-    assert_eq!(
-        client
-            .read_with_options(
-                "file",
-                ReadOptions {
-                    max_in_memory_bytes: 10,
+                    max_in_memory_bytes: Some(10),
                     ..ReadOptions::default()
                 }
             )
@@ -318,7 +359,13 @@ async fn ranges_clip_at_eof_and_enforce_memory_and_generation_conditions() {
     };
     assert_eq!(
         client
-            .read_range("file", ByteRange::new(1, 2).unwrap(), pinned.clone())
+            .read(
+                "file",
+                ReadOptions {
+                    range: Some((ByteRange::new(1, 2).unwrap()).into()),
+                    ..pinned.clone()
+                }
+            )
             .await
             .unwrap(),
         "12"
@@ -333,18 +380,20 @@ async fn ranges_clip_at_eof_and_enforce_memory_and_generation_conditions() {
         .unwrap();
     assert_eq!(
         client
-            .read_range("file", ByteRange::new(1, 2).unwrap(), pinned.clone())
+            .read(
+                "file",
+                ReadOptions {
+                    range: Some((ByteRange::new(1, 2).unwrap()).into()),
+                    ..pinned.clone()
+                }
+            )
             .await
             .unwrap_err()
             .kind,
         ErrorKind::PreconditionFailed
     );
     assert_eq!(
-        client
-            .read_with_options("file", pinned)
-            .await
-            .unwrap_err()
-            .kind,
+        client.read("file", pinned).await.unwrap_err().kind,
         ErrorKind::PreconditionFailed
     );
     client.shutdown().await.unwrap();
@@ -352,344 +401,137 @@ async fn ranges_clip_at_eof_and_enforce_memory_and_generation_conditions() {
 
 #[tokio::test]
 async fn builder_memory_limits_apply_to_default_reads_and_allow_explicit_overrides() {
-    let (directory, original) = fixture().await;
-    for (path, bytes) in [("empty", ""), ("boundary", "123"), ("larger", "1234")] {
-        original
-            .write(path, Bytes::from(bytes.to_owned()), WriteOptions::default())
-            .await
+    for injected in [false, true] {
+        let (directory, original) = fixture().await;
+        for (path, bytes) in [("empty", ""), ("boundary", "123"), ("larger", "1234")] {
+            original
+                .write(path, Bytes::from(bytes.to_owned()), WriteOptions::default())
+                .await
+                .unwrap();
+        }
+        original.shutdown().await.unwrap();
+        let config = ConfigLoader::new()
+            .with_explicit_paths([directory.path().join("config.json")])
+            .load()
             .unwrap();
-    }
-    original.shutdown().await.unwrap();
-    let config = ConfigLoader::new()
-        .with_explicit_paths([directory.path().join("config.json")])
-        .load()
-        .unwrap();
-    let bounded = StorageClient::builder(config.clone(), "local")
-        .with_max_in_memory_bytes(3)
-        .build()
-        .await
-        .unwrap();
-    assert_eq!(bounded.read("boundary").await.unwrap(), "123");
-    assert!(bounded.read("empty").await.unwrap().is_empty());
-    for client in [&bounded, &bounded.clone()] {
+        let builder = || {
+            if injected {
+                StorageClientBuilder::from_provider(std::sync::Arc::new(
+                    multi_storage_client::provider::posix::PosixProvider::new(
+                        multi_storage_client::provider::posix::PosixOptions::new(
+                            directory.path().join("storage"),
+                        ),
+                    )
+                    .unwrap(),
+                ))
+            } else {
+                StorageClient::builder(config.clone(), "local")
+            }
+        };
+        assert!(
+            builder()
+                .with_retry_policy(multi_storage_client::RetryPolicy {
+                    max_attempts: 0,
+                    ..Default::default()
+                })
+                .is_err()
+        );
+        let bounded = builder().with_max_in_memory_bytes(3).build().await.unwrap();
         assert_eq!(
-            client.read("larger").await.unwrap_err().kind,
+            bounded
+                .read("boundary", ReadOptions::default())
+                .await
+                .unwrap(),
+            "123"
+        );
+        assert!(
+            bounded
+                .read("empty", ReadOptions::default())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        for client in [&bounded, &bounded.clone()] {
+            assert_eq!(
+                client
+                    .read("larger", ReadOptions::default())
+                    .await
+                    .unwrap_err()
+                    .kind,
+                ErrorKind::Unsupported
+            );
+        }
+        assert_eq!(
+            bounded
+                .read(
+                    "larger",
+                    ReadOptions {
+                        max_in_memory_bytes: Some(4),
+                        ..ReadOptions::default()
+                    }
+                )
+                .await
+                .unwrap(),
+            "1234"
+        );
+        assert_eq!(
+            bounded
+                .read(
+                    "larger",
+                    ReadOptions {
+                        range: Some(ByteRange::new(0, 4).unwrap().into()),
+                        max_in_memory_bytes: Some(4),
+                        ..ReadOptions::default()
+                    }
+                )
+                .await
+                .unwrap(),
+            "1234"
+        );
+        assert_eq!(
+            bounded
+                .read(
+                    "larger",
+                    ReadOptions {
+                        range: Some(ByteRange::new(0, 4).unwrap().into()),
+                        ..ReadOptions::default()
+                    }
+                )
+                .await
+                .unwrap_err()
+                .kind,
             ErrorKind::Unsupported
         );
-    }
-    assert_eq!(
-        bounded
-            .read_with_options(
-                "larger",
-                ReadOptions {
-                    max_in_memory_bytes: 4,
-                    ..ReadOptions::default()
-                }
-            )
-            .await
-            .unwrap(),
-        "1234"
-    );
-    assert_eq!(
-        bounded
-            .read_range(
-                "larger",
-                ByteRange::new(0, 4).unwrap(),
-                ReadOptions::default()
-            )
-            .await
-            .unwrap(),
-        "1234"
-    );
-    let chunks = bounded
-        .read_stream("larger", ReadOptions::default())
-        .await
-        .unwrap()
-        .try_collect::<Vec<_>>()
-        .await
-        .unwrap();
-    assert_eq!(chunks.concat(), b"1234");
-    let zero = StorageClient::builder(config.clone(), "local")
-        .with_max_in_memory_bytes(0)
-        .build()
-        .await
-        .unwrap();
-    assert!(zero.read("empty").await.unwrap().is_empty());
-    assert_eq!(
-        zero.read("boundary").await.unwrap_err().kind,
-        ErrorKind::Unsupported
-    );
-    let unbounded = StorageClient::builder(config, "local")
-        .with_max_in_memory_bytes(u64::MAX)
-        .build()
-        .await
-        .unwrap();
-    assert_eq!(unbounded.read("larger").await.unwrap(), "1234");
-    bounded.shutdown().await.unwrap();
-    zero.shutdown().await.unwrap();
-    unbounded.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn explicit_one_mib_reader_buffer_overrides_a_different_builder_default() {
-    let (directory, _) = fixture().await;
-    let config = ConfigLoader::new()
-        .with_explicit_paths([directory.path().join("config.json")])
-        .load()
-        .unwrap();
-    let client = StorageClient::builder(config, "local")
-        .with_read_buffer_size(2 * 1024 * 1024)
-        .build()
-        .await
-        .unwrap();
-    for buffer_size in [None, Some(1024 * 1024)] {
-        client
-            .write(
-                "large",
-                Bytes::from(vec![1; 2 * 1024 * 1024]),
-                WriteOptions::default(),
-            )
+        let zero = builder().with_max_in_memory_bytes(0).build().await.unwrap();
+        assert!(
+            zero.read("empty", ReadOptions::default())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            zero.read("boundary", ReadOptions::default())
+                .await
+                .unwrap_err()
+                .kind,
+            ErrorKind::Unsupported
+        );
+        let unbounded = builder()
+            .with_max_in_memory_bytes(u64::MAX)
+            .build()
             .await
             .unwrap();
-        let mut reader = client
-            .reader(
-                "large",
-                ReadOptions {
-                    buffer_size,
-                    ..ReadOptions::default()
-                },
-            )
-            .await
-            .unwrap();
-        reader.read_exact(&mut vec![0; 1024 * 1024]).await.unwrap();
-        client
-            .write(
-                "large",
-                Bytes::from(vec![2; 2 * 1024 * 1024]),
-                WriteOptions::default(),
-            )
-            .await
-            .unwrap();
-        let result = reader.read_exact(&mut [0; 1]).await;
-        assert_eq!(result.is_ok(), buffer_size.is_none());
+        assert_eq!(
+            unbounded
+                .read("larger", ReadOptions::default())
+                .await
+                .unwrap(),
+            "1234"
+        );
+        bounded.shutdown().await.unwrap();
+        zero.shutdown().await.unwrap();
+        unbounded.shutdown().await.unwrap();
     }
-}
-
-#[tokio::test]
-async fn seekable_reader_handles_buffer_boundaries_eof_and_invalid_seeks() {
-    let (_directory, client) = fixture().await;
-    client
-        .write(
-            "file",
-            Bytes::from_static(b"0123456789"),
-            WriteOptions::default(),
-        )
-        .await
-        .unwrap();
-    let mut reader = client
-        .reader(
-            "file",
-            ReadOptions {
-                buffer_size: Some(3),
-                max_in_memory_bytes: 1,
-                ..ReadOptions::default()
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(reader.len(), 10);
-    assert!(!reader.is_empty());
-    assert_eq!(reader.position(), 0);
-    assert_eq!(reader.read(&mut []).await.unwrap(), 0);
-    let mut first = [0; 4];
-    reader.read_exact(&mut first).await.unwrap();
-    assert_eq!(&first, b"0123");
-    assert_eq!(reader.position(), 4);
-    assert_eq!(reader.seek(SeekFrom::Current(-2)).await.unwrap(), 2);
-    let mut middle = [0; 3];
-    reader.read_exact(&mut middle).await.unwrap();
-    assert_eq!(&middle, b"234");
-    assert_eq!(reader.seek(SeekFrom::End(-2)).await.unwrap(), 8);
-    let mut tail = Vec::new();
-    reader.read_to_end(&mut tail).await.unwrap();
-    assert_eq!(tail, b"89");
-    assert_eq!(reader.seek(SeekFrom::Start(100)).await.unwrap(), 100);
-    assert_eq!(reader.read(&mut [0; 1]).await.unwrap(), 0);
-    assert_eq!(
-        reader.seek(SeekFrom::End(-11)).await.unwrap_err().kind(),
-        std::io::ErrorKind::InvalidInput
-    );
-    assert_eq!(reader.position(), 100);
-    reader.seek(SeekFrom::Start(u64::MAX)).await.unwrap();
-    assert_eq!(
-        reader.seek(SeekFrom::Current(1)).await.unwrap_err().kind(),
-        std::io::ErrorKind::InvalidInput
-    );
-    reader.rewind().await.unwrap();
-    let mut all = Vec::new();
-    reader.read_to_end(&mut all).await.unwrap();
-    assert_eq!(all, b"0123456789");
-    assert_eq!(
-        client
-            .reader(
-                "file",
-                ReadOptions {
-                    buffer_size: Some(0),
-                    ..ReadOptions::default()
-                }
-            )
-            .await
-            .err()
-            .unwrap()
-            .kind,
-        ErrorKind::InvalidConfig
-    );
-    client.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn readers_and_streams_propagate_stale_generation_errors() {
-    let (_directory, client) = fixture().await;
-    let metadata = client
-        .write(
-            "file",
-            Bytes::from_static(b"0123456789"),
-            WriteOptions::default(),
-        )
-        .await
-        .unwrap();
-    let mut reader = client
-        .reader(
-            "file",
-            ReadOptions {
-                buffer_size: Some(2),
-                ..ReadOptions::default()
-            },
-        )
-        .await
-        .unwrap();
-    let mut first = [0; 2];
-    reader.read_exact(&mut first).await.unwrap();
-    client
-        .write(
-            "file",
-            Bytes::from_static(b"abcdefghij"),
-            WriteOptions::default(),
-        )
-        .await
-        .unwrap();
-    let error = reader.read_exact(&mut first).await.unwrap_err();
-    assert_eq!(
-        error
-            .get_ref()
-            .unwrap()
-            .downcast_ref::<MscError>()
-            .unwrap()
-            .kind,
-        ErrorKind::PreconditionFailed
-    );
-    let options = ReadOptions {
-        conditions: GetConditions {
-            version: metadata.source_version,
-            ..GetConditions::default()
-        },
-        ..ReadOptions::default()
-    };
-    assert_eq!(
-        client
-            .read_stream("file", options)
-            .await
-            .err()
-            .unwrap()
-            .kind,
-        ErrorKind::PreconditionFailed
-    );
-    {
-        let options = ReadOptions {
-            max_in_memory_bytes: 1,
-            ..ReadOptions::default()
-        };
-        let stream = client.read_stream("file", options).await.unwrap();
-        let chunks = stream.try_collect::<Vec<_>>().await.unwrap();
-        assert_eq!(chunks.concat(), b"abcdefghij");
-    }
-    client.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn writer_only_publishes_on_finish_and_honors_create_only_conditions() {
-    let (_directory, client) = fixture().await;
-    client
-        .write(
-            "stable",
-            Bytes::from_static(b"old"),
-            WriteOptions::default(),
-        )
-        .await
-        .unwrap();
-    for action in ["drop", "abort"] {
-        let mut writer = client
-            .writer("stable", Some(100), WriteOptions::default())
-            .await
-            .unwrap();
-        writer.write_all(b"unpublished").await.unwrap();
-        writer.flush().await.unwrap();
-        assert_eq!(client.read("stable").await.unwrap(), "old");
-        if action == "abort" {
-            writer.abort().await.unwrap();
-        } else {
-            drop(writer);
-        }
-        assert_eq!(client.read("stable").await.unwrap(), "old");
-    }
-    let mut writer = client
-        .writer("finished", Some(100), WriteOptions::default())
-        .await
-        .unwrap();
-    assert_eq!(writer.bytes_written(), 0);
-    writer.write_all(b"new").await.unwrap();
-    assert_eq!(writer.bytes_written(), 3);
-    writer.shutdown().await.unwrap();
-    assert!(!client.is_file("finished").await.unwrap());
-    assert_eq!(
-        writer.write_all(b"closed").await.unwrap_err().kind(),
-        std::io::ErrorKind::BrokenPipe
-    );
-    assert_eq!(writer.finish().await.unwrap().content_length, 3);
-    assert_eq!(client.read("finished").await.unwrap(), "new");
-    assert_eq!(
-        client
-            .writer("empty", Some(99), WriteOptions::default())
-            .await
-            .unwrap()
-            .finish()
-            .await
-            .unwrap()
-            .content_length,
-        0
-    );
-    let mut writer = client
-        .writer(
-            "stable",
-            None,
-            WriteOptions {
-                if_none_match: Some("*".into()),
-                ..WriteOptions::default()
-            },
-        )
-        .await
-        .unwrap();
-    writer.write_all(b"rejected").await.unwrap();
-    assert_eq!(
-        writer.finish().await.unwrap_err().kind,
-        ErrorKind::PreconditionFailed
-    );
-    assert_eq!(client.read("stable").await.unwrap(), "old");
-    assert_eq!(
-        keys(&client, ListOptions::default()).await,
-        ["empty", "finished", "stable"]
-    );
-    client.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -701,17 +543,18 @@ async fn file_downloads_create_missing_parents_and_preserve_destinations_on_fail
         .await
         .unwrap();
     let target = directory.path().join("downloads/data/downloaded.bin");
-    let metadata = client
+    client
         .download_file(
             "file",
             &target,
             ReadOptions {
-                max_in_memory_bytes: 1,
+                max_in_memory_bytes: Some(1),
                 ..ReadOptions::default()
             },
         )
         .await
         .unwrap();
+    let metadata = client.info("file", InfoOptions::default()).await.unwrap();
     assert_eq!(metadata.content_length, body.len() as u64);
     assert_eq!(std::fs::read(&target).unwrap(), body);
     assert_eq!(
@@ -810,7 +653,7 @@ async fn uploads_reject_missing_directory_and_symlink_sources_without_mutation()
     } else {
         BTreeMap::new()
     };
-    let uploaded = client
+    client
         .upload_file(
             "nested/uploaded",
             &source,
@@ -821,9 +664,19 @@ async fn uploads_reject_missing_directory_and_symlink_sources_without_mutation()
         )
         .await
         .unwrap();
+    let uploaded = client
+        .info("nested/uploaded", InfoOptions::default())
+        .await
+        .unwrap();
     assert_eq!(uploaded.content_length, 8);
     assert_eq!(uploaded.attributes, attrs);
-    assert_eq!(client.read("nested/uploaded").await.unwrap(), "uploaded");
+    assert_eq!(
+        client
+            .read("nested/uploaded", ReadOptions::default())
+            .await
+            .unwrap(),
+        "uploaded"
+    );
     assert_eq!(
         client
             .upload_file(
@@ -854,7 +707,13 @@ async fn uploads_reject_missing_directory_and_symlink_sources_without_mutation()
             .kind,
         ErrorKind::Unsupported
     );
-    assert_eq!(client.read("nested/uploaded").await.unwrap(), "uploaded");
+    assert_eq!(
+        client
+            .read("nested/uploaded", ReadOptions::default())
+            .await
+            .unwrap(),
+        "uploaded"
+    );
     client.shutdown().await.unwrap();
 }
 
@@ -896,7 +755,7 @@ async fn batch_delete_preserves_indices_and_treats_missing_objects_as_success() 
 }
 
 #[tokio::test]
-async fn listings_and_globs_respect_exact_paths_bounds_and_directory_options() {
+async fn listings_respect_exact_paths_bounds_and_directory_options() {
     let (directory, client) = fixture().await;
     for path in [
         "data/a.txt",
@@ -1001,39 +860,6 @@ async fn listings_and_globs_respect_exact_paths_bounds_and_directory_options() {
         .await,
         ["data/a.txt.bak", "data/b.bin"]
     );
-    let matches = client
-        .glob("data/*.[tb][xi][tn]", ListOptions::default())
-        .await
-        .unwrap()
-        .try_collect::<Vec<_>>()
-        .await
-        .unwrap();
-    assert_eq!(
-        matches
-            .iter()
-            .map(|item| item.key.as_str())
-            .collect::<Vec<_>>(),
-        ["data/a.txt", "data/b.bin", "data/sub/c.txt"]
-    );
-    assert!(
-        client
-            .glob("*.absent", ListOptions::default())
-            .await
-            .unwrap()
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(
-        client
-            .glob("[", ListOptions::default())
-            .await
-            .err()
-            .unwrap()
-            .kind,
-        ErrorKind::InvalidPath
-    );
     for end in ["data/a.txt", "data/0"] {
         assert_eq!(
             client
@@ -1054,7 +880,7 @@ async fn listings_and_globs_respect_exact_paths_bounds_and_directory_options() {
 
 #[tokio::test]
 async fn symlinks_follow_relative_targets_and_deleting_links_retains_targets() {
-    let (_directory, client) = fixture().await;
+    let (directory, client) = fixture().await;
     client
         .write(
             "target",
@@ -1063,20 +889,30 @@ async fn symlinks_follow_relative_targets_and_deleting_links_retains_targets() {
         )
         .await
         .unwrap();
-    let made = client
+    client
         .make_symlink("links/alias", "../target")
         .await
         .unwrap();
-    assert_eq!(made.kind, ObjectKind::Symlink);
-    assert_eq!(made.symlink_target.as_deref(), Some("../target"));
+    assert_eq!(
+        std::fs::read_link(directory.path().join("storage/links/alias")).unwrap(),
+        Path::new("../target")
+    );
     assert!(client.is_file("links/alias").await.unwrap());
-    assert_eq!(client.read("links/alias").await.unwrap(), "target payload");
     assert_eq!(
         client
-            .read_range(
+            .read("links/alias", ReadOptions::default())
+            .await
+            .unwrap(),
+        "target payload"
+    );
+    assert_eq!(
+        client
+            .read(
                 "links/alias",
-                ByteRange::new(7, 7).unwrap(),
-                ReadOptions::default()
+                ReadOptions {
+                    range: Some((ByteRange::new(7, 7).unwrap()).into()),
+                    ..ReadOptions::default()
+                }
             )
             .await
             .unwrap(),
@@ -1097,7 +933,11 @@ async fn symlinks_follow_relative_targets_and_deleting_links_retains_targets() {
     client.make_symlink("dangling", "missing").await.unwrap();
     assert!(!client.is_file("dangling").await.unwrap());
     assert_eq!(
-        client.read("dangling").await.unwrap_err().kind,
+        client
+            .read("dangling", ReadOptions::default())
+            .await
+            .unwrap_err()
+            .kind,
         ErrorKind::NotFound
     );
     assert_eq!(
@@ -1112,7 +952,10 @@ async fn symlinks_follow_relative_targets_and_deleting_links_retains_targets() {
         .delete("links/alias", false, DeleteOptions::default())
         .await
         .unwrap();
-    assert_eq!(client.read("target").await.unwrap(), "target payload");
+    assert_eq!(
+        client.read("target", ReadOptions::default()).await.unwrap(),
+        "target payload"
+    );
     client
         .delete("dangling", false, DeleteOptions::default())
         .await
@@ -1140,7 +983,11 @@ async fn invalid_paths_and_unsupported_conditions_never_mutate_existing_objects(
         "a\0stable",
     ] {
         assert_eq!(
-            client.read(path).await.unwrap_err().kind,
+            client
+                .read(path, ReadOptions::default())
+                .await
+                .unwrap_err()
+                .kind,
             ErrorKind::InvalidPath
         );
         assert_eq!(
@@ -1156,15 +1003,6 @@ async fn invalid_paths_and_unsupported_conditions_never_mutate_existing_objects(
                 .delete(path, false, DeleteOptions::default())
                 .await
                 .unwrap_err()
-                .kind,
-            ErrorKind::InvalidPath
-        );
-        assert_eq!(
-            client
-                .writer(path, None, WriteOptions::default())
-                .await
-                .err()
-                .unwrap()
                 .kind,
             ErrorKind::InvalidPath
         );
@@ -1223,17 +1061,11 @@ async fn invalid_paths_and_unsupported_conditions_never_mutate_existing_objects(
             ErrorKind::Unsupported
         );
     }
-    for method in [PresignMethod::Get, PresignMethod::Put] {
-        assert_eq!(
-            client
-                .presigned_url("stable", method, Duration::from_secs(60))
-                .await
-                .unwrap_err()
-                .kind,
-            ErrorKind::Unsupported
-        );
-    }
-    assert_eq!(client.read("stable").await.unwrap(), "original");
+
+    assert_eq!(
+        client.read("stable", ReadOptions::default()).await.unwrap(),
+        "original"
+    );
     assert_eq!(
         std::fs::read_dir(directory.path().join("storage"))
             .unwrap()
@@ -1243,89 +1075,93 @@ async fn invalid_paths_and_unsupported_conditions_never_mutate_existing_objects(
     client.shutdown().await.unwrap();
 }
 
-#[test]
-fn replacing_named_spools_cannot_change_writer_or_snapshot_uploads() {
-    fn replace_named_spools() {
-        for entry in std::fs::read_dir(std::env::temp_dir()).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_file() {
-                std::fs::remove_file(&path).unwrap();
-                std::fs::write(path, b"bad").unwrap();
-            }
+struct SourceChangingProvider {
+    inner: multi_storage_client::provider::posix::PosixProvider,
+    source: std::path::PathBuf,
+    replace: bool,
+}
+
+#[async_trait::async_trait]
+impl StorageProvider for SourceChangingProvider {
+    fn name(&self) -> &'static str {
+        "source-changing-test"
+    }
+    fn capabilities(&self) -> ProviderCapabilities {
+        self.inner.capabilities()
+    }
+    async fn head(&self, key: &ObjectPath) -> Result<ObjectMetadata> {
+        self.inner.head(key).await
+    }
+    async fn get(&self, key: &ObjectPath, conditions: &GetConditions) -> Result<ByteStream> {
+        self.inner.get(key, conditions).await
+    }
+    async fn get_range(
+        &self,
+        key: &ObjectPath,
+        range: ByteRange,
+        conditions: &GetConditions,
+    ) -> Result<Bytes> {
+        self.inner.get_range(key, range, conditions).await
+    }
+    async fn put(
+        &self,
+        key: &ObjectPath,
+        body: ByteStream,
+        size: Option<u64>,
+        options: &WriteOptions,
+    ) -> Result<PutResult> {
+        if self.replace {
+            std::fs::remove_file(&self.source)?;
+            std::fs::write(&self.source, b"new")?;
+        } else {
+            std::fs::write(&self.source, b"changed size")?;
         }
+        self.inner.put(key, body, size, options).await
     }
-    if std::env::var_os("MSC_SPOOL_CHILD").is_none() {
-        let directory = tempfile::tempdir().unwrap();
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "replacing_named_spools_cannot_change_writer_or_snapshot_uploads",
-            ])
-            .env("MSC_SPOOL_CHILD", "1")
-            .env("TMPDIR", directory.path())
-            .env("TMP", directory.path())
-            .env("TEMP", directory.path())
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return;
+    async fn delete(&self, key: &ObjectPath, options: &DeleteOptions) -> Result<()> {
+        self.inner.delete(key, options).await
     }
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    runtime.block_on(async {
-        let (directory, client) = fixture().await;
-        let mut writer = client
-            .writer("written", None, WriteOptions::default())
-            .await
-            .unwrap();
-        writer.write_all(b"old").await.unwrap();
-        writer.flush().await.unwrap();
-        replace_named_spools();
-        writer.finish().await.unwrap();
-        assert_eq!(client.read("written").await.unwrap(), "old");
-        let source = directory.path().join("source");
-        std::fs::write(&source, b"old").unwrap();
-        let callback =
-            std::sync::Arc::new(|_: multi_storage_client::TransferProgress| replace_named_spools());
-        client
-            .upload_file_with_callback("snapshot", source, WriteOptions::default(), Some(callback))
-            .await
-            .unwrap();
-        assert_eq!(client.read("snapshot").await.unwrap(), "old");
-    });
+    async fn list(&self, options: &ListOptions) -> Result<MetadataStream> {
+        self.inner.list(options).await
+    }
 }
 
 #[tokio::test]
 async fn direct_file_upload_retains_its_open_source_and_rejects_in_place_changes() {
-    let (directory, client) = fixture().await;
+    use multi_storage_client::provider::posix::{PosixOptions, PosixProvider};
+    let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("source");
     std::fs::write(&source, b"old").unwrap();
-    let path = source.clone();
-    let once = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let callback = std::sync::Arc::new(move |_: multi_storage_client::TransferProgress| {
-        if !once.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            std::fs::remove_file(&path).unwrap();
-            std::fs::write(&path, b"new").unwrap();
-        }
-    });
+    let client = StorageClientBuilder::from_provider(std::sync::Arc::new(SourceChangingProvider {
+        inner: PosixProvider::new(PosixOptions::new(directory.path())).unwrap(),
+        source: source.clone(),
+        replace: true,
+    }))
+    .build()
+    .await
+    .unwrap();
     client
-        .upload_file_with_callback("anchored", &source, WriteOptions::default(), Some(callback))
+        .upload_file("anchored", &source, WriteOptions::default())
         .await
         .unwrap();
-    assert_eq!(client.read("anchored").await.unwrap(), "old");
-    let path = source.clone();
-    let callback = std::sync::Arc::new(move |_: multi_storage_client::TransferProgress| {
-        std::fs::write(&path, b"changed size").unwrap();
-    });
+    assert_eq!(
+        client
+            .read("anchored", ReadOptions::default())
+            .await
+            .unwrap(),
+        "old"
+    );
+    assert_eq!(std::fs::read(&source).unwrap(), b"new");
+    let client = StorageClientBuilder::from_provider(std::sync::Arc::new(SourceChangingProvider {
+        inner: PosixProvider::new(PosixOptions::new(directory.path())).unwrap(),
+        source: source.clone(),
+        replace: false,
+    }))
+    .build()
+    .await
+    .unwrap();
     let error = client
-        .upload_file_with_callback("changed", source, WriteOptions::default(), Some(callback))
+        .upload_file("changed", source, WriteOptions::default())
         .await
         .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Integrity);

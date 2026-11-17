@@ -17,12 +17,12 @@
 #![cfg(feature = "s3")]
 #![allow(clippy::too_many_lines)] // Keep each provider contract scenario together.
 
-use std::{collections::BTreeMap, io::SeekFrom, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use futures::{StreamExt, TryStreamExt, stream};
 use multi_storage_client::{
-    ConfigLoader, StorageClient,
+    ConfigLoader, StorageClient, StorageClientBuilder,
     credentials::{AwsCredentials, FileCredentialsProvider, SecretString},
     error::{ErrorKind, MscError},
     path::ObjectPath,
@@ -32,10 +32,10 @@ use multi_storage_client::{
     },
     types::{
         ByteRange, ByteStream, CopyOptions, DeleteOptions, GetConditions, InfoOptions, ListOptions,
-        ObjectKind, ObjectMetadata, PresignMethod, PutResult, ReadOptions, WriteOptions,
+        ObjectKind, ObjectMetadata, PutResult, ReadOptions, WriteOptions,
     },
 };
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 fn key(value: &str) -> ObjectPath {
     ObjectPath::new(value).unwrap()
@@ -135,7 +135,6 @@ async fn configured_client_with_tags(
         .load()
         .unwrap();
     StorageClient::builder(config, "data")
-        .with_read_buffer_size(16 * 1024)
         .build()
         .await
         .unwrap()
@@ -294,41 +293,14 @@ async fn object_contract_and_conditions() {
         .await
         .unwrap();
     assert_eq!(publication.etag, provider.head(&copy).await.unwrap().etag);
-    StorageClient::from_provider(Arc::new(provider.clone()))
+    StorageClientBuilder::from_provider(Arc::new(provider.clone()))
+        .build()
+        .await
+        .unwrap()
         .copy(&object, &copy, CopyOptions::default())
         .await
         .unwrap();
     assert_eq!(read(&provider, &copy).await, Bytes::from_static(b"new"));
-    let signed = provider
-        .presigned_url(&copy, PresignMethod::Get, Duration::from_secs(60))
-        .await
-        .unwrap();
-    assert_eq!(
-        reqwest::get(signed).await.unwrap().bytes().await.unwrap(),
-        Bytes::from_static(b"new")
-    );
-    let signed_put = provider
-        .presigned_url(
-            &key("signed-put"),
-            PresignMethod::Put,
-            Duration::from_secs(60),
-        )
-        .await
-        .unwrap();
-    assert!(
-        reqwest::Client::new()
-            .put(signed_put)
-            .body("signed upload")
-            .send()
-            .await
-            .unwrap()
-            .status()
-            .is_success()
-    );
-    assert_eq!(
-        read(&provider, &key("signed-put")).await,
-        Bytes::from_static(b"signed upload")
-    );
     let batch = provider
         .delete_many(
             &[object.clone(), copy.clone(), key("missing")],
@@ -838,7 +810,7 @@ async fn live_file_credentials_and_error_redaction() {
 
 #[tokio::test]
 #[ignore = "requires local storage simulators; run just run-integration-tests"]
-async fn configured_storage_client_crud_listing_and_seekable_reader() {
+async fn configured_storage_client_crud_listing() {
     let prefix = "facade/objects";
     let client = configured_client(prefix).await;
     configured_object_contract(client, prefix).await;
@@ -846,7 +818,7 @@ async fn configured_storage_client_crud_listing_and_seekable_reader() {
 
 #[tokio::test]
 #[ignore = "requires local storage simulators; run just run-integration-tests"]
-async fn configured_s8k_client_crud_listing_and_seekable_reader() {
+async fn configured_s8k_client_crud_listing() {
     let prefix = "facade/s8k-objects";
     let client = configured_client_with_tags(prefix, "s8k", "S3Credentials").await;
     let body = Bytes::from_static(b"RIFF\x00\x00\x00\x00WAVE");
@@ -864,13 +836,19 @@ async fn configured_s8k_client_crud_listing_and_seekable_reader() {
             "audio/wav",
         ),
     ] {
-        for metadata in [
-            client
-                .write(path, body.clone(), options.clone())
-                .await
-                .unwrap(),
-            client.upload_file(path, &local, options).await.unwrap(),
-        ] {
+        for upload in [false, true] {
+            if upload {
+                client
+                    .upload_file(path, &local, options.clone())
+                    .await
+                    .unwrap();
+            } else {
+                client
+                    .write(path, body.clone(), options.clone())
+                    .await
+                    .unwrap();
+            }
+            let metadata = client.info(path, InfoOptions::default()).await.unwrap();
             assert_eq!(
                 metadata
                     .provider_fields
@@ -879,13 +857,16 @@ async fn configured_s8k_client_crud_listing_and_seekable_reader() {
                 Some(expected)
             );
         }
-        assert_eq!(client.read(path).await.unwrap(), body);
+        assert_eq!(
+            client.read(path, ReadOptions::default()).await.unwrap(),
+            body
+        );
         client
             .delete(path, false, DeleteOptions::default())
             .await
             .unwrap();
     }
-    let standard = StorageClient::from_provider(Arc::new(
+    let standard = StorageClientBuilder::from_provider(Arc::new(
         S3Provider::new(
             S3Options {
                 bucket: Some(std::env::var("MSC_S3_TEST_BUCKET").unwrap()),
@@ -897,9 +878,16 @@ async fn configured_s8k_client_crud_listing_and_seekable_reader() {
             Some(credentials()),
         )
         .unwrap(),
-    ));
-    let metadata = standard
+    ))
+    .build()
+    .await
+    .unwrap();
+    standard
         .write("inferred.wav", body, WriteOptions::default())
+        .await
+        .unwrap();
+    let metadata = standard
+        .info("inferred.wav", InfoOptions::default())
         .await
         .unwrap();
     assert_eq!(
@@ -929,7 +917,7 @@ async fn configured_object_contract(client: StorageClient, prefix: &str) {
         attributes: attributes.clone(),
         ..WriteOptions::default()
     };
-    let created = client
+    client
         .write(
             "nested//hello.txt",
             Bytes::from_static(b"0123456789"),
@@ -937,12 +925,55 @@ async fn configured_object_contract(client: StorageClient, prefix: &str) {
         )
         .await
         .unwrap();
+    let created = client
+        .info("nested//hello.txt", InfoOptions::default())
+        .await
+        .unwrap();
     assert_eq!(created.key, key("nested/hello.txt"));
     assert_eq!(created.attributes, attributes);
     assert!(created.etag.is_some());
+    assert!(InfoOptions::default().strict);
+    assert_eq!(
+        client
+            .info("nested", InfoOptions::default())
+            .await
+            .unwrap()
+            .kind,
+        ObjectKind::Directory
+    );
+    assert_eq!(
+        client
+            .info("nested", InfoOptions { strict: false })
+            .await
+            .unwrap_err()
+            .kind,
+        ErrorKind::NotFound
+    );
+    assert_eq!(
+        client
+            .info("nested/", InfoOptions { strict: false })
+            .await
+            .unwrap()
+            .kind,
+        ObjectKind::Directory
+    );
+    for path in ["neste", "nested/hello.txt/"] {
+        assert_eq!(
+            client
+                .info(path, InfoOptions::default())
+                .await
+                .unwrap_err()
+                .kind,
+            ErrorKind::NotFound
+        );
+    }
+
     assert!(client.is_file("nested/hello.txt").await.unwrap());
     assert_eq!(
-        client.read("nested/hello.txt").await.unwrap(),
+        client
+            .read("nested/hello.txt", ReadOptions::default())
+            .await
+            .unwrap(),
         Bytes::from_static(b"0123456789")
     );
     let physical = test_provider("");
@@ -956,10 +987,12 @@ async fn configured_object_contract(client: StorageClient, prefix: &str) {
     );
     assert_eq!(
         client
-            .read_range(
+            .read(
                 "nested/hello.txt",
-                ByteRange::new(2, 4).unwrap(),
-                ReadOptions::default()
+                ReadOptions {
+                    range: Some((ByteRange::new(2, 4).unwrap()).into()),
+                    ..ReadOptions::default()
+                }
             )
             .await
             .unwrap(),
@@ -967,10 +1000,12 @@ async fn configured_object_contract(client: StorageClient, prefix: &str) {
     );
     assert_eq!(
         client
-            .read_range(
+            .read(
                 "nested/hello.txt",
-                ByteRange::new(8, 99).unwrap(),
-                ReadOptions::default()
+                ReadOptions {
+                    range: Some((ByteRange::new(8, 99).unwrap()).into()),
+                    ..ReadOptions::default()
+                }
             )
             .await
             .unwrap(),
@@ -978,10 +1013,10 @@ async fn configured_object_contract(client: StorageClient, prefix: &str) {
     );
     assert_eq!(
         client
-            .read_with_options(
+            .read(
                 "nested/hello.txt",
                 ReadOptions {
-                    max_in_memory_bytes: 5,
+                    max_in_memory_bytes: Some(5),
                     ..ReadOptions::default()
                 }
             )
@@ -990,29 +1025,12 @@ async fn configured_object_contract(client: StorageClient, prefix: &str) {
             .kind,
         ErrorKind::Unsupported
     );
-    let mut reader = client
-        .reader(
-            "nested/hello.txt",
-            ReadOptions {
-                buffer_size: Some(3),
-                ..ReadOptions::default()
-            },
-        )
-        .await
-        .unwrap();
-    reader.seek(SeekFrom::Start(4)).await.unwrap();
-    let mut two = [0; 2];
-    reader.read_exact(&mut two).await.unwrap();
-    assert_eq!(&two, b"45");
-    reader.seek(SeekFrom::End(-2)).await.unwrap();
-    reader.read_exact(&mut two).await.unwrap();
-    assert_eq!(&two, b"89");
-    let updated = client
+    client
         .write(
             "nested/hello.txt",
             Bytes::from_static(b"abcdefghij"),
             WriteOptions {
-                if_match: created.etag,
+                if_match: created.etag.clone(),
                 attributes: attributes.clone(),
                 content_type: Some("text/plain".into()),
                 ..WriteOptions::default()
@@ -1020,19 +1038,33 @@ async fn configured_object_contract(client: StorageClient, prefix: &str) {
         )
         .await
         .unwrap();
-    reader.seek(SeekFrom::Start(0)).await.unwrap();
-    let error = reader.read(&mut two).await.unwrap_err();
+    let updated = client
+        .info("nested/hello.txt", InfoOptions::default())
+        .await
+        .unwrap();
     assert_eq!(
-        error
-            .get_ref()
-            .unwrap()
-            .downcast_ref::<MscError>()
-            .unwrap()
+        client
+            .read(
+                "nested/hello.txt",
+                ReadOptions {
+                    conditions: GetConditions {
+                        if_match: created.etag,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+            )
+            .await
+            .unwrap_err()
             .kind,
         ErrorKind::PreconditionFailed
     );
-    let copied = client
+    client
         .copy("nested/hello.txt", "copy.txt", CopyOptions::default())
+        .await
+        .unwrap();
+    let copied = client
+        .info("copy.txt", InfoOptions::default())
         .await
         .unwrap();
     assert_eq!(copied.attributes, attributes);
@@ -1044,7 +1076,7 @@ async fn configured_object_contract(client: StorageClient, prefix: &str) {
         Some("text/plain")
     );
     let replaced_attributes = BTreeMap::from([("owner".into(), "replacement".into())]);
-    let streamed = client
+    client
         .copy(
             "nested/hello.txt",
             "z-conditional-copy.txt",
@@ -1063,6 +1095,10 @@ async fn configured_object_contract(client: StorageClient, prefix: &str) {
         )
         .await
         .unwrap();
+    let streamed = client
+        .info("z-conditional-copy.txt", InfoOptions::default())
+        .await
+        .unwrap();
     assert_eq!(streamed.attributes, replaced_attributes);
     assert_eq!(
         streamed
@@ -1072,7 +1108,10 @@ async fn configured_object_contract(client: StorageClient, prefix: &str) {
         Some("application/json")
     );
     assert_eq!(
-        client.read("z-conditional-copy.txt").await.unwrap(),
+        client
+            .read("z-conditional-copy.txt", ReadOptions::default())
+            .await
+            .unwrap(),
         Bytes::from_static(b"abcdefghij")
     );
     let listed: Vec<ObjectMetadata> = client
@@ -1085,20 +1124,6 @@ async fn configured_object_contract(client: StorageClient, prefix: &str) {
     let expected = ["copy.txt", "nested/hello.txt", "z-conditional-copy.txt"].map(key);
     assert_eq!(
         listed.into_iter().map(|meta| meta.key).collect::<Vec<_>>(),
-        expected
-    );
-    let matching: Vec<ObjectMetadata> = client
-        .glob("*.txt", ListOptions::default())
-        .await
-        .unwrap()
-        .try_collect()
-        .await
-        .unwrap();
-    assert_eq!(
-        matching
-            .into_iter()
-            .map(|meta| meta.key)
-            .collect::<Vec<_>>(),
         expected
     );
     let bounded: Vec<ObjectMetadata> = client
@@ -1114,14 +1139,6 @@ async fn configured_object_contract(client: StorageClient, prefix: &str) {
         .unwrap();
     assert_eq!(bounded.len(), 1);
     assert_eq!(bounded[0].key, key("nested/hello.txt"));
-    let signed = client
-        .presigned_url("copy.txt", PresignMethod::Get, Duration::from_secs(60))
-        .await
-        .unwrap();
-    assert_eq!(
-        reqwest::get(signed).await.unwrap().bytes().await.unwrap(),
-        Bytes::from_static(b"abcdefghij")
-    );
     assert_eq!(
         client
             .delete("nested", true, DeleteOptions::default())
@@ -1155,82 +1172,35 @@ async fn configured_object_contract(client: StorageClient, prefix: &str) {
 
 #[tokio::test]
 #[ignore = "requires local storage simulators; run just run-integration-tests"]
-async fn configured_storage_client_writer_and_file_transfers() {
+async fn configured_storage_client_file_transfers() {
     let client = configured_client("facade/files").await;
-    let mut writer = client
-        .writer("finished", Some(6 * 1024 * 1024), WriteOptions::default())
-        .await
-        .unwrap();
-    let chunk = vec![42_u8; 64 * 1024];
-    for _ in 0..96 {
-        writer.write_all(&chunk).await.unwrap();
-    }
-    writer.flush().await.unwrap();
-    assert!(!client.is_file("finished").await.unwrap());
-    writer.shutdown().await.unwrap();
-    assert!(!client.is_file("finished").await.unwrap());
-    assert_eq!(
-        writer.finish().await.unwrap().content_length,
-        6 * 1024 * 1024
-    );
-    assert_eq!(
-        client
-            .read_range(
-                "finished",
-                ByteRange::new(0, 16).unwrap(),
-                ReadOptions::default()
-            )
-            .await
-            .unwrap(),
-        Bytes::from(vec![42; 16])
-    );
-    let mut dropped = client
-        .writer("dropped", None, WriteOptions::default())
-        .await
-        .unwrap();
-    dropped.write_all(b"unpublished").await.unwrap();
-    drop(dropped);
-    assert!(!client.is_file("dropped").await.unwrap());
-    let mut aborted = client
-        .writer("aborted", None, WriteOptions::default())
-        .await
-        .unwrap();
-    aborted.write_all(b"unpublished").await.unwrap();
-    aborted.abort().await.unwrap();
-    assert!(!client.is_file("aborted").await.unwrap());
-
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("source");
     let mut file = tokio::fs::File::create(&source).await.unwrap();
+    let chunk = vec![42_u8; 64 * 1024];
     for _ in 0..96 {
         file.write_all(&chunk).await.unwrap();
     }
     file.flush().await.unwrap();
     drop(file);
     let attributes = BTreeMap::from([("source".into(), "local-file".into())]);
-    assert_eq!(
-        client
-            .upload_file(
-                "uploaded",
-                &source,
-                WriteOptions {
-                    attributes: attributes.clone(),
-                    ..Default::default()
-                }
-            )
-            .await
-            .unwrap()
-            .content_length,
-        6 * 1024 * 1024
-    );
-    assert_eq!(
-        client
-            .info("uploaded", InfoOptions::default())
-            .await
-            .unwrap()
-            .attributes,
-        attributes
-    );
+    client
+        .upload_file(
+            "uploaded",
+            &source,
+            WriteOptions {
+                attributes: attributes.clone(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let metadata = client
+        .info("uploaded", InfoOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(metadata.content_length, 6 * 1024 * 1024);
+    assert_eq!(metadata.attributes, attributes);
     let destination = directory.path().join("destination");
     tokio::fs::write(&destination, b"original").await.unwrap();
     assert_eq!(
@@ -1247,7 +1217,7 @@ async fn configured_storage_client_writer_and_file_transfers() {
             "uploaded",
             &destination,
             ReadOptions {
-                max_in_memory_bytes: 1,
+                max_in_memory_bytes: Some(1),
                 ..Default::default()
             },
         )
@@ -1261,12 +1231,24 @@ async fn configured_storage_client_writer_and_file_transfers() {
 
     let cloned = client.clone();
     let range = ByteRange::new(0, 16).unwrap();
-    let (finished, uploaded) = tokio::join!(
-        client.read_range("finished", range, ReadOptions::default()),
-        cloned.read_range("uploaded", range, ReadOptions::default()),
+    let (first, second) = tokio::join!(
+        client.read(
+            "uploaded",
+            ReadOptions {
+                range: Some((range).into()),
+                ..ReadOptions::default()
+            }
+        ),
+        cloned.read(
+            "uploaded",
+            ReadOptions {
+                range: Some((range).into()),
+                ..ReadOptions::default()
+            }
+        ),
     );
-    assert_eq!(finished.unwrap(), Bytes::from(vec![42; 16]));
-    assert_eq!(uploaded.unwrap(), Bytes::from(vec![42; 16]));
+    assert_eq!(first.unwrap(), Bytes::from(vec![42; 16]));
+    assert_eq!(second.unwrap(), Bytes::from(vec![42; 16]));
     assert!(client.is_file("uploaded").await.unwrap());
     client.shutdown().await.unwrap();
     assert_eq!(multipart_upload_count().await, 0);
@@ -1299,18 +1281,17 @@ async fn configured_file_downloads_cover_multipart_boundaries() {
             .write("object", bytes.clone(), WriteOptions::default())
             .await
             .unwrap();
-        let metadata = client
+        client
             .download_file(
                 "object",
                 &destination,
                 ReadOptions {
-                    max_in_memory_bytes: 1,
+                    max_in_memory_bytes: Some(1),
                     ..Default::default()
                 },
             )
             .await
             .unwrap();
-        assert_eq!(metadata.content_length, size);
         assert_eq!(tokio::fs::read(&destination).await.unwrap(), bytes);
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
     }
@@ -1319,26 +1300,19 @@ async fn configured_file_downloads_cover_multipart_boundaries() {
 
 #[tokio::test]
 #[ignore = "requires local storage simulators; run just run-integration-tests"]
-async fn configured_storage_client_stream_conditions_and_literal_url_keys() {
-    let client = configured_client("facade/stream-conditions").await;
+async fn configured_storage_client_read_conditions_and_literal_url_keys() {
+    let client = configured_client("facade/read-conditions").await;
     let path = "日本語//%28sici%29+ spaces?#✅.bin";
     let value = Bytes::from_static("Unicode payload ✅\n0123456789".as_bytes());
-    let metadata = client
+    client
         .write(path, value.clone(), WriteOptions::default())
         .await
         .unwrap();
+    let metadata = client.info(path, InfoOptions::default()).await.unwrap();
     assert_eq!(metadata.key, key(path));
     assert_eq!(metadata.kind, ObjectKind::File);
     assert_eq!(metadata.content_length, value.len() as u64);
-    assert!(metadata.last_modified.is_none());
-    assert!(
-        client
-            .info(path, InfoOptions::default())
-            .await
-            .unwrap()
-            .last_modified
-            .is_some()
-    );
+    assert!(metadata.last_modified.is_some());
     assert!(metadata.source_version.is_some());
     assert!(
         !client
@@ -1346,31 +1320,29 @@ async fn configured_storage_client_stream_conditions_and_literal_url_keys() {
             .await
             .unwrap()
     );
-    let stored = client.info(path, InfoOptions::default()).await.unwrap();
-    assert_eq!(stored.etag, metadata.etag);
-    assert_eq!(stored.source_version, metadata.source_version);
-    assert_eq!(stored.content_length, metadata.content_length);
-    assert_eq!(stored.attributes, metadata.attributes);
-
     {
         let options = ReadOptions {
-            max_in_memory_bytes: 1,
+            max_in_memory_bytes: Some(1),
             conditions: GetConditions {
                 version: metadata.source_version.clone(),
                 ..Default::default()
             },
             ..Default::default()
         };
-        let body = client.read_stream(path, options).await.unwrap();
-        let chunks: Vec<_> = body.try_collect().await.unwrap();
-        assert_eq!(Bytes::from(chunks.concat()), value);
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("download");
+        client
+            .download_file(path, &destination, options)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(destination).unwrap(), value);
     }
     assert_eq!(
         client
-            .read_with_options(
+            .read(
                 path,
                 ReadOptions {
-                    max_in_memory_bytes: value.len() as u64,
+                    max_in_memory_bytes: Some(value.len() as u64),
                     ..Default::default()
                 }
             )
@@ -1380,15 +1352,17 @@ async fn configured_storage_client_stream_conditions_and_literal_url_keys() {
     );
     assert_eq!(
         client
-            .read_range(
+            .read(
                 path,
-                ByteRange::new(value.len() as u64 - 3, 99).unwrap(),
                 ReadOptions {
-                    conditions: GetConditions {
-                        version: metadata.source_version.clone(),
+                    range: Some((ByteRange::new(value.len() as u64 - 3, 99).unwrap()).into()),
+                    ..ReadOptions {
+                        conditions: GetConditions {
+                            version: metadata.source_version.clone(),
+                            ..Default::default()
+                        },
                         ..Default::default()
-                    },
-                    ..Default::default()
+                    }
                 }
             )
             .await
@@ -1404,34 +1378,18 @@ async fn configured_storage_client_stream_conditions_and_literal_url_keys() {
         ..Default::default()
     };
     assert_eq!(
-        client
-            .read_with_options(path, options.clone())
-            .await
-            .unwrap_err()
-            .kind,
+        client.read(path, options.clone()).await.unwrap_err().kind,
         ErrorKind::NotModified
     );
     assert_eq!(
         client
-            .read_stream(path, options.clone())
-            .await
-            .err()
-            .unwrap()
-            .kind,
-        ErrorKind::NotModified
-    );
-    assert_eq!(
-        client
-            .read_stream(path, options.clone())
-            .await
-            .err()
-            .unwrap()
-            .kind,
-        ErrorKind::NotModified
-    );
-    assert_eq!(
-        client
-            .read_range(path, ByteRange::new(0, 1).unwrap(), options)
+            .read(
+                path,
+                ReadOptions {
+                    range: Some((ByteRange::new(0, 1).unwrap()).into()),
+                    ..options
+                }
+            )
             .await
             .unwrap_err()
             .kind,
@@ -1462,17 +1420,18 @@ async fn configured_storage_client_stream_conditions_and_literal_url_keys() {
             ..Default::default()
         };
         assert_eq!(
-            client
-                .read_stream(path, options.clone())
-                .await
-                .err()
-                .unwrap()
-                .kind,
+            client.read(path, options.clone()).await.err().unwrap().kind,
             ErrorKind::PreconditionFailed
         );
         assert_eq!(
             client
-                .read_range(path, ByteRange::new(0, 1).unwrap(), options)
+                .read(
+                    path,
+                    ReadOptions {
+                        range: Some((ByteRange::new(0, 1).unwrap()).into()),
+                        ..options
+                    }
+                )
                 .await
                 .unwrap_err()
                 .kind,
@@ -1489,7 +1448,7 @@ async fn configured_storage_client_stream_conditions_and_literal_url_keys() {
         .unwrap();
     assert_eq!(
         client
-            .read_stream(
+            .read(
                 path,
                 ReadOptions {
                     conditions: GetConditions {
@@ -1509,19 +1468,13 @@ async fn configured_storage_client_stream_conditions_and_literal_url_keys() {
         .write("empty", Bytes::new(), WriteOptions::default())
         .await
         .unwrap();
-    {
-        let body = client
-            .read_stream("empty", ReadOptions::default())
+    assert!(
+        client
+            .read("empty", ReadOptions::default())
             .await
-            .unwrap();
-        assert!(
-            body.try_collect::<Vec<_>>()
-                .await
-                .unwrap()
-                .concat()
-                .is_empty()
-        );
-    }
+            .unwrap()
+            .is_empty()
+    );
     client.shutdown().await.unwrap();
 }
 
@@ -1542,14 +1495,11 @@ async fn configured_storage_client_multipart_attributes_and_condition_boundaries
     for size in [5 * 1024 * 1024 - 1, 5 * 1024 * 1024, 5 * 1024 * 1024 + 1] {
         let path = format!("size-{size}");
         let body = vec![42; size];
-        let mut writer = client
-            .writer(&path, Some(1), options.clone())
+        client
+            .write(&path, Bytes::copy_from_slice(&body), options.clone())
             .await
             .unwrap();
-        writer.write_all(&body[..size / 2]).await.unwrap();
-        writer.write_all(&body[size / 2..]).await.unwrap();
-        assert_eq!(writer.bytes_written(), size as u64);
-        let metadata = writer.finish().await.unwrap();
+        let metadata = client.info(&path, InfoOptions::default()).await.unwrap();
         assert_eq!(metadata.content_length, size as u64);
         assert_eq!(metadata.attributes, attributes);
         assert_eq!(
@@ -1563,14 +1513,8 @@ async fn configured_storage_client_multipart_attributes_and_condition_boundaries
             metadata.etag.as_deref(),
             Some("custom-etag-is-not-the-generation")
         );
-        let chunks: Vec<_> = client
-            .read_stream(&path, ReadOptions::default())
-            .await
-            .unwrap()
-            .try_collect()
-            .await
-            .unwrap();
-        assert_eq!(chunks.concat(), body);
+        let bytes = client.read(&path, ReadOptions::default()).await.unwrap();
+        assert_eq!(bytes, body);
     }
     let listed = client_listing(
         &client,
@@ -1590,7 +1534,7 @@ async fn configured_storage_client_multipart_attributes_and_condition_boundaries
     let threshold = 5 * 1024 * 1024;
     let exact_body = Bytes::from(vec![7; threshold]);
     let exact_path = "exact-threshold-conditional";
-    let created = client
+    client
         .write(
             exact_path,
             exact_body.clone(),
@@ -1601,9 +1545,19 @@ async fn configured_storage_client_multipart_attributes_and_condition_boundaries
         )
         .await
         .unwrap();
+    let created = client
+        .info(exact_path, InfoOptions::default())
+        .await
+        .unwrap();
     assert_eq!(created.content_length, threshold as u64);
     assert_eq!(created.attributes, attributes);
-    assert_eq!(client.read(exact_path).await.unwrap(), exact_body);
+    assert_eq!(
+        client
+            .read(exact_path, ReadOptions::default())
+            .await
+            .unwrap(),
+        exact_body
+    );
     let conflict = client
         .write(
             exact_path,
@@ -1615,14 +1569,23 @@ async fn configured_storage_client_multipart_attributes_and_condition_boundaries
         )
         .await
         .unwrap_err();
-    assert!(matches!(
-        conflict.kind,
-        ErrorKind::PreconditionFailed | ErrorKind::AmbiguousOutcome
-    ));
-    assert_eq!(client.read(exact_path).await.unwrap(), exact_body);
-    let original_etag = created.etag.expect("conditional creation returns an ETag");
+    assert!(
+        matches!(
+            conflict.kind,
+            ErrorKind::PreconditionFailed | ErrorKind::AmbiguousOutcome
+        ),
+        "{conflict:?}"
+    );
+    assert_eq!(
+        client
+            .read(exact_path, ReadOptions::default())
+            .await
+            .unwrap(),
+        exact_body
+    );
+    let original_etag = created.etag.expect("created object has an ETag");
     let replacement = Bytes::from(vec![9; threshold]);
-    let overwritten = client
+    client
         .write(
             exact_path,
             replacement.clone(),
@@ -1633,10 +1596,20 @@ async fn configured_storage_client_multipart_attributes_and_condition_boundaries
         )
         .await
         .unwrap();
+    let overwritten = client
+        .info(exact_path, InfoOptions::default())
+        .await
+        .unwrap();
     assert_eq!(overwritten.content_length, threshold as u64);
     assert_eq!(overwritten.attributes, attributes);
     assert_ne!(overwritten.etag.as_deref(), Some(original_etag.as_str()));
-    assert_eq!(client.read(exact_path).await.unwrap(), replacement);
+    assert_eq!(
+        client
+            .read(exact_path, ReadOptions::default())
+            .await
+            .unwrap(),
+        replacement
+    );
     let conflict = client
         .write(
             exact_path,
@@ -1648,14 +1621,27 @@ async fn configured_storage_client_multipart_attributes_and_condition_boundaries
         )
         .await
         .unwrap_err();
-    assert!(matches!(
-        conflict.kind,
-        ErrorKind::PreconditionFailed | ErrorKind::AmbiguousOutcome
-    ));
-    assert_eq!(client.read(exact_path).await.unwrap(), replacement);
+    assert!(
+        matches!(
+            conflict.kind,
+            ErrorKind::PreconditionFailed | ErrorKind::AmbiguousOutcome
+        ),
+        "{conflict:?}"
+    );
+    assert_eq!(
+        client
+            .read(exact_path, ReadOptions::default())
+            .await
+            .unwrap(),
+        replacement
+    );
 
-    let original = client
+    client
         .write("conditional", Bytes::from_static(b"original"), options)
+        .await
+        .unwrap();
+    let original = client
+        .info("conditional", InfoOptions::default())
         .await
         .unwrap();
     let payload = Bytes::from(vec![7; threshold + 1]);
@@ -1685,7 +1671,10 @@ async fn configured_storage_client_multipart_attributes_and_condition_boundaries
         );
     }
     assert_eq!(
-        client.read("conditional").await.unwrap(),
+        client
+            .read("conditional", ReadOptions::default())
+            .await
+            .unwrap(),
         Bytes::from_static(b"original")
     );
     assert!(!client.is_file("create-only").await.unwrap());
@@ -1714,12 +1703,19 @@ async fn configured_storage_client_multipart_attributes_and_condition_boundaries
             ErrorKind::InvalidConfig
         );
         assert_eq!(
-            client.read("conditional").await.unwrap(),
+            client
+                .read("conditional", ReadOptions::default())
+                .await
+                .unwrap(),
             Bytes::from_static(b"original")
         );
     }
-    let overwritten = client
+    client
         .write("conditional", Bytes::new(), WriteOptions::default())
+        .await
+        .unwrap();
+    let overwritten = client
+        .info("conditional", InfoOptions::default())
         .await
         .unwrap();
     assert!(overwritten.attributes.is_empty());
@@ -1728,98 +1724,6 @@ async fn configured_storage_client_multipart_attributes_and_condition_boundaries
         .await
         .unwrap();
     assert!(!client.is_file(exact_path).await.unwrap());
-    client.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-#[ignore = "requires local storage simulators; run just run-integration-tests"]
-async fn configured_storage_client_presigned_put_get_and_expiration_boundaries() {
-    let client = configured_client("facade/presigned").await;
-    let path = "日本語/%28name%29+ space?#.txt";
-    let signed = client
-        .presigned_url(path, PresignMethod::Put, Duration::from_secs(60))
-        .await
-        .unwrap();
-    let response = reqwest::Client::new()
-        .put(signed)
-        .header("content-type", "text/plain")
-        .body("Unicode ✅")
-        .send()
-        .await
-        .unwrap();
-    assert!(response.status().is_success());
-    let metadata = client.info(path, InfoOptions::default()).await.unwrap();
-    assert!(metadata.attributes.is_empty());
-    assert_eq!(
-        metadata
-            .provider_fields
-            .get("content_type")
-            .map(String::as_str),
-        Some("text/plain")
-    );
-    assert_eq!(
-        client.read(path).await.unwrap(),
-        Bytes::from_static("Unicode ✅".as_bytes())
-    );
-    for expires in [
-        Duration::from_secs(1),
-        Duration::from_secs(60),
-        Duration::from_secs(7 * 24 * 60 * 60),
-    ] {
-        let signed = client
-            .presigned_url(path, PresignMethod::Get, expires)
-            .await
-            .unwrap();
-        let url = url::Url::parse(&signed).unwrap();
-        assert_eq!(
-            url.query_pairs()
-                .find(|(key, _)| key.eq_ignore_ascii_case("x-amz-expires"))
-                .unwrap()
-                .1,
-            expires.as_secs().to_string()
-        );
-        if expires.as_secs() > 1 {
-            assert_eq!(
-                reqwest::get(signed)
-                    .await
-                    .unwrap()
-                    .error_for_status()
-                    .unwrap()
-                    .bytes()
-                    .await
-                    .unwrap(),
-                Bytes::from_static("Unicode ✅".as_bytes())
-            );
-        }
-    }
-    for expires in [
-        Duration::ZERO,
-        Duration::from_millis(999),
-        Duration::from_secs(7 * 24 * 60 * 60 + 1),
-    ] {
-        for method in [PresignMethod::Get, PresignMethod::Put] {
-            assert_eq!(
-                client
-                    .presigned_url(path, method, expires)
-                    .await
-                    .unwrap_err()
-                    .kind,
-                ErrorKind::InvalidConfig
-            );
-        }
-    }
-    client
-        .delete(path, false, DeleteOptions::default())
-        .await
-        .unwrap();
-    let signed = client
-        .presigned_url(path, PresignMethod::Get, Duration::from_secs(60))
-        .await
-        .unwrap();
-    assert_eq!(
-        reqwest::get(signed).await.unwrap().status(),
-        reqwest::StatusCode::NOT_FOUND
-    );
     client.shutdown().await.unwrap();
 }
 
@@ -1874,12 +1778,16 @@ async fn configured_storage_client_delete_many_preserves_chunk_indices() {
 #[ignore = "requires local storage simulators; run just run-integration-tests"]
 async fn configured_storage_client_unsupported_conditions_preserve_objects() {
     let client = configured_client("facade/unsupported-conditions").await;
-    let metadata = client
+    client
         .write(
             "existing",
             Bytes::from_static(b"original"),
             WriteOptions::default(),
         )
+        .await
+        .unwrap();
+    let metadata = client
+        .info("existing", InfoOptions::default())
         .await
         .unwrap();
     for options in [
@@ -1931,13 +1839,18 @@ async fn configured_storage_client_unsupported_conditions_preserve_objects() {
             assert_eq!(failure.error.kind, ErrorKind::Unsupported);
         }
         assert_eq!(
-            client.read("existing").await.unwrap(),
+            client
+                .read("existing", ReadOptions::default())
+                .await
+                .unwrap(),
             Bytes::from_static(b"original")
         );
     }
-    let link = client.make_symlink("link", "existing").await.unwrap();
-    assert_eq!(link.kind, ObjectKind::Symlink);
-    assert_eq!(client.read("link").await.unwrap(), "original");
+    client.make_symlink("link", "existing").await.unwrap();
+    assert_eq!(
+        client.read("link", ReadOptions::default()).await.unwrap(),
+        "original"
+    );
     let empty_attributes = BTreeMap::from([("owner".into(), "empty-file".into())]);
     client
         .write(
@@ -1985,26 +1898,17 @@ async fn configured_storage_client_unsupported_conditions_preserve_objects() {
             assert!(entries[2].attributes.is_empty());
         }
     }
-    let signed = client
-        .presigned_url("link", PresignMethod::Get, Duration::from_secs(60))
-        .await
-        .unwrap();
-    assert_eq!(
-        reqwest::get(signed)
-            .await
-            .unwrap()
-            .error_for_status()
-            .unwrap()
-            .bytes()
-            .await
-            .unwrap(),
-        "original"
-    );
     client
         .delete("link", false, DeleteOptions::default())
         .await
         .unwrap();
-    assert_eq!(client.read("existing").await.unwrap(), "original");
+    assert_eq!(
+        client
+            .read("existing", ReadOptions::default())
+            .await
+            .unwrap(),
+        "original"
+    );
     client
         .delete("existing", false, DeleteOptions::default())
         .await
@@ -2013,10 +1917,14 @@ async fn configured_storage_client_unsupported_conditions_preserve_objects() {
         .delete("empty", false, DeleteOptions::default())
         .await
         .unwrap();
-    client
-        .delete("missing", false, DeleteOptions::default())
-        .await
-        .unwrap();
+    assert_eq!(
+        client
+            .delete("missing", false, DeleteOptions::default())
+            .await
+            .unwrap_err()
+            .kind,
+        ErrorKind::NotFound
+    );
     assert!(client.is_empty("").await.unwrap());
     client.shutdown().await.unwrap();
 }

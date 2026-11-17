@@ -13,19 +13,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Ordered, resumable listings and glob selection.
+//! Ordered listings with retry cursors and attribute filtering.
 use super::StorageClient;
 use crate::filter::AttributeFilter;
 use crate::{ErrorKind, ListOptions, MetadataStream, MscError, ObjectPath, Result};
 use futures::{StreamExt, stream};
 
 impl StorageClient {
-    /// Return provider-ordered metadata. File-only streams resume after their last key.
-    ///
-    /// # Errors
-    /// Returns invalid listing bounds; provider/ordering errors appear in the stream.
     #[allow(clippy::unused_async)] // Opening and retries happen when the stream is polled.
-    pub async fn list(&self, mut options: ListOptions) -> Result<MetadataStream> {
+    pub(super) async fn list_impl(&self, mut options: ListOptions) -> Result<MetadataStream> {
         options.validate()?;
         let filter = AttributeFilter::compile(options.attribute_filter_expression.as_deref())?;
         let include_attributes = options.include_attributes;
@@ -110,37 +106,6 @@ impl StorageClient {
                     }
                 }
             }
-        })))
-    }
-
-    /// List all descendant keys while preserving ordering and bounds.
-    ///
-    /// # Errors
-    /// Returns invalid listing bounds; provider/ordering errors appear in the stream.
-    pub async fn list_recursive(&self, mut options: ListOptions) -> Result<MetadataStream> {
-        options.recursive = true;
-        self.list(options).await
-    }
-
-    /// Match normalized keys using S3-compatible wildcard and character classes.
-    ///
-    /// # Errors
-    /// Returns invalid patterns/paths/bounds; provider errors appear in the stream.
-    pub async fn glob(&self, pattern: &str, mut options: ListOptions) -> Result<MetadataStream> {
-        let pattern = ObjectPath::new(pattern)?;
-        let matcher = globset::GlobBuilder::new(pattern.as_str())
-            .literal_separator(false)
-            .build()
-            .map_err(|_| MscError::new(ErrorKind::InvalidPath, "invalid glob pattern"))?
-            .compile_matcher();
-        options.recursive = true;
-        let listing = self.list(options).await?;
-        Ok(Box::pin(listing.filter_map(move |result| {
-            let accepted = match &result {
-                Ok(metadata) => matcher.is_match(metadata.key.as_str()),
-                Err(_) => true,
-            };
-            std::future::ready(if accepted { Some(result) } else { None })
         })))
     }
 }

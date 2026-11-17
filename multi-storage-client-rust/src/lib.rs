@@ -22,7 +22,7 @@
 //! # Getting started
 //!
 //! Start with [`ConfigLoader`] and [`StorageClient::builder`] to preserve profile
-//! configuration. For a direct local adapter, use [`StorageClient::from_provider`].
+//! configuration. For a direct local adapter, use [`StorageClientBuilder::from_provider`].
 //! All client data methods take keys relative to the profile's base path;
 //! [`ResolvedConfig::resolve`] translates MSC URLs and absolute local paths.
 //!
@@ -42,16 +42,19 @@ pub mod error;
 mod filter;
 pub mod path;
 pub mod provider;
-pub mod transfer;
 pub mod types;
 
-pub use client::StorageClient;
+pub use client::{StorageClient, StorageClientBuilder};
 pub use config::{ConfigLoader, ResolvedConfig};
 pub use error::{ErrorKind, MscError, Result};
 pub use path::ObjectPath;
 pub use provider::{ProviderRegistry, StorageProvider};
-pub use transfer::*;
-pub use types::*;
+pub use types::{
+    BatchError, BatchFailure, BatchResult, ByteRange, ByteStream, CopyOptions, CopyScope,
+    DeleteOptions, GetConditions, InfoOptions, ListOptions, MetadataStream, ObjectKind,
+    ObjectMetadata, ProviderCapabilities, PutResult, ReadOptions, ReadRange, RetryPolicy,
+    SourceVersion, SuffixRange, WriteOptions,
+};
 
 /// The crate version supplied by Cargo.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

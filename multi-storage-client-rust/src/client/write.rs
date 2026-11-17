@@ -13,8 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Replayable uploads, sequential writers, and object mutations.
-use super::{ObjectWriter, StorageClient, nonroot_path, require_file, stable_conditions};
+//! Replayable uploads, byte writes, and object mutations.
+use super::{StorageClient, nonroot_path, require_file, stable_conditions};
 use crate::{
     CopyOptions, ErrorKind, InfoOptions, MscError, ObjectMetadata, ObjectPath, PutResult, Result,
     WriteOptions,
@@ -24,18 +24,16 @@ use futures::stream;
 use std::path::Path;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
+const UPLOAD_BUFFER_SIZE: usize = 1024 * 1024;
+
 impl StorageClient {
-    /// Publish bytes with the profile retry budget and return publication metadata.
-    ///
-    /// # Errors
-    /// Returns invalid paths, failed conditions, upload, or post-upload metadata errors.
-    pub async fn write(
+    pub(super) async fn write_impl(
         &self,
         path: impl AsRef<str>,
         bytes: Bytes,
         options: WriteOptions,
     ) -> Result<ObjectMetadata> {
-        if self.is_read_only() {
+        if !self.state.provider.capabilities().streaming_writes {
             return Err(MscError::unsupported("read-only client write"));
         }
         let path = nonroot_path(path)?;
@@ -54,51 +52,13 @@ impl StorageClient {
         self.metadata_after_put(&path, result).await
     }
 
-    /// Create an unpublished sequential upload. `size_hint` is advisory.
-    ///
-    /// # Errors
-    /// Returns invalid paths, unsupported writes, or temporary-file errors.
-    pub async fn writer(
-        &self,
-        path: impl AsRef<str>,
-        _size_hint: Option<u64>,
-        options: WriteOptions,
-    ) -> Result<ObjectWriter> {
-        if !self.capabilities().streaming_writes {
-            return Err(MscError::unsupported("streaming writers"));
-        }
-        ObjectWriter::new(self.clone(), nonroot_path(path)?, options).await
-    }
-
-    /// Upload a regular local file to `remote` from its anchored, replayable file handle.
-    ///
-    /// Memory stays bounded; no whole-file temporary copy is created.
-    /// The final source component is opened without following symlinks.
-    ///
-    /// # Errors
-    /// Returns path, local-file, unsupported-symlink, upload, or metadata errors.
-    pub async fn upload_file(
+    pub(super) async fn upload_file_impl(
         &self,
         remote: impl AsRef<str>,
         local: impl AsRef<Path>,
         options: WriteOptions,
     ) -> Result<ObjectMetadata> {
-        self.upload_file_with_callback(remote, local, options, None)
-            .await
-    }
-
-    /// Upload a regular file with cumulative progress for each upload attempt.
-    ///
-    /// # Errors
-    /// Returns source-file, upload, condition or metadata errors.
-    pub async fn upload_file_with_callback(
-        &self,
-        remote: impl AsRef<str>,
-        local: impl AsRef<Path>,
-        options: WriteOptions,
-        callback: Option<crate::TransferCallback>,
-    ) -> Result<ObjectMetadata> {
-        if self.is_read_only() {
+        if !self.state.provider.capabilities().streaming_writes {
             return Err(MscError::unsupported("read-only client upload"));
         }
         let path = nonroot_path(remote)?;
@@ -122,40 +82,24 @@ impl StorageClient {
                 "upload source must be a regular file",
             ));
         }
-        self.upload_open_file_with_callback(&path, &source, metadata.len(), &options, callback)
+        self.upload_open_file(&path, &source, metadata.len(), &options)
             .await
     }
 
-    pub(super) async fn upload_open_file(
+    async fn upload_open_file(
         &self,
         remote: &ObjectPath,
         local: &tokio::fs::File,
         length: u64,
         options: &WriteOptions,
-    ) -> Result<ObjectMetadata> {
-        self.upload_open_file_with_callback(remote, local, length, options, None)
-            .await
-    }
-
-    async fn upload_open_file_with_callback(
-        &self,
-        remote: &ObjectPath,
-        local: &tokio::fs::File,
-        length: u64,
-        options: &WriteOptions,
-        callback: Option<crate::TransferCallback>,
     ) -> Result<ObjectMetadata> {
         let file = std::sync::Arc::new(tokio::sync::Mutex::new(local.try_clone().await?));
         let expected = std::sync::Arc::new(file.lock().await.metadata().await?);
-        let buffer_size = self.state.read_buffer_size;
         let result = self
             .retry_mutation(|| async {
                 let file = file.clone();
-                let callback = callback.clone();
                 let expected = expected.clone();
-                crate::transfer::progress(callback.as_ref(), 0, length);
                 let body = stream::try_unfold((file, 0_u64), move |(file, offset)| {
-                    let callback = callback.clone();
                     let expected = expected.clone();
                     async move {
                         let mut handle = file.lock().await;
@@ -165,7 +109,7 @@ impl StorageClient {
                         if offset == 0 {
                             handle.seek(std::io::SeekFrom::Start(0)).await?;
                         }
-                        let mut bytes = vec![0; buffer_size];
+                        let mut bytes = vec![0; UPLOAD_BUFFER_SIZE];
                         let read = handle.read(&mut bytes).await?;
                         if read == 0 {
                             if offset != length
@@ -181,7 +125,6 @@ impl StorageClient {
                         drop(handle);
                         bytes.truncate(read);
                         let offset = offset + read as u64;
-                        crate::transfer::progress(callback.as_ref(), offset, length);
                         Ok(Some((Bytes::from(bytes), (file, offset))))
                     }
                 });
@@ -194,41 +137,36 @@ impl StorageClient {
         self.metadata_after_put(remote, result).await
     }
 
-    /// Copy an object using the provider or a bounded streaming fallback.
-    /// Empty destination attributes inherit the source attributes; nonempty
-    /// attributes replace them. An omitted content type inherits the source type.
-    ///
-    /// # Errors
-    /// Returns path, unsupported-operation, condition, copy, or metadata errors.
-    pub async fn copy(
+    pub(super) async fn copy_impl(
         &self,
         source: impl AsRef<str>,
         destination: impl AsRef<str>,
         options: CopyOptions,
     ) -> Result<ObjectMetadata> {
-        if self.is_read_only() {
+        if !self.state.provider.capabilities().streaming_writes {
             return Err(MscError::unsupported("read-only client copy"));
         }
         let mut source = nonroot_path(source)?;
-        if self.is_posix() {
-            let metadata = self.info(source, InfoOptions::default()).await?;
+        if self.is_posix_file_storage_provider() {
+            let metadata = self.info(source, InfoOptions { strict: false }).await?;
             require_file(&metadata)?;
             source = metadata.key;
         }
         let destination = nonroot_path(destination)?;
-        let result = if self.capabilities().server_side_copy == crate::CopyScope::None {
-            self.streaming_copy(&source, &destination, &options).await?
-        } else {
-            match self
-                .retry_mutation(|| self.state.provider.copy(&source, &destination, &options))
-                .await
-            {
-                Err(error) if error.kind == ErrorKind::Unsupported => {
-                    self.streaming_copy(&source, &destination, &options).await?
+        let result =
+            if self.state.provider.capabilities().server_side_copy == crate::CopyScope::None {
+                self.streaming_copy(&source, &destination, &options).await?
+            } else {
+                match self
+                    .retry_mutation(|| self.state.provider.copy(&source, &destination, &options))
+                    .await
+                {
+                    Err(error) if error.kind == ErrorKind::Unsupported => {
+                        self.streaming_copy(&source, &destination, &options).await?
+                    }
+                    result => result?,
                 }
-                result => result?,
-            }
-        };
+            };
         self.metadata_after_put(&destination, result).await
     }
 
@@ -238,10 +176,12 @@ impl StorageClient {
         destination: &ObjectPath,
         options: &CopyOptions,
     ) -> Result<PutResult> {
-        if !self.capabilities().streaming_reads || !self.capabilities().streaming_writes {
+        if !self.state.provider.capabilities().streaming_reads
+            || !self.state.provider.capabilities().streaming_writes
+        {
             return Err(MscError::unsupported("copy"));
         }
-        let metadata = self.info(source, InfoOptions::default()).await?;
+        let metadata = self.info(source, InfoOptions { strict: false }).await?;
         require_file(&metadata)?;
         let conditions = stable_conditions(&metadata, &options.source_conditions);
         let mut destination_options = options.destination.clone();
@@ -278,12 +218,7 @@ impl StorageClient {
             return Ok(metadata);
         }
         let metadata = self
-            .info(
-                path,
-                InfoOptions {
-                    follow_symlinks: false,
-                },
-            )
+            .retry(true, || self.state.provider.head(path))
             .await
             .map_err(|error| {
                 error.context(
@@ -314,28 +249,18 @@ impl StorageClient {
         Ok(metadata)
     }
 
-    /// Create a normalized link when the provider supports symlinks.
-    ///
-    /// # Errors
-    /// Returns invalid/escaping targets, unsupported symlinks, or provider errors.
-    pub async fn make_symlink(
+    pub(super) async fn make_symlink_impl(
         &self,
         path: impl AsRef<str>,
         target: &str,
     ) -> Result<ObjectMetadata> {
         let path = nonroot_path(path)?;
         path.resolve_link(target)?;
-        if !self.capabilities().symlinks {
+        if !self.state.provider.capabilities().symlinks {
             return Err(MscError::unsupported("symlinks"));
         }
         self.state.provider.make_symlink(&path, target).await?;
-        self.info(
-            &path,
-            InfoOptions {
-                follow_symlinks: false,
-            },
-        )
-        .await
+        self.retry(true, || self.state.provider.head(&path)).await
     }
 }
 
@@ -345,6 +270,7 @@ fn changed_source() -> MscError {
         "upload source changed during transfer",
     )
 }
+
 fn same_source(actual: &std::fs::Metadata, expected: &std::fs::Metadata) -> bool {
     #[cfg(unix)]
     {
@@ -354,15 +280,6 @@ fn same_source(actual: &std::fs::Metadata, expected: &std::fs::Metadata) -> bool
         }
     }
     actual.len() == expected.len() && actual.modified().ok() == expected.modified().ok()
-}
-
-pub(super) async fn create_spool_file() -> Result<tokio::fs::File> {
-    let file = tokio::task::spawn_blocking(tempfile::tempfile)
-        .await
-        .map_err(|_| {
-            MscError::new(ErrorKind::Cancelled, "temporary-file creation task failed")
-        })??;
-    Ok(tokio::fs::File::from_std(file))
 }
 
 #[cfg(unix)]

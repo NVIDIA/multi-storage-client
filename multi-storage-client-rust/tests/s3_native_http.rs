@@ -16,8 +16,8 @@
 //! Native S3 copy/delete publication evidence exercised over the actual HTTP adapter.
 #![cfg(feature = "s3")]
 use multi_storage_client::{
-    CopyOptions, DeleteOptions, ErrorKind, GetConditions, ObjectPath, StorageClient,
-    StorageProvider, WriteOptions,
+    CopyOptions, DeleteOptions, ErrorKind, GetConditions, ObjectPath, ReadOptions,
+    StorageClientBuilder, StorageProvider, WriteOptions,
     credentials::{AwsCredentials, SecretString},
     provider::s3::{S3Options, S3Provider},
 };
@@ -305,9 +305,141 @@ async fn conditional_delete_uses_etag_and_version_and_rejects_conflicting_scope(
 }
 
 #[tokio::test]
+async fn single_delete_checks_the_requested_generation_once_before_retrying_deletion() {
+    for historical in [false, true] {
+        let server = Server::new(vec![
+            Response::head("\"old\"", "v1", "tag"),
+            Response {
+                status: 503,
+                headers: String::new(),
+                body: "<Error><Code>SlowDown</Code></Error>".into(),
+            },
+            Response {
+                status: 204,
+                headers: String::new(),
+                body: String::new(),
+            },
+        ])
+        .await;
+        let provider = server.provider();
+        let version = historical.then(|| multi_storage_client::SourceVersion {
+            scope: provider.backend_fingerprint(),
+            value: "version:v1".into(),
+        });
+        let client = StorageClientBuilder::from_provider(Arc::new(provider))
+            .with_retry_policy(multi_storage_client::RetryPolicy {
+                max_attempts: 2,
+                initial_delay_ms: 1,
+                max_delay_ms: 1,
+                jitter: false,
+                ..Default::default()
+            })
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        client
+            .delete(
+                "object",
+                false,
+                DeleteOptions {
+                    version,
+                    if_match: Some("\"old\"".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        server.done().await;
+        let requests = server.requests.lock().unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.method.as_str())
+                .collect::<Vec<_>>(),
+            ["HEAD", "DELETE", "DELETE"]
+        );
+        let target = if historical {
+            "/bucket/base/object?versionId=v1"
+        } else {
+            "/bucket/base/object"
+        };
+        assert!(requests.iter().all(|request| request.target == target));
+        for request in &requests[1..] {
+            assert_eq!(request.headers["if-match"], "\"old\"");
+        }
+    }
+}
+
+#[tokio::test]
+async fn single_delete_never_mutates_after_a_failed_existence_check() {
+    for (status, expected, attempts, historical) in [
+        (404, ErrorKind::NotFound, 1, false),
+        (404, ErrorKind::NotFound, 1, true),
+        (403, ErrorKind::PermissionDenied, 1, false),
+        (503, ErrorKind::Unavailable, 2, false),
+    ] {
+        let server = Server::new(
+            (0..attempts)
+                .map(|_| Response {
+                    status,
+                    headers: String::new(),
+                    body: String::new(),
+                })
+                .collect(),
+        )
+        .await;
+        let provider = server.provider();
+        let version = historical.then(|| multi_storage_client::SourceVersion {
+            scope: provider.backend_fingerprint(),
+            value: "version:v1".into(),
+        });
+        let client = StorageClientBuilder::from_provider(Arc::new(provider))
+            .with_retry_policy(multi_storage_client::RetryPolicy {
+                max_attempts: 2,
+                initial_delay_ms: 1,
+                max_delay_ms: 1,
+                jitter: false,
+                ..Default::default()
+            })
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let error = client
+            .delete(
+                "object",
+                false,
+                DeleteOptions {
+                    version,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind, expected);
+        server.done().await;
+        let requests = server.requests.lock().unwrap();
+        assert_eq!(requests.len(), attempts);
+        assert!(requests.iter().all(|request| request.method == "HEAD"));
+        assert!(requests.iter().all(|request| {
+            request.target
+                == if historical {
+                    "/bucket/base/object?versionId=v1"
+                } else {
+                    "/bucket/base/object"
+                }
+        }));
+    }
+}
+
+#[tokio::test]
 async fn batch_deletion_preserves_input_indices_and_partial_failure_details() {
     let server=Server::new(vec![Response::xml("<DeleteResult><Deleted><Key>base/third</Key></Deleted><Error><Key>base/second</Key><Code>AccessDenied</Code><Message>secret</Message></Error><Deleted><Key>base/first&amp;☃</Key></Deleted></DeleteResult>")]).await;
-    let client = StorageClient::from_provider(Arc::new(server.provider()));
+    let client = StorageClientBuilder::from_provider(Arc::new(server.provider()))
+        .build()
+        .await
+        .unwrap();
     let keys = vec![key("first&☃"), key("second"), key("third")];
     let result = client
         .delete_many(&keys, DeleteOptions::default())
@@ -342,7 +474,7 @@ async fn batch_delete_reports_a_precondition_after_a_transient_attempt_as_ambigu
         },
     ])
     .await;
-    let client = StorageClient::from_provider(Arc::new(server.provider()))
+    let client = StorageClientBuilder::from_provider(Arc::new(server.provider()))
         .with_retry_policy(multi_storage_client::RetryPolicy {
             max_attempts: 2,
             initial_delay_ms: 1,
@@ -350,6 +482,9 @@ async fn batch_delete_reports_a_precondition_after_a_transient_attempt_as_ambigu
             jitter: false,
             ..Default::default()
         })
+        .unwrap()
+        .build()
+        .await
         .unwrap();
     let result = client
         .delete_many(
@@ -368,13 +503,12 @@ async fn batch_delete_reports_a_precondition_after_a_transient_attempt_as_ambigu
 
 #[tokio::test]
 async fn historical_reads_obtain_size_and_etag_from_the_requested_version() {
-    use futures::StreamExt as _;
     let mut current = Response::head("\"current\"", "v2", "current");
     current.body = "a longer current object".into();
     let mut responses = vec![current];
-    for operation in 0..5 {
+    for operation in 0..3 {
         responses.push(Response::head("\"old\"", "v1", "old"));
-        let ranged = matches!(operation, 2 | 4);
+        let ranged = operation == 2;
         let mut response = Response::head("\"old\"", "v1", "old");
         response.status = if ranged { 206 } else { 200 };
         if ranged {
@@ -392,46 +526,34 @@ async fn historical_reads_obtain_size_and_etag_from_the_requested_version() {
         .source_version
         .unwrap();
     version.value = "version:v1".into();
-    let client = StorageClient::from_provider(provider);
-    let options = multi_storage_client::ReadOptions {
+    let client = StorageClientBuilder::from_provider(provider)
+        .build()
+        .await
+        .unwrap();
+    let options = ReadOptions {
         conditions: GetConditions {
             version: Some(version),
             ..Default::default()
         },
         ..Default::default()
     };
-    assert_eq!(
-        client
-            .read_with_options("a", options.clone())
-            .await
-            .unwrap(),
-        "old!"
-    );
-    let mut stream = client.read_stream("a", options.clone()).await.unwrap();
-    let mut bytes = Vec::new();
-    while let Some(chunk) = stream.next().await {
-        bytes.extend_from_slice(&chunk.unwrap());
-    }
-    assert_eq!(bytes, b"old!");
-    let mut reader = client.reader("a", options.clone()).await.unwrap();
-    assert_eq!(reader.len(), 4);
-    bytes.clear();
-    reader.read_to_end(&mut bytes).await.unwrap();
-    assert_eq!(bytes, b"old!");
+    assert_eq!(client.read("a", options.clone()).await.unwrap(), "old!");
     let directory = tempfile::tempdir().unwrap();
     let output = directory.path().join("download");
-    let metadata = client
+    client
         .download_file("a", &output, options.clone())
         .await
         .unwrap();
-    assert_eq!(metadata.content_length, 4);
+    assert_eq!(std::fs::metadata(&output).unwrap().len(), 4);
     assert_eq!(std::fs::read(output).unwrap(), b"old!");
     assert_eq!(
         client
-            .read_range(
+            .read(
                 "a",
-                multi_storage_client::ByteRange::new(0, 4).unwrap(),
-                options
+                ReadOptions {
+                    range: Some((multi_storage_client::ByteRange::new(0, 4).unwrap()).into()),
+                    ..options
+                }
             )
             .await
             .unwrap(),
@@ -439,7 +561,7 @@ async fn historical_reads_obtain_size_and_etag_from_the_requested_version() {
     );
     server.done().await;
     let requests = server.requests.lock().unwrap();
-    assert_eq!(requests.len(), 11);
+    assert_eq!(requests.len(), 7);
     for request in &requests[1..] {
         assert!(
             request.target.contains("versionId=v1"),
@@ -750,7 +872,7 @@ async fn native_environment_child_probe() {
         assert_eq!(error.kind, ErrorKind::InvalidConfig);
         return;
     }
-    let responses = if scenario == "requester" {
+    let responses = if scenario == "requester" || scenario == "anonymous" {
         vec![Response {
             status: 204,
             headers: String::new(),
@@ -763,20 +885,16 @@ async fn native_environment_child_probe() {
     let provider = server.provider();
     match scenario.as_str() {
         "anonymous" => {
-            assert!(!provider.capabilities().presigned_get);
-            assert_eq!(
-                provider
-                    .presigned_url(
-                        &key("object"),
-                        multi_storage_client::PresignMethod::Get,
-                        Duration::from_secs(60)
-                    )
-                    .await
-                    .unwrap_err()
-                    .kind,
-                ErrorKind::Unsupported
+            provider
+                .delete(&key("object"), &DeleteOptions::default())
+                .await
+                .unwrap();
+            server.done().await;
+            assert!(
+                !server.requests.lock().unwrap()[0]
+                    .headers
+                    .contains_key("authorization")
             );
-            provider.delete_many(&[], &DeleteOptions::default()).await;
         }
         "encrypted" => {
             assert_eq!(
@@ -841,12 +959,17 @@ async fn copy_http_success_with_service_error_is_typed_and_redacted() {
 async fn suffix_read_uses_one_get_with_native_suffix_header() {
     let server = Server::new(vec![Response { status: 206,
         headers: "Content-Range: bytes 7-9/10\r\nETag: \"v1\"\r\nLast-Modified: Tue, 06 Oct 2026 12:00:00 GMT\r\n".into(), body: "789".into() }]).await;
-    let client = StorageClient::from_provider(Arc::new(server.provider()));
+    let client = StorageClientBuilder::from_provider(Arc::new(server.provider()))
+        .build()
+        .await
+        .unwrap();
     let result = client
-        .read_range(
+        .read(
             "tail",
-            multi_storage_client::SuffixRange::new(3).unwrap(),
-            multi_storage_client::ReadOptions::default(),
+            ReadOptions {
+                range: Some((multi_storage_client::SuffixRange::new(3).unwrap()).into()),
+                ..ReadOptions::default()
+            },
         )
         .await
         .unwrap();

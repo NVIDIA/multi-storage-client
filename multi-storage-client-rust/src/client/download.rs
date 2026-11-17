@@ -16,11 +16,13 @@
 //! Atomic streamed and parallel ranged file downloads.
 //!
 //! Range planning and source pinning adapt the accelerator's download module.
-//! Staging is ephemeral and retained by any outstanding blocking filesystem work.
+//! Small files use ephemeral staging; multipart checkpoints survive interrupted calls.
+mod multipart;
+mod state;
 use super::{StorageClient, require_file, stable_conditions};
-use crate::{ByteRange, ErrorKind, GetConditions, MscError, ObjectMetadata, ReadOptions, Result};
+use crate::{ErrorKind, GetConditions, MscError, ObjectMetadata, ReadOptions, Result};
 use bytes::Bytes;
-use futures::{StreamExt, TryStreamExt, stream};
+use futures::StreamExt;
 use std::{path::Path, sync::Arc};
 
 struct Staging {
@@ -50,6 +52,7 @@ impl Staging {
             use std::os::unix::fs::FileExt;
             self.file.as_file().write_all_at(bytes, offset)?;
         }
+
         #[cfg(not(unix))]
         {
             use std::io::{Seek, Write};
@@ -68,6 +71,7 @@ impl Staging {
             return Err(invalid_length());
         }
         self.file.as_file().sync_all()?;
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
@@ -99,14 +103,15 @@ impl StorageClient {
             .filter(|path| !path.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
         tokio::fs::create_dir_all(parent).await?;
-        let parent = parent.to_path_buf();
-        let staging = blocking(move || Staging::create(&parent).map(Arc::new)).await?;
+        check_conditions(&metadata, &options.conditions)?;
         let conditions = stable_conditions(&metadata, &options.conditions);
         let parts = self
             .state
             .provider
             .download_part_config(metadata.content_length)
-            .filter(|_| self.capabilities().ranged_reads && generation_pinned(&conditions));
+            .filter(|_| {
+                self.state.provider.capabilities().ranged_reads && generation_pinned(&conditions)
+            });
         if let Some((part_size, concurrency)) = parts {
             if part_size == 0 || !(1..=64).contains(&concurrency) {
                 return Err(MscError::new(
@@ -114,12 +119,14 @@ impl StorageClient {
                     "download parts require a positive size and concurrency between 1 and 64",
                 ));
             }
-            self.download_parallel(&metadata, &conditions, &staging, part_size, concurrency)
+            self.download_resumable(&metadata, &conditions, local, part_size, concurrency)
                 .await?;
-        } else {
-            self.download_stream(&metadata, &conditions, &staging)
-                .await?;
+            return Ok(metadata);
         }
+        let parent = parent.to_path_buf();
+        let staging = blocking(move || Staging::create(&parent).map(Arc::new)).await?;
+        self.download_stream(&metadata, &conditions, &staging)
+            .await?;
         let length = metadata.content_length;
         let synchronized = staging.clone();
         blocking(move || synchronized.synchronize(length)).await?;
@@ -164,50 +171,30 @@ impl StorageClient {
         })
         .await
     }
+}
 
-    async fn download_parallel(
-        &self,
-        metadata: &ObjectMetadata,
-        conditions: &GetConditions,
-        staging: &Arc<Staging>,
-        part_size: u64,
-        concurrency: usize,
-    ) -> Result<()> {
-        let parts = stream::iter(0..metadata.content_length.div_ceil(part_size))
-            .map(|index| {
-                let offset = index * part_size;
-                let length = part_size.min(metadata.content_length - offset);
-                let range = ByteRange { offset, length };
-                self.retry(true, move || async move {
-                    let mut body = self
-                        .state
-                        .provider
-                        .get_download_part(
-                            &metadata.key,
-                            range,
-                            conditions,
-                            metadata.content_length,
-                        )
-                        .await?;
-                    let mut written = 0_u64;
-                    while let Some(chunk) = body.next().await {
-                        let chunk = chunk?;
-                        if chunk.len() as u64 > length - written {
-                            return Err(invalid_length());
-                        }
-                        let count = chunk.len() as u64;
-                        write_part(staging.clone(), offset + written, chunk).await?;
-                        written += count;
-                    }
-                    if written != length {
-                        return Err(invalid_length());
-                    }
-                    Ok(())
-                })
-            })
-            .buffer_unordered(concurrency);
-        parts.try_for_each(|()| std::future::ready(Ok(()))).await
+fn check_conditions(metadata: &ObjectMetadata, conditions: &GetConditions) -> Result<()> {
+    if conditions
+        .if_match
+        .as_ref()
+        .is_some_and(|etag| etag != "*" && metadata.etag.as_ref() != Some(etag))
+    {
+        return Err(MscError::new(
+            ErrorKind::PreconditionFailed,
+            "download source does not match the requested ETag",
+        ));
     }
+    if conditions
+        .if_none_match
+        .as_ref()
+        .is_some_and(|etag| etag == "*" || metadata.etag.as_ref() == Some(etag))
+    {
+        return Err(MscError::new(
+            ErrorKind::NotModified,
+            "download source matches the excluded ETag",
+        ));
+    }
+    Ok(())
 }
 
 fn generation_pinned(conditions: &GetConditions) -> bool {

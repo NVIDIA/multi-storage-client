@@ -30,8 +30,8 @@ use crate::{
     provider::StorageProvider,
     types::{
         ByteRange, ByteStream, CopyOptions, CopyScope, DeleteOptions, GetConditions, ListOptions,
-        MetadataStream, ObjectMetadata, PresignMethod, ProviderCapabilities, PutResult,
-        SourceVersion, WriteOptions,
+        MetadataStream, ObjectMetadata, ProviderCapabilities, PutResult, SourceVersion,
+        WriteOptions,
     },
 };
 use async_trait::async_trait;
@@ -42,7 +42,6 @@ use object_store::{
     UpdateVersion,
     aws::{AmazonS3, AmazonS3Builder, AmazonS3ConfigKey, Checksum, S3ConditionalPut},
     path::Path,
-    signer::Signer,
 };
 use options::{config_error, validate_endpoint};
 use std::{sync::Arc, time::Duration};
@@ -545,8 +544,6 @@ impl StorageProvider for S3Provider {
             },
             multipart_upload: true,
             native_lexical_listing: true,
-            presigned_get: !self.skip_signature,
-            presigned_put: !self.skip_signature,
             user_metadata: true,
             stable_source_versions: true,
             symlinks: true,
@@ -568,6 +565,9 @@ impl StorageProvider for S3Provider {
             .await
             .map_err(|error| translate(error, "head", key.as_str()))?;
         self.metadata(result.meta, &result.attributes)
+    }
+    async fn virtual_directory_exists(&self, key: &ObjectPath) -> Result<bool> {
+        listing::virtual_directory_exists(self, key).await
     }
     async fn head_version(
         &self,
@@ -894,31 +894,7 @@ impl StorageProvider for S3Provider {
             .await?;
         Ok(())
     }
-    async fn presigned_url(
-        &self,
-        key: &ObjectPath,
-        method: PresignMethod,
-        expires: Duration,
-    ) -> Result<String> {
-        if self.skip_signature {
-            return Err(MscError::unsupported("anonymous S3 presigning"));
-        }
-        if expires.as_secs() == 0 || expires > Duration::from_secs(7 * 24 * 60 * 60) {
-            return Err(MscError::new(
-                ErrorKind::InvalidConfig,
-                "S3 presigned expiration must be positive and at most seven days",
-            ));
-        }
-        let method = match method {
-            PresignMethod::Get => reqwest::Method::GET,
-            PresignMethod::Put => reqwest::Method::PUT,
-        };
-        self.store
-            .signed_url(method, &self.path(key)?, expires)
-            .await
-            .map(|url| url.to_string())
-            .map_err(|error| translate(error, "presign", key.as_str()))
-    }
+
     async fn shutdown(&self) -> Result<()> {
         self.cleanup.shutdown().await
     }

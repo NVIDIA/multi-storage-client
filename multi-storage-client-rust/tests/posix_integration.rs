@@ -19,22 +19,25 @@ use bytes::Bytes;
 use futures::{StreamExt, stream};
 use multi_storage_client::{
     ByteRange, DeleteOptions, ErrorKind, GetConditions, InfoOptions, ListOptions, MscError,
-    ObjectKind, ObjectPath, ReadOptions, StorageClient, StorageProvider, WriteOptions,
+    ObjectKind, ObjectPath, ReadOptions, StorageClient, StorageClientBuilder, StorageProvider,
+    WriteOptions,
     provider::posix::{PosixOptions, PosixProvider},
 };
 use std::{collections::BTreeMap, sync::Arc};
-use tokio::io::AsyncReadExt;
 
-fn client(directory: &tempfile::TempDir) -> (Arc<PosixProvider>, StorageClient) {
+async fn client(directory: &tempfile::TempDir) -> (Arc<PosixProvider>, StorageClient) {
     let provider = Arc::new(PosixProvider::new(PosixOptions::new(directory.path())).unwrap());
-    let client = StorageClient::from_provider(provider.clone());
+    let client = StorageClientBuilder::from_provider(provider.clone())
+        .build()
+        .await
+        .unwrap();
     (provider, client)
 }
 
 #[tokio::test]
-async fn posix_contract_full_range_attributes_reader_and_generation() {
+async fn posix_contract_full_range_attributes_and_generation() {
     let directory = tempfile::tempdir().unwrap();
-    let (_, client) = client(&directory);
+    let (_, client) = client(&directory).await;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     let options = WriteOptions {
         attributes: BTreeMap::from([("owner".into(), "研究".into())]),
@@ -42,37 +45,37 @@ async fn posix_contract_full_range_attributes_reader_and_generation() {
     };
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let options = WriteOptions::default();
-    let metadata = client
+    client
         .write("α/sp ace.txt", Bytes::from_static(b"0123456789"), options)
+        .await
+        .unwrap();
+    let metadata = client
+        .info("α/sp ace.txt", InfoOptions::default())
         .await
         .unwrap();
     assert_eq!(metadata.content_length, 10);
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     assert_eq!(metadata.attributes["owner"], "研究");
-    assert_eq!(client.read("α/sp ace.txt").await.unwrap(), "0123456789");
     assert_eq!(
         client
-            .read_range(
+            .read("α/sp ace.txt", ReadOptions::default())
+            .await
+            .unwrap(),
+        "0123456789"
+    );
+    assert_eq!(
+        client
+            .read(
                 "α/sp ace.txt",
-                ByteRange::new(8, 10).unwrap(),
-                ReadOptions::default()
+                ReadOptions {
+                    range: Some((ByteRange::new(8, 10).unwrap()).into()),
+                    ..ReadOptions::default()
+                }
             )
             .await
             .unwrap(),
         "89"
     );
-    let mut reader = client
-        .reader(
-            "α/sp ace.txt",
-            ReadOptions {
-                buffer_size: Some(3),
-                ..ReadOptions::default()
-            },
-        )
-        .await
-        .unwrap();
-    let mut first = [0; 3];
-    reader.read_exact(&mut first).await.unwrap();
     client
         .write(
             "α/sp ace.txt",
@@ -81,9 +84,30 @@ async fn posix_contract_full_range_attributes_reader_and_generation() {
         )
         .await
         .unwrap();
-    let mut next = [0; 3];
-    assert!(reader.read_exact(&mut next).await.is_err());
-    assert_eq!(client.read("α/sp ace.txt").await.unwrap(), "abcdefghij");
+    assert_eq!(
+        client
+            .read(
+                "α/sp ace.txt",
+                ReadOptions {
+                    conditions: GetConditions {
+                        version: metadata.source_version,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+            )
+            .await
+            .unwrap_err()
+            .kind,
+        ErrorKind::PreconditionFailed
+    );
+    assert_eq!(
+        client
+            .read("α/sp ace.txt", ReadOptions::default())
+            .await
+            .unwrap(),
+        "abcdefghij"
+    );
     assert_eq!(
         client.info("α", InfoOptions::default()).await.unwrap().kind,
         ObjectKind::Directory
@@ -93,7 +117,7 @@ async fn posix_contract_full_range_attributes_reader_and_generation() {
 #[tokio::test]
 async fn posix_atomic_create_is_exclusive_between_concurrent_writers() {
     let directory = tempfile::tempdir().unwrap();
-    let (_, client) = client(&directory);
+    let (_, client) = client(&directory).await;
     let mut writers = futures::stream::iter(0..24)
         .map(|index| {
             let client = client.clone();
@@ -114,7 +138,7 @@ async fn posix_atomic_create_is_exclusive_between_concurrent_writers() {
     let mut successes = 0;
     while let Some(result) = writers.next().await {
         match result {
-            Ok(_) => successes += 1,
+            Ok(()) => successes += 1,
             Err(error) => assert_eq!(error.kind, ErrorKind::PreconditionFailed),
         }
     }
@@ -125,7 +149,7 @@ async fn posix_atomic_create_is_exclusive_between_concurrent_writers() {
 #[tokio::test]
 async fn posix_failed_and_cancelled_writes_leave_destination_and_temps_unchanged() {
     let directory = tempfile::tempdir().unwrap();
-    let (provider, client) = client(&directory);
+    let (provider, client) = client(&directory).await;
     client
         .write(
             "stable",
@@ -157,9 +181,12 @@ async fn posix_failed_and_cancelled_writes_leave_destination_and_temps_unchanged
             .await
             .is_err()
     );
-    let observer = StorageClient::from_provider(Arc::new(
+    let observer = StorageClientBuilder::from_provider(Arc::new(
         PosixProvider::new(PosixOptions::new(directory.path())).unwrap(),
-    ));
+    ))
+    .build()
+    .await
+    .unwrap();
     let listed: Vec<_> = observer
         .list(ListOptions::default())
         .await
@@ -169,7 +196,10 @@ async fn posix_failed_and_cancelled_writes_leave_destination_and_temps_unchanged
         .await;
     assert_eq!(listed.as_slice(), std::slice::from_ref(&key));
     drop(future);
-    assert_eq!(client.read("stable").await.unwrap(), "old");
+    assert_eq!(
+        client.read("stable", ReadOptions::default()).await.unwrap(),
+        "old"
+    );
     assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
 }
 
@@ -184,13 +214,21 @@ async fn posix_symlink_escape_is_rejected_for_reads_and_mutations() {
         directory.path().join("absolute"),
     )
     .unwrap();
-    let (_, client) = client(&directory);
+    let (_, client) = client(&directory).await;
     assert_eq!(
-        client.read("escape/secret").await.unwrap_err().kind,
+        client
+            .read("escape/secret", ReadOptions::default())
+            .await
+            .unwrap_err()
+            .kind,
         ErrorKind::InvalidPath
     );
     assert_eq!(
-        client.read("absolute").await.unwrap_err().kind,
+        client
+            .read("absolute", ReadOptions::default())
+            .await
+            .unwrap_err()
+            .kind,
         ErrorKind::InvalidPath
     );
     assert_eq!(
@@ -229,17 +267,29 @@ async fn posix_internal_symlinks_and_cycles_have_consistent_metadata() {
     std::os::unix::fs::symlink("real/data", directory.path().join("link")).unwrap();
     std::os::unix::fs::symlink("cycle2", directory.path().join("cycle1")).unwrap();
     std::os::unix::fs::symlink("cycle1", directory.path().join("cycle2")).unwrap();
-    let (_, client) = client(&directory);
-    assert_eq!(client.read("alias/data").await.unwrap(), "inside");
-    assert_eq!(client.read("link").await.unwrap(), "inside");
-    let version = client
-        .info("link", InfoOptions::default())
-        .await
-        .unwrap()
-        .source_version;
+    let (provider, client) = client(&directory).await;
     assert_eq!(
         client
-            .read_with_options(
+            .read("alias/data", ReadOptions::default())
+            .await
+            .unwrap(),
+        "inside"
+    );
+    assert_eq!(
+        client.read("link", ReadOptions::default()).await.unwrap(),
+        "inside"
+    );
+    let metadata = client.info("link", InfoOptions::default()).await.unwrap();
+    let non_strict = client
+        .info("link", InfoOptions { strict: false })
+        .await
+        .unwrap();
+    assert_eq!(non_strict.kind, ObjectKind::File);
+    assert_eq!(non_strict.source_version, metadata.source_version);
+    let version = metadata.source_version;
+    assert_eq!(
+        client
+            .read(
                 "link",
                 ReadOptions {
                     conditions: GetConditions {
@@ -255,44 +305,48 @@ async fn posix_internal_symlinks_and_cycles_have_consistent_metadata() {
     );
     assert_eq!(
         client
-            .read_suffix(
+            .read(
                 "link",
-                multi_storage_client::SuffixRange::new(4).unwrap(),
                 ReadOptions {
-                    conditions: GetConditions {
-                        version,
+                    range: Some((multi_storage_client::SuffixRange::new(4).unwrap()).into()),
+                    ..ReadOptions {
+                        conditions: GetConditions {
+                            version,
+                            ..Default::default()
+                        },
                         ..Default::default()
-                    },
-                    ..Default::default()
+                    }
                 }
             )
             .await
             .unwrap(),
         "side"
     );
-    let link = client
-        .info(
-            "link",
-            InfoOptions {
-                follow_symlinks: false,
-            },
-        )
+    let link = provider
+        .head(&ObjectPath::new("link").unwrap())
         .await
         .unwrap();
     assert_eq!(link.kind, ObjectKind::Symlink);
     assert_eq!(link.symlink_target.as_deref(), Some("real/data"));
     assert_eq!(
-        client.read("cycle1").await.unwrap_err().kind,
+        client
+            .read("cycle1", ReadOptions::default())
+            .await
+            .unwrap_err()
+            .kind,
         ErrorKind::Integrity
     );
     client.make_symlink("made", "real/data").await.unwrap();
-    assert_eq!(client.read("made").await.unwrap(), "inside");
+    assert_eq!(
+        client.read("made", ReadOptions::default()).await.unwrap(),
+        "inside"
+    );
 }
 
 #[tokio::test]
 async fn posix_listing_matches_python_directory_delimiter_order() {
     let directory = tempfile::tempdir().unwrap();
-    let (_, client) = client(&directory);
+    let (_, client) = client(&directory).await;
     for key in ["a/file", "a!", "a-", "a.txt", "a0", "b/deep/file", "é"] {
         client
             .write(key, Bytes::new(), WriteOptions::default())
@@ -370,7 +424,7 @@ async fn posix_listing_uses_exact_directories_and_visits_descendants_lazily() {
     let nested_file = directory.path().join("data/sub/file.txt");
     std::fs::write(&nested_file, b"nested").unwrap();
     xattr::set(&nested_file, "user.json", b"invalid-json").unwrap();
-    let (_, client) = client(&directory);
+    let (_, client) = client(&directory).await;
     let options = ListOptions {
         prefix: ObjectPath::new("data").unwrap(),
         recursive: false,
@@ -429,7 +483,7 @@ async fn posix_listing_reads_attributes_only_when_requested() {
     let file = directory.path().join("z.txt");
     std::fs::write(&file, b"content").unwrap();
     xattr::set(&file, "user.json", b"invalid-json").unwrap();
-    let (_, client) = client(&directory);
+    let (_, client) = client(&directory).await;
     let entries = client
         .list(ListOptions::default())
         .await
@@ -455,9 +509,9 @@ async fn posix_listing_reads_attributes_only_when_requested() {
 }
 
 #[tokio::test]
-async fn posix_refuses_nonempty_directory_and_missing_deletes_are_successful() {
+async fn posix_refuses_nonempty_directory_and_missing_single_deletes() {
     let directory = tempfile::tempdir().unwrap();
-    let (_, client) = client(&directory);
+    let (_, client) = client(&directory).await;
     client
         .write("directory/file", Bytes::new(), WriteOptions::default())
         .await
@@ -476,10 +530,14 @@ async fn posix_refuses_nonempty_directory_and_missing_deletes_are_successful() {
         .delete("directory", false, DeleteOptions::default())
         .await
         .unwrap();
-    client
-        .delete("missing", false, DeleteOptions::default())
-        .await
-        .unwrap();
+    assert_eq!(
+        client
+            .delete("missing", false, DeleteOptions::default())
+            .await
+            .unwrap_err()
+            .kind,
+        ErrorKind::NotFound
+    );
 }
 
 #[tokio::test]
@@ -490,11 +548,15 @@ async fn posix_source_version_conditions_and_preserved_attributes() {
     options.preserve_mtime = true;
     options.preserve_permissions = true;
     let provider = Arc::new(PosixProvider::new(options).unwrap());
-    let client = StorageClient::from_provider(provider.clone());
-    let mut metadata = client
+    let client = StorageClientBuilder::from_provider(provider.clone())
+        .build()
+        .await
+        .unwrap();
+    client
         .write("file", Bytes::from_static(b"old"), WriteOptions::default())
         .await
         .unwrap();
+    let mut metadata = client.info("file", InfoOptions::default()).await.unwrap();
     let old_version = metadata.source_version.clone();
     metadata.last_modified = chrono::DateTime::from_timestamp(1_500_000_000, 123_456_789);
     metadata
@@ -549,14 +611,24 @@ async fn symlinks_below_directory_aliases_resolve_and_validate_physical_parents(
     symlink("real/sub", directory.path().join("alias")).unwrap();
     symlink("../data", directory.path().join("real/sub/link")).unwrap();
     symlink("alias/../data", directory.path().join("ambiguous")).unwrap();
-    let (provider, client) = client(&directory);
-    assert_eq!(client.read("alias/link").await.unwrap(), "correct");
+    let (provider, client) = client(&directory).await;
+    assert_eq!(
+        client
+            .read("alias/link", ReadOptions::default())
+            .await
+            .unwrap(),
+        "correct"
+    );
     assert_eq!(
         std::fs::read(directory.path().join("ambiguous")).unwrap(),
         b"correct"
     );
     assert_eq!(
-        client.read("ambiguous").await.unwrap_err().kind,
+        client
+            .read("ambiguous", ReadOptions::default())
+            .await
+            .unwrap_err()
+            .kind,
         ErrorKind::Unsupported
     );
     std::fs::create_dir(directory.path().join("nested")).unwrap();
@@ -574,7 +646,11 @@ async fn concurrent_copies_complete_with_one_provider_permit() {
     let directory = tempfile::tempdir().unwrap();
     let mut options = PosixOptions::new(directory.path());
     options.max_concurrency = 1;
-    let client = StorageClient::from_provider(Arc::new(PosixProvider::new(options).unwrap()));
+    let client =
+        StorageClientBuilder::from_provider(Arc::new(PosixProvider::new(options).unwrap()))
+            .build()
+            .await
+            .unwrap();
     let bytes = Bytes::from(vec![42; 131_073]);
     client
         .write("source", bytes.clone(), WriteOptions::default())
@@ -593,7 +669,10 @@ async fn concurrent_copies_complete_with_one_provider_permit() {
     {
         result.unwrap();
     }
-    assert_eq!(client.read("copy-7").await.unwrap(), bytes);
+    assert_eq!(
+        client.read("copy-7", ReadOptions::default()).await.unwrap(),
+        bytes
+    );
 }
 
 #[test]
@@ -603,13 +682,13 @@ fn listing_does_not_depend_on_blocking_pool_capacity_and_hides_cross_process_sta
         std::fs::write(directory.path().join(format!("file-{index:04}")), b"x").unwrap();
     }
     std::fs::write(directory.path().join(".msc-tmp-other-process"), b"partial").unwrap();
-    let (_, client) = client(&directory);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .max_blocking_threads(1)
         .build()
         .unwrap();
     runtime.block_on(async {
+        let (_, client) = client(&directory).await;
         let listed = tokio::time::timeout(
             std::time::Duration::from_secs(15),
             client
@@ -661,14 +740,17 @@ fn listing_system_temporary_directory_never_exposes_its_own_spool() {
         );
         return;
     }
-    let client = StorageClient::from_provider(Arc::new(
-        PosixProvider::new(PosixOptions::new(std::env::temp_dir())).unwrap(),
-    ));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
     runtime.block_on(async {
+        let client = StorageClientBuilder::from_provider(Arc::new(
+            PosixProvider::new(PosixOptions::new(std::env::temp_dir())).unwrap(),
+        ))
+        .build()
+        .await
+        .unwrap();
         let entries = client
             .list(ListOptions {
                 recursive: false,
@@ -695,7 +777,10 @@ async fn replacing_download_staging_cannot_truncate_or_publish_an_unrelated_file
     let mut options = PosixOptions::new(directory.path());
     options.max_concurrency = 1;
     let provider = Arc::new(PosixProvider::new(options).unwrap());
-    let client = StorageClient::from_provider(provider.clone());
+    let client = StorageClientBuilder::from_provider(provider.clone())
+        .build()
+        .await
+        .unwrap();
     client
         .write(
             "source",

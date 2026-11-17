@@ -42,6 +42,85 @@ pub(super) fn list(provider: S3Provider, options: &ListOptions) -> Result<Metada
         },
     )))
 }
+pub(super) async fn virtual_directory_exists(
+    provider: &S3Provider,
+    key: &ObjectPath,
+) -> Result<bool> {
+    let page = fetch_page(
+        provider,
+        &ListOptions {
+            prefix: key.clone(),
+            recursive: false,
+            ..Default::default()
+        },
+        None,
+        1,
+    )
+    .await?;
+    Ok(!page.contents.is_empty() || !page.common_prefixes.is_empty())
+}
+
+async fn fetch_page(
+    provider: &S3Provider,
+    options: &ListOptions,
+    token: Option<&str>,
+    max_keys: usize,
+) -> Result<Page> {
+    let path = provider.path(&options.prefix)?;
+    let prefix = if options.recursive && !options.prefix.is_root() {
+        path.to_string()
+    } else if path.as_ref().is_empty() {
+        String::new()
+    } else {
+        format!("{path}/")
+    };
+    let mut url = provider.bucket_url()?;
+    {
+        let mut query = url.query_pairs_mut();
+        query
+            .append_pair("list-type", "2")
+            .append_pair("prefix", &prefix)
+            .append_pair("max-keys", &max_keys.to_string());
+        if !options.recursive {
+            query.append_pair("delimiter", "/");
+        }
+        if let Some(token) = token {
+            query.append_pair("continuation-token", token);
+        }
+        if let Some(key) = &options.start_after {
+            query.append_pair("start-after", provider.path(key)?.as_ref());
+        }
+    }
+    let request = http::Request::builder()
+        .method("GET")
+        .uri(url.as_str())
+        .body(bytes::Bytes::new().into())
+        .map_err(|_| listing_failure(ErrorKind::InvalidConfig))?;
+    let response = provider
+        .send_native(request, "list", &options.prefix)
+        .await?;
+    let mut body = response.into_body().bytes_stream();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = body.next().await {
+        let chunk = chunk.map_err(|error| {
+            super::translate(
+                object_store::Error::Generic {
+                    store: "S3",
+                    source: Box::new(error),
+                },
+                "list",
+                options.prefix.as_str(),
+            )
+        })?;
+        if bytes.len().saturating_add(chunk.len()) > MAX_LISTING_BYTES {
+            return Err(listing_failure(ErrorKind::Integrity));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    validate_listing_envelope(&bytes)?;
+    quick_xml::de::from_reader(bytes.as_slice()).map_err(|_| listing_failure(ErrorKind::Integrity))
+}
+
 struct Listing {
     provider: S3Provider,
     options: ListOptions,
@@ -70,64 +149,13 @@ impl Listing {
         Ok(key)
     }
     async fn fetch(&mut self) -> Result<()> {
-        let path = self.provider.path(&self.options.prefix)?;
-        let prefix = if self.options.recursive && !self.options.prefix.is_root() {
-            path.to_string()
-        } else if path.as_ref().is_empty() {
-            String::new()
-        } else {
-            format!("{path}/")
-        };
-        let mut url = self.provider.bucket_url()?;
-        {
-            let mut query = url.query_pairs_mut();
-            query
-                .append_pair("list-type", "2")
-                .append_pair("prefix", &prefix)
-                .append_pair(
-                    "max-keys",
-                    &self.provider.options.list_page_size.to_string(),
-                );
-            if !self.options.recursive {
-                query.append_pair("delimiter", "/");
-            }
-            if let Some(token) = &self.token {
-                query.append_pair("continuation-token", token);
-            }
-            if let Some(key) = &self.options.start_after {
-                query.append_pair("start-after", self.provider.path(key)?.as_ref());
-            }
-        }
-        let request = http::Request::builder()
-            .method("GET")
-            .uri(url.as_str())
-            .body(bytes::Bytes::new().into())
-            .map_err(|_| listing_failure(ErrorKind::InvalidConfig))?;
-        let response = self
-            .provider
-            .send_native(request, "list", &self.options.prefix)
-            .await?;
-        let mut body = response.into_body().bytes_stream();
-        let mut bytes = Vec::new();
-        while let Some(chunk) = body.next().await {
-            let chunk = chunk.map_err(|error| {
-                super::translate(
-                    object_store::Error::Generic {
-                        store: "S3",
-                        source: Box::new(error),
-                    },
-                    "list",
-                    self.options.prefix.as_str(),
-                )
-            })?;
-            if bytes.len().saturating_add(chunk.len()) > MAX_LISTING_BYTES {
-                return Err(listing_failure(ErrorKind::Integrity));
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        validate_listing_envelope(&bytes)?;
-        let page: Page = quick_xml::de::from_reader(bytes.as_slice())
-            .map_err(|_| listing_failure(ErrorKind::Integrity))?;
+        let page = fetch_page(
+            &self.provider,
+            &self.options,
+            self.token.as_deref(),
+            self.provider.options.list_page_size,
+        )
+        .await?;
         self.accept_page(page)
     }
     fn accept_page(&mut self, page: Page) -> Result<()> {

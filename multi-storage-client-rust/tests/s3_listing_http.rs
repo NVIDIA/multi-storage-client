@@ -18,8 +18,8 @@
 
 use futures::{StreamExt, TryStreamExt};
 use multi_storage_client::{
-    ByteRange, ErrorKind, ListOptions, ObjectKind, ObjectPath, ReadOptions, RetryPolicy,
-    StorageClient,
+    ByteRange, ErrorKind, InfoOptions, ListOptions, ObjectKind, ObjectPath, ReadOptions,
+    RetryPolicy, StorageClient, StorageClientBuilder,
     credentials::{AwsCredentials, SecretString},
     provider::s3::{S3Options, S3Provider},
 };
@@ -120,7 +120,7 @@ impl Server {
             task,
         }
     }
-    fn client(&self) -> StorageClient {
+    async fn client(&self) -> StorageClient {
         let provider = S3Provider::new(
             S3Options {
                 base_path: "bucket/base".into(),
@@ -137,7 +137,7 @@ impl Server {
             }),
         )
         .unwrap();
-        StorageClient::from_provider(Arc::new(provider))
+        StorageClientBuilder::from_provider(Arc::new(provider))
             .with_retry_policy(RetryPolicy {
                 max_attempts: 3,
                 initial_delay_ms: 1,
@@ -145,6 +145,9 @@ impl Server {
                 jitter: false,
                 ..Default::default()
             })
+            .unwrap()
+            .build()
+            .await
             .unwrap()
     }
 }
@@ -166,6 +169,127 @@ fn page(contents: &str) -> String {
 }
 
 #[tokio::test]
+async fn strict_info_detects_virtual_directories_without_probing_children() {
+    let entries = [
+        object("base/dir/child"),
+        object("base/dir/zero").replace("<Size>3</Size>", "<Size>0</Size>"),
+        object("base/dir/").replace("<Size>3</Size>", "<Size>0</Size>"),
+        object("base/dir//unsupported"),
+        "<CommonPrefixes><Prefix>base/dir/sub/</Prefix></CommonPrefixes>".into(),
+        String::new(),
+    ];
+    for strict in [false, true] {
+        for directory_hint in [false, true] {
+            for contents in &entries {
+                let mut replies = Vec::new();
+                if !directory_hint {
+                    replies.push(Reply::bytes(404, b"", None));
+                }
+                if directory_hint || strict {
+                    replies.push(Reply::bytes(200, page(contents).as_bytes(), None));
+                }
+                let server = Server::start_responses(replies).await;
+                let client = server.client().await;
+                let path = if directory_hint { "dir/" } else { "dir" };
+                let result = client.info(path, InfoOptions { strict }).await;
+                if (directory_hint || strict) && !contents.is_empty() {
+                    let metadata = result.unwrap();
+                    assert_eq!(metadata.kind, ObjectKind::Directory);
+                    assert_eq!(metadata.key.as_str(), "dir");
+                } else {
+                    assert_eq!(result.unwrap_err().kind, ErrorKind::NotFound);
+                }
+                let requests = server.requests.lock().unwrap();
+                let wanted = usize::from(!directory_hint) + usize::from(directory_hint || strict);
+                assert_eq!(requests.len(), wanted);
+                for request in requests.iter().filter(|request| request.method == "GET") {
+                    let url =
+                        url::Url::parse(&format!("{}{}", server.endpoint, request.target)).unwrap();
+                    let query: BTreeMap<_, _> = url.query_pairs().collect();
+                    assert_eq!(query["prefix"], "base/dir/");
+                    assert_eq!(query["delimiter"], "/");
+                    assert_eq!(query["max-keys"], "1");
+                }
+            }
+        }
+        let server = Server::start_responses(vec![Reply::bytes(200, b"abc", None)]).await;
+        let client = server.client().await;
+        assert_eq!(
+            client
+                .info("file", InfoOptions { strict })
+                .await
+                .unwrap()
+                .kind,
+            ObjectKind::File
+        );
+        assert_eq!(
+            client.info("", InfoOptions { strict }).await.unwrap().kind,
+            ObjectKind::Directory
+        );
+        let requests = server.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, "HEAD");
+    }
+}
+
+#[tokio::test]
+async fn strict_info_directory_probes_preserve_errors_and_one_retry_budget() {
+    for directory_hint in [false, true] {
+        for (status, failures, recover) in [(503, 1, true), (503, 3, false), (403, 1, false)] {
+            let mut replies = Vec::new();
+            for _ in 0..failures {
+                if !directory_hint {
+                    replies.push(Reply::bytes(404, b"", None));
+                }
+                replies.push(Reply::bytes(
+                    status,
+                    b"<Error><Code>Failure</Code></Error>",
+                    None,
+                ));
+            }
+            if recover {
+                if !directory_hint {
+                    replies.push(Reply::bytes(404, b"", None));
+                }
+                replies.push(Reply::bytes(
+                    200,
+                    page(&object("base/dir/child")).as_bytes(),
+                    None,
+                ));
+            }
+            let server = Server::start_responses(replies).await;
+            let client = server.client().await;
+            let path = if directory_hint { "dir/" } else { "dir" };
+            let result = client.info(path, InfoOptions::default()).await;
+            if recover {
+                assert_eq!(result.unwrap().kind, ObjectKind::Directory);
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(
+                    error.kind,
+                    if status == 403 {
+                        ErrorKind::PermissionDenied
+                    } else {
+                        ErrorKind::Unavailable
+                    }
+                );
+                assert_eq!(error.http_status, Some(status));
+            }
+            let requests = server.requests.lock().unwrap();
+            let attempts = failures + usize::from(recover);
+            assert_eq!(
+                requests.len(),
+                attempts * if directory_hint { 1 } else { 2 }
+            );
+            assert_eq!(
+                requests.iter().filter(|r| r.method == "GET").count(),
+                attempts
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn unsupported_object_keys_fail_before_any_normalized_page_is_exposed() {
     for key in [
         "/base/a",
@@ -178,7 +302,7 @@ async fn unsupported_object_keys_fail_before_any_normalized_page_is_exposed() {
     ] {
         let server =
             Server::start(vec![page(&format!("{}{}", object("base/a"), object(key)))]).await;
-        let client = server.client();
+        let client = server.client().await;
         let mut listing = client.list(ListOptions::default()).await.unwrap();
         let error = listing.next().await.unwrap().unwrap_err();
         assert_eq!(error.kind, ErrorKind::InvalidPath, "{key}");
@@ -198,6 +322,7 @@ async fn directory_prefixes_keep_one_delimiter_and_invalid_aliases_fail() {
     .await;
     let entries = server
         .client()
+        .await
         .list(ListOptions {
             recursive: false,
             include_directories: true,
@@ -231,6 +356,7 @@ async fn directory_prefixes_keep_one_delimiter_and_invalid_aliases_fail() {
         .await;
         let error = server
             .client()
+            .await
             .list(ListOptions {
                 recursive: false,
                 include_directories: true,
@@ -259,6 +385,7 @@ async fn native_pagination_preserves_encoded_utf8_keys() {
     .await;
     let entries = server
         .client()
+        .await
         .list(ListOptions::default())
         .await
         .unwrap()
@@ -311,6 +438,7 @@ async fn malformed_structures_missing_fields_and_trailing_payloads_are_integrity
         let server = Server::start(vec![body.into()]).await;
         let error = server
             .client()
+            .await
             .list(ListOptions::default())
             .await
             .unwrap()
@@ -333,6 +461,7 @@ async fn listing_page_counts_tokens_envelope_depth_and_bytes_are_bounded() {
     assert_eq!(
         server
             .client()
+            .await
             .list(ListOptions::default())
             .await
             .unwrap()
@@ -354,6 +483,7 @@ async fn listing_page_counts_tokens_envelope_depth_and_bytes_are_bounded() {
         let server = Server::start(vec![page(&contents)]).await;
         let error = server
             .client()
+            .await
             .list(ListOptions::default())
             .await
             .unwrap()
@@ -384,10 +514,13 @@ async fn malformed_partial_response_bounds_fail_without_sdk_overflow_or_range_al
         let server = Server::start_responses(vec![Reply::bytes(status, b"bcd", header)]).await;
         let error = server
             .client()
-            .read_range(
+            .await
+            .read(
                 "range",
-                ByteRange::new(1, 3).unwrap(),
-                ReadOptions::default(),
+                ReadOptions {
+                    range: Some((ByteRange::new(1, 3).unwrap()).into()),
+                    ..ReadOptions::default()
+                },
             )
             .await
             .unwrap_err();
@@ -411,7 +544,13 @@ async fn malformed_partial_response_bounds_fail_without_sdk_overflow_or_range_al
     let server =
         Server::start_responses(vec![Reply::bytes(206, b"bcd", Some("bytes 1-3/8"))]).await;
     assert_eq!(
-        server.client().read("range").await.unwrap_err().kind,
+        server
+            .client()
+            .await
+            .read("range", ReadOptions::default())
+            .await
+            .unwrap_err()
+            .kind,
         ErrorKind::Integrity
     );
     let server =
@@ -419,17 +558,28 @@ async fn malformed_partial_response_bounds_fail_without_sdk_overflow_or_range_al
     assert_eq!(
         server
             .client()
-            .read_range(
+            .await
+            .read(
                 "range",
-                ByteRange::new(1, 100).unwrap(),
-                ReadOptions::default()
+                ReadOptions {
+                    range: Some((ByteRange::new(1, 100).unwrap()).into()),
+                    ..ReadOptions::default()
+                }
             )
             .await
             .unwrap(),
         "bcdefgh"
     );
     let server = Server::start_responses(vec![Reply::bytes(200, b"abcdefgh", None)]).await;
-    assert_eq!(server.client().read("range").await.unwrap(), "abcdefgh");
+    assert_eq!(
+        server
+            .client()
+            .await
+            .read("range", ReadOptions::default())
+            .await
+            .unwrap(),
+        "abcdefgh"
+    );
 }
 
 #[tokio::test]
@@ -443,6 +593,7 @@ async fn zero_byte_folder_markers_are_ignored_without_aliasing_files() {
         .await;
         let entries = server
             .client()
+            .await
             .list(ListOptions {
                 recursive,
                 include_directories: true,
@@ -483,6 +634,7 @@ async fn recursive_markers_synthesize_ancestors_without_duplicates_across_pages(
         let server = Server::start(pages).await;
         let entries = server
             .client()
+            .await
             .list(ListOptions {
                 include_directories: true,
                 ..Default::default()
@@ -518,6 +670,7 @@ async fn a_zero_byte_probe_never_hides_invalid_logical_link_metadata() {
         Server::start_responses(vec![Reply::bytes(200, listing.as_bytes(), None), head]).await;
     let error = server
         .client()
+        .await
         .list(ListOptions::default())
         .await
         .unwrap()
@@ -538,6 +691,7 @@ async fn repeated_continuation_tokens_fail_for_recursive_and_shallow_lists() {
         .await;
         let error = server
             .client()
+            .await
             .list(ListOptions {
                 recursive,
                 ..ListOptions::default()
@@ -563,6 +717,7 @@ async fn recursive_directories_share_pages_without_per_file_probes_and_bounds_sk
     .await;
     let entries = server
         .client()
+        .await
         .list(ListOptions {
             include_directories: true,
             start_after: Some(ObjectPath::new("0").unwrap()),
@@ -601,6 +756,7 @@ async fn directory_bounds_stop_before_fetching_an_out_of_range_punctuation_group
         std::time::Duration::from_secs(2),
         server
             .client()
+            .await
             .list(ListOptions {
                 include_directories: true,
                 end_at: Some(ObjectPath::new("b").unwrap()),
@@ -627,6 +783,7 @@ async fn recursive_upper_bound_retains_a_directory_after_an_out_of_range_file() 
     .await;
     let entries = server
         .client()
+        .await
         .list(ListOptions {
             include_directories: true,
             end_at: Some(ObjectPath::new("a").unwrap()),
@@ -654,6 +811,7 @@ async fn disconnected_listing_bodies_are_retried_before_emitting_a_partial_page(
     .await;
     let entries = server
         .client()
+        .await
         .list(ListOptions::default())
         .await
         .unwrap()
@@ -677,6 +835,7 @@ async fn unsupported_keys_can_be_skipped_without_hiding_valid_neighbors() {
     .await;
     let entries = server
         .client()
+        .await
         .list(ListOptions {
             skip_unsupported_keys: true,
             ..ListOptions::default()
@@ -700,6 +859,7 @@ async fn shallow_listing_matches_python_prefixes_before_page_objects() {
     let server = Server::start(vec![page(&format!("<CommonPrefixes><Prefix>base/z/</Prefix></CommonPrefixes>{}<NextContinuationToken>next</NextContinuationToken>", object("base/a"))), page(&format!("<CommonPrefixes><Prefix>base/y/</Prefix></CommonPrefixes>{}", object("base/b")))]).await;
     let entries = server
         .client()
+        .await
         .list(ListOptions {
             recursive: false,
             include_directories: true,

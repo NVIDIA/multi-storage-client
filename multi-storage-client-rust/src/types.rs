@@ -27,6 +27,7 @@ use std::{collections::BTreeMap, pin::Pin, time::Duration};
 /// Owned, asynchronous byte chunks. Opening succeeds before all bytes arrive;
 /// callers must propagate errors yielded later by the stream.
 pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes>> + Send>>;
+
 /// Asynchronous metadata entries and per-item errors. File-only listings are
 /// globally lexical; directory entries follow provider order.
 pub type MetadataStream = Pin<Box<dyn Stream<Item = Result<ObjectMetadata>> + Send>>;
@@ -43,6 +44,7 @@ pub struct ByteRange {
 /// A positive byte count measured backwards from the end of an object.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SuffixRange(u64);
+
 impl SuffixRange {
     /// Construct a tail range, returning `InvalidPath` for zero bytes.
     ///
@@ -57,6 +59,7 @@ impl SuffixRange {
         }
         Ok(Self(length))
     }
+
     /// Maximum number of bytes to return, clipped to the object size.
     #[must_use]
     pub fn length(self) -> u64 {
@@ -72,16 +75,19 @@ pub enum ReadRange {
     /// A byte count measured from EOF.
     Suffix(SuffixRange),
 }
+
 impl From<ByteRange> for ReadRange {
     fn from(range: ByteRange) -> Self {
         Self::Bounded(range)
     }
 }
+
 impl From<SuffixRange> for ReadRange {
     fn from(range: SuffixRange) -> Self {
         Self::Suffix(range)
     }
 }
+
 impl ByteRange {
     /// Construct a checked half-open range.
     ///
@@ -93,6 +99,7 @@ impl ByteRange {
             .ok_or_else(|| MscError::new(ErrorKind::InvalidPath, "byte range overflows u64"))?;
         Ok(Self { offset, length })
     }
+
     /// Obtain the checked exclusive end, also validating directly constructed ranges.
     ///
     /// # Errors
@@ -103,6 +110,7 @@ impl ByteRange {
             .ok_or_else(|| MscError::new(ErrorKind::InvalidPath, "byte range overflows u64"))
     }
 }
+
 /// File, directory, or logical/physical symbolic link classification.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -115,6 +123,7 @@ pub enum ObjectKind {
     /// A symbolic link whose target is recorded in metadata.
     Symlink,
 }
+
 /// Opaque generation scoped to the backend which issued it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SourceVersion {
@@ -123,6 +132,7 @@ pub struct SourceVersion {
     /// Opaque generation token interpreted only by its issuing provider.
     pub value: String,
 }
+
 /// Provider-neutral object information with profile-relative keys.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ObjectMetadata {
@@ -141,11 +151,13 @@ pub struct ObjectMetadata {
     /// Relative link target when [`Self::kind`] is [`ObjectKind::Symlink`].
     pub symlink_target: Option<String>,
     /// User-defined JSON attributes. Cloud-native metadata requires string values;
+
     /// POSIX storage preserves all JSON values without conversion.
     pub attributes: BTreeMap<String, serde_json::Value>,
     /// Provider-specific fields, such as local permissions or modification times.
     pub provider_fields: BTreeMap<String, String>,
 }
+
 impl ObjectMetadata {
     /// Construct file metadata without timestamps, generations, or attributes.
     #[must_use]
@@ -162,6 +174,7 @@ impl ObjectMetadata {
             provider_fields: BTreeMap::new(),
         }
     }
+
     /// Construct a zero-sized directory entry without a backend generation.
     #[must_use]
     pub fn directory(key: ObjectPath) -> Self {
@@ -171,6 +184,7 @@ impl ObjectMetadata {
         }
     }
 }
+
 /// Ordered listing selection. Defaults to recursive files beneath the root,
 /// without custom attributes or directory entries.
 #[derive(Clone, Debug)]
@@ -197,6 +211,7 @@ pub struct ListOptions {
     /// Expressions are limited to 64 KiB and 256 nested/grouped clauses.
     pub attribute_filter_expression: Option<String>,
 }
+
 impl Default for ListOptions {
     fn default() -> Self {
         Self {
@@ -211,6 +226,7 @@ impl Default for ListOptions {
         }
     }
 }
+
 impl ListOptions {
     /// Validate the exclusive lower and inclusive upper boundaries.
     ///
@@ -230,6 +246,7 @@ impl ListOptions {
         }
         Ok(())
     }
+
     /// Test lexical bounds only; this does not check the prefix or object kind.
     #[must_use]
     pub fn contains(&self, key: &ObjectPath) -> bool {
@@ -237,6 +254,7 @@ impl ListOptions {
             && self.end_at.as_ref().is_none_or(|end| key <= end)
     }
 }
+
 /// Optional read preconditions. Unsupported conditions fail explicitly rather
 /// than silently allowing a different object generation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -248,6 +266,7 @@ pub struct GetConditions {
     /// Require an opaque generation from this backend's scope.
     pub version: Option<SourceVersion>,
 }
+
 /// Write preconditions and replacement attributes. Defaults to an unconditional
 /// write without custom attributes or an explicit content type.
 #[derive(Clone, Debug, Default)]
@@ -264,6 +283,7 @@ pub struct WriteOptions {
     /// Explicit MIME content type, when supported by the provider.
     pub content_type: Option<String>,
 }
+
 /// Optional deletion preconditions, enforced or explicitly rejected by the adapter.
 #[derive(Clone, Debug, Default)]
 pub struct DeleteOptions {
@@ -274,6 +294,7 @@ pub struct DeleteOptions {
     /// Delete only this backend-scoped object generation.
     pub version: Option<SourceVersion>,
 }
+
 /// Source read conditions and destination write settings for a copy.
 #[derive(Clone, Debug, Default)]
 pub struct CopyOptions {
@@ -282,41 +303,34 @@ pub struct CopyOptions {
     /// Destination preconditions, replacement attributes, and content type.
     pub destination: WriteOptions,
 }
-/// Read limits. Defaults to a 64 MiB in-memory limit and a 1 MiB reader buffer.
-#[derive(Clone, Debug)]
+
+/// Byte-read selection and limits; absent limits inherit the client configuration.
+#[derive(Clone, Debug, Default)]
 pub struct ReadOptions {
     /// Conditions passed to the selected backend.
     pub conditions: GetConditions,
-    /// Maximum bytes materialized by byte/range reads; streams do not use this
-    /// as a total object-size limit.
-    pub max_in_memory_bytes: u64,
-    /// Seekable reader buffer size in bytes; must be positive when supplied.
-    /// `None` inherits the client builder's configured size (1 MiB by default).
-    pub buffer_size: Option<usize>,
+    /// Optional byte range for `StorageClient::read`; file transfers read whole objects.
+    pub range: Option<ReadRange>,
+    /// Maximum bytes materialized by byte reads. `None` inherits the client limit,
+    /// which defaults to 64 MiB. File transfers do not limit total object size.
+    pub max_in_memory_bytes: Option<u64>,
 }
 
-impl Default for ReadOptions {
-    fn default() -> Self {
-        Self {
-            conditions: GetConditions::default(),
-            max_in_memory_bytes: 64 * 1024 * 1024,
-            buffer_size: None,
-        }
-    }
-}
-/// Metadata lookup options. Symlinks are followed by default.
+/// Metadata lookup options with Python-compatible strict queries.
 #[derive(Clone, Copy, Debug)]
 pub struct InfoOptions {
-    /// Follow relative links with an eight-hop bound and cycle detection.
-    pub follow_symlinks: bool,
+    /// Probe virtual S3 directories when an exact object is missing. Defaults to true.
+    /// Explicit remote paths ending in `/` query directories for either value.
+    /// Both values query physical metadata until metadata providers support pending updates.
+    pub strict: bool,
 }
+
 impl Default for InfoOptions {
     fn default() -> Self {
-        Self {
-            follow_symlinks: true,
-        }
+        Self { strict: true }
     }
 }
+
 /// Provider publication result used by the client to verify the new generation.
 #[derive(Clone, Debug, Default)]
 pub struct PutResult {
@@ -330,6 +344,7 @@ pub struct PutResult {
     /// Authoritative metadata returned by a mapping provider after staging.
     pub metadata: Option<ObjectMetadata>,
 }
+
 /// One failed batch item, retaining its original index and typed cause.
 #[derive(Clone, Debug)]
 pub struct BatchFailure {
@@ -343,6 +358,7 @@ pub struct BatchFailure {
     /// Operation failure with provider context.
     pub error: MscError,
 }
+
 /// Independent batch successes and failures, sorted by original input index.
 /// A successful outer `Result` does not imply every item succeeded.
 #[derive(Clone, Debug, Default)]
@@ -352,6 +368,7 @@ pub struct BatchResult {
     /// Failed items and their typed causes.
     pub failed: Vec<BatchFailure>,
 }
+
 /// Every failed item keeps its original input index and its typed cause.
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("{} storage items failed", .failures.len())]
@@ -359,6 +376,7 @@ pub struct BatchError {
     /// All failed items with original indices.
     pub failures: Vec<BatchFailure>,
 }
+
 /// Scope within which a provider advertises native server-side copying.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum CopyScope {
@@ -370,6 +388,7 @@ pub enum CopyScope {
     /// Copies can span providers sharing the same backend endpoint.
     SameEndpoint,
 }
+
 /// Immutable feature flags. Optional operations return [`ErrorKind::Unsupported`]
 /// when unavailable; clients may provide explicit streaming fallbacks.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -398,23 +417,12 @@ pub struct ProviderCapabilities {
     pub native_lexical_listing: bool,
     /// Represents symbolic links directly or through logical metadata.
     pub symlinks: bool,
-    /// Can sign a time-limited GET URL.
-    pub presigned_get: bool,
-    /// Can sign a time-limited PUT URL.
-    pub presigned_put: bool,
     /// Supports custom string attributes.
     pub user_metadata: bool,
     /// Returns generation tokens suitable for conditional reads and validation.
     pub stable_source_versions: bool,
 }
-/// Operation authorized by a presigned URL.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PresignMethod {
-    /// Download an object.
-    Get,
-    /// Upload an object where the provider supports signed writes.
-    Put,
-}
+
 /// The attempt limit and backoff for client operations and safely replayable
 /// multipart parts. Provider SDK request retries must be disabled to avoid
 /// multiplying these budgets.
@@ -431,6 +439,7 @@ pub struct RetryPolicy {
     /// Apply bounded jitter to calculated delays; enabled by default.
     pub jitter: bool,
 }
+
 impl<'de> Deserialize<'de> for RetryPolicy {
     fn deserialize<D: serde::Deserializer<'de>>(
         deserializer: D,
@@ -481,6 +490,7 @@ impl<'de> Deserialize<'de> for RetryPolicy {
         Ok(policy)
     }
 }
+
 impl Default for RetryPolicy {
     fn default() -> Self {
         Self {
@@ -492,6 +502,7 @@ impl Default for RetryPolicy {
         }
     }
 }
+
 impl RetryPolicy {
     /// Check the retry budget and exponential-delay settings.
     ///
@@ -510,6 +521,7 @@ impl RetryPolicy {
         }
         Ok(())
     }
+
     /// Calculate the delay after a one-based attempt, respecting the ceiling
     /// and optionally applying jitter.
     #[must_use]
@@ -543,6 +555,7 @@ impl RetryPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn ranges_and_bounds_validate() {
         assert!(ByteRange::new(u64::MAX, 1).is_err());
@@ -562,6 +575,7 @@ mod tests {
             .is_err()
         );
     }
+
     #[test]
     fn python_retry_fields_preserve_units() {
         let policy: RetryPolicy =
