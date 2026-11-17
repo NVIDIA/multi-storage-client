@@ -1,0 +1,6 @@
+profiles:
+  local:
+    storage_provider:
+      type: file
+      options:
+        base_path: ${MSC_POSIX_ROOT}

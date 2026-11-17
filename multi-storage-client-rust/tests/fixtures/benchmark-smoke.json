@@ -1,0 +1,5 @@
+{
+  "processes": [1, 2],
+  "threads": [2],
+  "test_object_sizes": {"1KB": 3}
+}
