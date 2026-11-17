@@ -406,6 +406,17 @@ async fn sync_data(
         .map_err(|error| invalid_state(format!("Download sync task failed: {error}")))?
 }
 
+async fn publish_data(files: Arc<DownloadFiles>, target: PathBuf) -> Result<(), StorageError> {
+    tokio::task::spawn_blocking(move || {
+        // Cancellation cannot stop a blocking rename; retain its lock and transient directory.
+        std::fs::rename(files.dir.join(DATA_FILE), target)?;
+        drop(files);
+        Ok(())
+    })
+    .await
+    .map_err(|error| invalid_state(format!("Download publish task failed: {error}")))?
+}
+
 pub(crate) async fn download(
     store: Arc<dyn ObjectStore>,
     remote_path: Path,
@@ -503,7 +514,7 @@ pub(crate) async fn download(
     }
     let size = state.size;
     sync_data(Arc::clone(&files), Arc::new(state)).await?;
-    fs::rename(files.dir.join(DATA_FILE), target).await?;
+    publish_data(Arc::clone(&files), target.to_path_buf()).await?;
     let cleanup = if files.temporary_dir.is_some() {
         fs::remove_dir_all(&files.dir).await
     } else {
@@ -616,8 +627,9 @@ mod tests {
                 chunk_size: 4,
                 completed: BTreeSet::new(),
             });
-            for (disposable, write) in [(false, false), (false, true), (true, false), (true, true)]
-            {
+            for (disposable, operation) in [false, true].into_iter().flat_map(|disposable| {
+                ["sync", "write", "publish"].map(|operation| (disposable, operation))
+            }) {
                 let dir = tempfile::tempdir().unwrap();
                 let path = dir.path().to_path_buf();
                 std::fs::write(path.join(DATA_FILE), b"old!").unwrap();
@@ -639,9 +651,10 @@ mod tests {
                     _lock: Some(lock),
                     temporary_dir,
                 });
-                let mut operation = Box::pin(async {
-                    if write {
-                        download_chunk(
+                let published = path.join("published");
+                let mut pending = Box::pin(async {
+                    match operation {
+                        "write" => download_chunk(
                             Arc::clone(&store),
                             remote_path.clone(),
                             files,
@@ -649,16 +662,16 @@ mod tests {
                             Arc::clone(&revision),
                         )
                         .await
-                        .map(|_| ())
-                    } else {
-                        sync_data(files, Arc::clone(&revision)).await
+                        .map(|_| ()),
+                        "publish" => publish_data(files, published.clone()).await,
+                        _ => sync_data(files, Arc::clone(&revision)).await,
                     }
                 });
-                assert!(operation
+                assert!(pending
                     .as_mut()
                     .poll(&mut Context::from_waker(Waker::noop()))
                     .is_pending());
-                drop(operation);
+                drop(pending);
                 assert!(path.is_dir());
                 assert!(try_lock_state(&path).unwrap().is_none());
                 release.send(()).unwrap();
@@ -678,10 +691,19 @@ mod tests {
                 .await
                 .unwrap();
                 if !disposable {
-                    assert_eq!(
-                        std::fs::read(path.join(DATA_FILE)).unwrap(),
-                        if write { b"data" } else { b"old!" }
-                    );
+                    if operation == "publish" {
+                        assert_eq!(std::fs::read(&published).unwrap(), b"old!");
+                        assert!(!path.join(DATA_FILE).exists());
+                    } else {
+                        assert_eq!(
+                            std::fs::read(path.join(DATA_FILE)).unwrap(),
+                            if operation == "write" {
+                                b"data"
+                            } else {
+                                b"old!"
+                            }
+                        );
+                    }
                 }
             }
         });
