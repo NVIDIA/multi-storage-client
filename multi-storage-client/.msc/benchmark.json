@@ -2,7 +2,7 @@
   "processes": [1],
   "threads": [1],
   "test_object_sizes": {
-    "64KB": 32,
+    "64KB": 256,
     "2GB": 1
   }
 }
