@@ -19,7 +19,7 @@
 //! Small files use ephemeral staging; multipart checkpoints survive interrupted calls.
 mod multipart;
 mod state;
-use super::{StorageClient, require_file, stable_conditions};
+use super::{BaseStorageProvider, require_file, stable_conditions};
 use crate::{ErrorKind, GetConditions, MscError, ObjectMetadata, ReadOptions, Result};
 use bytes::Bytes;
 use futures::StreamExt;
@@ -88,7 +88,7 @@ impl Staging {
     }
 }
 
-impl StorageClient {
+impl<B: crate::StorageBackend + ?Sized + 'static> BaseStorageProvider<B> {
     pub(super) async fn download_atomic(
         &self,
         remote: impl AsRef<str>,
@@ -153,7 +153,11 @@ impl StorageClient {
         self.retry(true, || async {
             let reset = staging.clone();
             blocking(move || reset.file.as_file().set_len(0).map_err(MscError::from)).await?;
-            let mut body = self.state.provider.get(&metadata.key, conditions).await?;
+            let mut body = self
+                .state
+                .provider
+                .get_object(&metadata.key, conditions)
+                .await?;
             let mut length = 0_u64;
             while let Some(chunk) = body.next().await {
                 let chunk = chunk?;

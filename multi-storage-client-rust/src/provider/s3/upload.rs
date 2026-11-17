@@ -183,7 +183,7 @@ impl S3Provider {
         let retry_policy = Arc::new(PartRetryPolicy {
             // Capture before spawning initiation: task-local scopes belong to
             // the caller and are not implicitly inherited by new Tokio tasks.
-            policy: crate::client::current_provider_retry_policy()
+            policy: crate::provider::current_provider_retry_policy()
                 .unwrap_or_else(|| self.retry_policy.clone()),
             timeout: Duration::from_millis(self.options.read_timeout_ms),
         });
@@ -414,7 +414,7 @@ mod tests {
     use super::*;
     use crate::{
         credentials::{AwsCredentials, SecretString},
-        provider::StorageProvider,
+        provider::StorageBackend,
     };
     use std::time::Duration;
     #[test]

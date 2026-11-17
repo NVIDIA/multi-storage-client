@@ -48,7 +48,7 @@ pub use client::{StorageClient, StorageClientBuilder};
 pub use config::{ConfigLoader, ResolvedConfig};
 pub use error::{ErrorKind, MscError, Result};
 pub use path::ObjectPath;
-pub use provider::{ProviderRegistry, StorageProvider};
+pub use provider::{BaseStorageProvider, ProviderRegistry, StorageBackend, StorageProvider};
 pub use types::{
     BatchError, BatchFailure, BatchResult, ByteRange, ByteStream, CopyOptions, CopyScope,
     DeleteOptions, GetConditions, InfoOptions, ListOptions, MetadataStream, ObjectKind,

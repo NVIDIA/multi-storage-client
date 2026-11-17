@@ -14,12 +14,12 @@
 // limitations under the License.
 
 //! Ordered listings with retry cursors and attribute filtering.
-use super::StorageClient;
+use super::BaseStorageProvider;
 use crate::filter::AttributeFilter;
 use crate::{ErrorKind, ListOptions, MetadataStream, MscError, ObjectPath, Result};
 use futures::{StreamExt, stream};
 
-impl StorageClient {
+impl<B: crate::StorageBackend + ?Sized + 'static> BaseStorageProvider<B> {
     #[allow(clippy::unused_async)] // Opening and retries happen when the stream is polled.
     pub(super) async fn list_impl(&self, mut options: ListOptions) -> Result<MetadataStream> {
         options.validate()?;
@@ -48,7 +48,13 @@ impl StorageClient {
                     current.next().await
                 } else {
                     state.attempts += 1;
-                    match state.client.state.provider.list(&state.options).await {
+                    match state
+                        .client
+                        .state
+                        .provider
+                        .list_objects(&state.options)
+                        .await
+                    {
                         Ok(current) => {
                             state.current = Some(current);
                             continue;
@@ -110,8 +116,8 @@ impl StorageClient {
     }
 }
 
-struct ListingState {
-    client: StorageClient,
+struct ListingState<B: crate::StorageBackend + ?Sized> {
+    client: BaseStorageProvider<B>,
     options: ListOptions,
     current: Option<MetadataStream>,
     last: Option<ObjectPath>,

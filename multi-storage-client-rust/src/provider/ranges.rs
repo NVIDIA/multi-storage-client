@@ -14,14 +14,14 @@
 // limitations under the License.
 
 //! Validated range collection and source-pinned suffix fallbacks.
-use super::StorageProvider;
+use super::StorageBackend;
 use crate::{ByteRange, ErrorKind, GetConditions, MscError, ObjectPath, Result};
 use bytes::Bytes;
 
 #[cfg(feature = "s3")]
 use futures::StreamExt;
 
-pub(crate) async fn suffix_fallback<P: StorageProvider + ?Sized>(
+pub(crate) async fn suffix_fallback<P: StorageBackend + ?Sized>(
     provider: &P,
     key: &ObjectPath,
     range: crate::SuffixRange,
@@ -36,9 +36,9 @@ pub(crate) async fn suffix_fallback<P: StorageProvider + ?Sized>(
         let metadata = if let Some(version) = &conditions.version
             && !provider.is_posix()
         {
-            provider.head_version(&key, version).await?
+            provider.get_object_metadata_version(&key, version).await?
         } else {
-            provider.head(&key).await?
+            provider.get_object_metadata(&key).await?
         };
         if let Some(target) = metadata.symlink_target {
             key = key.resolve_link(&target)?;
@@ -90,7 +90,7 @@ pub(crate) async fn suffix_fallback<P: StorageProvider + ?Sized>(
             conditions.version = metadata.source_version;
         }
         return provider
-            .get_range(
+            .get_object_range(
                 &key,
                 ByteRange::new(metadata.content_length - length, length)?,
                 &conditions,

@@ -20,6 +20,7 @@ use crate::{
     ObjectMetadata, ObjectPath, ReadOptions, Result, WriteOptions, config::ResolvedConfig,
 };
 use bytes::Bytes;
+use futures::StreamExt;
 use std::path::Path;
 
 impl StorageClient {
@@ -39,7 +40,7 @@ impl StorageClient {
         path: impl AsRef<str>,
         options: InfoOptions,
     ) -> Result<ObjectMetadata> {
-        self.info_impl(path, options).await
+        crate::provider::resolve_metadata(self.provider.as_ref(), path.as_ref(), options).await
     }
 
     /// Test whether a path resolves to a regular object. Missing objects return false.
@@ -47,7 +48,7 @@ impl StorageClient {
     /// # Errors
     /// Returns path, symlink-resolution, or provider errors other than missing objects.
     pub async fn is_file(&self, path: impl AsRef<str>) -> Result<bool> {
-        self.is_file_impl(path).await
+        self.provider.is_file(path.as_ref()).await
     }
 
     /// Test whether any keys start with the normalized lexical prefix.
@@ -55,7 +56,14 @@ impl StorageClient {
     /// # Errors
     /// Returns invalid paths or listing errors.
     pub async fn is_empty(&self, prefix: impl AsRef<str>) -> Result<bool> {
-        self.is_empty_impl(prefix).await
+        let mut listing = self
+            .provider
+            .list_objects(ListOptions {
+                prefix: ObjectPath::new(prefix)?,
+                ..ListOptions::default()
+            })
+            .await?;
+        Ok(listing.next().await.transpose()?.is_none())
     }
 
     /// Read bounded bytes, optionally selecting a half-open range or suffix.
@@ -63,11 +71,8 @@ impl StorageClient {
     ///
     /// # Errors
     /// Returns path, provider, size-limit, version-condition, or integrity errors.
-    pub async fn read(&self, path: impl AsRef<str>, mut options: ReadOptions) -> Result<Bytes> {
-        if let Some(range) = options.range.take() {
-            return self.read_range_impl(path, range, options).await;
-        }
-        self.read_with_options_impl(path, options).await
+    pub async fn read(&self, path: impl AsRef<str>, options: ReadOptions) -> Result<Bytes> {
+        self.provider.get_object(path.as_ref(), options).await
     }
 
     /// Download `remote` to `local`, creating missing parent directories and
@@ -82,9 +87,9 @@ impl StorageClient {
         local: impl AsRef<Path>,
         options: ReadOptions,
     ) -> Result<()> {
-        self.download_atomic(remote, local.as_ref(), options)
+        self.provider
+            .download_file(remote.as_ref(), local.as_ref(), options)
             .await
-            .map(drop)
     }
 
     /// Publish bytes with the profile retry budget and validate publication.
@@ -97,7 +102,9 @@ impl StorageClient {
         bytes: Bytes,
         options: WriteOptions,
     ) -> Result<()> {
-        self.write_impl(path, bytes, options).await.map(drop)
+        self.provider
+            .put_object(path.as_ref(), bytes, options)
+            .await
     }
 
     /// Upload a regular local file to `remote` from its anchored, replayable file handle.
@@ -113,9 +120,9 @@ impl StorageClient {
         local: impl AsRef<Path>,
         options: WriteOptions,
     ) -> Result<()> {
-        self.upload_file_impl(remote, local, options)
+        self.provider
+            .upload_file(remote.as_ref(), local.as_ref(), options)
             .await
-            .map(drop)
     }
 
     /// Copy an object using the provider or a bounded streaming fallback.
@@ -130,15 +137,17 @@ impl StorageClient {
         destination: impl AsRef<str>,
         options: CopyOptions,
     ) -> Result<()> {
-        self.copy_impl(source, destination, options).await.map(drop)
+        self.provider
+            .copy_object(source.as_ref(), destination.as_ref(), options)
+            .await
     }
 
-    /// Create a normalized link when the provider supports symlinks.
+    /// Create a link to a target key relative to the profile root.
     ///
     /// # Errors
     /// Returns invalid/escaping targets, unsupported symlinks, or provider errors.
     pub async fn make_symlink(&self, path: impl AsRef<str>, target: &str) -> Result<()> {
-        self.make_symlink_impl(path, target).await.map(drop)
+        self.provider.make_symlink(path.as_ref(), target).await
     }
 
     /// Delete one exact key, failing if the requested object does not exist.
@@ -152,7 +161,12 @@ impl StorageClient {
         recursive: bool,
         options: DeleteOptions,
     ) -> Result<()> {
-        self.delete_impl(path, recursive, options).await
+        if recursive {
+            return Err(crate::MscError::unsupported(
+                "recursive deletion; list and delete exact keys instead",
+            ));
+        }
+        self.provider.delete_object(path.as_ref(), options).await
     }
 
     /// Delete in bounded batches while preserving original input indices.
@@ -164,7 +178,7 @@ impl StorageClient {
         paths: &[ObjectPath],
         options: DeleteOptions,
     ) -> Result<BatchResult> {
-        self.delete_many_impl(paths, options).await
+        self.provider.delete_objects(paths, options).await
     }
 
     /// Return provider-ordered metadata. File-only streams resume after their last key.
@@ -172,16 +186,15 @@ impl StorageClient {
     /// # Errors
     /// Returns invalid listing bounds; provider/ordering errors appear in the stream.
     pub async fn list(&self, options: ListOptions) -> Result<MetadataStream> {
-        self.list_impl(options).await
+        self.provider.list_objects(options).await
     }
 
     /// List all descendant keys while preserving ordering and bounds.
     ///
     /// # Errors
     /// Returns invalid listing bounds; provider/ordering errors appear in the stream.
-    pub async fn list_recursive(&self, mut options: ListOptions) -> Result<MetadataStream> {
-        options.recursive = true;
-        self.list(options).await
+    pub async fn list_recursive(&self, options: ListOptions) -> Result<MetadataStream> {
+        self.provider.list_objects_recursive(options).await
     }
 
     /// Drain provider-owned cleanup, including cancelled multipart uploads.
@@ -190,6 +203,6 @@ impl StorageClient {
     /// # Errors
     /// Returns cleanup or task-join failures. Calling it again can retry cleanup.
     pub async fn shutdown(&self) -> Result<()> {
-        self.state.provider.shutdown().await
+        self.provider.shutdown().await
     }
 }

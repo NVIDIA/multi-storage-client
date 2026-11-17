@@ -17,12 +17,15 @@
 #![cfg(unix)]
 #![allow(clippy::too_many_lines)] // Keep each public API contract scenario together.
 
+#[path = "common/provider_contract.rs"]
+mod provider_contract;
+
 use bytes::Bytes;
 use futures::TryStreamExt;
 use multi_storage_client::{
     ByteRange, ByteStream, ConfigLoader, DeleteOptions, ErrorKind, GetConditions, InfoOptions,
     ListOptions, MetadataStream, ObjectKind, ObjectMetadata, ObjectPath, ProviderCapabilities,
-    PutResult, ReadOptions, Result, StorageClient, StorageClientBuilder, StorageProvider,
+    PutResult, ReadOptions, Result, StorageBackend, StorageClient, StorageClientBuilder,
     WriteOptions,
 };
 use serde_json::json;
@@ -889,10 +892,7 @@ async fn symlinks_follow_relative_targets_and_deleting_links_retains_targets() {
         )
         .await
         .unwrap();
-    client
-        .make_symlink("links/alias", "../target")
-        .await
-        .unwrap();
+    client.make_symlink("links/alias", "target").await.unwrap();
     assert_eq!(
         std::fs::read_link(directory.path().join("storage/links/alias")).unwrap(),
         Path::new("../target")
@@ -1082,28 +1082,28 @@ struct SourceChangingProvider {
 }
 
 #[async_trait::async_trait]
-impl StorageProvider for SourceChangingProvider {
+impl StorageBackend for SourceChangingProvider {
     fn name(&self) -> &'static str {
         "source-changing-test"
     }
     fn capabilities(&self) -> ProviderCapabilities {
         self.inner.capabilities()
     }
-    async fn head(&self, key: &ObjectPath) -> Result<ObjectMetadata> {
-        self.inner.head(key).await
+    async fn get_object_metadata(&self, key: &ObjectPath) -> Result<ObjectMetadata> {
+        self.inner.get_object_metadata(key).await
     }
-    async fn get(&self, key: &ObjectPath, conditions: &GetConditions) -> Result<ByteStream> {
-        self.inner.get(key, conditions).await
+    async fn get_object(&self, key: &ObjectPath, conditions: &GetConditions) -> Result<ByteStream> {
+        self.inner.get_object(key, conditions).await
     }
-    async fn get_range(
+    async fn get_object_range(
         &self,
         key: &ObjectPath,
         range: ByteRange,
         conditions: &GetConditions,
     ) -> Result<Bytes> {
-        self.inner.get_range(key, range, conditions).await
+        self.inner.get_object_range(key, range, conditions).await
     }
-    async fn put(
+    async fn put_object(
         &self,
         key: &ObjectPath,
         body: ByteStream,
@@ -1116,13 +1116,13 @@ impl StorageProvider for SourceChangingProvider {
         } else {
             std::fs::write(&self.source, b"changed size")?;
         }
-        self.inner.put(key, body, size, options).await
+        self.inner.put_object(key, body, size, options).await
     }
-    async fn delete(&self, key: &ObjectPath, options: &DeleteOptions) -> Result<()> {
-        self.inner.delete(key, options).await
+    async fn delete_object(&self, key: &ObjectPath, options: &DeleteOptions) -> Result<()> {
+        self.inner.delete_object(key, options).await
     }
-    async fn list(&self, options: &ListOptions) -> Result<MetadataStream> {
-        self.inner.list(options).await
+    async fn list_objects(&self, options: &ListOptions) -> Result<MetadataStream> {
+        self.inner.list_objects(options).await
     }
 }
 
@@ -1166,4 +1166,193 @@ async fn direct_file_upload_retains_its_open_source_and_rejects_in_place_changes
         .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Integrity);
     assert!(!client.is_file("changed").await.unwrap());
+}
+
+struct ExternalBackend {
+    inner: multi_storage_client::provider::posix::PosixProvider,
+    get_attempts: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl StorageBackend for ExternalBackend {
+    fn name(&self) -> &'static str {
+        "external-contract"
+    }
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            server_side_copy: multi_storage_client::CopyScope::None,
+            symlinks: false,
+            ..self.inner.capabilities()
+        }
+    }
+    async fn get_object_metadata(&self, key: &ObjectPath) -> Result<ObjectMetadata> {
+        self.inner.get_object_metadata(key).await
+    }
+    async fn get_object(&self, key: &ObjectPath, conditions: &GetConditions) -> Result<ByteStream> {
+        if self
+            .get_attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            < 2
+        {
+            return Err(multi_storage_client::MscError::new(
+                ErrorKind::Unavailable,
+                "injected transient read failure",
+            ));
+        }
+        self.inner.get_object(key, conditions).await
+    }
+    async fn get_object_range(
+        &self,
+        key: &ObjectPath,
+        range: ByteRange,
+        conditions: &GetConditions,
+    ) -> Result<Bytes> {
+        self.inner.get_object_range(key, range, conditions).await
+    }
+    async fn put_object(
+        &self,
+        key: &ObjectPath,
+        body: ByteStream,
+        size: Option<u64>,
+        options: &WriteOptions,
+    ) -> Result<PutResult> {
+        self.inner.put_object(key, body, size, options).await
+    }
+    async fn delete_object(&self, key: &ObjectPath, options: &DeleteOptions) -> Result<()> {
+        self.inner.delete_object(key, options).await
+    }
+    async fn list_objects(&self, options: &ListOptions) -> Result<MetadataStream> {
+        self.inner.list_objects(options).await
+    }
+}
+
+fn provider_retry(attempts: u32) -> multi_storage_client::RetryPolicy {
+    multi_storage_client::RetryPolicy {
+        max_attempts: attempts,
+        initial_delay_ms: 0,
+        max_delay_ms: 0,
+        jitter: false,
+        ..multi_storage_client::RetryPolicy::default()
+    }
+}
+
+#[tokio::test]
+async fn public_provider_contract_is_shared_by_posix_and_external_backends() {
+    use multi_storage_client::{
+        BaseStorageProvider, StorageProvider,
+        provider::posix::{PosixOptions, PosixProvider},
+    };
+    for external in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let local = tempfile::tempdir().unwrap();
+        let backend = PosixProvider::new(PosixOptions::new(directory.path())).unwrap();
+        let provider: Box<dyn StorageProvider> = if external {
+            Box::new(
+                BaseStorageProvider::new(std::sync::Arc::new(ExternalBackend {
+                    inner: backend,
+                    get_attempts: 0.into(),
+                }))
+                .with_max_in_memory_bytes(16)
+                .with_retry_policy(provider_retry(3))
+                .unwrap(),
+            )
+        } else {
+            Box::new(
+                BaseStorageProvider::new(std::sync::Arc::new(backend)).with_max_in_memory_bytes(16),
+            )
+        };
+        provider_contract::assert_contract(provider.as_ref(), local.path()).await;
+        if !external {
+            provider_contract::assert_symlink_contract(provider.as_ref()).await;
+        }
+        provider.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn external_factory_receives_shared_policy_without_nested_retries() {
+    use multi_storage_client::{
+        ProviderRegistry,
+        provider::{
+            ProviderFactory,
+            posix::{PosixOptions, PosixProvider},
+        },
+    };
+    use std::sync::{Arc, atomic::Ordering};
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Arc::new(ExternalBackend {
+        inner: PosixProvider::new(PosixOptions::new(directory.path())).unwrap(),
+        get_attempts: 0.into(),
+    });
+    let factory_backend = backend.clone();
+    let factory: ProviderFactory = Arc::new(move |_| {
+        let backend: Arc<dyn StorageBackend> = factory_backend.clone();
+        Box::pin(async move { Ok(backend) })
+    });
+    let mut registry = ProviderRegistry::new();
+    registry.register("external-contract", factory).unwrap();
+    let config_file = directory.path().join("config.json");
+    std::fs::write(&config_file, serde_json::to_vec(&json!({"profiles":{"data":{
+        "storage_provider":{"type":"external-contract","options":{"base_path":directory.path()}},
+        "retry":{"attempts":2,"delay":0.0,"max_delay_ms":0,"jitter":false}
+    }}})).unwrap()).unwrap();
+    let config = ConfigLoader::new()
+        .with_registry(registry.clone())
+        .with_explicit_paths([config_file])
+        .load()
+        .unwrap();
+    for attempts in [1, 3] {
+        backend.get_attempts.store(0, Ordering::SeqCst);
+        let client = StorageClient::builder(config.clone(), "data")
+            .with_provider_registry(registry.clone())
+            .with_retry_policy(provider_retry(attempts))
+            .unwrap()
+            .with_max_in_memory_bytes(3)
+            .build()
+            .await
+            .unwrap();
+        client
+            .write(
+                "object",
+                Bytes::from_static(b"abc"),
+                WriteOptions::default(),
+            )
+            .await
+            .unwrap();
+        let result = client.read("object", ReadOptions::default()).await;
+        assert_eq!(
+            backend.get_attempts.load(Ordering::SeqCst),
+            attempts as usize
+        );
+        if attempts == 1 {
+            assert_eq!(result.unwrap_err().kind, ErrorKind::Unavailable);
+        } else {
+            assert_eq!(result.unwrap(), "abc");
+        }
+        backend.get_attempts.store(2, Ordering::SeqCst);
+        client
+            .write(
+                "large",
+                Bytes::from_static(b"abcd"),
+                WriteOptions::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            client
+                .read("large", ReadOptions::default())
+                .await
+                .unwrap_err()
+                .kind,
+            ErrorKind::Unsupported
+        );
+        let local = tempfile::tempdir().unwrap();
+        let destination = local.path().join("download");
+        client
+            .download_file("large", &destination, ReadOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(destination).unwrap(), b"abcd");
+        client.shutdown().await.unwrap();
+    }
 }

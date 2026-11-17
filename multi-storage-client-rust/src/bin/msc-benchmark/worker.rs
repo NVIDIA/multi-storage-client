@@ -324,7 +324,7 @@ mod tests {
     use super::*;
     use multi_storage_client::{
         ByteRange, ByteStream, GetConditions, ListOptions, MetadataStream, ObjectMetadata,
-        ObjectPath, ProviderCapabilities, PutResult, StorageProvider,
+        ObjectPath, ProviderCapabilities, PutResult, StorageBackend,
         provider::posix::{PosixOptions, PosixProvider},
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -336,32 +336,35 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl StorageProvider for ObservedProvider {
+    impl StorageBackend for ObservedProvider {
         fn name(&self) -> &str {
             self.inner.name()
         }
         fn capabilities(&self) -> ProviderCapabilities {
             self.inner.capabilities()
         }
-        async fn head(&self, key: &ObjectPath) -> multi_storage_client::Result<ObjectMetadata> {
-            self.inner.head(key).await
+        async fn get_object_metadata(
+            &self,
+            key: &ObjectPath,
+        ) -> multi_storage_client::Result<ObjectMetadata> {
+            self.inner.get_object_metadata(key).await
         }
-        async fn get(
+        async fn get_object(
             &self,
             key: &ObjectPath,
             conditions: &GetConditions,
         ) -> multi_storage_client::Result<ByteStream> {
-            self.inner.get(key, conditions).await
+            self.inner.get_object(key, conditions).await
         }
-        async fn get_range(
+        async fn get_object_range(
             &self,
             key: &ObjectPath,
             range: ByteRange,
             conditions: &GetConditions,
         ) -> multi_storage_client::Result<Bytes> {
-            self.inner.get_range(key, range, conditions).await
+            self.inner.get_object_range(key, range, conditions).await
         }
-        async fn put(
+        async fn put_object(
             &self,
             key: &ObjectPath,
             body: ByteStream,
@@ -371,22 +374,22 @@ mod tests {
             let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
             self.maximum.fetch_max(active, Ordering::SeqCst);
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            let result = self.inner.put(key, body, size, options).await;
+            let result = self.inner.put_object(key, body, size, options).await;
             self.active.fetch_sub(1, Ordering::SeqCst);
             result
         }
-        async fn delete(
+        async fn delete_object(
             &self,
             key: &ObjectPath,
             options: &DeleteOptions,
         ) -> multi_storage_client::Result<()> {
-            self.inner.delete(key, options).await
+            self.inner.delete_object(key, options).await
         }
-        async fn list(
+        async fn list_objects(
             &self,
             options: &ListOptions,
         ) -> multi_storage_client::Result<MetadataStream> {
-            self.inner.list(options).await
+            self.inner.list_objects(options).await
         }
     }
 

@@ -122,6 +122,31 @@ impl fmt::Display for ObjectPath {
         self.0.fmt(f)
     }
 }
+
+pub(crate) fn relative_link_target(key: &ObjectPath, target: &ObjectPath) -> String {
+    let mut parent: Vec<_> = key.as_str().split('/').collect();
+    parent.pop();
+    let target: Vec<_> = target
+        .as_str()
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    let common = parent
+        .iter()
+        .zip(&target)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let relative = std::iter::repeat_n("..", parent.len() - common)
+        .chain(target[common..].iter().copied())
+        .collect::<Vec<_>>()
+        .join("/");
+    if relative.is_empty() {
+        ".".into()
+    } else {
+        relative
+    }
+}
+
 impl AsRef<str> for ObjectPath {
     fn as_ref(&self) -> &str {
         self.as_str()
@@ -146,5 +171,19 @@ mod tests {
         let key = ObjectPath::new("a/link").unwrap();
         assert_eq!(key.resolve_link("../target").unwrap().as_str(), "target");
         assert!(key.resolve_link("../../target").is_err());
+        for (link, target, expected) in [
+            ("links/alias", "data/file", "../data/file"),
+            ("links/deep/alias", "data/file", "../../data/file"),
+            ("links/alias", "links/file", "file"),
+            ("links/alias", "links", "."),
+            ("links/alias", "", ".."),
+            ("alias", "", "."),
+        ] {
+            let link = ObjectPath::new(link).unwrap();
+            let target = ObjectPath::new(target).unwrap();
+            let encoded = relative_link_target(&link, &target);
+            assert_eq!(encoded, expected);
+            assert_eq!(link.resolve_link(&encoded).unwrap(), target);
+        }
     }
 }

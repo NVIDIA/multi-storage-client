@@ -14,10 +14,11 @@
 // limitations under the License.
 
 use super::PosixOptions;
+use crate::path::relative_link_target;
 use crate::{
     ByteRange, ByteStream, CopyOptions, CopyScope, DeleteOptions, ErrorKind, GetConditions,
     ListOptions, MetadataStream, MscError, ObjectKind, ObjectMetadata, ObjectPath,
-    ProviderCapabilities, PutResult, Result, SourceVersion, StorageProvider, WriteOptions,
+    ProviderCapabilities, PutResult, Result, SourceVersion, StorageBackend, WriteOptions,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -292,7 +293,7 @@ impl PosixProvider {
                 MscError::new(ErrorKind::InvalidPath, "POSIX symlink target is not UTF-8")
             })?;
             Some(match self.resolve_target(&physical_key, raw) {
-                Ok(target) => relative_target(key, &target),
+                Ok(target) => relative_link_target(key, &target),
                 Err(error) if error.kind == ErrorKind::Unsupported => return Err(error),
                 Err(_) => raw.to_owned(),
             })
@@ -624,7 +625,7 @@ impl PosixProvider {
 }
 
 #[async_trait]
-impl StorageProvider for PosixProvider {
+impl StorageBackend for PosixProvider {
     fn name(&self) -> &'static str {
         "file"
     }
@@ -661,12 +662,12 @@ impl StorageProvider for PosixProvider {
     ) -> Result<Option<ObjectMetadata>> {
         Self::preserve_metadata(self, key, source, expected).await
     }
-    async fn head(&self, key: &ObjectPath) -> Result<ObjectMetadata> {
+    async fn get_object_metadata(&self, key: &ObjectPath) -> Result<ObjectMetadata> {
         let this = self.clone();
         let key = key.clone();
         blocking(move || this.metadata(&key)).await
     }
-    async fn get(&self, key: &ObjectPath, conditions: &GetConditions) -> Result<ByteStream> {
+    async fn get_object(&self, key: &ObjectPath, conditions: &GetConditions) -> Result<ByteStream> {
         let permit = self
             .semaphore
             .clone()
@@ -675,7 +676,7 @@ impl StorageProvider for PosixProvider {
             .map_err(|_| MscError::new(ErrorKind::Cancelled, "POSIX provider closed"))?;
         self.get_inner(key, conditions, Some(permit)).await
     }
-    async fn get_range(
+    async fn get_object_range(
         &self,
         key: &ObjectPath,
         range: ByteRange,
@@ -716,7 +717,7 @@ impl StorageProvider for PosixProvider {
         .await?;
         Ok(Bytes::from(output))
     }
-    async fn put(
+    async fn put_object(
         &self,
         key: &ObjectPath,
         body: ByteStream,
@@ -731,7 +732,7 @@ impl StorageProvider for PosixProvider {
             .map_err(|_| MscError::new(ErrorKind::Cancelled, "POSIX provider closed"))?;
         self.put_inner(key, body, size, options).await
     }
-    async fn copy(
+    async fn copy_object(
         &self,
         source: &ObjectPath,
         destination: &ObjectPath,
@@ -742,7 +743,7 @@ impl StorageProvider for PosixProvider {
             .acquire()
             .await
             .map_err(|_| MscError::new(ErrorKind::Cancelled, "POSIX provider closed"))?;
-        let metadata = self.head(source).await?;
+        let metadata = self.get_object_metadata(source).await?;
         let mut destination_options = options.destination.clone();
         if destination_options.attributes.is_empty() {
             destination_options.attributes = metadata.attributes;
@@ -761,7 +762,7 @@ impl StorageProvider for PosixProvider {
         )
         .await
     }
-    async fn delete(&self, key: &ObjectPath, conditions: &DeleteOptions) -> Result<()> {
+    async fn delete_object(&self, key: &ObjectPath, conditions: &DeleteOptions) -> Result<()> {
         if conditions.version.is_some()
             || conditions.if_match.is_some()
             || conditions.if_none_match.is_some()
@@ -794,20 +795,22 @@ impl StorageProvider for PosixProvider {
         })
         .await
     }
-    async fn list(&self, options: &ListOptions) -> Result<MetadataStream> {
+    async fn list_objects(&self, options: &ListOptions) -> Result<MetadataStream> {
         listing::open(self.clone(), options.clone())
     }
     async fn make_symlink(&self, key: &ObjectPath, target: &str) -> Result<()> {
         let this = self.clone();
         let key = key.clone();
-        let target = target.to_owned();
+        let target = ObjectPath::new(target)?;
         blocking(move || {
             check_namespace(&key)?;
             let (parent_key, name) = key.as_str().rsplit_once('/').unwrap_or(("", key.as_str()));
             let name = name.to_owned();
             let (parent, physical_parent) =
                 this.resolved_directory(&ObjectPath::new(parent_key)?, true)?;
-            this.resolve_target(&physical_parent.join(&ObjectPath::new(&name)?)?, &target)?;
+            let physical_key = physical_parent.join(&ObjectPath::new(&name)?)?;
+            let target = relative_link_target(&physical_key, &target);
+            this.resolve_target(&physical_key, &target)?;
             let ((), temporary) = TemporaryEntry::create(
                 Arc::new(parent),
                 format!(".msc-tmp-{}", uuid::Uuid::new_v4()),
@@ -892,25 +895,6 @@ async fn blocking<T: Send + 'static>(
 
 fn errno(error: rustix::io::Errno) -> MscError {
     MscError::from(std::io::Error::from(error))
-}
-
-fn relative_target(key: &ObjectPath, target: &ObjectPath) -> String {
-    let mut source: Vec<_> = key.as_str().split('/').collect();
-    source.pop();
-    let target: Vec<_> = target
-        .as_str()
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .collect();
-    let common = source
-        .iter()
-        .zip(&target)
-        .take_while(|(left, right)| left == right)
-        .count();
-    std::iter::repeat_n("..", source.len() - common)
-        .chain(target[common..].iter().copied())
-        .collect::<Vec<_>>()
-        .join("/")
 }
 
 fn read_attributes(file: &File) -> Result<BTreeMap<String, serde_json::Value>> {

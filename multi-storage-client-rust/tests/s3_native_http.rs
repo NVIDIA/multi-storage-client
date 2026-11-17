@@ -16,8 +16,8 @@
 //! Native S3 copy/delete publication evidence exercised over the actual HTTP adapter.
 #![cfg(feature = "s3")]
 use multi_storage_client::{
-    CopyOptions, DeleteOptions, ErrorKind, GetConditions, ObjectPath, ReadOptions,
-    StorageClientBuilder, StorageProvider, WriteOptions,
+    CopyOptions, DeleteOptions, ErrorKind, GetConditions, ObjectPath, ReadOptions, StorageBackend,
+    StorageClientBuilder, WriteOptions,
     credentials::{AwsCredentials, SecretString},
     provider::s3::{S3Options, S3Provider},
 };
@@ -174,6 +174,55 @@ fn key(k: &str) -> ObjectPath {
 }
 
 #[tokio::test]
+async fn symlinks_encode_profile_relative_target_keys() {
+    let cases = [
+        ("links/alias", "data/file", "../data/file"),
+        ("links/sibling", "links/file", "file"),
+        ("links/to-parent", "links", "."),
+        ("links/to-root", "", ".."),
+    ];
+    let server = Server::new(
+        cases
+            .iter()
+            .map(|_| Response {
+                status: 200,
+                headers: "ETag: \"link\"\r\n".into(),
+                body: String::new(),
+            })
+            .collect(),
+    )
+    .await;
+    let provider = server.provider();
+    for (link, target, _) in cases {
+        provider.make_symlink(&key(link), target).await.unwrap();
+    }
+    server.done().await;
+    for target in [
+        "../data",
+        "links/../data",
+        "/data",
+        "bad\\name",
+        "bad\0name",
+    ] {
+        assert_eq!(
+            provider
+                .make_symlink(&key("links/invalid"), target)
+                .await
+                .unwrap_err()
+                .kind,
+            ErrorKind::InvalidPath
+        );
+    }
+    let requests = server.requests.lock().unwrap();
+    assert_eq!(requests.len(), cases.len());
+    for (request, (link, _, stored)) in requests.iter().zip(cases) {
+        assert_eq!(request.method, "PUT");
+        assert_eq!(request.target, format!("/bucket/base/{link}"));
+        assert_eq!(request.headers["x-amz-meta-msc-symlink-target"], stored);
+    }
+}
+
+#[tokio::test]
 async fn native_copy_pins_historical_source_and_returns_response_generation() {
     let server = Server::new(vec![
         Response::head("\"old\"", "v1", "old-tag"),
@@ -190,7 +239,7 @@ async fn native_copy_pins_historical_source_and_returns_response_generation() {
         value: "version:v1".into(),
     };
     let result = provider
-        .copy(
+        .copy_object(
             &key("source +%☃"),
             &key("destination"),
             &CopyOptions {
@@ -237,7 +286,7 @@ async fn copy_http_success_requires_completed_xml_publication() {
         assert_eq!(
             server
                 .provider()
-                .copy(&key("source"), &key("dest"), &CopyOptions::default())
+                .copy_object(&key("source"), &key("dest"), &CopyOptions::default())
                 .await
                 .unwrap_err()
                 .kind,
@@ -256,7 +305,7 @@ async fn conditional_delete_uses_etag_and_version_and_rejects_conflicting_scope(
     .await;
     let provider = server.provider();
     provider
-        .delete(
+        .delete_object(
             &key("日本語/%28name%29+ space?#.txt"),
             &DeleteOptions {
                 if_match: Some("\"expected\"".into()),
@@ -292,11 +341,16 @@ async fn conditional_delete_uses_etag_and_version_and_rejects_conflicting_scope(
             ..Default::default()
         },
     ] {
-        assert!(provider.delete(&key("object"), &options).await.is_err());
+        assert!(
+            provider
+                .delete_object(&key("object"), &options)
+                .await
+                .is_err()
+        );
     }
     assert_eq!(
         provider
-            .delete(&ObjectPath::default(), &DeleteOptions::default())
+            .delete_object(&ObjectPath::default(), &DeleteOptions::default())
             .await
             .unwrap_err()
             .kind,
@@ -520,7 +574,7 @@ async fn historical_reads_obtain_size_and_etag_from_the_requested_version() {
     let server = Server::new(responses).await;
     let provider = Arc::new(server.provider());
     let mut version = provider
-        .head(&key("a"))
+        .get_object_metadata(&key("a"))
         .await
         .unwrap()
         .source_version
@@ -593,7 +647,7 @@ async fn malformed_batch_outcomes_never_become_success_or_panic() {
         let server = Server::new(vec![Response::xml(body)]).await;
         let result = server
             .provider()
-            .delete_many(&[key("a")], &DeleteOptions::default())
+            .delete_objects(&[key("a")], &DeleteOptions::default())
             .await;
         assert!(result.succeeded.is_empty(), "{body}");
         assert_eq!(result.failed[0].error.kind, ErrorKind::Integrity, "{body}");
@@ -617,7 +671,7 @@ async fn batch_requests_are_bounded_and_invalid_inputs_keep_their_indices() {
     keys.insert(500, ObjectPath::default());
     let result = server
         .provider()
-        .delete_many(&keys, &DeleteOptions::default())
+        .delete_objects(&keys, &DeleteOptions::default())
         .await;
     assert_eq!(result.succeeded.len(), 1001);
     assert_eq!(result.failed.len(), 1);
@@ -635,7 +689,7 @@ async fn destination_copy_conditions_decline_before_network_mutation() {
     let server = Server::new(vec![]).await;
     let error = server
         .provider()
-        .copy(
+        .copy_object(
             &key("src"),
             &key("dst"),
             &CopyOptions {
@@ -663,7 +717,7 @@ async fn native_copy_metadata_override_retains_standard_content_properties() {
     .await;
     server
         .provider()
-        .copy(
+        .copy_object(
             &key("source"),
             &key("destination"),
             &CopyOptions {
@@ -707,7 +761,7 @@ async fn unstable_versions_invalid_keys_and_metadata_reject_before_requests() {
         };
         assert_eq!(
             provider
-                .delete(
+                .delete_object(
                     &key("object"),
                     &DeleteOptions {
                         version: Some(version.clone()),
@@ -721,7 +775,7 @@ async fn unstable_versions_invalid_keys_and_metadata_reject_before_requests() {
         );
         assert_eq!(
             provider
-                .get(
+                .get_object(
                     &key("object"),
                     &GetConditions {
                         version: Some(version),
@@ -737,7 +791,7 @@ async fn unstable_versions_invalid_keys_and_metadata_reject_before_requests() {
     }
     assert_eq!(
         provider
-            .delete(&key("bad\nkey"), &DeleteOptions::default())
+            .delete_object(&key("bad\nkey"), &DeleteOptions::default())
             .await
             .unwrap_err()
             .kind,
@@ -749,7 +803,7 @@ async fn unstable_versions_invalid_keys_and_metadata_reject_before_requests() {
     ] {
         assert!(
             provider
-                .copy(
+                .copy_object(
                     &key("source"),
                     &key("destination"),
                     &CopyOptions {
@@ -784,14 +838,14 @@ async fn null_version_uses_etag_and_poisoned_link_metadata_is_rejected() {
     .await;
     let provider = server.provider();
     let version = provider
-        .head(&key("object"))
+        .get_object_metadata(&key("object"))
         .await
         .unwrap()
         .source_version
         .unwrap();
     assert_eq!(version.value, "etag:\"stable\"");
     let bytes = provider
-        .get_range(
+        .get_object_range(
             &key("object"),
             multi_storage_client::ByteRange::new(0, 4).unwrap(),
             &GetConditions {
@@ -808,7 +862,11 @@ async fn null_version_uses_etag_and_poisoned_link_metadata_is_rejected() {
         "\"stable\""
     );
     assert_eq!(
-        provider.head(&key("link")).await.unwrap_err().kind,
+        provider
+            .get_object_metadata(&key("link"))
+            .await
+            .unwrap_err()
+            .kind,
         ErrorKind::Integrity
     );
 }
@@ -886,7 +944,7 @@ async fn native_environment_child_probe() {
     match scenario.as_str() {
         "anonymous" => {
             provider
-                .delete(&key("object"), &DeleteOptions::default())
+                .delete_object(&key("object"), &DeleteOptions::default())
                 .await
                 .unwrap();
             server.done().await;
@@ -903,7 +961,7 @@ async fn native_environment_child_probe() {
             );
             assert_eq!(
                 provider
-                    .copy(&key("source"), &key("destination"), &CopyOptions::default())
+                    .copy_object(&key("source"), &key("destination"), &CopyOptions::default())
                     .await
                     .unwrap_err()
                     .kind,
@@ -913,7 +971,7 @@ async fn native_environment_child_probe() {
         }
         "requester" => {
             provider
-                .delete(&key("object"), &DeleteOptions::default())
+                .delete_object(&key("object"), &DeleteOptions::default())
                 .await
                 .unwrap();
             server.done().await;
@@ -946,7 +1004,7 @@ async fn copy_http_success_with_service_error_is_typed_and_redacted() {
         .await;
         let error = server
             .provider()
-            .copy(&key("source"), &key("target"), &CopyOptions::default())
+            .copy_object(&key("source"), &key("target"), &CopyOptions::default())
             .await
             .unwrap_err();
         assert_eq!(error.kind, kind);

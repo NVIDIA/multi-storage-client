@@ -17,7 +17,7 @@
 use super::S3Provider;
 use crate::{
     ErrorKind, ListOptions, MetadataStream, MscError, ObjectKind, ObjectMetadata, ObjectPath,
-    Result, StorageProvider,
+    Result, StorageBackend,
 };
 use futures::{StreamExt, stream};
 use serde::Deserialize;
@@ -268,7 +268,7 @@ impl Listing {
                 if metadata.kind == ObjectKind::File
                     && (self.options.include_attributes || metadata.content_length == 0)
                 {
-                    metadata = match self.provider.head(&metadata.key).await {
+                    metadata = match self.provider.get_object_metadata(&metadata.key).await {
                         Ok(metadata) => metadata,
                         Err(error) if error.kind == ErrorKind::NotFound => continue,
                         Err(error)

@@ -19,7 +19,7 @@ use bytes::Bytes;
 use futures::{StreamExt, stream};
 use multi_storage_client::{
     ByteRange, DeleteOptions, ErrorKind, GetConditions, InfoOptions, ListOptions, MscError,
-    ObjectKind, ObjectPath, ReadOptions, StorageClient, StorageClientBuilder, StorageProvider,
+    ObjectKind, ObjectPath, ReadOptions, StorageBackend, StorageClient, StorageClientBuilder,
     WriteOptions,
     provider::posix::{PosixOptions, PosixProvider},
 };
@@ -165,7 +165,7 @@ async fn posix_failed_and_cancelled_writes_leave_destination_and_temps_unchanged
     ]));
     assert_eq!(
         provider
-            .put(&key, body, Some(3), &WriteOptions::default())
+            .put_object(&key, body, Some(3), &WriteOptions::default())
             .await
             .unwrap_err()
             .kind,
@@ -175,7 +175,7 @@ async fn posix_failed_and_cancelled_writes_leave_destination_and_temps_unchanged
         stream::once(async { Ok(Bytes::from_static(b"partial")) }).chain(stream::pending()),
     );
     let options = WriteOptions::default();
-    let mut future = Box::pin(provider.put(&key, body, None, &options));
+    let mut future = Box::pin(provider.put_object(&key, body, None, &options));
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(30), &mut future)
             .await
@@ -323,7 +323,7 @@ async fn posix_internal_symlinks_and_cycles_have_consistent_metadata() {
         "side"
     );
     let link = provider
-        .head(&ObjectPath::new("link").unwrap())
+        .get_object_metadata(&ObjectPath::new("link").unwrap())
         .await
         .unwrap();
     assert_eq!(link.kind, ObjectKind::Symlink);
@@ -584,7 +584,7 @@ async fn posix_source_version_conditions_and_preserved_attributes() {
     );
     assert_eq!(
         provider
-            .get(
+            .get_object(
                 &ObjectPath::new("file").unwrap(),
                 &GetConditions {
                     version: old_version,
@@ -607,11 +607,26 @@ async fn symlinks_below_directory_aliases_resolve_and_validate_physical_parents(
     let directory = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(directory.path().join("real/sub")).unwrap();
     std::fs::write(directory.path().join("real/data"), b"correct").unwrap();
-    std::fs::write(directory.path().join("data"), b"wrong").unwrap();
+    std::fs::write(directory.path().join("data"), b"root").unwrap();
     symlink("real/sub", directory.path().join("alias")).unwrap();
     symlink("../data", directory.path().join("real/sub/link")).unwrap();
     symlink("alias/../data", directory.path().join("ambiguous")).unwrap();
     let (provider, client) = client(&directory).await;
+    provider
+        .make_symlink(&ObjectPath::new("alias/created").unwrap(), "data")
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_link(directory.path().join("real/sub/created")).unwrap(),
+        std::path::Path::new("../../data")
+    );
+    assert_eq!(
+        client
+            .read("alias/created", ReadOptions::default())
+            .await
+            .unwrap(),
+        "root"
+    );
     assert_eq!(
         client
             .read("alias/link", ReadOptions::default())
@@ -794,7 +809,7 @@ async fn replacing_download_staging_cannot_truncate_or_publish_an_unrelated_file
     std::fs::write(&victim, b"retained victim").unwrap();
     std::fs::write(&target, b"retained destination").unwrap();
     let held = provider
-        .get(
+        .get_object(
             &ObjectPath::new("source").unwrap(),
             &GetConditions::default(),
         )

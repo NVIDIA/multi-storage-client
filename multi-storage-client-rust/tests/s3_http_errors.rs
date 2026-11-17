@@ -26,8 +26,8 @@ use std::{
 
 use multi_storage_client::{
     ByteRange, CopyOptions, CopyScope, DeleteOptions, ErrorKind, GetConditions, InfoOptions,
-    MscError, ObjectPath, ReadOptions, RetryPolicy, StorageClient, StorageClientBuilder,
-    StorageProvider, WriteOptions,
+    MscError, ObjectPath, ReadOptions, RetryPolicy, StorageBackend, StorageClient,
+    StorageClientBuilder, WriteOptions,
     credentials::{AwsCredentials, SecretString},
     provider::s3::{S3Options, S3Provider},
 };
@@ -163,7 +163,7 @@ impl FailureServer {
         total_ms: u64,
         idle_ms: u64,
         retry: RetryPolicy,
-    ) -> Arc<dyn StorageProvider> {
+    ) -> Arc<dyn StorageBackend> {
         self.multipart_provider_with_threshold(total_ms, idle_ms, retry, 5 * 1024 * 1024)
             .await
     }
@@ -174,7 +174,7 @@ impl FailureServer {
         idle_ms: u64,
         retry: RetryPolicy,
         threshold: u64,
-    ) -> Arc<dyn StorageProvider> {
+    ) -> Arc<dyn StorageBackend> {
         self.multipart_provider_with_options(
             retry,
             serde_json::json!({
@@ -190,7 +190,7 @@ impl FailureServer {
         &self,
         retry: RetryPolicy,
         extra: serde_json::Value,
-    ) -> Arc<dyn StorageProvider> {
+    ) -> Arc<dyn StorageBackend> {
         let mut options = serde_json::json!({
             "base_path": "test-bucket", "endpoint_url": self.endpoint,
             "multipart_threshold": 5 * 1024 * 1024, "connect_timeout_ms": 1000
@@ -397,7 +397,7 @@ async fn sdk_reads_uploads_and_native_deletes_share_one_connection() {
     let provider = server.provider_timeouts(2000, 500);
     let key = ObjectPath::new("shared.bin").unwrap();
     provider
-        .put(
+        .put_object(
             &key,
             Box::pin(stream::once(async {
                 Ok(bytes::Bytes::from_static(b"data"))
@@ -407,9 +407,16 @@ async fn sdk_reads_uploads_and_native_deletes_share_one_connection() {
         )
         .await
         .unwrap();
-    assert_eq!(provider.head(&key).await.unwrap().content_length, 4);
+    assert_eq!(
+        provider
+            .get_object_metadata(&key)
+            .await
+            .unwrap()
+            .content_length,
+        4
+    );
     let bytes = provider
-        .get(&key, &GetConditions::default())
+        .get_object(&key, &GetConditions::default())
         .await
         .unwrap()
         .try_fold(Vec::new(), |mut output, chunk| async move {
@@ -420,7 +427,7 @@ async fn sdk_reads_uploads_and_native_deletes_share_one_connection() {
         .unwrap();
     assert_eq!(bytes, b"data");
     provider
-        .delete(&key, &DeleteOptions::default())
+        .delete_object(&key, &DeleteOptions::default())
         .await
         .unwrap();
     assert_eq!(server.count(), 4);
@@ -947,7 +954,7 @@ async fn endpoint_environment_child_probe() {
     let key = ObjectPath::new("object").unwrap();
     if case == "explicit" {
         provider
-            .put(
+            .put_object(
                 &key,
                 Box::pin(futures::stream::once(async {
                     Ok(bytes::Bytes::from_static(b"data"))
@@ -958,7 +965,7 @@ async fn endpoint_environment_child_probe() {
             .await
             .unwrap();
     } else {
-        let metadata = provider.head(&key).await.unwrap();
+        let metadata = provider.get_object_metadata(&key).await.unwrap();
         let scope = metadata.source_version.unwrap().scope;
         let expected = if case == "inherited" {
             std::env::var("AWS_ENDPOINT_URL_S3").unwrap()
@@ -1023,7 +1030,7 @@ async fn native_copy_declines_before_mutating_destination() {
     );
     assert_eq!(
         provider
-            .copy(
+            .copy_object(
                 &ObjectPath::new("source").unwrap(),
                 &ObjectPath::new("destination").unwrap(),
                 &CopyOptions {
@@ -1070,7 +1077,7 @@ async fn malformed_request_headers_return_errors_before_network_io() {
         },
     ] {
         let error = provider
-            .put(
+            .put_object(
                 &ObjectPath::new("object").unwrap(),
                 Box::pin(futures::stream::empty()),
                 Some(0),
@@ -1082,7 +1089,7 @@ async fn malformed_request_headers_return_errors_before_network_io() {
         assert!(!format!("{error:?} {error}").contains("secret"));
     }
     let error = provider
-        .get(
+        .get_object(
             &ObjectPath::new("object").unwrap(),
             &GetConditions {
                 if_none_match: Some("etag\nsecret".into()),
@@ -1129,7 +1136,7 @@ async fn malformed_explicit_and_refreshed_credentials_fail_before_signing() {
         )
         .unwrap();
         let error = provider
-            .head(&ObjectPath::new("object").unwrap())
+            .get_object_metadata(&ObjectPath::new("object").unwrap())
             .await
             .unwrap_err();
         assert_eq!(error.kind, ErrorKind::Unauthenticated);
@@ -1145,7 +1152,7 @@ async fn oversized_range_fails_before_waiting_for_the_response_to_finish() {
     let provider = server.provider(2000);
     let error = tokio::time::timeout(
         Duration::from_millis(500),
-        provider.get_range(
+        provider.get_object_range(
             &ObjectPath::new("object").unwrap(),
             ByteRange::new(0, 1).unwrap(),
             &GetConditions::default(),
@@ -1168,7 +1175,7 @@ async fn multipart_preserves_part_failure_when_abort_fails_and_shutdown_retries(
     let body = bytes::Bytes::from(vec![42; 8 * 1024 * 1024]);
     let error = tokio::time::timeout(
         Duration::from_secs(10),
-        provider.put(
+        provider.put_object(
             &ObjectPath::new("object").unwrap(),
             Box::pin(futures::stream::once(async move { Ok(body) })),
             Some(8 * 1024 * 1024),
@@ -1209,12 +1216,12 @@ fn part_retry_policy(max_attempts: u32) -> RetryPolicy {
 }
 
 async fn upload_one_part(
-    provider: &dyn StorageProvider,
+    provider: &dyn StorageBackend,
 ) -> multi_storage_client::Result<multi_storage_client::PutResult> {
     let body = bytes::Bytes::from(vec![42; 8 * 1024 * 1024]);
     tokio::time::timeout(
         Duration::from_secs(10),
-        provider.put(
+        provider.put_object(
             &ObjectPath::new("object").unwrap(),
             Box::pin(futures::stream::once(async move { Ok(body) })),
             Some(8 * 1024 * 1024),
@@ -1260,7 +1267,7 @@ async fn single_put_is_never_duplicated_by_low_speed_hedging() {
     let server = FailureServer::start(Behavior::DelayedPutResponse, 0).await;
     let provider = server.low_speed_provider(1024 * 1024 * 1024, 20);
     let result = provider
-        .put(
+        .put_object(
             &ObjectPath::new("object").unwrap(),
             Box::pin(futures::stream::once(async {
                 Ok(bytes::Bytes::from_static(b"data"))
@@ -1329,7 +1336,7 @@ async fn throttled_range_read_resumes_within_its_requested_range() {
     let server = FailureServer::start(Behavior::ThrottledGets { slow: 1 }, 0).await;
     let provider = server.low_speed_provider(1024, 100);
     let bytes = provider
-        .get_range(
+        .get_object_range(
             &ObjectPath::new("object").unwrap(),
             ByteRange {
                 offset: 1000,
@@ -1370,7 +1377,7 @@ async fn threshold_sized_upload_uses_one_put_and_larger_upload_retries_parts() {
             .multipart_provider_with_threshold(2000, 50, part_retry_policy(2), 2)
             .await;
         let result = provider
-            .put(
+            .put_object(
                 &ObjectPath::new("object").unwrap(),
                 Box::pin(futures::stream::once(async move {
                     Ok(bytes::Bytes::from(vec![42; length]))
@@ -1592,7 +1599,7 @@ async fn early_precondition_status_survives_truncated_error_body_without_put_rep
     let body = bytes::Bytes::from(vec![42; 5 * 1024 * 1024]);
     let error = tokio::time::timeout(
         Duration::from_secs(5),
-        provider.put(
+        provider.put_object(
             &ObjectPath::new("object").unwrap(),
             Box::pin(futures::stream::once(async move { Ok(body) })),
             Some(5 * 1024 * 1024),
@@ -1624,7 +1631,7 @@ async fn ordinary_put_waits_for_response_beyond_read_idle_window_without_replay(
     let provider = server.provider_timeouts(1000, 50);
     let started = std::time::Instant::now();
     let result = provider
-        .put(
+        .put_object(
             &ObjectPath::new("object").unwrap(),
             Box::pin(futures::stream::once(async {
                 Ok(bytes::Bytes::from_static(b"data"))
@@ -1704,7 +1711,7 @@ async fn total_request_timeout_still_bounds_progressing_response_bodies() {
     let server = FailureServer::start(Behavior::SlowSteadyGetBody, 0).await;
     let provider = server.provider_timeouts(45, 50);
     let error = provider
-        .get(
+        .get_object(
             &ObjectPath::new("object").unwrap(),
             &GetConditions::default(),
         )
@@ -1726,7 +1733,7 @@ async fn real_http_transients_preserve_typed_context_without_sdk_retries() {
         let server = FailureServer::start(Behavior::Failure(status), 2).await;
         let provider = server.provider(1000);
         let error = provider
-            .get(
+            .get_object(
                 &ObjectPath::new("object").unwrap(),
                 &GetConditions::default(),
             )

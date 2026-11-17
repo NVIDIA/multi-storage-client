@@ -14,7 +14,7 @@
 // limitations under the License.
 
 //! Replayable uploads, byte writes, and object mutations.
-use super::{StorageClient, nonroot_path, require_file, stable_conditions};
+use super::{BaseStorageProvider, nonroot_path, require_file, stable_conditions};
 use crate::{
     CopyOptions, ErrorKind, InfoOptions, MscError, ObjectMetadata, ObjectPath, PutResult, Result,
     WriteOptions,
@@ -26,7 +26,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 const UPLOAD_BUFFER_SIZE: usize = 1024 * 1024;
 
-impl StorageClient {
+impl<B: crate::StorageBackend + ?Sized + 'static> BaseStorageProvider<B> {
     pub(super) async fn write_impl(
         &self,
         path: impl AsRef<str>,
@@ -41,7 +41,7 @@ impl StorageClient {
             .retry_mutation(|| {
                 let bytes = bytes.clone();
                 let size = bytes.len() as u64;
-                self.state.provider.put(
+                self.state.provider.put_object(
                     &path,
                     Box::pin(stream::once(async move { Ok(bytes) })),
                     Some(size),
@@ -130,7 +130,7 @@ impl StorageClient {
                 });
                 self.state
                     .provider
-                    .put(remote, Box::pin(body), Some(length), options)
+                    .put_object(remote, Box::pin(body), Some(length), options)
                     .await
             })
             .await?;
@@ -148,7 +148,9 @@ impl StorageClient {
         }
         let mut source = nonroot_path(source)?;
         if self.is_posix_file_storage_provider() {
-            let metadata = self.info(source, InfoOptions { strict: false }).await?;
+            let metadata = self
+                .info_impl(source, InfoOptions { strict: false })
+                .await?;
             require_file(&metadata)?;
             source = metadata.key;
         }
@@ -158,7 +160,11 @@ impl StorageClient {
                 self.streaming_copy(&source, &destination, &options).await?
             } else {
                 match self
-                    .retry_mutation(|| self.state.provider.copy(&source, &destination, &options))
+                    .retry_mutation(|| {
+                        self.state
+                            .provider
+                            .copy_object(&source, &destination, &options)
+                    })
                     .await
                 {
                     Err(error) if error.kind == ErrorKind::Unsupported => {
@@ -181,7 +187,9 @@ impl StorageClient {
         {
             return Err(MscError::unsupported("copy"));
         }
-        let metadata = self.info(source, InfoOptions { strict: false }).await?;
+        let metadata = self
+            .info_impl(source, InfoOptions { strict: false })
+            .await?;
         require_file(&metadata)?;
         let conditions = stable_conditions(&metadata, &options.source_conditions);
         let mut destination_options = options.destination.clone();
@@ -195,10 +203,14 @@ impl StorageClient {
                 metadata.provider_fields.get("content_type").cloned();
         }
         self.retry_mutation(|| async {
-            let body = self.state.provider.get(&metadata.key, &conditions).await?;
+            let body = self
+                .state
+                .provider
+                .get_object(&metadata.key, &conditions)
+                .await?;
             self.state
                 .provider
-                .put(
+                .put_object(
                     destination,
                     body,
                     Some(metadata.content_length),
@@ -218,7 +230,7 @@ impl StorageClient {
             return Ok(metadata);
         }
         let metadata = self
-            .retry(true, || self.state.provider.head(path))
+            .retry(true, || self.state.provider.get_object_metadata(path))
             .await
             .map_err(|error| {
                 error.context(
@@ -255,12 +267,16 @@ impl StorageClient {
         target: &str,
     ) -> Result<ObjectMetadata> {
         let path = nonroot_path(path)?;
-        path.resolve_link(target)?;
+        let target = ObjectPath::new(target)?;
         if !self.state.provider.capabilities().symlinks {
             return Err(MscError::unsupported("symlinks"));
         }
-        self.state.provider.make_symlink(&path, target).await?;
-        self.retry(true, || self.state.provider.head(&path)).await
+        self.state
+            .provider
+            .make_symlink(&path, target.as_str())
+            .await?;
+        self.retry(true, || self.state.provider.get_object_metadata(&path))
+            .await
     }
 }
 

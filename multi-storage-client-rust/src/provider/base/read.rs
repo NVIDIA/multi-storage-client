@@ -14,15 +14,15 @@
 // limitations under the License.
 
 //! Metadata, byte reads, and conditional ranges.
-use super::{StorageClient, require_file, stable_conditions};
+use super::{BaseStorageProvider, require_file, stable_conditions};
 use crate::{
-    ByteRange, ErrorKind, GetConditions, InfoOptions, ListOptions, MscError, ObjectKind,
-    ObjectMetadata, ObjectPath, ReadOptions, Result,
+    ByteRange, ErrorKind, GetConditions, InfoOptions, MscError, ObjectMetadata, ObjectPath,
+    ReadOptions, Result,
 };
 use bytes::{Bytes, BytesMut};
 use futures::StreamExt;
 
-impl StorageClient {
+impl<B: crate::StorageBackend + ?Sized + 'static> BaseStorageProvider<B> {
     pub(super) async fn read_metadata(
         &self,
         path: &ObjectPath,
@@ -32,10 +32,14 @@ impl StorageClient {
             && !self.is_posix_file_storage_provider()
         {
             return self
-                .retry(true, || self.state.provider.head_version(path, version))
+                .retry(true, || {
+                    self.state
+                        .provider
+                        .get_object_metadata_version(path, version)
+                })
                 .await;
         }
-        let metadata = self.info(path, InfoOptions { strict: false }).await?;
+        let metadata = self.info_impl(path, InfoOptions { strict: false }).await?;
         if conditions
             .version
             .as_ref()
@@ -54,37 +58,21 @@ impl StorageClient {
         path: impl AsRef<str>,
         options: InfoOptions,
     ) -> Result<ObjectMetadata> {
-        let directory_hint = path.as_ref().ends_with('/') && !self.is_posix_file_storage_provider();
-        let mut path = ObjectPath::new(path)?;
+        super::super::resolve_metadata(self, path.as_ref(), options).await
+    }
+
+    pub(super) async fn metadata_impl(
+        &self,
+        path: &str,
+        options: InfoOptions,
+    ) -> Result<ObjectMetadata> {
+        let directory_hint = path.ends_with('/') && !self.is_posix_file_storage_provider();
+        let path = ObjectPath::new(path)?;
         if path.is_root() {
             return Ok(ObjectMetadata::directory(path));
         }
-        let mut visited = std::collections::BTreeSet::new();
-        for hop in 0..=8 {
-            if !visited.insert(path.clone()) {
-                return Err(MscError::new(
-                    ErrorKind::Integrity,
-                    "symlink cycle detected",
-                ));
-            }
-            let metadata = self
-                .lookup_metadata(&path, options.strict, directory_hint)
-                .await?;
-            if metadata.kind != ObjectKind::Symlink {
-                return Ok(metadata);
-            }
-            if hop == 8 {
-                return Err(MscError::new(
-                    ErrorKind::Integrity,
-                    "symlink hop limit exceeded",
-                ));
-            }
-            let target = metadata
-                .symlink_target
-                .ok_or_else(|| MscError::new(ErrorKind::Integrity, "symlink has no target"))?;
-            path = path.resolve_link(&target)?;
-        }
-        unreachable!("bounded symlink resolution")
+        self.lookup_metadata(&path, options.strict, directory_hint)
+            .await
     }
 
     async fn lookup_metadata(
@@ -101,7 +89,7 @@ impl StorageClient {
                     path.as_str(),
                 )
             } else {
-                match self.state.provider.head(path).await {
+                match self.state.provider.get_object_metadata(path).await {
                     Ok(metadata) => return Ok(metadata),
                     Err(error) if error.kind == ErrorKind::NotFound && strict => error,
                     Err(error) => return Err(error),
@@ -114,24 +102,6 @@ impl StorageClient {
             }
         })
         .await
-    }
-
-    pub(super) async fn is_file_impl(&self, path: impl AsRef<str>) -> Result<bool> {
-        match self.info(path, InfoOptions { strict: false }).await {
-            Ok(metadata) => Ok(metadata.kind == ObjectKind::File),
-            Err(error) if error.kind == ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(error),
-        }
-    }
-
-    pub(super) async fn is_empty_impl(&self, prefix: impl AsRef<str>) -> Result<bool> {
-        let mut listing = self
-            .list(ListOptions {
-                prefix: ObjectPath::new(prefix)?,
-                ..ListOptions::default()
-            })
-            .await?;
-        Ok(listing.next().await.transpose()?.is_none())
     }
 
     /// Read with explicit conditions and an in-memory size limit.
@@ -168,7 +138,7 @@ impl StorageClient {
             )
             .await?;
         if bytes.is_empty() && !resolve_first && self.state.provider.capabilities().symlinks {
-            let metadata = self.info(&path, InfoOptions { strict: false }).await?;
+            let metadata = self.info_impl(&path, InfoOptions { strict: false }).await?;
             require_file(&metadata)?;
             if metadata.key != path {
                 return self
@@ -199,7 +169,7 @@ impl StorageClient {
             ));
         }
         self.retry(true, || async {
-            let mut body = self.state.provider.get(path, conditions).await?;
+            let mut body = self.state.provider.get_object(path, conditions).await?;
             let mut output = BytesMut::new();
             while let Some(chunk) = body.next().await {
                 let chunk = chunk?;
@@ -262,7 +232,7 @@ impl StorageClient {
                 .range_with_conditions(&path, range, &options.conditions)
                 .await?;
             if bytes.is_empty() && self.state.provider.capabilities().symlinks {
-                let metadata = self.info(&path, InfoOptions { strict: false }).await?;
+                let metadata = self.info_impl(&path, InfoOptions { strict: false }).await?;
                 if metadata.key != path {
                     return self
                         .range_with_conditions(&metadata.key, range, &options.conditions)
@@ -299,7 +269,7 @@ impl StorageClient {
         self.retry(true, || {
             self.state
                 .provider
-                .get_suffix(&path, range, &options.conditions)
+                .get_object_suffix(&path, range, &options.conditions)
         })
         .await
     }
@@ -314,7 +284,9 @@ impl StorageClient {
             return Err(MscError::unsupported("ranged reads"));
         }
         self.retry(true, || {
-            self.state.provider.get_range(path, range, conditions)
+            self.state
+                .provider
+                .get_object_range(path, range, conditions)
         })
         .await
     }

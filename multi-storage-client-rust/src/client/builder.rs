@@ -13,8 +13,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{ClientState, DEFAULT_MEMORY_LIMIT, StorageClient, StorageClientBuilder};
-use crate::{ProviderRegistry, Result, RetryPolicy, StorageProvider, config::ResolvedConfig};
+use super::{StorageClient, StorageClientBuilder};
+use crate::provider::DEFAULT_MEMORY_LIMIT;
+use crate::{
+    BaseStorageProvider, ProviderRegistry, Result, RetryPolicy, StorageBackend,
+    config::ResolvedConfig,
+};
 use std::sync::Arc;
 
 pub(super) enum ClientSource {
@@ -22,7 +26,7 @@ pub(super) enum ClientSource {
         config: ResolvedConfig,
         profile: String,
     },
-    Provider(Arc<dyn StorageProvider>),
+    Provider(Arc<dyn StorageBackend>),
 }
 
 impl StorageClientBuilder {
@@ -30,10 +34,10 @@ impl StorageClientBuilder {
         Self::new(ClientSource::Profile { config, profile })
     }
 
-    /// Select an application-supplied provider with default client settings.
+    /// Select an application-supplied backend, wrapped with shared provider behavior.
     /// Construction is completed by [`Self::build`]; builder settings apply normally.
     #[must_use]
-    pub fn from_provider(provider: Arc<dyn StorageProvider>) -> Self {
+    pub fn from_provider(provider: Arc<dyn StorageBackend>) -> Self {
         Self::new(ClientSource::Provider(provider))
     }
 
@@ -83,12 +87,13 @@ impl StorageClientBuilder {
             }
             ClientSource::Provider(provider) => (provider, RetryPolicy::default()),
         };
+        let provider = BaseStorageProvider::configured(
+            provider,
+            self.retry.unwrap_or(default_retry),
+            self.max_in_memory_bytes,
+        );
         Ok(StorageClient {
-            state: Arc::new(ClientState {
-                provider,
-                retry: self.retry.unwrap_or(default_retry),
-                max_in_memory_bytes: self.max_in_memory_bytes,
-            }),
+            provider: Arc::new(provider),
         })
     }
 }

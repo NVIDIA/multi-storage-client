@@ -14,7 +14,7 @@
 // limitations under the License.
 
 //! Built-in provider construction and application-owned factories.
-use super::StorageProvider;
+use super::StorageBackend;
 use crate::{
     ErrorKind, MscError, Result,
     config::{ProfileConfig, ProviderConfig},
@@ -22,10 +22,10 @@ use crate::{
 use futures::future::BoxFuture;
 use std::{collections::BTreeMap, sync::Arc};
 
-/// Factory for a Rust-registered backend; no dynamic libraries are loaded.
-pub type ProviderFactory = Arc<
-    dyn Fn(ProfileConfig) -> BoxFuture<'static, Result<Arc<dyn StorageProvider>>> + Send + Sync,
->;
+/// Factory for a Rust-registered SDK backend. The client builder adds shared
+/// provider behavior; factories must not wrap or retry complete MSC operations.
+pub type ProviderFactory =
+    Arc<dyn Fn(ProfileConfig) -> BoxFuture<'static, Result<Arc<dyn StorageBackend>>> + Send + Sync>;
 
 /// Built-in storage tags plus application-owned factories. `s8k` uses the S3
 /// adapter and the same `s3` Cargo feature. Registration is process-local;
@@ -73,11 +73,12 @@ impl ProviderRegistry {
         matches!(tag, "s3" | "s8k" | "file" | "gcs" | "azure") || self.factories.contains_key(tag)
     }
 
-    /// Validate and build the backend selected by a single profile.
+    /// Validate and build the raw backend selected by a single profile.
+    /// Wrap it in [`super::BaseStorageProvider`] for public provider operations.
     ///
     /// # Errors
     /// Returns configuration, credential, or unsupported-provider errors before I/O.
-    pub async fn build(&self, profile: &ProfileConfig) -> Result<Arc<dyn StorageProvider>> {
+    pub async fn build(&self, profile: &ProfileConfig) -> Result<Arc<dyn StorageBackend>> {
         profile.validate_runtime_support()?;
         profile.retry.validate()?;
         let config = profile.storage_provider.as_ref().ok_or_else(|| {
@@ -100,7 +101,7 @@ impl ProviderRegistry {
     }
 }
 
-fn build_posix_provider(config: &ProviderConfig) -> Result<Arc<dyn StorageProvider>> {
+fn build_posix_provider(config: &ProviderConfig) -> Result<Arc<dyn StorageBackend>> {
     #[cfg(unix)]
     {
         let options = serde_json::from_value(config.options_value()).map_err(|_| {
@@ -125,7 +126,7 @@ fn build_posix_provider(config: &ProviderConfig) -> Result<Arc<dyn StorageProvid
 async fn build_s3_provider(
     profile: &ProfileConfig,
     config: &ProviderConfig,
-) -> Result<Arc<dyn StorageProvider>> {
+) -> Result<Arc<dyn StorageBackend>> {
     let mut options = super::s3::S3Options::from_config(config)?;
     if config.provider_type == "s8k" && !config.options.contains_key("infer_content_type") {
         options.infer_content_type = true;
@@ -151,7 +152,7 @@ async fn build_s3_provider(
 async fn build_s3_provider(
     _profile: &ProfileConfig,
     _config: &ProviderConfig,
-) -> Result<Arc<dyn StorageProvider>> {
+) -> Result<Arc<dyn StorageBackend>> {
     Err(MscError::new(
         ErrorKind::Unsupported,
         "S3 requires the Cargo feature `s3`",

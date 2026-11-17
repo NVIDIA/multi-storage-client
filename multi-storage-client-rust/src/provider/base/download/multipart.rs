@@ -14,16 +14,17 @@
 // limitations under the License.
 
 //! Bounded missing-part downloads and atomic checkpoint publication.
+use super::super::BaseStorageProvider;
 use super::{
     blocking, invalid_length,
     state::{Chunk, Directory, DownloadState},
 };
-use crate::{ByteRange, ErrorKind, GetConditions, MscError, ObjectMetadata, Result, StorageClient};
+use crate::{ByteRange, ErrorKind, GetConditions, MscError, ObjectMetadata, Result};
 use futures::StreamExt;
 use std::{path::Path, sync::Arc};
 use tokio::task::JoinSet;
 
-impl StorageClient {
+impl<B: crate::StorageBackend + ?Sized + 'static> BaseStorageProvider<B> {
     pub(super) async fn download_resumable(
         &self,
         metadata: &ObjectMetadata,

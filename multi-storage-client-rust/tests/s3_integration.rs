@@ -17,6 +17,9 @@
 #![cfg(feature = "s3")]
 #![allow(clippy::too_many_lines)] // Keep each provider contract scenario together.
 
+#[path = "common/provider_contract.rs"]
+mod provider_contract;
+
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use bytes::Bytes;
@@ -27,7 +30,7 @@ use multi_storage_client::{
     error::{ErrorKind, MscError},
     path::ObjectPath,
     provider::{
-        StorageProvider,
+        StorageBackend,
         s3::{S3Options, S3Provider},
     },
     types::{
@@ -76,7 +79,7 @@ fn credentials() -> AwsCredentials {
 }
 async fn read(provider: &S3Provider, key: &ObjectPath) -> Bytes {
     let chunks: Vec<_> = provider
-        .get(key, &GetConditions::default())
+        .get_object(key, &GetConditions::default())
         .await
         .unwrap()
         .try_collect()
@@ -92,7 +95,7 @@ async fn put(
 ) -> PutResult {
     let size = value.len() as u64;
     provider
-        .put(key, input(value), Some(size), options)
+        .put_object(key, input(value), Some(size), options)
         .await
         .unwrap()
 }
@@ -152,7 +155,7 @@ async fn object_contract_and_conditions() {
         ..Default::default()
     };
     let created = put(&provider, &object, payload.clone(), &options).await;
-    let info = provider.head(&object).await.unwrap();
+    let info = provider.get_object_metadata(&object).await.unwrap();
     assert_eq!(info.key, object);
     assert_eq!(info.content_length, 10);
     assert_eq!(info.attributes, options.attributes);
@@ -161,7 +164,7 @@ async fn object_contract_and_conditions() {
     assert_eq!(read(&provider, &object).await, payload);
     assert_eq!(
         provider
-            .get_range(
+            .get_object_range(
                 &object,
                 ByteRange::new(2, 4).unwrap(),
                 &GetConditions::default()
@@ -172,7 +175,7 @@ async fn object_contract_and_conditions() {
     );
     assert_eq!(
         provider
-            .get_range(
+            .get_object_range(
                 &object,
                 ByteRange::new(8, 99).unwrap(),
                 &GetConditions::default()
@@ -183,7 +186,7 @@ async fn object_contract_and_conditions() {
     );
     assert!(
         provider
-            .get_range(
+            .get_object_range(
                 &object,
                 ByteRange::new(99, 4).unwrap(),
                 &GetConditions::default()
@@ -194,7 +197,7 @@ async fn object_contract_and_conditions() {
     );
     assert!(
         provider
-            .get_range(
+            .get_object_range(
                 &key("missing"),
                 ByteRange::new(0, 0).unwrap(),
                 &GetConditions::default()
@@ -208,19 +211,19 @@ async fn object_contract_and_conditions() {
         if_match: info.etag.clone(),
         ..Default::default()
     };
-    assert!(provider.get(&object, &matching).await.is_ok());
+    assert!(provider.get_object(&object, &matching).await.is_ok());
     let source_version = GetConditions {
         version: info.source_version.clone(),
         ..Default::default()
     };
-    assert!(provider.get(&object, &source_version).await.is_ok());
+    assert!(provider.get_object(&object, &source_version).await.is_ok());
     let mismatching = GetConditions {
         if_match: Some("\"wrong-etag\"".into()),
         ..Default::default()
     };
     assert_eq!(
         provider
-            .get(&object, &mismatching)
+            .get_object(&object, &mismatching)
             .await
             .err()
             .unwrap()
@@ -229,7 +232,7 @@ async fn object_contract_and_conditions() {
     );
     assert_eq!(
         provider
-            .get_range(&object, ByteRange::new(99, 1).unwrap(), &mismatching)
+            .get_object_range(&object, ByteRange::new(99, 1).unwrap(), &mismatching)
             .await
             .err()
             .unwrap()
@@ -241,7 +244,12 @@ async fn object_contract_and_conditions() {
         ..Default::default()
     };
     assert_eq!(
-        provider.get(&object, &unchanged).await.err().unwrap().kind,
+        provider
+            .get_object(&object, &unchanged)
+            .await
+            .err()
+            .unwrap()
+            .kind,
         ErrorKind::NotModified
     );
     let create_only = WriteOptions {
@@ -250,7 +258,7 @@ async fn object_contract_and_conditions() {
     };
     assert_eq!(
         provider
-            .put(&object, input(Bytes::new()), Some(0), &create_only)
+            .put_object(&object, input(Bytes::new()), Some(0), &create_only)
             .await
             .unwrap_err()
             .kind,
@@ -263,7 +271,7 @@ async fn object_contract_and_conditions() {
     put(&provider, &object, Bytes::from_static(b"new"), &update).await;
     assert_eq!(
         provider
-            .put(&object, input(Bytes::new()), Some(0), &update)
+            .put_object(&object, input(Bytes::new()), Some(0), &update)
             .await
             .unwrap_err()
             .kind,
@@ -275,7 +283,7 @@ async fn object_contract_and_conditions() {
     };
     assert_eq!(
         provider
-            .put(
+            .put_object(
                 &key("absent"),
                 input(Bytes::new()),
                 Some(0),
@@ -289,10 +297,13 @@ async fn object_contract_and_conditions() {
 
     let copy = key("copy");
     let publication = provider
-        .copy(&object, &copy, &CopyOptions::default())
+        .copy_object(&object, &copy, &CopyOptions::default())
         .await
         .unwrap();
-    assert_eq!(publication.etag, provider.head(&copy).await.unwrap().etag);
+    assert_eq!(
+        publication.etag,
+        provider.get_object_metadata(&copy).await.unwrap().etag
+    );
     StorageClientBuilder::from_provider(Arc::new(provider.clone()))
         .build()
         .await
@@ -302,7 +313,7 @@ async fn object_contract_and_conditions() {
         .unwrap();
     assert_eq!(read(&provider, &copy).await, Bytes::from_static(b"new"));
     let batch = provider
-        .delete_many(
+        .delete_objects(
             &[object.clone(), copy.clone(), key("missing")],
             &DeleteOptions::default(),
         )
@@ -310,10 +321,21 @@ async fn object_contract_and_conditions() {
     assert_eq!(batch.succeeded, vec![0, 1, 2]);
     assert!(batch.failed.is_empty());
     assert_eq!(
-        provider.head(&object).await.unwrap_err().kind,
+        provider
+            .get_object_metadata(&object)
+            .await
+            .unwrap_err()
+            .kind,
         ErrorKind::NotFound
     );
-    assert!(provider.head(&ObjectPath::default()).await.unwrap().kind == ObjectKind::Directory);
+    assert!(
+        provider
+            .get_object_metadata(&ObjectPath::default())
+            .await
+            .unwrap()
+            .kind
+            == ObjectKind::Directory
+    );
 }
 
 #[tokio::test]
@@ -350,7 +372,7 @@ async fn listing_pagination_boundaries_and_directory_order() {
     )
     .await;
     let recursive: Vec<ObjectMetadata> = provider
-        .list(&ListOptions::default())
+        .list_objects(&ListOptions::default())
         .await
         .unwrap()
         .try_collect()
@@ -370,7 +392,7 @@ async fn listing_pagination_boundaries_and_directory_order() {
         ..Default::default()
     };
     let synthesized: Vec<ObjectMetadata> = provider
-        .list(&options)
+        .list_objects(&options)
         .await
         .unwrap()
         .try_collect()
@@ -399,7 +421,7 @@ async fn listing_pagination_boundaries_and_directory_order() {
         ..Default::default()
     };
     let delimited: Vec<ObjectMetadata> = provider
-        .list(&options)
+        .list_objects(&options)
         .await
         .unwrap()
         .try_collect()
@@ -428,7 +450,7 @@ async fn listing_pagination_boundaries_and_directory_order() {
         ..Default::default()
     };
     let bounded: Vec<ObjectMetadata> = provider
-        .list(&bounded)
+        .list_objects(&bounded)
         .await
         .unwrap()
         .try_collect()
@@ -446,7 +468,7 @@ async fn listing_pagination_boundaries_and_directory_order() {
         ..Default::default()
     };
     let prefixed: Vec<ObjectMetadata> = provider
-        .list(&prefixed)
+        .list_objects(&prefixed)
         .await
         .unwrap()
         .try_collect()
@@ -459,7 +481,7 @@ async fn listing_pagination_boundaries_and_directory_order() {
     };
     assert_eq!(
         provider
-            .list(&attributes)
+            .list_objects(&attributes)
             .await
             .unwrap()
             .try_collect::<Vec<_>>()
@@ -488,7 +510,7 @@ async fn zero_multipart_boundaries_length_failure_and_cancellation() {
     }
     let mismatch = key("wrong-length");
     let error = provider
-        .put(
+        .put_object(
             &mismatch,
             input(Bytes::from(vec![0; 6 * 1024 * 1024])),
             Some(5),
@@ -498,7 +520,11 @@ async fn zero_multipart_boundaries_length_failure_and_cancellation() {
         .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Integrity);
     assert_eq!(
-        provider.head(&mismatch).await.unwrap_err().kind,
+        provider
+            .get_object_metadata(&mismatch)
+            .await
+            .unwrap_err()
+            .kind,
         ErrorKind::NotFound
     );
     let failed = key("failed-source");
@@ -508,14 +534,18 @@ async fn zero_multipart_boundaries_length_failure_and_cancellation() {
     ]);
     assert_eq!(
         provider
-            .put(&failed, Box::pin(body), None, &WriteOptions::default())
+            .put_object(&failed, Box::pin(body), None, &WriteOptions::default())
             .await
             .unwrap_err()
             .kind,
         ErrorKind::Io
     );
     assert_eq!(
-        provider.head(&failed).await.unwrap_err().kind,
+        provider
+            .get_object_metadata(&failed)
+            .await
+            .unwrap_err()
+            .kind,
         ErrorKind::NotFound
     );
 
@@ -529,7 +559,7 @@ async fn zero_multipart_boundaries_length_failure_and_cancellation() {
     let worker_provider = Arc::clone(&provider);
     let worker = tokio::spawn(async move {
         worker_provider
-            .put(
+            .put_object(
                 &key("cancelled"),
                 Box::pin(body),
                 None,
@@ -548,7 +578,11 @@ async fn zero_multipart_boundaries_length_failure_and_cancellation() {
     worker.abort();
     assert!(worker.await.unwrap_err().is_cancelled());
     assert_eq!(
-        provider.head(&key("cancelled")).await.unwrap_err().kind,
+        provider
+            .get_object_metadata(&key("cancelled"))
+            .await
+            .unwrap_err()
+            .kind,
         ErrorKind::NotFound
     );
     provider.shutdown().await.unwrap();
@@ -602,7 +636,7 @@ async fn waiting_upload_drains_cancelled_upload_without_deadlock() {
     let first_provider = Arc::clone(&provider);
     let first = tokio::spawn(async move {
         first_provider
-            .put(
+            .put_object(
                 &key("cancelled"),
                 Box::pin(body),
                 None,
@@ -614,7 +648,7 @@ async fn waiting_upload_drains_cancelled_upload_without_deadlock() {
     let second_provider = Arc::clone(&provider);
     let mut second = tokio::spawn(async move {
         second_provider
-            .put(
+            .put_object(
                 &key("waiting"),
                 input(Bytes::from(vec![1; 6 * 1024 * 1024])),
                 None,
@@ -637,7 +671,11 @@ async fn waiting_upload_drains_cancelled_upload_without_deadlock() {
     provider.shutdown().await.unwrap();
     assert_eq!(multipart_upload_count().await, 0);
     assert_eq!(
-        provider.head(&key("waiting")).await.unwrap().content_length,
+        provider
+            .get_object_metadata(&key("waiting"))
+            .await
+            .unwrap()
+            .content_length,
         6 * 1024 * 1024
     );
 }
@@ -666,7 +704,7 @@ async fn synthesized_directories_stay_inside_requested_prefix() {
         .await;
     }
     let all: Vec<ObjectMetadata> = provider
-        .list(&ListOptions {
+        .list_objects(&ListOptions {
             include_directories: true,
             ..Default::default()
         })
@@ -684,7 +722,7 @@ async fn synthesized_directories_stay_inside_requested_prefix() {
         ..Default::default()
     };
     let result: Vec<ObjectMetadata> = provider
-        .list(&options)
+        .list_objects(&options)
         .await
         .unwrap()
         .try_collect()
@@ -709,7 +747,7 @@ async fn synthesized_directories_stay_inside_requested_prefix() {
         ..Default::default()
     };
     let result: Vec<ObjectMetadata> = provider
-        .list(&options)
+        .list_objects(&options)
         .await
         .unwrap()
         .try_collect()
@@ -723,7 +761,7 @@ async fn synthesized_directories_stay_inside_requested_prefix() {
         vec![key("folder/nested"), key("folder/plain.txt")]
     );
     let result: Vec<ObjectMetadata> = provider
-        .list(&ListOptions {
+        .list_objects(&ListOptions {
             prefix: key("folder"),
             recursive: false,
             include_directories: false,
@@ -747,7 +785,7 @@ async fn synthesized_directories_stay_inside_requested_prefix() {
         ..Default::default()
     };
     let result: Vec<ObjectMetadata> = provider
-        .list(&options)
+        .list_objects(&options)
         .await
         .unwrap()
         .try_collect()
@@ -798,7 +836,10 @@ async fn live_file_credentials_and_error_redaction() {
     .await
     .unwrap();
     tokio::fs::rename(&rotated, &file).await.unwrap();
-    let error = provider.head(&key("object")).await.unwrap_err();
+    let error = provider
+        .get_object_metadata(&key("object"))
+        .await
+        .unwrap_err();
     assert!(matches!(
         error.kind,
         ErrorKind::PermissionDenied | ErrorKind::Unauthenticated
@@ -979,7 +1020,7 @@ async fn configured_object_contract(client: StorageClient, prefix: &str) {
     let physical = test_provider("");
     assert_eq!(
         physical
-            .head(&key(&format!("{prefix}/nested/hello.txt")))
+            .get_object_metadata(&key(&format!("{prefix}/nested/hello.txt")))
             .await
             .unwrap()
             .content_length,
@@ -1867,7 +1908,7 @@ async fn configured_storage_client_unsupported_conditions_preserve_objects() {
     for recursive in [true, false] {
         for include_attributes in [false, true] {
             let entries = provider
-                .list(&ListOptions {
+                .list_objects(&ListOptions {
                     recursive,
                     include_attributes,
                     ..ListOptions::default()
@@ -1899,6 +1940,37 @@ async fn configured_storage_client_unsupported_conditions_preserve_objects() {
         }
     }
     client
+        .make_symlink("links/alias", "existing")
+        .await
+        .unwrap();
+    provider
+        .make_symlink(&key("links/direct"), "existing")
+        .await
+        .unwrap();
+    for link in ["links/alias", "links/direct"] {
+        assert_eq!(
+            provider
+                .get_object_metadata(&key(link))
+                .await
+                .unwrap()
+                .symlink_target
+                .as_deref(),
+            Some("../existing")
+        );
+        assert_eq!(
+            client.read(link, ReadOptions::default()).await.unwrap(),
+            "original"
+        );
+    }
+    let removed = client
+        .delete_many(
+            &[key("links/alias"), key("links/direct")],
+            DeleteOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(removed.failed.is_empty());
+    client
         .delete("link", false, DeleteOptions::default())
         .await
         .unwrap();
@@ -1927,4 +1999,20 @@ async fn configured_storage_client_unsupported_conditions_preserve_objects() {
     );
     assert!(client.is_empty("").await.unwrap());
     client.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires local storage simulators; run just run-integration-tests"]
+async fn shared_public_provider_contract_uses_s3_native_operations() {
+    let backend = std::sync::Arc::new(test_provider(&format!(
+        "public-provider-{}",
+        uuid::Uuid::new_v4()
+    )));
+    let provider = multi_storage_client::BaseStorageProvider::new(backend);
+    let local = tempfile::tempdir().unwrap();
+    provider_contract::assert_contract(&provider, local.path()).await;
+    provider_contract::assert_symlink_contract(&provider).await;
+    multi_storage_client::StorageProvider::shutdown(&provider)
+        .await
+        .unwrap();
 }

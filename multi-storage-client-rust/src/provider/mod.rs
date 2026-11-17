@@ -16,9 +16,12 @@
 //! Object-safe storage boundary and process-local provider factories.
 //!
 //! Most applications use [`StorageClient`](crate::StorageClient). Implement
-//! [`StorageProvider`] to add a backend, or construct a built-in
-//! `posix::PosixProvider` directly for a local root on Unix. S3 types are available
-//! under `s3` when the default `s3` Cargo feature is enabled.
+//! [`StorageBackend`] and wrap it in [`BaseStorageProvider`] to add a backend.
+//! Built-in adapters are available under [`posix`] on Unix and `s3` when the
+//! default `s3` Cargo feature is enabled. Builders wrap adapters automatically.
+mod backend;
+mod base;
+mod metadata;
 mod ranges;
 mod registry;
 mod traits;
@@ -27,9 +30,15 @@ pub mod posix;
 #[cfg(feature = "s3")]
 pub mod s3;
 
+pub use backend::StorageBackend;
+pub use base::BaseStorageProvider;
+pub(crate) use base::DEFAULT_MEMORY_LIMIT;
+#[cfg(feature = "s3")]
+pub(crate) use base::current_provider_retry_policy;
 pub use registry::{ProviderFactory, ProviderRegistry};
 pub use traits::StorageProvider;
 
+pub(crate) use metadata::resolve_metadata;
 pub(crate) use ranges::suffix_fallback;
 #[cfg(feature = "s3")]
 pub(crate) use ranges::{range_bytes, requested_bounds};

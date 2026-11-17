@@ -14,30 +14,27 @@
 // limitations under the License.
 
 //! Exact-key deletion and bounded partial-result batches.
-use super::{StorageClient, nonroot_path};
+use super::{BaseStorageProvider, nonroot_path};
 use crate::{BatchFailure, BatchResult, DeleteOptions, ErrorKind, MscError, ObjectPath, Result};
 use futures::{StreamExt, stream};
 
 const DELETE_BATCH_SIZE: usize = 1000;
 
-impl StorageClient {
+impl<B: crate::StorageBackend + ?Sized + 'static> BaseStorageProvider<B> {
     pub(super) async fn delete_impl(
         &self,
         path: impl AsRef<str>,
-        recursive: bool,
         options: DeleteOptions,
     ) -> Result<()> {
-        if recursive {
-            return Err(MscError::unsupported(
-                "recursive deletion; list and delete exact keys instead",
-            ));
-        }
         let path = nonroot_path(path)?;
         self.retry(true, || async {
             if let Some(version) = &options.version {
-                self.state.provider.head_version(&path, version).await
+                self.state
+                    .provider
+                    .get_object_metadata_version(&path, version)
+                    .await
             } else {
-                self.state.provider.head(&path).await
+                self.state.provider.get_object_metadata(&path).await
             }
         })
         .await?;
@@ -46,7 +43,7 @@ impl StorageClient {
 
     async fn delete_exact(&self, path: &ObjectPath, options: &DeleteOptions) -> Result<()> {
         self.retry_mutation(|| async {
-            match self.state.provider.delete(path, options).await {
+            match self.state.provider.delete_object(path, options).await {
                 Err(error) if error.kind == ErrorKind::NotFound => Ok(()),
                 result => result,
             }
@@ -97,7 +94,7 @@ impl StorageClient {
             while !pending.is_empty() {
                 attempts += 1;
                 let keys: Vec<_> = pending.iter().map(|(_, path)| path.clone()).collect();
-                let batch = self.state.provider.delete_many(&keys, &options).await;
+                let batch = self.state.provider.delete_objects(&keys, &options).await;
                 validate_batch(&batch, pending.len())?;
                 for index in batch.succeeded {
                     output.succeeded.push(pending[index].0);

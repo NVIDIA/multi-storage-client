@@ -26,8 +26,8 @@ pub use options::S3Options;
 use crate::{
     credentials::AwsCredentials,
     error::{ErrorKind, MscError, Result},
-    path::ObjectPath,
-    provider::StorageProvider,
+    path::{ObjectPath, relative_link_target},
+    provider::StorageBackend,
     types::{
         ByteRange, ByteStream, CopyOptions, CopyScope, DeleteOptions, GetConditions, ListOptions,
         MetadataStream, ObjectMetadata, ProviderCapabilities, PutResult, SourceVersion,
@@ -518,7 +518,7 @@ impl S3Provider {
 }
 
 #[async_trait]
-impl StorageProvider for S3Provider {
+impl StorageBackend for S3Provider {
     fn backend_fingerprint(&self) -> String {
         self.scope.clone()
     }
@@ -549,7 +549,7 @@ impl StorageProvider for S3Provider {
             symlinks: true,
         }
     }
-    async fn head(&self, key: &ObjectPath) -> Result<ObjectMetadata> {
+    async fn get_object_metadata(&self, key: &ObjectPath) -> Result<ObjectMetadata> {
         if key.is_root() {
             return Ok(ObjectMetadata::directory(key.clone()));
         }
@@ -569,7 +569,7 @@ impl StorageProvider for S3Provider {
     async fn virtual_directory_exists(&self, key: &ObjectPath) -> Result<bool> {
         listing::virtual_directory_exists(self, key).await
     }
-    async fn head_version(
+    async fn get_object_metadata_version(
         &self,
         key: &ObjectPath,
         version: &SourceVersion,
@@ -586,7 +586,7 @@ impl StorageProvider for S3Provider {
             .map_err(|error| translate(error, "head", key.as_str()))?;
         self.metadata(result.meta, &result.attributes)
     }
-    async fn get(&self, key: &ObjectPath, conditions: &GetConditions) -> Result<ByteStream> {
+    async fn get_object(&self, key: &ObjectPath, conditions: &GetConditions) -> Result<ByteStream> {
         let path = self.path(key)?;
         let options = self.get_options(conditions)?;
         let result = self
@@ -623,7 +623,7 @@ impl StorageProvider for S3Provider {
             },
         )))
     }
-    async fn get_range(
+    async fn get_object_range(
         &self,
         key: &ObjectPath,
         range: ByteRange,
@@ -715,7 +715,7 @@ impl StorageProvider for S3Provider {
             chunk.map_err(|error| translate(error, "download_part", key.as_str()))
         })))
     }
-    async fn get_suffix(
+    async fn get_object_suffix(
         &self,
         key: &ObjectPath,
         range: crate::SuffixRange,
@@ -753,7 +753,7 @@ impl StorageProvider for S3Provider {
             .map(move |chunk| chunk.map_err(|error| translate(error, "get_suffix", key.as_str())));
         crate::provider::range_bytes(Box::pin(body), expected).await
     }
-    async fn put(
+    async fn put_object(
         &self,
         key: &ObjectPath,
         input: ByteStream,
@@ -852,7 +852,7 @@ impl StorageProvider for S3Provider {
             Ok(Self::completed_put(key, result, length, &options))
         }
     }
-    async fn delete(&self, key: &ObjectPath, conditions: &DeleteOptions) -> Result<()> {
+    async fn delete_object(&self, key: &ObjectPath, conditions: &DeleteOptions) -> Result<()> {
         if key.is_root() {
             return Err(MscError::new(
                 ErrorKind::InvalidPath,
@@ -861,7 +861,7 @@ impl StorageProvider for S3Provider {
         }
         self.native_delete(key, conditions).await
     }
-    async fn delete_many(
+    async fn delete_objects(
         &self,
         keys: &[ObjectPath],
         options: &DeleteOptions,
@@ -869,7 +869,7 @@ impl StorageProvider for S3Provider {
         self.native_delete_many(keys, options).await
     }
 
-    async fn copy(
+    async fn copy_object(
         &self,
         source: &ObjectPath,
         destination: &ObjectPath,
@@ -877,12 +877,12 @@ impl StorageProvider for S3Provider {
     ) -> Result<PutResult> {
         self.native_copy(source, destination, options).await
     }
-    async fn list(&self, options: &ListOptions) -> Result<MetadataStream> {
+    async fn list_objects(&self, options: &ListOptions) -> Result<MetadataStream> {
         listing::list(self.clone(), options)
     }
     async fn make_symlink(&self, key: &ObjectPath, target: &str) -> Result<()> {
-        key.resolve_link(target)?;
-        validate_header_value(target)?;
+        let target = relative_link_target(key, &ObjectPath::new(target)?);
+        validate_header_value(&target)?;
         let options = WriteOptions {
             attributes: std::collections::BTreeMap::from([(
                 "msc-symlink-target".into(),
@@ -890,7 +890,7 @@ impl StorageProvider for S3Provider {
             )]),
             ..Default::default()
         };
-        self.put(key, Box::pin(stream::empty()), Some(0), &options)
+        self.put_object(key, Box::pin(stream::empty()), Some(0), &options)
             .await?;
         Ok(())
     }
