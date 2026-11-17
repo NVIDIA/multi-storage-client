@@ -164,7 +164,6 @@ async fn read_state(dir: &LocalPath) -> Result<Option<DownloadState>, StorageErr
             dir.display()
         )));
     }
-    #[cfg(unix)]
     if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
         return Err(invalid_state(
             "Download state directory must be owned by the current user and private",
@@ -211,7 +210,6 @@ async fn prepare_data(
         Ok(metadata) if metadata.len() == state.size => {
             let mut options = OpenOptions::new();
             options.read(true).write(true);
-            #[cfg(unix)]
             options.custom_flags(libc::O_NOFOLLOW);
             let file = options.open(&path)?;
             let opened = file.metadata()?;
@@ -249,11 +247,7 @@ fn try_lock_state(dir: &LocalPath) -> Result<Option<same_file::Handle>, StorageE
     }
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
+    options.mode(0o600);
     let file = match options.open(&path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -279,7 +273,6 @@ async fn prepare_state(
     state: DownloadState,
 ) -> Result<(DownloadState, Option<same_file::Handle>), StorageError> {
     let mut builder = fs::DirBuilder::new();
-    #[cfg(unix)]
     builder.mode(0o700);
     let created = match builder.create(dir).await {
         Ok(()) => true,
@@ -467,7 +460,6 @@ pub(crate) async fn download(
         None => {
             let mut builder = tempfile::Builder::new();
             builder.prefix(".msc-dl-").suffix(STATE_SUFFIX);
-            #[cfg(unix)]
             builder.permissions(std::fs::Permissions::from_mode(0o700));
             let temp = builder.tempdir_in(parent)?;
             (temp.path().to_path_buf(), Some(temp))
@@ -751,7 +743,6 @@ mod tests {
     #[tokio::test]
     async fn cleanup_failure_restores_valid_marker() {
         let dir = tempfile::tempdir().unwrap();
-        #[cfg(unix)]
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let encoded = serde_json::to_vec(&serde_json::json!({
             "format": STATE_FORMAT,
