@@ -908,12 +908,12 @@ def _completed_chunks(state_dir: Path) -> set[int]:
         state = json.loads((state_dir / "state.json").read_text())
     except FileNotFoundError:
         return set()
-    return set(state["completed"])
+    return {index for start, end in state["completed"] for index in range(start, end)}
 
 
 def _downloaded_chunk(state_dir: Path, index: int) -> bytes:
     state = json.loads((state_dir / "state.json").read_text())
-    assert index in state["completed"]
+    assert any(start <= index < end for start, end in state["completed"])
     with (state_dir / "download.part").open("rb") as data:
         data.seek(index * state["chunk_size"])
         return data.read(min(state["chunk_size"], state["size"] - data.tell()))
@@ -1047,7 +1047,7 @@ async def test_rustclient_download_restarts_legacy_state(tmp_path):
         assert unrelated.read_bytes() == b"preserve"
 
 
-@pytest.mark.parametrize("completed", [[], [1]])
+@pytest.mark.parametrize("completed", [[], [[1, 2]]])
 @pytest.mark.asyncio
 async def test_rustclient_download_reuses_only_checkpointed_ranges(tmp_path, completed):
     async with _DownloadServer() as server:
@@ -1077,7 +1077,7 @@ async def test_rustclient_download_reuses_only_checkpointed_ranges(tmp_path, com
         assert not state_dir.exists()
 
 
-@pytest.mark.parametrize("completed", [[3], [-1], ["0"]])
+@pytest.mark.parametrize("completed", [[[3, 4]], [[2, 1]], [[0, 1], [1, 2]], [0]])
 @pytest.mark.asyncio
 async def test_rustclient_download_rejects_invalid_progress(tmp_path, completed):
     async with _DownloadServer() as server:

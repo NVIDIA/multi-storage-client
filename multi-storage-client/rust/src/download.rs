@@ -16,7 +16,7 @@
 use crate::StorageError;
 use object_store::{path::Path, GetOptions, ObjectMeta, ObjectStore, ObjectStoreExt};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::Write;
 use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -31,6 +31,78 @@ const STATE_SUFFIX: &str = ".msc-dl";
 const TEMP_FILE_RANDOM_LENGTH: usize = 6;
 const DATA_FILE: &str = "download.part";
 
+/// Completed chunk indices as disjoint ascending half-open ranges, so each
+/// checkpoint write stays proportional to the number of gaps, not chunks.
+#[derive(Clone, Debug, Default)]
+struct Completed(BTreeMap<u64, u64>);
+
+impl Completed {
+    fn insert(&mut self, index: u64) {
+        let mut start = index;
+        let mut end = index + 1;
+        if let Some((&before, &before_end)) = self.0.range(..=index).next_back() {
+            if before_end > index {
+                return;
+            }
+            if before_end == index {
+                start = before;
+                self.0.remove(&before);
+            }
+        }
+        if let Some((&after, &after_end)) = self.0.range(end..).next() {
+            if after == end {
+                end = after_end;
+                self.0.remove(&after);
+            }
+        }
+        self.0.insert(start, end);
+    }
+
+    fn contains(&self, index: u64) -> bool {
+        self.0
+            .range(..=index)
+            .next_back()
+            .is_some_and(|(_, &end)| end > index)
+    }
+
+    fn within(&self, count: u64) -> bool {
+        self.0
+            .iter()
+            .next_back()
+            .is_none_or(|(_, &end)| end <= count)
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl Serialize for Completed {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.iter().map(|(&start, &end)| [start, end]))
+    }
+}
+
+impl<'de> Deserialize<'de> for Completed {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut ranges = BTreeMap::new();
+        let mut previous = None;
+        for [start, end] in Vec::<[u64; 2]>::deserialize(deserializer)? {
+            if start >= end || previous.is_some_and(|previous| start <= previous) {
+                return Err(serde::de::Error::custom("invalid completed ranges"));
+            }
+            previous = Some(end);
+            ranges.insert(start, end);
+        }
+        Ok(Completed(ranges))
+    }
+}
+
 /// Resume metadata for retries against the same storage backend and bucket.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct DownloadState {
@@ -41,7 +113,7 @@ struct DownloadState {
     version: Option<String>,
     chunk_size: u64,
     #[serde(default)]
-    completed: BTreeSet<u64>,
+    completed: Completed,
 }
 
 impl DownloadState {
@@ -213,10 +285,9 @@ async fn read_state(dir: &LocalPath) -> Result<Option<DownloadState>, StorageErr
         .map_err(|e| invalid_state(format!("Invalid download state at {}: {e}", dir.display())))?;
     if !matches!(saved.format.as_str(), STATE_FORMAT | LEGACY_STATE_FORMAT)
         || saved.chunk_size == 0
-        || saved
+        || !saved
             .completed
-            .iter()
-            .any(|&index| index >= saved.size.div_ceil(saved.chunk_size))
+            .within(saved.size.div_ceil(saved.chunk_size))
     {
         return Err(invalid_state(format!(
             "Unrecognized download state at {}",
@@ -409,6 +480,17 @@ async fn checkpoint_next_chunk(
     }
 }
 
+fn verify_staging_identity(files: &DownloadFiles) -> Result<PathBuf, StorageError> {
+    let path = files.dir().join(DATA_FILE);
+    if !std::fs::symlink_metadata(&path)?.is_file()
+        || same_file::Handle::from_file(files.data.try_clone()?)?
+            != same_file::Handle::from_path(&path)?
+    {
+        return Err(invalid_state("Download staging data was replaced"));
+    }
+    Ok(path)
+}
+
 fn sync_and_checkpoint(
     files: &DownloadFiles,
     state: &DownloadState,
@@ -420,13 +502,7 @@ fn sync_and_checkpoint(
         untrusted.completed.clear();
         persist_state(files.dir(), &untrusted)?;
     }
-    let path = files.dir().join(DATA_FILE);
-    if !std::fs::symlink_metadata(&path)?.is_file()
-        || same_file::Handle::from_file(files.data.try_clone()?)?
-            != same_file::Handle::from_path(&path)?
-    {
-        return Err(invalid_state("Download staging data was replaced"));
-    }
+    verify_staging_identity(files)?;
     sync(&files.data)?;
     if files.persistent() {
         persist_state(files.dir(), state)?;
@@ -443,10 +519,25 @@ async fn sync_data(
         .map_err(|error| invalid_state(format!("Download sync task failed: {error}")))?
 }
 
-async fn publish_data(files: Arc<DownloadFiles>, target: PathBuf) -> Result<(), StorageError> {
+async fn publish_data(
+    files: Arc<DownloadFiles>,
+    state: Arc<DownloadState>,
+    target: PathBuf,
+) -> Result<(), StorageError> {
     tokio::task::spawn_blocking(move || {
         // Cancellation cannot stop a blocking rename; retain its lock and transient directory.
-        std::fs::rename(files.dir().join(DATA_FILE), target)?;
+        match verify_staging_identity(&files) {
+            Ok(path) => std::fs::rename(path, target)?,
+            Err(error) => {
+                // A same-length replacement must not be reused on retry.
+                if files.persistent() {
+                    let mut untrusted = (*state).clone();
+                    untrusted.completed.clear();
+                    persist_state(files.dir(), &untrusted)?;
+                }
+                return Err(error);
+            }
+        }
         drop(files);
         Ok(())
     })
@@ -486,7 +577,7 @@ pub(crate) async fn download(
         etag,
         version,
         chunk_size: chunk_size as u64,
-        completed: BTreeSet::new(),
+        completed: Completed::default(),
     };
     let mut staging = None;
     if state.etag.is_some() || state.version.is_some() {
@@ -511,7 +602,7 @@ pub(crate) async fn download(
     let mut tasks = JoinSet::new();
     let downloads: Result<(), StorageError> = async {
         for index in 0..count {
-            if state.completed.contains(&index) {
+            if state.completed.contains(index) {
                 continue;
             }
             if tasks.len() >= concurrency {
@@ -536,8 +627,9 @@ pub(crate) async fn download(
         return Err(error);
     }
     let size = state.size;
-    sync_data(Arc::clone(&files), Arc::new(state)).await?;
-    publish_data(Arc::clone(&files), target.to_path_buf()).await?;
+    let state = Arc::new(state);
+    sync_data(Arc::clone(&files), Arc::clone(&state)).await?;
+    publish_data(Arc::clone(&files), state, target.to_path_buf()).await?;
     let cleanup = if files.persistent() {
         remove_state(files.dir()).await
     } else {
@@ -578,7 +670,7 @@ mod tests {
             etag: meta.e_tag,
             version: meta.version,
             chunk_size: 4,
-            completed: BTreeSet::new(),
+            completed: Completed::default(),
         };
         let (mut state, lock) = prepare_state(&dir, state).await.unwrap();
         let staging = Staging::Persistent {
@@ -588,7 +680,9 @@ mod tests {
         let data = prepare_data(&staging, &mut state).await.unwrap();
         let files = Arc::new(DownloadFiles { staging, data });
         files.write_range(body, 0).unwrap();
-        state.completed.extend([0, 1, 2]);
+        for index in [0, 1, 2] {
+            state.completed.insert(index);
+        }
         persist_state(&dir, &state).unwrap();
 
         let result = sync_and_checkpoint(&files, &state, |file| {
@@ -622,6 +716,52 @@ mod tests {
         assert!(!dir.exists());
     }
 
+    #[tokio::test]
+    async fn publication_rejects_replaced_staging_data() {
+        let parent = tempfile::tempdir().unwrap();
+        let target = parent.path().join("download");
+        let dir = parent.path().join(".download.msc-dl");
+        let body = b"abcdefghijk";
+        let state = DownloadState {
+            format: STATE_FORMAT.to_string(),
+            key: "key".to_string(),
+            size: body.len() as u64,
+            etag: Some("revision-1".to_string()),
+            version: None,
+            chunk_size: 4,
+            completed: Completed::default(),
+        };
+        let (mut state, lock) = prepare_state(&dir, state).await.unwrap();
+        let staging = Staging::Persistent {
+            dir: dir.clone(),
+            _lock: lock.unwrap(),
+        };
+        let data = prepare_data(&staging, &mut state).await.unwrap();
+        let files = Arc::new(DownloadFiles { staging, data });
+        files.write_range(body, 0).unwrap();
+        for index in [0, 1, 2] {
+            state.completed.insert(index);
+        }
+        persist_state(&dir, &state).unwrap();
+
+        let replacement = parent.path().join("replacement");
+        std::fs::write(&replacement, b"IMPOSTOR!!!").unwrap();
+        std::fs::rename(&replacement, dir.join(DATA_FILE)).unwrap();
+        assert!(
+            publish_data(Arc::clone(&files), Arc::new(state), target.clone())
+                .await
+                .is_err()
+        );
+        assert!(!target.exists());
+        assert!(read_state(&dir)
+            .await
+            .unwrap()
+            .unwrap()
+            .completed
+            .is_empty());
+        assert_eq!(std::fs::read(dir.join(DATA_FILE)).unwrap(), b"IMPOSTOR!!!");
+    }
+
     #[test]
     fn cancelled_file_operations_keep_staging_resources_until_task_finishes() {
         use std::future::Future;
@@ -647,7 +787,7 @@ mod tests {
                 etag: metadata.e_tag,
                 version: metadata.version,
                 chunk_size: 4,
-                completed: BTreeSet::new(),
+                completed: Completed::default(),
             });
             for (disposable, operation) in [false, true].into_iter().flat_map(|disposable| {
                 ["sync", "write", "publish"].map(|operation| (disposable, operation))
@@ -689,7 +829,9 @@ mod tests {
                         )
                         .await
                         .map(|_| ()),
-                        "publish" => publish_data(files, published.clone()).await,
+                        "publish" => {
+                            publish_data(files, Arc::clone(&revision), published.clone()).await
+                        }
                         _ => sync_data(files, Arc::clone(&revision)).await,
                     }
                 });
@@ -757,7 +899,7 @@ mod tests {
                 etag: Some(key.to_string()),
                 version: None,
                 chunk_size: 4,
-                completed: BTreeSet::new(),
+                completed: Completed::default(),
             };
             let (release, blocked) = std::sync::mpsc::channel();
             let blocker = tokio::task::spawn_blocking(move || blocked.recv().unwrap());
