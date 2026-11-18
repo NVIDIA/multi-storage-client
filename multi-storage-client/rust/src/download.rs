@@ -25,6 +25,9 @@ use std::sync::Arc;
 use tokio::fs;
 use tokio::task::JoinSet;
 
+// Bound response buffering independently of multipart size and parallel file count.
+const WRITE_BATCH_SIZE_IN_BYTES: usize = 2 * 1024 * 1024;
+
 const STATE_FORMAT: &str = "msc-download-v2";
 const LEGACY_STATE_FORMAT: &str = "msc-download-v1";
 const STATE_SUFFIX: &str = ".msc-dl";
@@ -448,15 +451,54 @@ async fn download_chunk(
             "Remote object changed or returned an unexpected range",
         ));
     }
-    let data = result.bytes().await.map_err(StorageError::from)?;
-    if data.len() as u64 != end - start {
+    let mut stream = result.into_stream();
+    let mut data = Vec::new();
+    let mut received_in_bytes = 0u64;
+    let mut buffered_in_bytes = 0usize;
+    let mut write_offset_in_bytes = start;
+    while let Some(segment) =
+        std::future::poll_fn(|context| stream.as_mut().poll_next(context)).await
+    {
+        let mut segment = segment.map_err(StorageError::from)?;
+        received_in_bytes = received_in_bytes.saturating_add(segment.len() as u64);
+        if received_in_bytes > end - start {
+            return Err(invalid_state("Downloaded chunk has an unexpected length"));
+        }
+        while !segment.is_empty() {
+            let take_in_bytes = (WRITE_BATCH_SIZE_IN_BYTES - buffered_in_bytes).min(segment.len());
+            data.push(segment.split_to(take_in_bytes));
+            buffered_in_bytes += take_in_bytes;
+            if buffered_in_bytes == WRITE_BATCH_SIZE_IN_BYTES {
+                write_segment_batch(
+                    Arc::clone(&files),
+                    std::mem::take(&mut data),
+                    write_offset_in_bytes,
+                )
+                .await?;
+                write_offset_in_bytes += buffered_in_bytes as u64;
+                buffered_in_bytes = 0;
+            }
+        }
+    }
+    if received_in_bytes != end - start {
         return Err(invalid_state("Downloaded chunk has an unexpected length"));
     }
+    if !data.is_empty() {
+        write_segment_batch(files, data, write_offset_in_bytes).await?;
+    }
+    Ok(index)
+}
+
+async fn write_segment_batch(
+    files: Arc<DownloadFiles>,
+    data: Vec<bytes::Bytes>,
+    offset: u64,
+) -> Result<(), StorageError> {
     tokio::task::spawn_blocking(move || {
         // Cancellation cannot stop a blocking write; retain its lock and transient directory.
-        files.write_range(&data, start)?;
+        files.write_range(&data.concat(), offset)?;
         drop(files);
-        Ok(index)
+        Ok(())
     })
     .await
     .map_err(|error| invalid_state(format!("Download write task failed: {error}")))?

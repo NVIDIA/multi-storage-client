@@ -239,8 +239,11 @@ chunks when the source object is unchanged. For ``/data/model.bin``, progress is
 saved in ``/data/.model.bin.msc-dl/``. No additional configuration is needed.
 
 MSC writes chunks at their corresponding offsets in one staging file and records
-completed ranges in the state metadata. Once all ranges are complete, MSC syncs
-that file, atomically replaces the destination, and removes the state directory.
+completed ranges in the state metadata. Response bodies are streamed in small
+write batches to limit memory use across concurrent requests. An incomplete
+response is not checkpointed, and a retry rewrites that range. Once all ranges
+are complete, MSC syncs that file, atomically replaces the destination, and
+removes the state directory.
 An existing destination remains intact until publication. Staging requires
 approximately the object size, plus any existing destination and small metadata
 files. No final merge or full-file reread is required. To discard progress, stop

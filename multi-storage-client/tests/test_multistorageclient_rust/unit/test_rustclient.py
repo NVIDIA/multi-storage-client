@@ -42,12 +42,15 @@ from multistorageclient_rust import (  # pyright: ignore[reportAttributeAccessIs
 from .utils import RefreshableTestCredentialsProvider
 
 
-@pytest.mark.parametrize("multipart", [False, True])
-@pytest.mark.parametrize("stalled", [False, True])
+@pytest.mark.parametrize(
+    "multipart,stalled,partial",
+    [(False, False, False), (True, False, False), (False, True, False), (True, True, False), (True, True, True)],
+)
 @pytest.mark.asyncio
-async def test_rustclient_download_read_timeout(tmp_path, multipart, stalled):
-    body = b"abcdef"
+async def test_rustclient_download_read_timeout(tmp_path, multipart, stalled, partial):
+    body = b"a" * (3 * 1024**2) + b"b" * (3 * 1024**2) if partial else b"abcdef"
     tasks: list[asyncio.Task] = []
+    retrying = False
 
     async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         task = asyncio.current_task()
@@ -68,9 +71,16 @@ async def test_rustclient_download_read_timeout(tmp_path, multipart, stalled):
             writer.write((headers + "\r\n").encode())
             await writer.drain()
             if not is_head:
-                if stalled:
-                    await asyncio.sleep(1.5)
+                if retrying:
                     writer.write(body)
+                    await writer.drain()
+                elif stalled:
+                    split = len(body) // 2 if partial else 0
+                    if split:
+                        writer.write(body[:split])
+                        await writer.drain()
+                    await asyncio.sleep(1.5)
+                    writer.write(body[split:])
                     await writer.drain()
                 else:
                     for byte in body:
@@ -81,7 +91,10 @@ async def test_rustclient_download_read_timeout(tmp_path, multipart, stalled):
             pass
         finally:
             writer.close()
-            await writer.wait_closed()
+            try:
+                await writer.wait_closed()
+            except ConnectionError:
+                pass
 
     server = await asyncio.start_server(serve, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
@@ -100,6 +113,8 @@ async def test_rustclient_download_read_timeout(tmp_path, multipart, stalled):
                 retry=RustRetryConfig(attempts=0),
             )
             path = tmp_path / "download"
+            state_dir = tmp_path / ".download.msc-dl"
+            path.write_bytes(b"previous destination")
 
             async def download():
                 if multipart:
@@ -109,6 +124,16 @@ async def test_rustclient_download_read_timeout(tmp_path, multipart, stalled):
             if stalled:
                 with pytest.raises(RustRetryableError, match="timed out"):
                     await download()
+                assert path.read_bytes() == b"previous destination"
+                if multipart:
+                    assert json.loads((state_dir / "state.json").read_text())["completed"] == []
+                if partial:
+                    with (state_dir / "download.part").open("rb") as staged:
+                        assert staged.read(1024) == body[:1024]
+                    retrying = True
+                    assert await download() == len(body)
+                    assert path.read_bytes() == body
+                    assert not state_dir.exists()
             else:
                 assert await download() == len(body)
                 assert await asyncio.to_thread(path.read_bytes) == body
