@@ -53,17 +53,40 @@ impl DownloadState {
     }
 }
 
+enum Staging {
+    Persistent {
+        dir: PathBuf,
+        _lock: same_file::Handle,
+    },
+    Transient(tempfile::TempDir),
+}
+
+impl Staging {
+    fn dir(&self) -> &LocalPath {
+        match self {
+            Staging::Persistent { dir, .. } => dir,
+            Staging::Transient(temporary) => temporary.path(),
+        }
+    }
+
+    fn persistent(&self) -> bool {
+        matches!(self, Staging::Persistent { .. })
+    }
+}
+
 struct DownloadFiles {
-    dir: PathBuf,
+    staging: Staging,
     // Keep range writes and writeback error reporting on the same open file description.
     data: File,
-    _lock: Option<same_file::Handle>,
-    temporary_dir: Option<tempfile::TempDir>,
 }
 
 impl DownloadFiles {
+    fn dir(&self) -> &LocalPath {
+        self.staging.dir()
+    }
+
     fn persistent(&self) -> bool {
-        self.temporary_dir.is_none()
+        self.staging.persistent()
     }
 
     fn write_range(&self, data: &[u8], offset: u64) -> std::io::Result<()> {
@@ -103,7 +126,13 @@ fn persist_state(dir: &LocalPath, state: &DownloadState) -> Result<(), StorageEr
     Ok(())
 }
 
-async fn clear_download_files(dir: &LocalPath, completed_chunks: bool) -> std::io::Result<()> {
+#[derive(PartialEq)]
+enum Clear {
+    TempsOnly,
+    All,
+}
+
+async fn clear_download_files(dir: &LocalPath, scope: Clear) -> std::io::Result<()> {
     let mut entries = fs::read_dir(dir).await?;
     while let Some(entry) = entries.next_entry().await? {
         let filename = entry.file_name();
@@ -124,7 +153,7 @@ async fn clear_download_files(dir: &LocalPath, completed_chunks: bool) -> std::i
                     && id.len() == TEMP_FILE_RANDOM_LENGTH
                     && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
             });
-        if (temporary || completed_chunks && (chunk(name) || name == DATA_FILE))
+        if (temporary || scope == Clear::All && (chunk(name) || name == DATA_FILE))
             && entry.file_type().await?.is_file()
         {
             fs::remove_file(entry.path()).await?;
@@ -136,7 +165,7 @@ async fn clear_download_files(dir: &LocalPath, completed_chunks: bool) -> std::i
 async fn remove_state(dir: &LocalPath) -> std::io::Result<()> {
     let marker = dir.join("state.json");
     let encoded = fs::read(&marker).await?;
-    clear_download_files(dir, true).await?;
+    clear_download_files(dir, Clear::All).await?;
     fs::remove_file(&marker).await?;
     let cleanup: std::io::Result<()> = async {
         fs::remove_file(dir.join("lock")).await?;
@@ -197,11 +226,8 @@ async fn read_state(dir: &LocalPath) -> Result<Option<DownloadState>, StorageErr
     Ok(Some(saved))
 }
 
-async fn prepare_data(
-    dir: &LocalPath,
-    persistent: bool,
-    state: &mut DownloadState,
-) -> Result<File, StorageError> {
+async fn prepare_data(staging: &Staging, state: &mut DownloadState) -> Result<File, StorageError> {
+    let dir = staging.dir();
     let path = dir.join(DATA_FILE);
     match fs::symlink_metadata(&path).await {
         Ok(metadata) if !metadata.is_file() => {
@@ -226,13 +252,24 @@ async fn prepare_data(
     }
     // Invalidate progress before replacing missing or truncated data, including on cancellation.
     state.completed.clear();
-    if persistent {
+    if staging.persistent() {
         persist_state(dir, state)?;
     }
     let (file, temporary) = create_private_temp(dir, "data.")?;
     file.set_len(state.size)?;
     temporary.persist(path).map_err(|error| error.error)?;
     Ok(file)
+}
+
+fn persistent_staging_dir(target: &LocalPath, parent: &LocalPath) -> Result<PathBuf, StorageError> {
+    let mut filename = std::ffi::OsString::from(".");
+    filename.push(
+        target
+            .file_name()
+            .ok_or_else(|| invalid_state("Download destination requires a file name"))?,
+    );
+    filename.push(STATE_SUFFIX);
+    Ok(parent.join(filename))
 }
 
 fn try_lock_state(dir: &LocalPath) -> Result<Option<same_file::Handle>, StorageError> {
@@ -288,12 +325,12 @@ async fn prepare_state(
         };
         if let Some(saved) = read_state(dir).await? {
             if saved.format == STATE_FORMAT && saved.same_object(&state) {
-                clear_download_files(dir, false).await?;
+                clear_download_files(dir, Clear::TempsOnly).await?;
                 return Ok((saved, Some(lock)));
             }
         }
         // Discard untracked chunks before publishing a marker that makes them reusable.
-        clear_download_files(dir, true).await?;
+        clear_download_files(dir, Clear::All).await?;
         persist_state(dir, &state)?;
         Ok((state, Some(lock)))
     }
@@ -354,7 +391,7 @@ async fn download_chunk(
     .map_err(|error| invalid_state(format!("Download write task failed: {error}")))?
 }
 
-async fn finish_chunk(
+async fn checkpoint_next_chunk(
     tasks: &mut JoinSet<Result<u64, StorageError>>,
     files: &DownloadFiles,
     state: &mut DownloadState,
@@ -363,7 +400,7 @@ async fn finish_chunk(
         Some(Ok(result)) => {
             state.completed.insert(result?);
             if files.persistent() {
-                persist_state(&files.dir, state)?;
+                persist_state(files.dir(), state)?;
             }
             Ok(())
         }
@@ -381,9 +418,9 @@ fn sync_and_checkpoint(
         // Failed fsync may discard dirty pages; invalidate progress before the non-cancellable sync.
         let mut untrusted = state.clone();
         untrusted.completed.clear();
-        persist_state(&files.dir, &untrusted)?;
+        persist_state(files.dir(), &untrusted)?;
     }
-    let path = files.dir.join(DATA_FILE);
+    let path = files.dir().join(DATA_FILE);
     if !std::fs::symlink_metadata(&path)?.is_file()
         || same_file::Handle::from_file(files.data.try_clone()?)?
             != same_file::Handle::from_path(&path)?
@@ -392,7 +429,7 @@ fn sync_and_checkpoint(
     }
     sync(&files.data)?;
     if files.persistent() {
-        persist_state(&files.dir, state)?;
+        persist_state(files.dir(), state)?;
     }
     Ok(())
 }
@@ -409,7 +446,7 @@ async fn sync_data(
 async fn publish_data(files: Arc<DownloadFiles>, target: PathBuf) -> Result<(), StorageError> {
     tokio::task::spawn_blocking(move || {
         // Cancellation cannot stop a blocking rename; retain its lock and transient directory.
-        std::fs::rename(files.dir.join(DATA_FILE), target)?;
+        std::fs::rename(files.dir().join(DATA_FILE), target)?;
         drop(files);
         Ok(())
     })
@@ -451,38 +488,24 @@ pub(crate) async fn download(
         chunk_size: chunk_size as u64,
         completed: BTreeSet::new(),
     };
-    let (persistent_dir, state_lock) = if state.etag.is_some() || state.version.is_some() {
-        let mut filename = std::ffi::OsString::from(".");
-        filename.push(
-            target
-                .file_name()
-                .ok_or_else(|| invalid_state("Download destination requires a file name"))?,
-        );
-        filename.push(STATE_SUFFIX);
-        let dir = parent.join(filename);
+    let mut staging = None;
+    if state.etag.is_some() || state.version.is_some() {
+        let dir = persistent_staging_dir(target, parent)?;
         let (prepared, lock) = prepare_state(&dir, state).await?;
         state = prepared;
-        (lock.as_ref().map(|_| dir), lock)
-    } else {
-        (None, None)
-    };
-    let (dir, temporary_dir) = match persistent_dir {
-        Some(dir) => (dir, None),
+        staging = lock.map(|lock| Staging::Persistent { dir, _lock: lock });
+    }
+    let staging = match staging {
+        Some(staging) => staging,
         None => {
             let mut builder = tempfile::Builder::new();
             builder.prefix(".msc-dl-").suffix(STATE_SUFFIX);
             builder.permissions(std::fs::Permissions::from_mode(0o700));
-            let temp = builder.tempdir_in(parent)?;
-            (temp.path().to_path_buf(), Some(temp))
+            Staging::Transient(builder.tempdir_in(parent)?)
         }
     };
-    let data = prepare_data(&dir, temporary_dir.is_none(), &mut state).await?;
-    let files = Arc::new(DownloadFiles {
-        dir,
-        data,
-        _lock: state_lock,
-        temporary_dir,
-    });
+    let data = prepare_data(&staging, &mut state).await?;
+    let files = Arc::new(DownloadFiles { staging, data });
     let revision = Arc::new(state.clone());
     let count = state.size.div_ceil(state.chunk_size);
     let mut tasks = JoinSet::new();
@@ -492,7 +515,7 @@ pub(crate) async fn download(
                 continue;
             }
             if tasks.len() >= concurrency {
-                finish_chunk(&mut tasks, &files, &mut state).await?;
+                checkpoint_next_chunk(&mut tasks, &files, &mut state).await?;
             }
             tasks.spawn(download_chunk(
                 Arc::clone(&store),
@@ -503,7 +526,7 @@ pub(crate) async fn download(
             ));
         }
         while !tasks.is_empty() {
-            finish_chunk(&mut tasks, &files, &mut state).await?;
+            checkpoint_next_chunk(&mut tasks, &files, &mut state).await?;
         }
         Ok(())
     }
@@ -515,16 +538,16 @@ pub(crate) async fn download(
     let size = state.size;
     sync_data(Arc::clone(&files), Arc::new(state)).await?;
     publish_data(Arc::clone(&files), target.to_path_buf()).await?;
-    let cleanup = if files.temporary_dir.is_some() {
-        fs::remove_dir_all(&files.dir).await
+    let cleanup = if files.persistent() {
+        remove_state(files.dir()).await
     } else {
-        remove_state(&files.dir).await
+        fs::remove_dir_all(files.dir()).await
     };
     if let Err(error) = cleanup {
         eprintln!(
             "Downloaded file to {}, but could not remove download state at {}: {error}",
             target.display(),
-            files.dir.display()
+            files.dir().display()
         );
     }
     Ok(size)
@@ -558,13 +581,12 @@ mod tests {
             completed: BTreeSet::new(),
         };
         let (mut state, lock) = prepare_state(&dir, state).await.unwrap();
-        let data = prepare_data(&dir, true, &mut state).await.unwrap();
-        let files = Arc::new(DownloadFiles {
+        let staging = Staging::Persistent {
             dir: dir.clone(),
-            data,
-            _lock: lock,
-            temporary_dir: None,
-        });
+            _lock: lock.unwrap(),
+        };
+        let data = prepare_data(&staging, &mut state).await.unwrap();
+        let files = Arc::new(DownloadFiles { staging, data });
         files.write_range(body, 0).unwrap();
         state.completed.extend([0, 1, 2]);
         persist_state(&dir, &state).unwrap();
@@ -633,11 +655,17 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 let path = dir.path().to_path_buf();
                 std::fs::write(path.join(DATA_FILE), b"old!").unwrap();
-                let lock = try_lock_state(&path).unwrap().unwrap();
-                let (temporary_dir, _persistent_dir) = if disposable {
-                    (Some(dir), None)
+                let (staging, _persistent_dir) = if disposable {
+                    (Staging::Transient(dir), None)
                 } else {
-                    (None, Some(dir))
+                    let lock = try_lock_state(&path).unwrap().unwrap();
+                    (
+                        Staging::Persistent {
+                            dir: path.clone(),
+                            _lock: lock,
+                        },
+                        Some(dir),
+                    )
                 };
                 let (release, blocked) = std::sync::mpsc::channel();
                 let blocker = tokio::task::spawn_blocking(move || blocked.recv().unwrap());
@@ -647,9 +675,7 @@ mod tests {
                         .write(true)
                         .open(path.join(DATA_FILE))
                         .unwrap(),
-                    dir: path.clone(),
-                    _lock: Some(lock),
-                    temporary_dir,
+                    staging,
                 });
                 let published = path.join("published");
                 let mut pending = Box::pin(async {
@@ -673,7 +699,9 @@ mod tests {
                     .is_pending());
                 drop(pending);
                 assert!(path.is_dir());
-                assert!(try_lock_state(&path).unwrap().is_none());
+                if !disposable {
+                    assert!(try_lock_state(&path).unwrap().is_none());
+                }
                 release.send(()).unwrap();
                 blocker.await.unwrap();
                 tokio::time::timeout(std::time::Duration::from_secs(5), async {
