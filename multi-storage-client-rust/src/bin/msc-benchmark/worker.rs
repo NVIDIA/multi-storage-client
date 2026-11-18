@@ -152,12 +152,6 @@ pub(super) async fn cleanup(job: &Job) -> Result<()> {
                 "{}/test-{}-{index}",
                 job.prefix, job.size
             ))?);
-            if job.files_directory.is_some() {
-                keys.push(multi_storage_client::ObjectPath::new(format!(
-                    "{}/test-file-{}-{index}",
-                    job.prefix, job.size
-                ))?);
-            }
             if keys.len() >= 1000 {
                 delete_owned(&client, &keys).await?;
                 keys.clear();
@@ -260,7 +254,6 @@ async fn transfer(
 ) -> multi_storage_client::Result<u64> {
     let name = format!("test-{}-{index}", job.size);
     let object = format!("{}/{name}", job.prefix);
-    let file_object = format!("{}/test-file-{}-{index}", job.prefix, job.size);
     match phase {
         Phase::Upload => {
             client
@@ -281,27 +274,19 @@ async fn transfer(
             let local = directory.join(name);
             if matches!(phase, Phase::UploadFile) {
                 client
-                    .upload_file(&file_object, &local, WriteOptions::default())
+                    .upload_file(&object, &local, WriteOptions::default())
                     .await?;
             } else {
                 client
-                    .download_file(&file_object, &local, ReadOptions::default())
+                    .download_file(&object, &local, ReadOptions::default())
                     .await?;
             }
             validate_length(tokio::fs::metadata(&local).await?.len(), job.size_bytes)?;
         }
         Phase::Delete => {
-            let object_result = client
+            client
                 .delete(&object, false, DeleteOptions::default())
-                .await;
-            let file_result = if job.files_directory.is_some() {
-                client
-                    .delete(&file_object, false, DeleteOptions::default())
-                    .await
-            } else {
-                Ok(())
-            };
-            object_result.and(file_result)?;
+                .await?;
             return Ok(0);
         }
         Phase::Stop => unreachable!("control phases do not run transfers"),
@@ -417,8 +402,69 @@ mod tests {
             files_directory: Some(directory.path().join("missing-files")),
         };
         cleanup(&job).await.unwrap();
-        assert_eq!(std::fs::read_dir(root.join("owned")).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(root.join("owned")).unwrap().count(), 2);
         assert_eq!(std::fs::read(root.join("owned/sentinel")).unwrap(), b"data");
+        assert_eq!(
+            std::fs::read(root.join("owned/test-file-1KB-0")).unwrap(),
+            b"data"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_upload_overwrites_the_byte_object_and_download_reads_it_back() {
+        let directory = tempfile::tempdir().unwrap();
+        let files = tempfile::tempdir().unwrap();
+        let client = multi_storage_client::StorageClientBuilder::from_provider(Arc::new(
+            PosixProvider::new(PosixOptions::new(directory.path())).unwrap(),
+        ))
+        .build()
+        .await
+        .unwrap();
+        let job = Job {
+            profile: "test".into(),
+            storage_config: None,
+            prefix: "run".into(),
+            size: "1KB".into(),
+            size_bytes: 1024,
+            start: 0,
+            end: 1,
+            processes: 1,
+            threads: 1,
+            payload: PathBuf::new(),
+            files_directory: Some(files.path().to_path_buf()),
+        };
+        let body = Bytes::from(vec![1; 1024]);
+        transfer(&job, &client, &body, Phase::Upload, 0)
+            .await
+            .unwrap();
+        let local = files.path().join("test-1KB-0");
+        std::fs::write(&local, vec![2; 1024]).unwrap();
+        transfer(&job, &client, &body, Phase::UploadFile, 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_dir(directory.path().join("run"))
+                .unwrap()
+                .count(),
+            1
+        );
+        assert_eq!(
+            client
+                .read("run/test-1KB-0", ReadOptions::default())
+                .await
+                .unwrap(),
+            vec![2; 1024]
+        );
+        std::fs::write(&local, b"stale").unwrap();
+        transfer(&job, &client, &body, Phase::DownloadFile, 0)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&local).unwrap(), vec![2; 1024]);
+        transfer(&job, &client, &body, Phase::Delete, 0)
+            .await
+            .unwrap();
+        assert!(!directory.path().join("run/test-1KB-0").exists());
+        client.shutdown().await.unwrap();
     }
 
     #[tokio::test]

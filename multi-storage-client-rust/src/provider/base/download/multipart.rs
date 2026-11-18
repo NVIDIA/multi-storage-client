@@ -16,7 +16,7 @@
 //! Bounded missing-part downloads and atomic checkpoint publication.
 use super::super::BaseStorageProvider;
 use super::{
-    blocking, invalid_length,
+    blocking, coalesced, invalid_length,
     state::{Chunk, Directory, DownloadState},
 };
 use crate::{ByteRange, ErrorKind, GetConditions, MscError, ObjectMetadata, Result};
@@ -121,11 +121,12 @@ impl<B: crate::StorageBackend + ?Sized + 'static> BaseStorageProvider<B> {
             let directory = directory.clone();
             async move {
                 let chunk = blocking(move || Chunk::create(directory, index)).await?;
-                let mut body = self
+                let body = self
                     .state
                     .provider
                     .get_download_part(&metadata.key, range, conditions, metadata.content_length)
                     .await?;
+                let mut body = coalesced(body);
                 let mut written = 0_u64;
                 while let Some(bytes) = body.next().await {
                     let bytes = bytes?;

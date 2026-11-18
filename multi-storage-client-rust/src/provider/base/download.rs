@@ -20,10 +20,13 @@
 mod multipart;
 mod state;
 use super::{BaseStorageProvider, require_file, stable_conditions};
-use crate::{ErrorKind, GetConditions, MscError, ObjectMetadata, ReadOptions, Result};
-use bytes::Bytes;
-use futures::StreamExt;
+use crate::{ByteStream, ErrorKind, GetConditions, MscError, ObjectMetadata, ReadOptions, Result};
+use bytes::{Bytes, BytesMut};
+use futures::{StreamExt, stream};
 use std::{path::Path, sync::Arc};
+
+// Amortize blocking-pool handoffs for small HTTP frames while bounding memory.
+const DOWNLOAD_BUFFER_SIZE_IN_BYTES: usize = 1024 * 1024;
 
 struct Staging {
     file: tempfile::NamedTempFile,
@@ -153,11 +156,12 @@ impl<B: crate::StorageBackend + ?Sized + 'static> BaseStorageProvider<B> {
         self.retry(true, || async {
             let reset = staging.clone();
             blocking(move || reset.file.as_file().set_len(0).map_err(MscError::from)).await?;
-            let mut body = self
+            let body = self
                 .state
                 .provider
                 .get_object(&metadata.key, conditions)
                 .await?;
+            let mut body = coalesced(body);
             let mut length = 0_u64;
             while let Some(chunk) = body.next().await {
                 let chunk = chunk?;
@@ -175,6 +179,27 @@ impl<B: crate::StorageBackend + ?Sized + 'static> BaseStorageProvider<B> {
         })
         .await
     }
+}
+
+fn coalesced(body: ByteStream) -> ByteStream {
+    let body = body.fuse();
+    Box::pin(stream::try_unfold(
+        (body, Bytes::new()),
+        |(mut body, mut pending)| async move {
+            let mut buffer = BytesMut::new();
+            while buffer.len() < DOWNLOAD_BUFFER_SIZE_IN_BYTES {
+                if pending.is_empty() {
+                    let Some(bytes) = body.next().await else {
+                        break;
+                    };
+                    pending = bytes?;
+                }
+                let length = (DOWNLOAD_BUFFER_SIZE_IN_BYTES - buffer.len()).min(pending.len());
+                buffer.extend_from_slice(&pending.split_to(length));
+            }
+            Ok((!buffer.is_empty()).then(|| (buffer.freeze(), (body, pending))))
+        },
+    ))
 }
 
 fn check_conditions(metadata: &ObjectMetadata, conditions: &GetConditions) -> Result<()> {
@@ -231,6 +256,30 @@ async fn blocking<T: Send + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn file_buffers_preserve_content_and_stream_errors() {
+        let expected: Vec<u8> = (0..65).flat_map(|index| vec![index; 16 * 1024]).collect();
+        let frames: Vec<_> = expected
+            .chunks(16 * 1024)
+            .map(|bytes| Ok(Bytes::copy_from_slice(bytes)))
+            .collect();
+        let mut body = coalesced(Box::pin(stream::iter(frames)));
+        let first = body.next().await.unwrap().unwrap();
+        assert_eq!(first.len(), DOWNLOAD_BUFFER_SIZE_IN_BYTES);
+        let last = body.next().await.unwrap().unwrap();
+        assert_eq!([first.as_ref(), last.as_ref()].concat(), expected);
+        assert!(body.next().await.is_none());
+
+        let mut body = coalesced(Box::pin(stream::iter([
+            Ok(Bytes::from_static(b"partial")),
+            Err(MscError::new(ErrorKind::Unavailable, "interrupted body")),
+        ])));
+        assert_eq!(
+            body.next().await.unwrap().unwrap_err().kind,
+            ErrorKind::Unavailable
+        );
+    }
 
     #[test]
     fn cancelled_positioned_write_retains_staging_until_completion() {

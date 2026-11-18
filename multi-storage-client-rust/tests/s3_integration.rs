@@ -1523,6 +1523,8 @@ async fn configured_storage_client_read_conditions_and_literal_url_keys() {
 #[ignore = "requires local storage simulators; run just run-integration-tests"]
 async fn configured_storage_client_multipart_attributes_and_condition_boundaries() {
     let client = configured_client("facade/multipart-attributes").await;
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source");
     let attributes = BTreeMap::from([
         ("k".repeat(32), serde_json::Value::String("v".repeat(128))),
         ("etag".into(), "custom-etag-is-not-the-generation".into()),
@@ -1536,8 +1538,9 @@ async fn configured_storage_client_multipart_attributes_and_condition_boundaries
     for size in [5 * 1024 * 1024 - 1, 5 * 1024 * 1024, 5 * 1024 * 1024 + 1] {
         let path = format!("size-{size}");
         let body = vec![42; size];
+        tokio::fs::write(&source, &body).await.unwrap();
         client
-            .write(&path, Bytes::copy_from_slice(&body), options.clone())
+            .upload_file(&path, &source, options.clone())
             .await
             .unwrap();
         let metadata = client.info(&path, InfoOptions::default()).await.unwrap();
@@ -1685,7 +1688,9 @@ async fn configured_storage_client_multipart_attributes_and_condition_boundaries
         .info("conditional", InfoOptions::default())
         .await
         .unwrap();
-    let payload = Bytes::from(vec![7; threshold + 1]);
+    tokio::fs::write(&source, vec![7; threshold + 1])
+        .await
+        .unwrap();
     for (path, options) in [
         (
             "conditional",
@@ -1704,7 +1709,7 @@ async fn configured_storage_client_multipart_attributes_and_condition_boundaries
     ] {
         assert_eq!(
             client
-                .write(path, payload.clone(), options)
+                .upload_file(path, &source, options)
                 .await
                 .unwrap_err()
                 .kind,

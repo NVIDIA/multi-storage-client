@@ -144,6 +144,24 @@ pub trait StorageBackend: Send + Sync {
         options: &WriteOptions,
     ) -> Result<PutResult>;
 
+    /// Publish an already buffered object. Backends may avoid multipart setup
+    /// when a complete, replayable payload fits their single-request limit.
+    async fn put_object_bytes(
+        &self,
+        key: &ObjectPath,
+        body: Bytes,
+        options: &WriteOptions,
+    ) -> Result<PutResult> {
+        let size = body.len() as u64;
+        self.put_object(
+            key,
+            Box::pin(stream::once(async move { Ok(body) })),
+            Some(size),
+            options,
+        )
+        .await
+    }
+
     /// Delete a key with backend-enforced conditions. An absent key may return
     /// success or `NotFound`; the shared provider checks single-key existence first.
     async fn delete_object(&self, key: &ObjectPath, conditions: &DeleteOptions) -> Result<()>;
