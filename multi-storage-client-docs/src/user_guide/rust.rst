@@ -33,6 +33,14 @@ metadata and directory probes on boto3 to preserve their endpoint and authentica
 requirements.
 
 
+``StorageClient.read()`` may return a Rust buffer exposing Python's buffer protocol when the Rust
+client is enabled, even though its return annotation is ``bytes``. This avoids an additional copy
+for consumers that accept buffers directly. Use ``bytes(result)`` when Python ``bytes`` methods
+or a ``bytes`` instance are required, or ``str(result, "utf-8")`` to decode text without an
+intermediate Python ``bytes`` copy. Conversion is performed by adapters such as fsspec where
+those APIs require Python ``bytes``, rather than on every storage read.
+
+
 ***************************
 Supported Storage Providers
 ***************************

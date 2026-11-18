@@ -40,6 +40,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _ensure_bytes(data: Any) -> bytes:
+    """Return Python bytes from a buffer, reusing existing bytes without copying."""
+    return bytes(data)
+
+
+def _decode_buffer(data: Any, encoding: str = "utf-8", errors: str = "strict") -> str:
+    """Decode a buffer directly to text without an intermediate Python bytes copy."""
+    return str(data, encoding, errors)
+
+
 def _invoke_batch_transfer(
     transfer: Callable[..., None], *args: Any, transfer_callback: BatchTransferCallback | None
 ) -> None:

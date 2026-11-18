@@ -33,7 +33,7 @@ from ..types import (
     ResolvedPathState,
     StorageProvider,
 )
-from ..utils import create_attribute_filter_evaluator, glob, matches_attribute_filter_expression
+from ..utils import _decode_buffer, create_attribute_filter_evaluator, glob, matches_attribute_filter_expression
 from .manifest_formats import ManifestFormat, get_format_handler
 from .manifest_object_metadata import ManifestObjectMetadata
 
@@ -195,7 +195,7 @@ class ManifestMetadataProvider(MetadataProvider):
         :param file_type: Manifest file type.
         """
         if file_type == "json":
-            manifest_dict = json.loads(file_content.decode("utf-8"))
+            manifest_dict = json.loads(_decode_buffer(file_content))
             manifest = Manifest.from_dict(manifest_dict)
 
             # Check manifest version. Not needed once we make the manifest model use sum types/discriminated unions.

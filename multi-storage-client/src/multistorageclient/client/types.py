@@ -109,10 +109,15 @@ class AbstractStorageClient(ABC):
         """
         Read bytes from a file at the specified logical path.
 
+        With the Rust client enabled, the result may be a Rust buffer exposing Python's buffer protocol
+        rather than a Python ``bytes`` instance. Keeping this buffer avoids an additional copy for callers
+        that can consume it directly. Use ``bytes(result)`` when a Python ``bytes`` object is required,
+        or ``str(result, "utf-8")`` to decode text directly from the buffer.
+
         :param path: The logical path of the object to read.
         :param byte_range: Optional byte range to read (offset and length), or a suffix range to read the last bytes.
         :param check_source_version: Whether to check the source version of cached objects.
-        :return: The content of the object as bytes.
+        :return: The object content as Python bytes or, with Rust enabled, a buffer supporting Python's buffer protocol.
         :raises FileNotFoundError: If the file at the specified path does not exist.
         """
 

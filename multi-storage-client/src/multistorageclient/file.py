@@ -35,7 +35,7 @@ from .constants import MEMORY_LOAD_LIMIT
 from .instrumentation.utils import file_metrics
 from .providers.base import BaseStorageProvider
 from .types import Range, SourceVersionCheckMode
-from .utils import safe_makedirs, validate_attributes
+from .utils import _ensure_bytes, safe_makedirs, validate_attributes
 
 if TYPE_CHECKING:
     from .client.types import AbstractStorageClient
@@ -110,10 +110,8 @@ class RemoteFileReader(IO[bytes]):
         data = self._storage_client.read(
             self._remote_path, byte_range=bytes_range, check_source_version=self._check_source_version
         )
-        # If the storage client is using the Rust client, convert the Rust bytes-like buffer to Python bytes
-        # to support Python bytes operations like startswith()
-        if self._storage_client._is_rust_client_enabled() and hasattr(data, "to_bytes"):
-            data = data.to_bytes()  # type: ignore[attr-defined]
+        # Convert bytes-like buffers to Python bytes to support operations like startswith().
+        data = _ensure_bytes(data)
         # Update the position by the number of bytes read
         bytes_read = len(data)
         self._pos += bytes_read

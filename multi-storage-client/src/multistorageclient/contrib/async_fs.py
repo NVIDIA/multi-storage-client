@@ -27,6 +27,7 @@ from ..client import StorageClient
 from ..file import ObjectFile, PosixFile
 from ..shortcuts import resolve_storage_client
 from ..types import MSC_PROTOCOL_NAME, Range, SuffixRange
+from ..utils import _ensure_bytes
 
 _GLOBAL_THREAD_POOL = ThreadPoolExecutor(max_workers=int(os.getenv("MSC_MAX_WORKERS", "8")))
 
@@ -334,17 +335,17 @@ class MultiStorageAsyncFileSystem(AsyncFileSystem):
         """
         storage_client, path = self.resolve_path_and_storage_client(path)
         if start is None and end is None:
-            return storage_client.read(path)
+            return _ensure_bytes(storage_client.read(path))
 
         if start is None:
             start = 0
         if start < 0 and end is None:
-            return storage_client.read(path, byte_range=SuffixRange(size=-start))
+            return _ensure_bytes(storage_client.read(path, byte_range=SuffixRange(size=-start)))
         if start < 0 or end is None or end < 0:
             start, end, _ = slice(start, end).indices(storage_client.info(path).content_length)
         if end <= start:
             return b""
-        return storage_client.read(path, byte_range=Range(offset=start, size=end - start))
+        return _ensure_bytes(storage_client.read(path, byte_range=Range(offset=start, size=end - start)))
 
     async def _cat_file(self, path: str, start: int | None = None, end: int | None = None, **kwargs: Any) -> bytes:
         """

@@ -167,8 +167,11 @@ def test_preview_request_default_max_bytes():
     assert request.max_bytes == 1048576  # 1 MB default
 
 
-@pytest.mark.parametrize("content", [b"abc", b"abcd", b"abcdefgh"])
-def test_preview_reads_only_requested_bytes(test_client, tmp_path, content):
+@pytest.mark.parametrize(
+    "content,preview", [(b"abc", "abc"), (b"abcd", "abcd"), (b"abcdefgh", "abcd"), (b"\xffabc", None)]
+)
+@pytest.mark.parametrize("buffer_type", [bytes, memoryview])
+def test_preview_reads_only_requested_bytes(test_client, tmp_path, content, preview, buffer_type):
     storage_client = StorageClient(
         StorageClientConfig.from_dict(
             {
@@ -182,11 +185,15 @@ def test_preview_reads_only_requested_bytes(test_client, tmp_path, content):
     storage_client.write("file.txt", content)
     app_module._client_cache["test-local"] = storage_client
 
-    with patch.object(storage_client, "read", wraps=storage_client.read) as read:
+    read_content = storage_client.read
+    with patch.object(
+        storage_client, "read", side_effect=lambda *args, **kwargs: buffer_type(read_content(*args, **kwargs))
+    ) as read:
         response = test_client.post("/api/files/preview", json={"url": "msc://test-local/file.txt", "max_bytes": 4})
 
     assert response.status_code == 200
-    assert response.json()["content"] == content[:4].decode()
+    assert response.json()["content"] == preview
+    assert response.json()["is_text"] is (preview is not None)
     assert response.json()["content_truncated"] is (len(content) > 4)
     if len(content) > 4:
         read.assert_called_once_with(path="file.txt", byte_range=Range(offset=0, size=4))

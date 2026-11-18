@@ -36,6 +36,10 @@ Python slice semantics, so libraries such as Zarr read only the byte ranges they
 with no ``end`` (e.g. the last 4096 bytes) is read with a single suffix range request when the storage provider
 supports it, without first requesting the object metadata.
 
+``cat_file()`` and its asynchronous counterpart ``_cat_file()`` return Python ``bytes``, including when
+the Rust client is enabled. Rust buffers are converted at the fsspec boundary; underlying storage reads
+retain their existing buffer behavior.
+
 *****
 Hydra
 *****
@@ -220,5 +224,7 @@ and ``pathlib.PurePath`` objects. Equivalent local paths have the same ordering 
 
 ``read_text()`` and ``write_text()`` honor their ``encoding`` and ``errors``
 arguments when decoding and encoding text, respectively.
+``read_bytes()`` returns Python ``bytes`` even when the Rust client is enabled.
+Text reads decode Rust buffers directly without an intermediate Python ``bytes`` copy.
 
 .. note:: The ``Path`` class implements much of the same interface as ``pathlib.Path``, making it familiar to use while working with remote storage.

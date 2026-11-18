@@ -16,13 +16,13 @@
 import os
 import tempfile
 import uuid
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 import fsspec
 import pytest
 
 import multistorageclient as msc
-from multistorageclient.types import MSC_PROTOCOL
+from multistorageclient.types import MSC_PROTOCOL, Range, SuffixRange
 from test_multistorageclient.unit.utils import config, tempdatastore
 
 
@@ -116,6 +116,39 @@ async def test_multi_async_filesystem(file_storage_config_with_cache):
 
         # Clean up remote file after test
         await filesystem._rm(remote_file_path, recursive=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("buffer_type", [bytes, memoryview])
+@pytest.mark.parametrize("content", [b"", b"abc"])
+@pytest.mark.parametrize(
+    "start,end,byte_range",
+    [
+        (None, None, None),
+        (2, 5, Range(offset=2, size=3)),
+        (-3, None, SuffixRange(size=3)),
+        (17, None, Range(offset=17, size=3)),
+        (-4, -1, Range(offset=16, size=3)),
+    ],
+)
+async def test_async_fs_cat_file_returns_bytes(buffer_type, content, start, end, byte_range):
+    filesystem = msc.async_fs.MultiStorageAsyncFileSystem(skip_instance_cache=True)
+    storage_client = Mock(spec=msc.StorageClient)
+    storage_client.read.return_value = buffer_type(content)
+    storage_client.info.return_value.content_length = 20
+
+    with patch.object(filesystem, "resolve_path_and_storage_client", return_value=(storage_client, "file")):
+        sync_result = filesystem.cat_file("test/file", start=start, end=end)
+        async_result = await filesystem._cat_file("test/file", start=start, end=end)
+
+    for result in (sync_result, async_result):
+        assert isinstance(result, bytes)
+        assert result == content
+        if buffer_type is bytes:
+            assert result is storage_client.read.return_value
+
+    expected_call = call("file") if byte_range is None else call("file", byte_range=byte_range)
+    assert storage_client.read.call_args_list == [expected_call, expected_call]
 
 
 @pytest.mark.parametrize(

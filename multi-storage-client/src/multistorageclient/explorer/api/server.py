@@ -31,6 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from multistorageclient import StorageClient, StorageClientConfig
 from multistorageclient.shortcuts import _resolve_msc_url
 from multistorageclient.types import Range
+from multistorageclient.utils import _decode_buffer
 
 from .models import (
     ConfigUploadResponse,
@@ -485,7 +486,7 @@ async def preview_file(request: PreviewRequest):
                 is_text = True
                 # Try to decode as UTF-8
                 try:
-                    content = file_bytes.decode("utf-8")
+                    content = _decode_buffer(file_bytes)
                 except UnicodeDecodeError:
                     # If can't decode as UTF-8, it's binary
                     is_text = False
