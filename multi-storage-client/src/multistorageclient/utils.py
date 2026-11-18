@@ -482,6 +482,7 @@ def calculate_worker_processes_and_threads(
     - Available CPU cores
     - Execution mode (local vs distributed)
     - Storage provider characteristics (Rust client, POSIX filesystem)
+    - Internal batch transfer concurrency for local Python storage providers
 
     :param num_worker_processes: The number of worker processes to use. If not provided, the number of processes will be
         calculated based on the CPU count and the MSC_NUM_PROCESSES environment variable.
@@ -514,6 +515,10 @@ def calculate_worker_processes_and_threads(
     ):
         num_worker_processes = 1
         num_worker_threads = int(os.getenv("MSC_NUM_THREADS_PER_PROCESS", "8"))
+    elif execution_mode == ExecutionMode.LOCAL and source_client is not None and target_client is not None:
+        # Each sync thread can transfer 16 files concurrently through the batch APIs.
+        default_threads = max(cpu_count // num_worker_processes // 16, 1)
+        num_worker_threads = int(os.getenv("MSC_NUM_THREADS_PER_PROCESS", default_threads))
     elif execution_mode == ExecutionMode.RAY:
         num_worker_threads = int(os.getenv("MSC_NUM_THREADS_PER_PROCESS", "8"))
 
