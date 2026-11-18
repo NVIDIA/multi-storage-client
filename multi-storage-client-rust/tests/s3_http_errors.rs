@@ -1470,6 +1470,11 @@ async fn multipart_part_disconnect_obeys_profile_attempt_limit_and_aborts() {
 #[tokio::test]
 #[ignore = "requires local TCP binding; run just run-integration-tests"]
 async fn multipart_parts_use_each_clients_configured_retry_budget() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source");
+    tokio::fs::write(&source, vec![42; 8 * 1024 * 1024])
+        .await
+        .unwrap();
     let server = FailureServer::start(
         Behavior::MultipartPartDisconnected {
             failures: usize::MAX,
@@ -1496,14 +1501,10 @@ async fn multipart_parts_use_each_clients_configured_retry_budget() {
     for (client, expected_requests) in [(&first, 3), (&second, 4), (&first, 3)] {
         let error = tokio::time::timeout(
             Duration::from_secs(10),
-            client.write(
-                "object",
-                bytes::Bytes::from(vec![42; 8 * 1024 * 1024]),
-                WriteOptions::default(),
-            ),
+            client.upload_file("object", &source, WriteOptions::default()),
         )
         .await
-        .expect("local multipart client write must finish promptly")
+        .expect("local multipart client upload must finish promptly")
         .unwrap_err();
         assert_eq!(error.kind, ErrorKind::Unavailable);
         assert_redacted(&error);
@@ -1896,6 +1897,11 @@ async fn truncated_http_get_is_retried_without_publishing_partial_data() {
 #[tokio::test]
 #[ignore = "requires local TCP binding; run just run-integration-tests"]
 async fn multipart_parts_retry_transient_http_statuses_with_one_upload_id() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source");
+    tokio::fs::write(&source, vec![42; 8 * 1024 * 1024])
+        .await
+        .unwrap();
     for status in [429, 500, 503] {
         let server = FailureServer::start(
             Behavior::MultipartPartStatus {
@@ -1916,11 +1922,7 @@ async fn multipart_parts_retry_transient_http_statuses_with_one_upload_id() {
         .await
         .unwrap();
         client
-            .write(
-                "object",
-                bytes::Bytes::from(vec![42; 8 * 1024 * 1024]),
-                WriteOptions::default(),
-            )
+            .upload_file("object", &source, WriteOptions::default())
             .await
             .unwrap();
         assert_eq!(

@@ -117,14 +117,22 @@ fn multiprocess_matrix_covers_every_object_and_preserves_existing_files() {
         b"keep remote data",
     )
     .unwrap();
-    let output = fixture.run(&[
-        "--include-file-tests",
-        "--file-tests-dir",
-        "scratch",
-        "--format",
-        "json",
-    ]);
+    let output = fixture
+        .command()
+        .env("TOKIO_WORKER_THREADS", "2")
+        .args([
+            "--include-file-tests",
+            "--file-tests-dir",
+            "scratch",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
     success(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Runtime worker threads: 2; operation concurrency: 1"));
+    assert!(stderr.contains("Runtime worker threads: 2; operation concurrency: 3"));
     let summary: Value = serde_json::from_slice(&output.stdout).unwrap();
     let results = summary["results"].as_array().unwrap();
     assert_eq!(results.len(), 60);

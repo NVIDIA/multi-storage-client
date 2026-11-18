@@ -40,13 +40,7 @@ impl<B: crate::StorageBackend + ?Sized + 'static> BaseStorageProvider<B> {
         let result = self
             .retry_mutation(|| {
                 let bytes = bytes.clone();
-                let size = bytes.len() as u64;
-                self.state.provider.put_object(
-                    &path,
-                    Box::pin(stream::once(async move { Ok(bytes) })),
-                    Some(size),
-                    &options,
-                )
+                self.state.provider.put_object_bytes(&path, bytes, &options)
             })
             .await?;
         self.metadata_after_put(&path, result).await

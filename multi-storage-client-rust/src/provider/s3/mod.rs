@@ -760,97 +760,28 @@ impl StorageBackend for S3Provider {
         size: Option<u64>,
         options: &WriteOptions,
     ) -> Result<PutResult> {
-        if key.is_root() {
-            return Err(MscError::new(
-                ErrorKind::InvalidPath,
-                "an S3 object key must not be empty",
-            ));
-        }
-        if size.is_some_and(|size| size > MAX_OBJECT_SIZE) {
-            return Err(MscError::new(
-                ErrorKind::Integrity,
-                "S3 object exceeds 5 TiB",
-            ));
-        }
-        let mode = self.put_mode(options)?;
-        let path = self.path(key)?;
-        let mut options = options.clone();
-        if self.options.infer_content_type && options.content_type.is_none() {
-            let inferred = mime_guess::from_path(key.as_str()).first_or_octet_stream();
-            let content_type = if self.name == "s8k" && inferred.essence_str() == "audio/wav" {
-                "audio/x-wav"
-            } else {
-                inferred.essence_str()
-            };
-            options.content_type = Some(content_type.into());
-        }
-        let attributes = Self::attributes(&options)?;
-        let link = Self::validate_link_metadata(key, &options, size)?;
-        let threshold = usize::try_from(self.options.multipart_threshold)
-            .map_err(|_| config_error("multipart threshold exceeds address space"))?;
-        let mut reader = PartReader {
-            input,
-            pending: Bytes::new(),
-            total: 0,
-            finished: false,
-        };
-        let lookahead = threshold
-            .checked_add(1)
-            .ok_or_else(|| config_error("multipart threshold exceeds address space"))?;
-        let first = reader.next(lookahead).await?.unwrap_or_default();
-        if link && !first.is_empty() {
-            return Err(config_error(
-                "S3 logical links require an empty object body",
-            ));
-        }
-        // Match MSC Python: objects up to and including the threshold use one PUT.
-        // Swift multipart initiation and completion add seconds per object.
-        if first.len() <= threshold {
-            check_size(size, reader.total)?;
-            let create_only = mode == PutMode::Create;
-            let conditional_update = matches!(mode, PutMode::Update(_));
-            let result = self
-                .store
-                .put_opts(
-                    &path,
-                    first.into(),
-                    PutOptions {
-                        mode,
-                        attributes,
-                        ..Default::default()
-                    },
+        self.put_stream(key, input, size, options).await
+    }
+
+    async fn put_object_bytes(
+        &self,
+        key: &ObjectPath,
+        body: Bytes,
+        options: &WriteOptions,
+    ) -> Result<PutResult> {
+        let size = body.len() as u64;
+        if size > upload::MAX_PART_SIZE {
+            return self
+                .put_stream(
+                    key,
+                    Box::pin(stream::once(async move { Ok(body) })),
+                    Some(size),
+                    options,
                 )
-                .await
-                .map_err(|error| {
-                    let mut error = translate(error, "put", key.as_str());
-                    if (create_only && error.kind == ErrorKind::AlreadyExists)
-                        || (conditional_update && error.kind == ErrorKind::NotFound)
-                    {
-                        error.kind = ErrorKind::PreconditionFailed;
-                    }
-                    error
-                })?;
-            Ok(Self::completed_put(
-                key,
-                self.put_result(result),
-                reader.total,
-                &options,
-            ))
-        } else {
-            if mode != PutMode::Overwrite {
-                return Err(MscError::unsupported("conditional multipart S3 PUT"));
-            }
-            let input = Box::pin(stream::once(async move { Ok(first) }).chain(reader.remainder()));
-            let result = self
-                .multipart(&path, input, size, attributes)
-                .await
-                .map_err(|mut error| {
-                    error.retryable = false;
-                    error
-                })?;
-            let length = result.content_length.expect("completed upload length");
-            Ok(Self::completed_put(key, result, length, &options))
+                .await;
         }
+        let prepared = self.prepare_put(key, options, Some(size))?;
+        self.put_buffered(key, body, prepared).await
     }
     async fn delete_object(&self, key: &ObjectPath, conditions: &DeleteOptions) -> Result<()> {
         if key.is_root() {
@@ -969,4 +900,133 @@ fn bucket_endpoint(endpoint: Option<String>, bucket: &str, options: &S3Options) 
 fn concrete_etag(value: &str) -> bool {
     let value = value.trim();
     !value.is_empty() && value != "*" && !value.starts_with("W/") && !value.contains(',')
+}
+struct PreparedPut {
+    path: Path,
+    request: PutOptions,
+    options: WriteOptions,
+    link: bool,
+}
+
+impl S3Provider {
+    fn prepare_put(
+        &self,
+        key: &ObjectPath,
+        options: &WriteOptions,
+        size: Option<u64>,
+    ) -> Result<PreparedPut> {
+        if key.is_root() {
+            return Err(MscError::new(
+                ErrorKind::InvalidPath,
+                "an S3 object key must not be empty",
+            ));
+        }
+        if size.is_some_and(|size| size > MAX_OBJECT_SIZE) {
+            return Err(MscError::new(
+                ErrorKind::Integrity,
+                "S3 object exceeds 5 TiB",
+            ));
+        }
+        let mode = self.put_mode(options)?;
+        let path = self.path(key)?;
+        let mut options = options.clone();
+        if self.options.infer_content_type && options.content_type.is_none() {
+            let inferred = mime_guess::from_path(key.as_str()).first_or_octet_stream();
+            let content_type = if self.name == "s8k" && inferred.essence_str() == "audio/wav" {
+                "audio/x-wav"
+            } else {
+                inferred.essence_str()
+            };
+            options.content_type = Some(content_type.into());
+        }
+        let attributes = Self::attributes(&options)?;
+        let link = Self::validate_link_metadata(key, &options, size)?;
+        Ok(PreparedPut {
+            path,
+            request: PutOptions {
+                mode,
+                attributes,
+                ..Default::default()
+            },
+            options,
+            link,
+        })
+    }
+
+    async fn put_buffered(
+        &self,
+        key: &ObjectPath,
+        body: Bytes,
+        prepared: PreparedPut,
+    ) -> Result<PutResult> {
+        let length = body.len() as u64;
+        let create_only = prepared.request.mode == PutMode::Create;
+        let conditional_update = matches!(prepared.request.mode, PutMode::Update(_));
+        // Preserve the replayable Bytes owner instead of copying a buffered
+        // payload through the streaming part assembler.
+        let result = self
+            .store
+            .put_opts(&prepared.path, body.into(), prepared.request)
+            .await
+            .map_err(|error| {
+                let mut error = translate(error, "put", key.as_str());
+                if (create_only && error.kind == ErrorKind::AlreadyExists)
+                    || (conditional_update && error.kind == ErrorKind::NotFound)
+                {
+                    error.kind = ErrorKind::PreconditionFailed;
+                }
+                error
+            })?;
+        Ok(Self::completed_put(
+            key,
+            self.put_result(result),
+            length,
+            &prepared.options,
+        ))
+    }
+
+    async fn put_stream(
+        &self,
+        key: &ObjectPath,
+        input: ByteStream,
+        size: Option<u64>,
+        options: &WriteOptions,
+    ) -> Result<PutResult> {
+        let prepared = self.prepare_put(key, options, size)?;
+        let threshold = usize::try_from(self.options.multipart_threshold)
+            .map_err(|_| config_error("multipart threshold exceeds address space"))?;
+        let mut reader = PartReader {
+            input,
+            pending: Bytes::new(),
+            total: 0,
+            finished: false,
+        };
+        let lookahead = threshold
+            .checked_add(1)
+            .ok_or_else(|| config_error("multipart threshold exceeds address space"))?;
+        let first = reader.next(lookahead).await?.unwrap_or_default();
+        if prepared.link && !first.is_empty() {
+            return Err(config_error(
+                "S3 logical links require an empty object body",
+            ));
+        }
+        if first.len() <= threshold {
+            check_size(size, reader.total)?;
+            self.put_buffered(key, first, prepared).await
+        } else {
+            if prepared.request.mode != PutMode::Overwrite {
+                return Err(MscError::unsupported("conditional multipart S3 PUT"));
+            }
+            let input = Box::pin(stream::once(async move { Ok(first) }).chain(reader.remainder()));
+            let result = self
+                .multipart(&prepared.path, input, size, prepared.request.attributes)
+                .await
+                .map_err(|mut error| {
+                    error.retryable = false;
+                    error
+                })?;
+            let length = result.content_length.expect("completed upload length");
+            Ok(Self::completed_put(key, result, length, &prepared.options))
+        }
+    }
 }

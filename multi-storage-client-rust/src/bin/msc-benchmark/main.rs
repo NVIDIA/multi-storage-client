@@ -100,10 +100,15 @@ fn main() -> ExitCode {
 
 fn run_worker(path: &Path) -> Result<u8> {
     let job: Job = serde_json::from_slice(&std::fs::read(path)?)?;
+    // Match the binding's executor sizing; job.threads limits operations instead.
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(job.threads)
         .enable_all()
         .build()?;
+    eprintln!(
+        "Runtime worker threads: {}; operation concurrency: {}",
+        runtime.metrics().num_workers(),
+        job.threads
+    );
     runtime.block_on(worker::run(job))?;
     Ok(0)
 }
@@ -263,6 +268,11 @@ async fn run_phase(
     summary: &mut Summary,
     phase: Phase,
 ) -> Result<()> {
+    // Python recreates its process pool for each phase. Keep connection setup
+    // outside timing without giving later phases a warm native connection pool.
+    if !matches!(phase, Phase::Upload) {
+        workers.restart(job).await?;
+    }
     eprintln!(
         "Running {phase}: {} x {}, {} processes x {} threads",
         job.end,

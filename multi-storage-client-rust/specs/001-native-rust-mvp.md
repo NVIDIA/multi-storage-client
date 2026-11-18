@@ -217,11 +217,13 @@ uncertain multipart completion are not replayed.
 ## File transfers and restart recovery
 
 Uploads stream from their opened source without a whole-file temporary copy.
-S3 shares transfer settings between uploads and file downloads: an 8 MiB
-`multipart_threshold`, 8 MiB `part_size`, and `multipart_concurrency` of 4 by
+S3 shares transfer settings between uploads and file downloads: a 64 MiB
+`multipart_threshold`, 32 MiB `part_size`, and `multipart_concurrency` of 8 by
 default. Python-compatible aliases include `multipart_chunksize` and
 `max_concurrency`. Objects at or below the threshold use streaming; larger
-eligible objects use bounded multipart transfers.
+eligible objects use bounded multipart transfers. Buffered `write` payloads use
+a single PUT up to the S3 single-request limit, matching Python RustClient;
+these do not use the file-transfer multipart threshold.
 
 Downloads obtain metadata for the requested historical version or current
 object. Large S3 downloads pin every range to that version or observed strong

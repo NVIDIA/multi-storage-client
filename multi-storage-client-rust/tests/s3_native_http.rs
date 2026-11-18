@@ -174,6 +174,54 @@ fn key(k: &str) -> ObjectPath {
 }
 
 #[tokio::test]
+async fn buffered_writes_above_file_threshold_use_one_conditional_put() {
+    let server = Server::new(vec![Response {
+        status: 200,
+        headers: "ETag: \"written\"\r\n".into(),
+        body: String::new(),
+    }])
+    .await;
+    let provider = S3Provider::new(
+        S3Options {
+            base_path: "bucket".into(),
+            endpoint_url: Some(server.endpoint.clone()),
+            multipart_threshold: 1024 * 1024,
+            ..Default::default()
+        },
+        Some(AwsCredentials {
+            access_key_id: SecretString::new("test-access"),
+            secret_access_key: SecretString::new("test-secret"),
+            session_token: None,
+            expires_at: None,
+        }),
+    )
+    .unwrap();
+    let client = StorageClientBuilder::from_provider(Arc::new(provider))
+        .build()
+        .await
+        .unwrap();
+    let body = bytes::Bytes::from(vec![b'x'; 2 * 1024 * 1024]);
+    client
+        .write(
+            "object",
+            body.clone(),
+            WriteOptions {
+                if_none_match: Some("*".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    server.done().await;
+    let requests = server.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "PUT");
+    assert_eq!(requests[0].target, "/bucket/object");
+    assert_eq!(requests[0].headers["if-none-match"], "*");
+    assert_eq!(requests[0].body.as_bytes(), body.as_ref());
+}
+
+#[tokio::test]
 async fn symlinks_encode_profile_relative_target_keys() {
     let cases = [
         ("links/alias", "data/file", "../data/file"),

@@ -58,16 +58,16 @@ pub struct S3Options {
     /// Optional PEM CA certificate file for custom HTTPS trust.
     #[serde(default)]
     pub ca_certificate: Option<PathBuf>,
-    /// Multipart selection threshold in bytes; defaults to 8 MiB. Objects up to
+    /// Multipart selection threshold in bytes; defaults to 64 MiB. Objects up to
     /// and including the threshold use single-request transfers, as in MSC Python.
     /// Larger unconditional uploads and generation-pinned file downloads use multipart.
     #[serde(default = "default_threshold")]
     pub multipart_threshold: u64,
-    /// Multipart upload/download part size in bytes; defaults to 8 MiB.
+    /// Multipart upload/download part size in bytes; defaults to 32 MiB.
     /// The shared setting satisfies S3 uploads' minimum 5 MiB part size.
     #[serde(default = "default_part_size", alias = "multipart_chunksize")]
     pub part_size: u64,
-    /// Maximum simultaneous parts per multipart upload or download; defaults to four.
+    /// Maximum simultaneous parts per multipart upload or download; defaults to eight.
     #[serde(default = "default_concurrency", alias = "max_concurrency")]
     pub multipart_concurrency: usize,
     /// Connection timeout in milliseconds; defaults to 10,000.
@@ -124,13 +124,13 @@ fn default_true() -> bool {
     true
 }
 fn default_threshold() -> u64 {
-    8 * 1024 * 1024
+    64 * 1024 * 1024
 }
 fn default_part_size() -> u64 {
-    8 * 1024 * 1024
+    32 * 1024 * 1024
 }
 fn default_concurrency() -> usize {
-    4
+    8
 }
 fn default_connect_timeout() -> u64 {
     10_000

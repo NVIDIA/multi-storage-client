@@ -65,6 +65,18 @@ impl Workers {
         self.0.len()
     }
 
+    pub async fn restart(&mut self, job: &Job) -> Result<()> {
+        for worker in &mut self.0 {
+            worker.stop().await?;
+        }
+        let directory = job
+            .payload
+            .parent()
+            .ok_or("payload directory unavailable")?;
+        *self = Self::start(job, job.end, directory).await?;
+        Ok(())
+    }
+
     pub async fn start(job: &Job, objects: usize, directory: &Path) -> Result<Self> {
         let executable = std::env::current_exe()?;
         let active = job.processes.min(objects);
