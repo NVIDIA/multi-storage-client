@@ -62,6 +62,8 @@ The MSC Explorer provides read-only access to your storage backends with the fol
 The content preview API requests the first ``max_bytes`` bytes of larger files
 (1 MiB by default) using byte-range reads where supported. If a range read fails,
 the API falls back to reading the full file and truncating the preview.
+Text previews support Rust buffers directly, including when the Rust client is enabled
+for the selected profile. Content that is not valid UTF-8 is treated as binary.
 
 Configuration
 =============

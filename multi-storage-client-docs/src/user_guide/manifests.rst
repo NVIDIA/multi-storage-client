@@ -82,6 +82,9 @@ Directory metadata is available when the manifest contains files below that dire
 Calling ``get_object_metadata(..., include_pending=True)`` includes uncommitted additions and overwrites and excludes pending removals.
 Registering and converting object metadata preserves its storage class and symlink target. These fields also survive committing and reloading JSONL manifests.
 
+Manifest loading accepts both Python ``bytes`` and Rust buffers. The JSON index is decoded
+directly from the buffer, so manifests can be read with the Rust client enabled.
+
 Generating Manifests
 --------------------
 

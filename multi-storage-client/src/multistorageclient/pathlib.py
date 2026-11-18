@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import codecs
 import logging
 import os
 import stat
@@ -23,7 +22,7 @@ from types import NotImplementedType
 from .client import StorageClient
 from .shortcuts import resolve_storage_client
 from .types import MSC_PROTOCOL, ObjectMetadata
-from .utils import join_paths
+from .utils import _decode_buffer, _ensure_bytes, join_paths
 
 logger = logging.getLogger(__name__)
 
@@ -612,16 +611,14 @@ class MultiStoragePath:
         """
         Open the file in bytes mode, read it, and close the file.
         """
-        return self._storage_client.read(str(self._internal_path))
+        return _ensure_bytes(self._storage_client.read(str(self._internal_path)))
 
     def read_text(self, encoding: str = "utf-8", errors: str = "strict") -> str:
         """
         Open the file in text mode, read it, and close the file.
         """
         result = self._storage_client.read(str(self._internal_path))
-        if not hasattr(result, "decode"):  # Rust's PyBytes does not implement decode
-            return codecs.decode(memoryview(result), encoding, errors)
-        return result.decode(encoding, errors)
+        return _decode_buffer(result, encoding, errors)
 
     def write_bytes(self, data: bytes) -> None:
         """

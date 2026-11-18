@@ -20,6 +20,7 @@ import stat
 import tempfile
 import uuid
 from pathlib import Path, PurePosixPath
+from unittest.mock import patch
 
 import pytest
 
@@ -129,16 +130,38 @@ def test_path_open(file_storage_config):
             assert f.read() == "1.1.1.1"
 
 
-def test_path_read_text_honors_errors(file_storage_config):
+@pytest.mark.parametrize("buffer_type", [bytes, memoryview])
+@pytest.mark.parametrize(
+    "encoding,content,replacement",
+    [
+        ("utf-8", b"abc\xff", "abc\ufffd"),
+        ("ascii", b"abc\xc3\xa9", "abc\ufffd\ufffd"),
+        ("utf-16-le", b"a\x00b\x00c\x00\xff", "abc\ufffd"),
+    ],
+)
+def test_path_read_text_honors_errors(file_storage_config, buffer_type, encoding, content, replacement):
     with tempfile.TemporaryDirectory() as temp_dir:
         path = msc.Path(f"{temp_dir}/invalid-utf8.txt")
         with path.open("wb") as f:
-            f.write(b"abc\xff")
+            f.write(content)
 
-        assert path.read_text(errors="ignore") == "abc"
-        assert path.read_text(errors="replace") == "abc\ufffd"
-        with pytest.raises(UnicodeDecodeError):
-            path.read_text()
+        with patch.object(path._storage_client, "read", return_value=buffer_type(content)):
+            assert path.read_text(encoding=encoding, errors="ignore") == "abc"
+            assert path.read_text(encoding=encoding, errors="replace") == replacement
+            with pytest.raises(UnicodeDecodeError):
+                path.read_text(encoding=encoding)
+
+
+@pytest.mark.parametrize("buffer_type", [bytes, bytearray, memoryview])
+@pytest.mark.parametrize("content", [b"", b"abc"])
+def test_path_read_bytes_returns_bytes(file_storage_config, tmp_path, buffer_type, content):
+    path = msc.Path(tmp_path / "file.bin")
+    with patch.object(path._storage_client, "read", return_value=buffer_type(content)) as read:
+        result = path.read_bytes()
+    assert isinstance(result, bytes)
+    assert result == content
+    if buffer_type is bytes:
+        assert result is read.return_value
 
 
 def test_path_write_text_honors_errors(file_storage_config, tmp_path):

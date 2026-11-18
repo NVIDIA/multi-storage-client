@@ -33,6 +33,22 @@ from multistorageclient.types import ObjectMetadata, ResolvedPathState
 from test_multistorageclient.unit.utils import tempdatastore
 
 
+@pytest.mark.parametrize("buffer_type", [bytes, memoryview])
+def test_manifest_metadata_loads_buffer_content(buffer_type):
+    storage_provider = MagicMock()
+    storage_provider.is_file.return_value = True
+    storage_provider.get_object.side_effect = [
+        buffer_type(b'{"version": "1", "parts": [{"path": "part.jsonl"}]}'),
+        buffer_type(b'{"key": "file.txt", "size_bytes": 3, "last_modified": "2026-01-01T00:00:00Z"}\n'),
+    ]
+
+    provider = ManifestMetadataProvider(storage_provider, "index.json")
+
+    metadata = provider.get_object_metadata("file.txt")
+    assert metadata.content_length == 3
+    assert storage_provider.get_object.call_count == 2
+
+
 @pytest.mark.parametrize(
     argnames=["temp_data_store_type", "replace_base_path"],
     argvalues=[

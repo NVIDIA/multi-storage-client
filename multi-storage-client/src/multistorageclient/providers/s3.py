@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import codecs
 import io
 import logging
 import os
@@ -50,6 +49,7 @@ from ..types import (
     SymlinkHandling,
 )
 from ..utils import (
+    _decode_buffer,
     safe_makedirs,
     split_path,
     validate_attributes,
@@ -1199,13 +1199,9 @@ class S3StorageProvider(BaseStorageProvider):
             # Download small files
             if metadata.content_length <= self._multipart_threshold:
                 response = self._get_object(remote_path)
-                # Python client returns `bytes`, but Rust client returns an object that implements the buffer protocol,
-                # so we need to check whether `.decode()` is available.
+                # Decode Python bytes and Rust buffers without an intermediate Python bytes copy.
                 if isinstance(f, io.StringIO):
-                    if hasattr(response, "decode"):
-                        f.write(response.decode("utf-8"))
-                    else:
-                        f.write(codecs.decode(memoryview(response), "utf-8"))
+                    f.write(_decode_buffer(response))
                 else:
                     f.write(response)
                 return metadata.content_length

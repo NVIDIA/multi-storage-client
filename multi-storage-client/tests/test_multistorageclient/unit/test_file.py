@@ -34,6 +34,22 @@ from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
 
 
+@pytest.mark.parametrize("rust_enabled", [False, True])
+@pytest.mark.parametrize("buffer_type", [bytes, memoryview])
+def test_remote_file_reader_returns_bytes(rust_enabled, buffer_type):
+    storage_client = Mock()
+    storage_client.read.return_value = buffer_type(b"abc")
+    storage_client._is_rust_client_enabled.return_value = rust_enabled
+    reader = RemoteFileReader("file", 3, storage_client)
+
+    result = reader.read()
+
+    assert isinstance(result, bytes)
+    assert result == b"abc"
+    assert reader.tell() == 3
+    assert reader.read() == b""
+
+
 def _posix_client_with_file_descriptor_metrics(tmp_path):
     duration_gauge = Mock()
     open_counter = Mock()
