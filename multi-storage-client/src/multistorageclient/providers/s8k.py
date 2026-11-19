@@ -16,6 +16,7 @@
 import mimetypes
 from typing import IO
 
+from ..types import StreamingObjectWriter, StreamingWriterOptions
 from .s3 import S3StorageProvider
 
 PROVIDER = "s8k"
@@ -62,8 +63,6 @@ class S8KStorageProvider(S3StorageProvider):
         kwargs["retries"] = kwargs.get("retries", {}) | {"mode": "legacy"}
 
         super().__init__(*args, **kwargs)
-        if self._infer_content_type and self._streaming_write is not None:
-            raise ValueError("rust_client.streaming_write cannot be combined with infer_content_type.")
 
         # override the provider name from "s3"
         self._provider_name = PROVIDER
@@ -84,6 +83,13 @@ class S8KStorageProvider(S3StorageProvider):
         # Use mimetypes to guess the content type based on file extension
         content_type, _ = mimetypes.guess_type(file_path)
         return content_type
+
+    def _open_streaming_writer(
+        self, path: str, attributes: dict[str, str] | None, options: StreamingWriterOptions
+    ) -> StreamingObjectWriter:
+        if self._infer_content_type:
+            raise NotImplementedError("Streaming writes cannot be combined with infer_content_type.")
+        return super()._open_streaming_writer(path, attributes, options)
 
     def _put_object(
         self,

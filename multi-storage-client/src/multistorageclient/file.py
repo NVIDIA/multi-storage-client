@@ -279,9 +279,9 @@ class ObjectFile(IOBase, IO):
     `seek`, or `tell`) will block until the download is complete.
 
     For files opened in write mode ('wb'), the class writes locally to a specified path and uploads the file
-    to the remote storage when the file is closed. When the storage provider enables streaming writes, 'wb'
-    files are forward-only instead: parts upload while data is written, close publishes the object, and leaving
-    a ``with`` block by an exception (or calling :py:meth:`discard`) aborts the upload without publishing.
+    to the remote storage when the file is closed. A 'wb' file opened with ``writer_options`` is forward-only
+    instead: parts upload while data is written, close publishes the object, and leaving a ``with`` block by an
+    exception (or calling :py:meth:`discard`) aborts the upload without publishing.
     """
 
     _file: IO
@@ -292,7 +292,7 @@ class ObjectFile(IOBase, IO):
 
     _local_path: str | None = None
     _attributes: dict[str, Any] | None = None
-    _stream: _StreamingFile | None = None
+    _streaming_writer: tuple[StreamingObjectWriter, Callable[[], None] | None] | None = None
 
     def __init__(
         self,
@@ -418,7 +418,7 @@ class ObjectFile(IOBase, IO):
 
     @property
     def _streaming(self) -> bool:
-        return self._stream is not None
+        return self._streaming_writer is not None
 
     def _create_fileobj(self) -> None:
         """
@@ -426,8 +426,7 @@ class ObjectFile(IOBase, IO):
         """
         if self._streaming_writer is not None:
             writer, on_close = self._streaming_writer
-            self._stream = _StreamingFile(writer, on_close, self._remote_path)
-            self._file = cast(IO, self._stream)
+            self._file = cast(IO, _StreamingFile(writer, on_close, self._remote_path))
             return
 
         if self._mode in ("rb", "wb", "ab"):
@@ -827,13 +826,13 @@ class ObjectFile(IOBase, IO):
 
     def fsync(self) -> None:
         """Wait for submitted streaming parts. The object is published only by :py:meth:`close`."""
-        if self._stream is not None:
-            self._stream.sync()
+        if self._streaming:
+            cast(_StreamingFile, self._file).sync()
 
     def discard(self) -> None:
         """Abort a streaming upload without publishing it. Does nothing for buffered writes."""
-        if self._stream is not None:
-            self._stream.abort()
+        if self._streaming:
+            cast(_StreamingFile, self._file).abort()
 
 
 class PosixFile(IOBase, IO):

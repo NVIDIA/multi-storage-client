@@ -296,6 +296,43 @@ class SuffixRange:
             raise ValueError(f"SuffixRange size must be positive, got {self.size}")
 
 
+_MiB = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class StreamingWriterOptions:
+    """
+    Options for streaming a binary write through a bounded multipart upload.
+
+    Pass them to ``open(path, "wb", writer_options=...)`` to upload parts while data is written, instead of
+    buffering the whole object until close. Host memory stays near ``(max_inflight_parts + 1) * part_size_bytes``.
+
+    :param part_size_bytes: Size of each uploaded part, from 5 MiB to 5 GiB.
+    :param max_inflight_parts: Parts allowed to upload concurrently before :py:meth:`StreamingObjectWriter.write`
+        blocks. At least 1.
+    :param max_object_size_bytes: Optional limit on the object size; writes past it fail and the upload is aborted.
+    """
+
+    part_size_bytes: int = 64 * _MiB
+    max_inflight_parts: int = 8
+    max_object_size_bytes: int | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("part_size_bytes", "max_inflight_parts"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{name} must be an integer, got {value!r}")
+        if not 5 * _MiB <= self.part_size_bytes <= 5 * 1024 * _MiB:
+            raise ValueError(f"part_size_bytes must be between 5 MiB and 5 GiB, got {self.part_size_bytes}")
+        if self.max_inflight_parts < 1:
+            raise ValueError(f"max_inflight_parts must be at least 1, got {self.max_inflight_parts}")
+        size = self.max_object_size_bytes
+        if size is not None and (isinstance(size, bool) or not isinstance(size, int)):
+            raise TypeError(f"max_object_size_bytes must be an integer or None, got {size!r}")
+        if size is not None and size < 0:
+            raise ValueError(f"max_object_size_bytes must be non-negative, got {size}")
+
+
 class StreamingObjectWriter(ABC):
     """
     Forward-only writer that streams one object to a storage provider.
@@ -347,17 +384,32 @@ class StreamingObjectWriter(ABC):
         Cancel in-flight uploads and discard the object without publishing it.
         """
 
-    @abstractmethod
     def stats(self) -> dict[str, Any]:
         """
-        :return: Transfer counters such as accepted, submitted and completed bytes, and peak retained bytes.
+        :return: Implementation-specific transfer counters, such as accepted, submitted and completed bytes and peak
+            retained bytes. Empty by default.
         """
+        return {}
 
 
 class StorageProvider(ABC):
     """
     Abstract base class for interacting with a storage provider.
     """
+
+    def open_streaming_writer(
+        self, path: str, attributes: dict[str, Any] | None, options: StreamingWriterOptions
+    ) -> StreamingObjectWriter:
+        """
+        Open a forward-only writer that uploads the object incrementally.
+
+        :param path: The path where the object will be stored.
+        :param attributes: The attributes to add to the object.
+        :param options: Part size, in-flight budget and size limit for the upload.
+        :return: A writer that publishes the object on close.
+        :raises NotImplementedError: If the provider has no streaming writer.
+        """
+        raise NotImplementedError(f"Streaming writes are not supported by {type(self).__name__}.")
 
     @abstractmethod
     def put_object(

@@ -24,6 +24,7 @@ import threading
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from typing import Any, cast
 from unittest.mock import patch
 
@@ -32,7 +33,7 @@ import torch as torch_module
 import torch.distributed.checkpoint as dcp
 
 import multistorageclient as msc
-from multistorageclient import StorageClient, StorageClientConfig
+from multistorageclient import StorageClient, StorageClientConfig, StreamingWriterOptions
 from multistorageclient.file import ObjectFile
 from multistorageclient.providers import s3 as s3_provider
 from multistorageclient.providers.s3 import S3StorageProvider
@@ -43,6 +44,7 @@ torch = cast(Any, torch_module)
 
 MiB = 1024 * 1024
 PART = 5 * MiB
+OPTIONS = StreamingWriterOptions(part_size_bytes=PART, max_inflight_parts=2)
 
 
 def _payload(size: int) -> bytes:
@@ -50,15 +52,9 @@ def _payload(size: int) -> bytes:
 
 
 @contextmanager
-def _streaming_bucket(**streaming: Any) -> Iterator[tuple[tempdatastore.TemporaryAWSS3Bucket, StorageClient]]:
+def _streaming_bucket() -> Iterator[tuple[tempdatastore.TemporaryAWSS3Bucket, StorageClient]]:
     with tempdatastore.TemporaryAWSS3Bucket(enable_rust_client=True) as bucket:
         profile = bucket.profile_config_dict()
-        profile["storage_provider"]["options"]["rust_client"]["streaming_write"] = {
-            "enabled": True,
-            "part_size_bytes": PART,
-            "max_inflight_parts": 2,
-            **streaming,
-        }
         client = StorageClient(StorageClientConfig.from_dict({"profiles": {"stream": profile}}, profile="stream"))
         yield bucket, client
 
@@ -68,7 +64,7 @@ def _multipart_uploads(bucket: tempdatastore.TemporaryAWSS3Bucket) -> list:
 
 
 def _stats(f: Any) -> dict[str, Any]:
-    return f._stream._writer.stats()
+    return f._file._writer.stats()
 
 
 @pytest.mark.parametrize("size", [0, 1, PART - 1, PART, PART + 1, 3 * PART, 3 * PART + 7])
@@ -76,7 +72,7 @@ def _stats(f: Any) -> dict[str, Any]:
 def test_streaming_write_roundtrip(size: int, write_size: int | None):
     data = _payload(size)
     with _streaming_bucket() as (bucket, client):
-        with client.open("dir/object.bin", "wb", attributes={"owner": "test"}) as f:
+        with client.open("dir/object.bin", "wb", attributes={"owner": "test"}, writer_options=OPTIONS) as f:
             assert isinstance(f, ObjectFile)
             step = write_size or max(size, 1)
             for offset in range(0, size, step):
@@ -101,13 +97,15 @@ def test_streaming_write_uploads_before_close_without_whole_object_calls():
 
     data = _payload(8 * PART + 3)
     with _streaming_bucket() as (_, client):
-        with patch.object(s3_provider, "run_async_rust_client_method", record):
-            with client.open("big.bin", "wb") as f:
-                for offset in range(0, len(data), MiB):
-                    f.write(data[offset : offset + MiB])
-                f.flush()
-                f.fsync()
-                flushed = _stats(f)
+        with (
+            patch.object(s3_provider, "run_async_rust_client_method", record),
+            client.open("big.bin", "wb", writer_options=OPTIONS) as f,
+        ):
+            for offset in range(0, len(data), MiB):
+                f.write(data[offset : offset + MiB])
+            f.flush()
+            f.fsync()
+            flushed = _stats(f)
         assert flushed["completed_bytes"] == 8 * PART
         assert flushed["inflight_parts"] == 0
         assert flushed["retained_bytes"] == 3
@@ -119,7 +117,7 @@ def test_streaming_write_uploads_before_close_without_whole_object_calls():
 
 def test_streaming_file_is_forward_only():
     with _streaming_bucket() as (_, client):
-        with client.open("forward.bin", "wb") as f:
+        with client.open("forward.bin", "wb", writer_options=OPTIONS) as f:
             assert f.writable() and not f.readable() and not f.seekable()
             f.write(b"abc")
             assert f.seek(3) == 3
@@ -140,7 +138,7 @@ def test_streaming_writer_owns_accepted_bytes():
         buffer = bytearray(_payload(PART + 11))
         floats = array.array("f", [1.5, -2.25, 3.0])
         strided = memoryview(bytes(range(16)))[::2]
-        with client.open("owned.bin", "wb") as f:
+        with client.open("owned.bin", "wb", writer_options=OPTIONS) as f:
             f.write(buffer)
             buffer[:] = b"\0" * len(buffer)
             f.write(memoryview(floats))
@@ -151,13 +149,12 @@ def test_streaming_writer_owns_accepted_bytes():
 def test_streaming_exception_or_discard_aborts_and_keeps_old_object():
     with _streaming_bucket() as (bucket, client):
         client.write("ckpt.bin", b"old")
-        with pytest.raises(KeyError):
-            with client.open("ckpt.bin", "wb") as f:
-                f.write(_payload(3 * PART))
-                raise KeyError("serialization failed")
+        with pytest.raises(KeyError), client.open("ckpt.bin", "wb", writer_options=OPTIONS) as f:
+            f.write(_payload(3 * PART))
+            raise KeyError("serialization failed")
         assert client.read("ckpt.bin") == b"old"
 
-        f = client.open("ckpt.bin", "wb")
+        f = client.open("ckpt.bin", "wb", writer_options=OPTIONS)
         f.write(_payload(2 * PART))
         f.discard()
         assert f.closed
@@ -168,7 +165,7 @@ def test_streaming_exception_or_discard_aborts_and_keeps_old_object():
 
 def test_streaming_unclosed_file_is_aborted_not_published(caplog):
     with _streaming_bucket() as (_, client):
-        f = client.open("unclosed.bin", "wb")
+        f = client.open("unclosed.bin", "wb", writer_options=OPTIONS)
         f.write(_payload(2 * PART))
         with caplog.at_level(logging.WARNING):
             del f
@@ -180,7 +177,7 @@ def test_streaming_unclosed_file_is_aborted_not_published(caplog):
 def test_streaming_failure_is_sticky():
     with _streaming_bucket() as (bucket, client):
         bucket._client.delete_bucket(Bucket=bucket._bucket_name)
-        f = client.open("missing.bin", "wb")
+        f = client.open("missing.bin", "wb", writer_options=OPTIONS)
         with pytest.raises(Exception) as first:
             f.write(_payload(2 * PART))
             f.close()
@@ -194,53 +191,72 @@ def test_streaming_failure_is_sticky():
 
 
 def test_streaming_is_opt_in_and_binary_write_only():
-    with tempdatastore.TemporaryAWSS3Bucket(enable_rust_client=True) as bucket:
-        client = StorageClient(
-            StorageClientConfig.from_dict({"profiles": {"p": bucket.profile_config_dict()}}, profile="p")
-        )
+    with _streaming_bucket() as (_, client):
         with client.open("legacy.bin", "wb") as f:
             assert isinstance(f._file, io.BytesIO)
             f.write(b"abc")
             f.seek(0)
             f.write(b"x")
         assert client.read("legacy.bin") == b"xbc"
-
-    with _streaming_bucket() as (_, client):
-        for mode, expected in (("w", io.StringIO), ("ab", io.BytesIO)):
-            with client.open(f"buffered-{mode}", mode) as f:
-                assert isinstance(f._file, expected)
+        for mode in ("w", "ab", "rb"):
+            with pytest.raises(ValueError, match='mode "wb"'):
+                client.open("legacy.bin", mode, writer_options=OPTIONS)
 
 
 @pytest.mark.parametrize(
-    "streaming",
-    [{"part_size_bytes": 1024}, {"max_inflight_parts": 0}, {"unknown": 1}, {"enabled": "yes"}],
+    "options",
+    [
+        {"part_size_bytes": 1024},
+        {"part_size_bytes": 5 * 1024 * MiB + 1},
+        {"max_inflight_parts": 0},
+        {"max_inflight_parts": True},
+        {"max_object_size_bytes": -1},
+    ],
 )
-def test_streaming_config_is_validated(streaming: dict[str, Any]):
-    with tempdatastore.TemporaryAWSS3Bucket(enable_rust_client=True) as bucket:
-        profile = bucket.profile_config_dict()
-        profile["storage_provider"]["options"]["rust_client"]["streaming_write"] = {"enabled": True, **streaming}
-        with pytest.raises(RuntimeError, match="Failed to validate"):
-            StorageClientConfig.from_dict({"profiles": {"p": profile}}, profile="p")
+def test_streaming_writer_options_are_validated(options: dict[str, Any]):
+    with pytest.raises((TypeError, ValueError)):
+        StreamingWriterOptions(**options)
+
+
+def test_streaming_writer_options_are_picklable():
+    assert pickle.loads(pickle.dumps(OPTIONS)) == OPTIONS
 
 
 def test_streaming_rejects_unsupported_providers():
     options: dict[str, Any] = {"endpoint_url": "http://localhost:7070", "base_path": "bucket"}
-    rust_client = {"allow_http": True, "streaming_write": {"enabled": True}}
-    with pytest.raises(ValueError, match="infer_content_type"):
-        S8KStorageProvider(**options, rust_client=dict(rust_client), infer_content_type=True)
-    with pytest.raises(NotImplementedError):
-        S3StorageProvider(**options).open_streaming_writer("key")
+    rust_client = {"allow_http": True}
+    with pytest.raises(NotImplementedError, match="infer_content_type"):
+        S8KStorageProvider(**options, rust_client=dict(rust_client), infer_content_type=True).open_streaming_writer(
+            "key", None, OPTIONS
+        )
+    with pytest.raises(NotImplementedError, match="Rust client"):
+        S3StorageProvider(**options).open_streaming_writer("key", None, OPTIONS)
     with pytest.raises(NotImplementedError, match="directory bucket"):
         S3StorageProvider(**{**options, "base_path": "b--x-s3"}, rust_client=dict(rust_client)).open_streaming_writer(
-            "key"
+            "key", None, OPTIONS
         )
+
+    with tempdatastore.TemporaryAWSS3Bucket() as bucket:
+        client = StorageClient(
+            StorageClientConfig.from_dict({"profiles": {"p": bucket.profile_config_dict()}}, profile="p")
+        )
+        with pytest.raises(NotImplementedError, match="Rust client"):
+            client.open("buffered.bin", "wb", writer_options=OPTIONS)
+        assert not client.is_file("buffered.bin")
+
+    with tempdatastore.TemporaryPOSIXDirectory() as directory:
+        client = StorageClient(
+            StorageClientConfig.from_dict({"profiles": {"p": directory.profile_config_dict()}}, profile="p")
+        )
+        with pytest.raises(NotImplementedError, match="POSIX"):
+            client.open("local.bin", "wb", writer_options=OPTIONS)
 
 
 def test_streaming_writer_rejects_pickling_and_other_processes():
     with _streaming_bucket() as (_, client):
-        f = client.open("pid.bin", "wb")
+        f = client.open("pid.bin", "wb", writer_options=OPTIONS)
         f.write(b"parent")
-        native = cast(Any, f)._stream._writer._native
+        native = cast(Any, f)._file._writer._native
         with pytest.raises(TypeError):
             pickle.dumps(native)
 
@@ -266,7 +282,7 @@ def test_streaming_writer_rejects_pickling_and_other_processes():
 
 def _child_write(config_dict: dict[str, Any], path: str, size: int) -> int:
     client = StorageClient(StorageClientConfig.from_dict(config_dict, profile="stream"))
-    with client.open(path, "wb") as f:
+    with client.open(path, "wb", writer_options=OPTIONS) as f:
         f.write(_payload(size))
         return f.tell()
 
@@ -307,11 +323,11 @@ def test_streaming_write_releases_gil_while_waiting():
         while not stop.is_set():
             ticks += 1
 
-    with _streaming_bucket(max_inflight_parts=1) as (_, client):
+    with _streaming_bucket() as (_, client):
         thread = threading.Thread(target=spin)
         thread.start()
         try:
-            with client.open("gil.bin", "wb") as f:
+            with client.open("gil.bin", "wb", writer_options=replace(OPTIONS, max_inflight_parts=1)) as f:
                 before = ticks
                 f.write(_payload(20 * PART))
                 during = ticks - before
@@ -329,6 +345,13 @@ class _Model(torch.nn.Module):
 
 
 def test_streaming_dcp_and_torch_save_roundtrip():
+    opened: list[tuple[str, StreamingWriterOptions]] = []
+    open_streaming_writer = S3StorageProvider.open_streaming_writer
+
+    def record(self: S3StorageProvider, path: str, attributes: Any, options: StreamingWriterOptions) -> Any:
+        opened.append((path, options))
+        return open_streaming_writer(self, path, attributes, options)
+
     with _streaming_bucket() as (bucket, client):
         config.setup_msc_config(
             config_dict={"profiles": {"stream": client._config._config_dict["profiles"]["stream"]}}  # pyright: ignore
@@ -336,9 +359,12 @@ def test_streaming_dcp_and_torch_save_roundtrip():
         torch.manual_seed(0)
         model = _Model()
         prefix = f"msc://stream/checkpoint-{uuid.uuid4()}"
-        with patch.object(os, "sync") as sync:
-            dcp.save({"model": model}, storage_writer=msc.torch.MultiStorageFileSystemWriter(prefix))  # type: ignore[reportPrivateImportUsage]
-        assert sync.called
+        with patch.object(S3StorageProvider, "open_streaming_writer", record):
+            writer = msc.torch.MultiStorageFileSystemWriter(prefix, writer_options=OPTIONS)  # type: ignore[reportPrivateImportUsage]
+            dcp.save({"model": model}, storage_writer=writer)  # type: ignore[reportPrivateImportUsage]
+            msc.torch.save(model.state_dict(), f"{prefix}/model.pt", writer_options=OPTIONS)
+        assert {path.rsplit(".", 1)[-1] for path, _ in opened} == {"distcp", "tmp", "pt"}
+        assert all(options is OPTIONS for _, options in opened)
 
         restored = _Model()
         state = {"model": restored}
@@ -346,7 +372,6 @@ def test_streaming_dcp_and_torch_save_roundtrip():
         for name, tensor in model.state_dict().items():
             assert torch.equal(tensor, restored.state_dict()[name]), name
 
-        msc.torch.save(model.state_dict(), f"{prefix}/model.pt")
         loaded = msc.torch.load(f"{prefix}/model.pt")
         assert all(torch.equal(loaded[k], v) for k, v in model.state_dict().items())
         assert _multipart_uploads(bucket) == []

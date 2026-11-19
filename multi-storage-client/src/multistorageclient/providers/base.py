@@ -48,6 +48,7 @@ from ..types import (
     SignerType,
     StorageProvider,
     StreamingObjectWriter,
+    StreamingWriterOptions,
     SuffixRange,
     SymlinkHandling,
 )
@@ -710,25 +711,24 @@ class BaseStorageProvider(StorageProvider):
             f=lambda: self._put_object(path, body, if_match, if_none_match, provider_attributes),
         )
 
-    def supports_streaming_write(self) -> bool:
-        """
-        :return: Whether :py:meth:`open_streaming_writer` is enabled for this provider.
-        """
-        return False
-
-    def open_streaming_writer(self, path: str, attributes: dict[str, Any] | None = None) -> StreamingObjectWriter:
+    def open_streaming_writer(
+        self, path: str, attributes: dict[str, Any] | None, options: StreamingWriterOptions
+    ) -> StreamingObjectWriter:
         """
         Open a forward-only writer that uploads the object incrementally.
 
         :param path: The path where the object will be stored.
         :param attributes: The attributes to add to the object.
+        :param options: Part size, in-flight budget and size limit for the upload.
         :return: A writer that publishes the object on close.
-        :raises NotImplementedError: If the provider does not support or enable streaming writes.
+        :raises NotImplementedError: If the provider has no streaming writer.
         """
         path = self._prepend_base_path(path)
-        return self._open_streaming_writer(path, self._prepare_provider_attributes(attributes))
+        return self._open_streaming_writer(path, self._prepare_provider_attributes(attributes), options)
 
-    def _open_streaming_writer(self, path: str, attributes: dict[str, str] | None) -> StreamingObjectWriter:
+    def _open_streaming_writer(
+        self, path: str, attributes: dict[str, str] | None, options: StreamingWriterOptions
+    ) -> StreamingObjectWriter:
         raise NotImplementedError(f"Streaming writes are not supported by the {self._provider_name} storage provider.")
 
     def get_object(self, path: str, byte_range: Range | SuffixRange | None = None) -> bytes:

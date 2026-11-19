@@ -152,27 +152,28 @@ Streaming Writes
 ****************
 
 By default, a file opened with ``mode="wb"`` on object storage buffers the whole object in memory and uploads it on
-``close()``. With ``rust_client.streaming_write`` enabled, binary writes instead stream through a bounded multipart
-upload: each full part uploads while the caller keeps writing, and the Rust client blocks the writer once
-``max_inflight_parts`` parts are in flight. Memory held per open file stays below
+``close()``. Passing :py:class:`multistorageclient.types.StreamingWriterOptions` as ``writer_options`` instead streams the
+write through a bounded multipart upload: each full part uploads while the caller keeps writing, and the Rust client
+blocks the writer once ``max_inflight_parts`` parts are in flight. Memory held per open file stays below
 ``(max_inflight_parts + 1) * part_size_bytes``. Objects smaller than one part are written with a single request on
-``close()``.
+``close()``. The profile needs the Rust client (``rust_client``); streaming is chosen per call, not in the profile.
 
-.. code-block:: yaml
-   :caption: S3 configuration with streaming writes.
+.. code-block:: python
+   :caption: Streaming a binary write.
 
-   profiles:
-     my-profile:
-       storage_provider:
-         type: s3
-         options:
-           base_path: my-bucket
-           rust_client:
-             streaming_write:
-               enabled: true
-               part_size_bytes: 67108864     # 64MiB
-               max_inflight_parts: 8
-               max_object_size_bytes: 1099511627776  # Optional: raises part size to stay within 10,000 parts.
+   import multistorageclient as msc
+
+   options = msc.StreamingWriterOptions(
+       part_size_bytes=64 * 1024 * 1024,  # 5 MiB to 5 GiB.
+       max_inflight_parts=8,
+       max_object_size_bytes=None,  # Optional: raises the part size to stay within 10,000 parts.
+   )
+   with msc.open("msc://my-profile/checkpoints/shard.bin", "wb", writer_options=options) as f:
+       f.write(data)
+
+:py:class:`multistorageclient.contrib.torch.MultiStorageFileSystemWriter` and ``msc.torch.save`` take the same
+``writer_options`` for PyTorch checkpoints. ``StreamingWriterOptions`` is a frozen dataclass and can be pickled to
+worker processes.
 
 Streaming files differ from buffered files in these ways:
 
@@ -195,7 +196,9 @@ Streaming files differ from buffered files in these ways:
   parent already started, as with other Rust client operations.
 
 Streaming writes are supported by the ``s3``, ``s8k`` (without ``infer_content_type``), ``gcs_s3`` and ``ais_s3``
-providers, except S3 directory buckets. Text (``"w"``) and append (``"a"``, ``"ab"``) modes keep the buffered behavior.
+providers with the Rust client, except S3 directory buckets. ``open`` raises instead of falling back to a buffered
+write when ``writer_options`` is passed with any other provider (including POSIX and S3 without the Rust client) or
+with a mode other than ``"wb"``.
 
 ********************
 Performance Benefits

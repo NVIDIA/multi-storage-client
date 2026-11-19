@@ -47,6 +47,7 @@ from ..types import (
     SourceVersionCheckMode,
     StorageProvider,
     StreamingObjectWriter,
+    StreamingWriterOptions,
     SuffixRange,
     SymlinkHandling,
     SyncResult,
@@ -351,25 +352,24 @@ class SingleStorageClient(AbstractStorageClient):
             self._metadata_provider.add_file(virtual_path, obj_metadata)
 
     def _open_streaming_writer(
-        self, path: str, attributes: dict[str, Any] | None = None
-    ) -> tuple[StreamingObjectWriter, Callable[[], None] | None] | None:
+        self, path: str, attributes: dict[str, Any] | None, options: StreamingWriterOptions
+    ) -> tuple[StreamingObjectWriter, Callable[[], None] | None]:
         """
-        Open a streaming writer when the storage provider enables streaming writes.
+        Open a streaming writer through the storage provider.
 
         :param path: The logical path of the object to write.
         :param attributes: The attributes to add to the object.
-        :return: The writer and an optional callback to run after it publishes the object, or ``None`` when
-            streaming writes are not enabled.
+        :param options: The streaming writer options.
+        :return: The writer and an optional callback to run after it publishes the object.
+        :raises NotImplementedError: If the storage provider does not support streaming writes.
         """
         provider = self._storage_provider
-        if not isinstance(provider, BaseStorageProvider) or not provider.supports_streaming_write():
-            return None
         if self._metadata_provider:
             physical_path = self._resolve_write_path(path)
             # Attributes belong to logical metadata, so physical writes get none and registration stores them.
-            writer = provider.open_streaming_writer(physical_path, attributes=None)
+            writer = provider.open_streaming_writer(physical_path, None, options)
             return writer, lambda: self._register_written_file(path, physical_path, attributes)
-        return provider.open_streaming_writer(path, attributes), None
+        return provider.open_streaming_writer(path, attributes, options), None
 
     def _register_written_files(
         self,
@@ -1054,6 +1054,7 @@ class SingleStorageClient(AbstractStorageClient):
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
         attributes: dict[str, Any] | None = None,
         prefetch_file: bool | None = None,
+        writer_options: StreamingWriterOptions | None = None,
     ) -> PosixFile | ObjectFile:
         """
         Open a file for reading or writing.
@@ -1074,10 +1075,18 @@ class SingleStorageClient(AbstractStorageClient):
         :param prefetch_file: Whether to prefetch the file content.
             This parameter is only applicable to ObjectFile when the mode is "r" or "rb".
             If None, inherits from cache configuration.
+        :param writer_options: Stream the object through a bounded multipart upload instead of buffering it in memory.
+            Only valid with mode ``"wb"`` on a storage provider that supports streaming writes.
         :return: A file-like object (PosixFile or ObjectFile) for the specified path.
         :raises FileNotFoundError: If the file does not exist (read mode).
+        :raises ValueError: If ``writer_options`` is set with a mode other than ``"wb"``.
+        :raises NotImplementedError: If ``writer_options`` is set and the storage provider does not support streaming writes.
         """
+        if writer_options is not None and mode != "wb":
+            raise ValueError(f'writer_options requires mode "wb", got {mode!r}.')
         if self._is_posix_file_storage_provider():
+            if writer_options is not None:
+                raise NotImplementedError("Streaming writes are not supported by POSIX file storage providers.")
             return PosixFile(
                 self, path=path, mode=mode, buffering=buffering, encoding=encoding, atomic=atomic, attributes=attributes
             )
@@ -1095,7 +1104,11 @@ class SingleStorageClient(AbstractStorageClient):
                 check_source_version=check_source_version,
                 attributes=attributes,
                 prefetch_file=prefetch_file,
-                streaming_writer=self._open_streaming_writer(path, attributes) if mode == "wb" else None,
+                streaming_writer=(
+                    self._open_streaming_writer(path, attributes, writer_options)
+                    if writer_options is not None
+                    else None
+                ),
             )
 
     def get_posix_path(self, path: str) -> str | None:

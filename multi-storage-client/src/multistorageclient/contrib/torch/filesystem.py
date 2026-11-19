@@ -29,6 +29,7 @@ from torch.distributed.checkpoint.planner import (
 from torch.futures import Future
 
 from ...pathlib import MultiStoragePath
+from ...types import StreamingWriterOptions
 
 
 class MultiStorageFileSystem(FileSystemBase):
@@ -36,10 +37,17 @@ class MultiStorageFileSystem(FileSystemBase):
     A filesystem implementation that uses the MultiStoragePath class to handle paths.
     """
 
+    def __init__(self, writer_options: StreamingWriterOptions | None = None) -> None:
+        """
+        :param writer_options: Stream files opened with mode ``"wb"`` through bounded multipart uploads.
+        """
+        self._writer_options = writer_options
+
     @contextmanager
     def create_stream(self, path: str | os.PathLike, mode: str) -> Generator[io.IOBase, None, None]:
         # always download the file here (used for checkpointing)
-        with MultiStoragePath(path).open(mode=mode, prefetch_file=True) as fp:
+        writer_options = self._writer_options if mode == "wb" else None
+        with MultiStoragePath(path).open(mode=mode, prefetch_file=True, writer_options=writer_options) as fp:
             yield fp
 
     def concat_path(self, path: str | os.PathLike, suffix: str) -> str | os.PathLike:
@@ -142,9 +150,12 @@ class MultiStorageFileSystemWriter(FileSystemWriter):
         per_thread_copy_ahead: int = 10_000_000,
         cache_staged_state_dict: bool = False,
         overwrite: bool = True,
+        writer_options: StreamingWriterOptions | None = None,
     ) -> None:
         """
         Initialize the MultiStorageFileSystemWriter with the MultiStorageFileSystem.
+
+        :param writer_options: Stream checkpoint files through bounded multipart uploads instead of buffering them.
         """
         super().__init__(
             path,
@@ -155,7 +166,7 @@ class MultiStorageFileSystemWriter(FileSystemWriter):
             cache_staged_state_dict,
             overwrite=overwrite,
         )
-        self.fs = MultiStorageFileSystem()
+        self.fs = MultiStorageFileSystem(writer_options=writer_options)
         self.path = self.fs.init_path(path)
 
     @classmethod

@@ -20,6 +20,7 @@ import torch as _torch_module
 
 from ...pathlib import MultiStoragePath
 from ...shortcuts import open as msc_open
+from ...types import StreamingWriterOptions
 
 _torch = cast(Any, _torch_module)
 
@@ -38,18 +39,28 @@ def load(f: str | os.PathLike[str] | IO[bytes], *args: Any, **kwargs: Any) -> An
         return _torch.load(f, *args, **kwargs)
 
 
-def save(obj: object, f: str | os.PathLike[str] | IO[bytes], *args: Any, **kwargs: Any) -> Any:
+def save(
+    obj: object,
+    f: str | os.PathLike[str] | IO[bytes],
+    *args: Any,
+    writer_options: StreamingWriterOptions | None = None,
+    **kwargs: Any,
+) -> Any:
     """
     Adapt ``torch.save``.
+
+    :param writer_options: Stream the object through a bounded multipart upload. Only valid when ``f`` is a path.
     """
     attributes_dict = {}
     if "attributes" in kwargs:
         attributes_dict = kwargs.pop("attributes")
     if isinstance(f, str):
-        with msc_open(f, "wb", attributes=attributes_dict) as fp:
+        with msc_open(f, "wb", attributes=attributes_dict, writer_options=writer_options) as fp:
             return _torch.save(obj, fp, *args, **kwargs)
     elif isinstance(f, MultiStoragePath):
-        with f.open("wb", attributes=attributes_dict) as fp:
+        with f.open("wb", attributes=attributes_dict, writer_options=writer_options) as fp:
             return _torch.save(obj, fp, *args, **kwargs)
     else:
+        if writer_options is not None:
+            raise ValueError("writer_options requires a path, not an open file.")
         return _torch.save(obj, f, *args, **kwargs)

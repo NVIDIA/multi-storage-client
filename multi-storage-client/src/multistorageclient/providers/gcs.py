@@ -195,8 +195,6 @@ class GoogleStorageProvider(BaseStorageProvider):
         if "rust_client" in kwargs:
             # Inherit the rust client options from the kwargs
             rust_client_options = copy.deepcopy(kwargs["rust_client"])
-            if (rust_client_options.pop("streaming_write", None) or {}).get("enabled", False):
-                raise ValueError("rust_client.streaming_write is only supported by S3-compatible storage providers.")
             if "max_pool_connections" in kwargs:
                 rust_client_options["max_pool_connections"] = kwargs["max_pool_connections"]
             if "max_concurrency" in kwargs:

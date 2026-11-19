@@ -13,13 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 import io
 import logging
 import os
 import tempfile
 import threading
 from collections.abc import Callable, Iterator
-from typing import IO, Any, NamedTuple, TypeVar
+from typing import IO, Any, TypeVar
 
 import boto3
 import botocore
@@ -46,6 +47,7 @@ from ..types import (
     RetryableError,
     SignerType,
     StreamingObjectWriter,
+    StreamingWriterOptions,
     SuffixRange,
     SymlinkHandling,
 )
@@ -56,6 +58,7 @@ from ..utils import (
     validate_attributes,
 )
 from .base import BaseStorageProvider, _translate_iterator_errors
+from .rust_streaming import RustStreamingWriter
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +74,6 @@ PYTHON_MAX_CONCURRENCY = 8
 MAX_POOL_CONNECTIONS = DEFAULT_MAX_POOL_CONNECTIONS
 
 PROVIDER = "s3"
-
-DEFAULT_STREAMING_PART_SIZE = 64 * MiB
-DEFAULT_STREAMING_MAX_INFLIGHT_PARTS = 8
 
 EXPRESS_ONEZONE_STORAGE_CLASS = "EXPRESS_ONEZONE"
 
@@ -148,83 +148,6 @@ class S3URLSigner(URLSigner):
             Params={"Bucket": self._bucket, "Key": path},
             ExpiresIn=self._expires_in,
         )
-
-
-class _StreamingWriteOptions(NamedTuple):
-    part_size: int
-    max_inflight_parts: int
-    max_object_size: int | None
-
-
-def _parse_streaming_write(options: dict[str, Any] | None) -> _StreamingWriteOptions | None:
-    """
-    Validate the ``rust_client.streaming_write`` options.
-
-    :return: The validated options, or ``None`` when streaming writes are disabled.
-    """
-    if not options or not options.get("enabled", False):
-        return None
-    part_size = options.get("part_size_bytes", DEFAULT_STREAMING_PART_SIZE)
-    max_inflight_parts = options.get("max_inflight_parts", DEFAULT_STREAMING_MAX_INFLIGHT_PARTS)
-    max_object_size = options.get("max_object_size_bytes")
-    for name, value in (("part_size_bytes", part_size), ("max_inflight_parts", max_inflight_parts)):
-        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise ValueError(f"streaming_write.{name} must be a positive integer, got {value!r}")
-    if max_object_size is not None and (isinstance(max_object_size, bool) or not isinstance(max_object_size, int)):
-        raise ValueError(f"streaming_write.max_object_size_bytes must be an integer, got {max_object_size!r}")
-    return _StreamingWriteOptions(part_size, max_inflight_parts, max_object_size)
-
-
-class _RustStreamingWriter(StreamingObjectWriter):
-    """
-    Python facade over the native streaming writer. Rust owns the part buffers, uploads and backpressure.
-    """
-
-    def __init__(self, provider: "S3StorageProvider", native: Any, bucket: str, key: str):
-        self._provider = provider
-        self._native = native
-        self._bucket = bucket
-        self._key = key
-
-    def _call(self, f: Callable[[], _T]) -> _T:
-        try:
-            return f()
-        except (RustClientError, RustRetryableError) as error:
-
-            def _reraise(caught: Exception = error) -> _T:
-                raise caught
-
-            return self._provider._translate_errors(_reraise, operation="PUT", bucket=self._bucket, key=self._key)
-
-    def write(self, data: Any) -> int:
-        view = data if isinstance(data, memoryview) else memoryview(data)
-        if not view.c_contiguous:
-            view = memoryview(view.tobytes())
-        if view.format != "B" or view.ndim != 1:
-            view = view.cast("B")
-        return self._call(lambda: self._native.write(view))
-
-    def tell(self) -> int:
-        return self._native.tell()
-
-    def flush(self) -> None:
-        self._call(self._native.flush)
-
-    def sync(self) -> None:
-        self._call(self._native.sync)
-
-    def close(self) -> int:
-        def _close() -> int:
-            self._call(self._native.close)
-            return self._native.tell()
-
-        return self._provider._emit_metrics(operation=BaseStorageProvider._Operation.WRITE, f=_close)
-
-    def abort(self) -> None:
-        self._call(self._native.abort)
-
-    def stats(self) -> dict[str, Any]:
-        return self._native.stats()
 
 
 class S3StorageProvider(BaseStorageProvider):
@@ -327,7 +250,6 @@ class S3StorageProvider(BaseStorageProvider):
 
         self._rust_client = None
         self._rust_bucket: str | None = None
-        self._streaming_write: _StreamingWriteOptions | None = None
         if "rust_client" in kwargs:
             # Inherit the rust client options from the kwargs
             rust_client_options = kwargs["rust_client"]
@@ -356,7 +278,6 @@ class S3StorageProvider(BaseStorageProvider):
                         f"Disable rust_client or use SHA256."
                     )
                 rust_client_options["checksum_algorithm"] = "sha256"
-            self._streaming_write = _parse_streaming_write(rust_client_options.get("streaming_write"))
             self._rust_client = self._create_rust_client(rust_client_options)
 
     @property
@@ -394,13 +315,11 @@ class S3StorageProvider(BaseStorageProvider):
             )
         return normalized
 
-    def supports_streaming_write(self) -> bool:
-        return self._rust_client is not None and self._streaming_write is not None
-
-    def _open_streaming_writer(self, path: str, attributes: dict[str, str] | None) -> StreamingObjectWriter:
-        options = self._streaming_write
-        if self._rust_client is None or options is None:
-            raise NotImplementedError("Streaming writes require rust_client.streaming_write.enabled.")
+    def _open_streaming_writer(
+        self, path: str, attributes: dict[str, str] | None, options: StreamingWriterOptions
+    ) -> StreamingObjectWriter:
+        if self._rust_client is None:
+            raise NotImplementedError("Streaming writes require the Rust client (rust_client in the profile options).")
         rust_client = self._rust_client
         bucket, key = split_path(path)
         if self._is_directory_bucket(bucket):
@@ -412,16 +331,20 @@ class S3StorageProvider(BaseStorageProvider):
         native = self._translate_errors(
             lambda: rust_client.open_streaming_writer(
                 key,
-                part_size=options.part_size,
+                part_size=options.part_size_bytes,
                 max_inflight_parts=options.max_inflight_parts,
-                max_object_size=options.max_object_size,
+                max_object_size=options.max_object_size_bytes,
                 **rust_attributes,
             ),
             operation="PUT",
             bucket=bucket,
             key=key,
         )
-        return _RustStreamingWriter(self, native, bucket, key)
+        return RustStreamingWriter(
+            native,
+            translate_errors=functools.partial(self._translate_errors, operation="PUT", bucket=bucket, key=key),
+            emit_write_metrics=functools.partial(self._emit_metrics, BaseStorageProvider._Operation.WRITE),
+        )
 
     def _is_directory_bucket(self, bucket: str) -> bool:
         """
@@ -513,7 +436,6 @@ class S3StorageProvider(BaseStorageProvider):
         Creates and configures the rust client, using refreshable credentials if possible.
         """
         configs = dict(rust_client_options) if rust_client_options else {}
-        configs.pop("streaming_write", None)
 
         # Extract and parse retry configuration
         retry_config = parse_retry_config(configs)

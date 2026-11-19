@@ -49,6 +49,7 @@ from .types import (
     ResolvedPathState,
     SignerType,
     StorageBackend,
+    StreamingWriterOptions,
     SymlinkHandling,
     SyncResult,
 )
@@ -66,6 +67,7 @@ __all__ = [
     "StorageBackend",
     "StorageClient",
     "StorageClientConfig",
+    "StreamingWriterOptions",
     "SymlinkHandling",
     "SyncResult",
     "commit_metadata",
