@@ -329,6 +329,10 @@ impl StreamCore {
                 limit, self.config.max_parts, self.config.part_size
             )));
         }
+        if self.started_multipart && self.partial.is_empty() && self.partial.capacity() < self.config.part_size {
+            // Every later part fills completely, so allocate it at its final size instead of growing it.
+            self.partial = BytesMut::with_capacity(self.config.part_size);
+        }
         let needed = self.partial.len() + n;
         if needed > self.partial.capacity() {
             let target = needed
@@ -444,23 +448,14 @@ impl StreamCore {
                 .map(|_| ())
                 .map_err(StreamError::from),
             Some(mut writer) => {
-                if !rest.is_empty() {
-                    let start = Instant::now();
-                    let waited = writer
-                        .wait_for_capacity(self.config.max_inflight_parts)
-                        .await;
-                    self.capacity_wait_ns += start.elapsed().as_nanos() as u64;
-                    if let Err(err) = waited {
-                        self.writer = Some(writer);
-                        return Err(self.fail(err.into()).await);
-                    }
-                    writer.put(rest);
-                }
+                // The remainder is shorter than a part, so `put` only buffers it.
+                writer.put(rest);
                 if let Err(err) = drain(&mut writer).await {
                     self.writer = Some(writer);
                     return Err(self.fail(err.into()).await);
                 }
-                // With no parts in flight, `finish` only completes, aborting the upload if that fails.
+                // `finish` uploads the buffered remainder as the last part and completes, aborting the upload if
+                // either fails.
                 writer.finish().await.map(|_| ()).map_err(|err| {
                     if self.counters.completion_attempted.load(Ordering::Relaxed) {
                         StreamError::AmbiguousCompletion(err.to_string())
@@ -744,6 +739,21 @@ mod tests {
         ] {
             roundtrip(len, 8, write).await;
         }
+    }
+
+    #[tokio::test]
+    async fn test_parts_after_the_first_are_allocated_at_part_size() {
+        let target = TestTarget::new(Faults::default(), None);
+        let mut core = StreamCore::new(target.clone(), config(8, 2));
+        let data = payload(8 * 4 + 3);
+        for chunk in data.chunks(3) {
+            core.write_all(chunk).await.unwrap();
+            if core.started_multipart && !core.partial.is_empty() {
+                assert_eq!(core.partial.capacity(), 8);
+            }
+        }
+        core.close().await.unwrap();
+        assert_eq!(target.read().await.unwrap(), data);
     }
 
     #[tokio::test]
