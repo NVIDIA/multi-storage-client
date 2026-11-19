@@ -306,8 +306,8 @@ class StreamingWriterOptions:
 
     Pass them to ``open(path, "wb", writer_options=...)`` to upload parts while data is written, instead of
     buffering the whole object until close. Host memory per open file stays below
-    ``(max_inflight_parts + 1) * part size``, where the part size is ``part_size_bytes`` unless
-    ``max_object_size_bytes`` raises it (the writer's ``stats()["part_size"]`` reports the size in use).
+    ``(max_inflight_parts + 1) * part size``. The part size is ``part_size_bytes``, or
+    ``ceil(max_object_size_bytes / 10,000)`` when that is larger (at most 5 GiB).
 
     :param part_size_bytes: Size of each uploaded part, from 5 MiB to 5 GiB.
     :param max_inflight_parts: Parts allowed to upload concurrently before :py:meth:`StreamingObjectWriter.write`
@@ -388,13 +388,6 @@ class StreamingObjectWriter(ABC):
         """
         Cancel in-flight uploads and discard the object without publishing it.
         """
-
-    def stats(self) -> dict[str, Any]:
-        """
-        :return: Implementation-specific transfer counters, such as accepted, submitted and completed bytes and peak
-            retained bytes. Empty by default.
-        """
-        return {}
 
 
 class StorageProvider(ABC):

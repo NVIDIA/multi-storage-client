@@ -65,7 +65,8 @@ def _multipart_uploads(bucket: tempdatastore.TemporaryAWSS3Bucket) -> list:
 
 
 def _stats(f: Any) -> dict[str, Any]:
-    return f._file._writer.stats()
+    # The native writer's counters; the Python streaming interface has no stats().
+    return f._file._writer._native.stats()
 
 
 @pytest.mark.parametrize("size", [0, 1, PART - 1, PART, PART + 1, 3 * PART, 3 * PART + 7])

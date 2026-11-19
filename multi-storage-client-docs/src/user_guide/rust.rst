@@ -155,8 +155,8 @@ By default, a file opened with ``mode="wb"`` on object storage buffers the whole
 ``close()``. Passing :py:class:`multistorageclient.types.StreamingWriterOptions` as ``writer_options`` instead streams the
 write through a bounded multipart upload: each full part uploads while the caller keeps writing, and the Rust client
 blocks the writer once ``max_inflight_parts`` parts are in flight. Memory held per open file stays below
-``(max_inflight_parts + 1)`` times the part size. That is ``part_size_bytes`` unless ``max_object_size_bytes`` raises
-it to keep the object within 10,000 parts; the writer's ``stats()["part_size"]`` reports the size in use.
+``(max_inflight_parts + 1)`` times the part size. The part size is ``part_size_bytes``, or
+``ceil(max_object_size_bytes / 10,000)`` when that is larger (at most 5 GiB), so the object fits in 10,000 parts;
 ``max_object_size_bytes`` is a size hint, not a limit. Objects smaller than one part are written with a single request
 on ``close()``. The profile needs the Rust client (``rust_client``); streaming is chosen per call, not in the profile.
 
@@ -202,10 +202,10 @@ Streaming files differ from buffered files in these ways:
   file again.
 * A writer belongs to the process that opened it. Forked children that use MSC must not inherit Rust I/O that the
   parent already started, as with other Rust client operations.
-* A writer serves one caller at a time. Calling its ``stats()`` or ``tell()`` from another thread while ``write()`` is
-  waiting for upload capacity raises :py:class:`RuntimeError`.
+* A streaming file serves one caller at a time. Calling ``tell()`` from another thread while ``write()`` is waiting
+  for upload capacity raises :py:class:`RuntimeError`.
 * The ``WRITE`` operation metric is recorded around ``close()``, so its latency covers the last part and the upload
-  completion, not the whole transfer. Per-part timings are in the writer's ``stats()``.
+  completion, not the whole transfer.
 
 Streaming writes are supported by the ``s3``, ``s8k`` (without ``infer_content_type``), ``gcs_s3`` and ``ais_s3``
 providers with the Rust client, except S3 directory buckets and keys the Rust client cannot represent. ``open`` raises

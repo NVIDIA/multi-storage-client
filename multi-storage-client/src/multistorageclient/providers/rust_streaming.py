@@ -89,6 +89,3 @@ class RustStreamingWriter(StreamingObjectWriter):
 
     def abort(self) -> None:
         self._call(self._native.abort)
-
-    def stats(self) -> dict[str, Any]:
-        return self._native.stats()

@@ -103,9 +103,6 @@ class _RegisteringWriter(StreamingObjectWriter):
         if self._size is None:
             self._inner.abort()
 
-    def stats(self) -> dict[str, Any]:
-        return self._inner.stats()
-
 
 class SingleStorageClient(AbstractStorageClient):
     """
