@@ -184,7 +184,9 @@ Streaming files differ from buffered files in these ways:
   placeholder temporary-file descriptor, so ``os.fsync(f.fileno())`` (as in PyTorch DCP) succeeds cheaply. Syncing it
   does not wait for parts; ``fsync()`` on the file does.
 * ``write()`` copies the caller's buffer before returning; the buffer must not be modified by another thread while
-  ``write()`` runs.
+  ``write()`` runs. A non-contiguous buffer (such as a strided view) is copied 16 MiB at a time, so it does not
+  break the memory bound. The native ``multistorageclient_rust.StreamingWriter.write`` itself accepts only
+  C-contiguous unsigned-byte buffers.
 * ``flush()`` raises errors from parts that already finished but does not wait, because serializers such as
   ``torch.save`` flush after every record. ``fsync()`` waits for every submitted part. Only ``close()`` publishes
   the object.
@@ -192,11 +194,17 @@ Streaming files differ from buffered files in these ways:
   publishing. An existing object at the same path is left unchanged. A file that is garbage-collected without being
   closed is also aborted, so close streaming files explicitly or use a ``with`` block. Abort first waits up to 60
   seconds for parts already in flight (a part the service already received could otherwise recreate the upload), so
-  an exception, ``discard()`` or garbage collection can block for that long on a slow connection.
+  an exception, ``discard()`` or garbage collection can block for that long on a slow connection. The same cleanup
+  runs when a part fails, so the call that reports the failure, including ``flush()``, can also wait that long.
+* Abort is best effort. A part that reaches the service after the wait, or an abort request that fails, can leave an
+  incomplete multipart upload behind; a failed abort keeps raising on later attempts. Configure a bucket lifecycle
+  rule that aborts incomplete multipart uploads (for example ``AbortIncompleteMultipartUpload`` after a day).
 * Errors are sticky: after a failed upload, every later ``write()``, ``flush()`` and ``close()`` raises. Upload
   failures are raised as :py:class:`RuntimeError` (with the cause chained), not as a retryable error, because the
-  file cannot be resumed. A failure while completing the multipart upload is reported as ambiguous, because the
-  service may have committed the object before the response was lost.
+  file cannot be resumed. ``tell()`` raises too, because a failed stream has no position to resume from. A failure
+  while completing the multipart upload is reported as ambiguous, because the service may have committed the object
+  before the response was lost. An object smaller than one part is written with a single request, so as with any
+  write, an error from that request does not prove the object was not stored.
 * Each request is retried by the Rust client's ``retry`` settings. Unlike buffered writes, MSC cannot re-upload the
   whole object after a retryable failure, because the written bytes are no longer held; the caller must write the
   file again.
@@ -206,6 +214,10 @@ Streaming files differ from buffered files in these ways:
   for upload capacity raises :py:class:`RuntimeError`.
 * The ``WRITE`` operation metric is recorded around ``close()``, so its latency covers the last part and the upload
   completion, not the whole transfer.
+* With a metadata provider that disallows overwrites, the overwrite check runs when the file is opened and again just
+  before ``close()`` publishes it; a path that was registered in the meantime makes ``close()`` abort the upload and
+  raise :py:class:`FileExistsError`. As with buffered writes, two writers that finish at nearly the same time for a
+  path that is not yet committed can still both publish; the object comes whole from one of them.
 
 Streaming writes are supported by the ``s3``, ``s8k`` (without ``infer_content_type``), ``gcs_s3`` and ``ais_s3``
 providers with the Rust client, except S3 directory buckets and keys the Rust client cannot represent. ``open`` raises

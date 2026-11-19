@@ -265,9 +265,10 @@ class _StreamingFile(IOBase):
     def abort(self) -> None:
         if self.closed:
             return
-        self._aborted = True
         self._release_placeholder()
+        # Closed only once the abort succeeds, so a failed abort is not reported as cleaned up.
         self._writer.abort()
+        self._aborted = True
 
     def __del__(self) -> None:
         if self.closed:

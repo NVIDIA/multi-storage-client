@@ -265,6 +265,7 @@ pub(crate) struct StreamCore {
     capacity_wait_ns: u64,
     close_complete_ns: u64,
     counters: Arc<StreamCounters>,
+    abort_error: Option<String>,
 }
 
 impl fmt::Debug for StreamCore {
@@ -293,6 +294,7 @@ impl StreamCore {
             capacity_wait_ns: 0,
             close_complete_ns: 0,
             counters: Arc::new(StreamCounters::new()),
+            abort_error: None,
         }
     }
 
@@ -302,6 +304,19 @@ impl StreamCore {
 
     pub fn accepted(&self) -> u64 {
         self.accepted
+    }
+
+    /// Bytes accepted so far, or the stored failure: a failed stream has no position to resume from.
+    pub fn position(&self) -> Result<u64, StreamError> {
+        match &self.state {
+            State::Failed(msg) => Err(StreamError::Failed(msg.clone())),
+            _ => Ok(self.accepted),
+        }
+    }
+
+    /// Raises the sticky failure or `Closed` unless the stream still accepts writes.
+    pub fn check_open(&self) -> Result<(), StreamError> {
+        self.ensure_open()
     }
 
     fn ensure_open(&self) -> Result<(), StreamError> {
@@ -386,7 +401,8 @@ impl StreamCore {
             .await;
         self.capacity_wait_ns += start.elapsed().as_nanos() as u64;
         waited?;
-        writer.put(self.partial.split().freeze());
+        // `take`, not `split`: the part keeps its allocation and `partial` keeps none.
+        writer.put(std::mem::take(&mut self.partial).freeze());
         Ok(())
     }
 
@@ -442,7 +458,7 @@ impl StreamCore {
             State::Aborted => return Err(StreamError::Closed),
             State::Failed(msg) => return Err(StreamError::Failed(msg.clone())),
         }
-        let rest = self.partial.split().freeze();
+        let rest = std::mem::take(&mut self.partial).freeze();
         let result = match self.writer.take() {
             None => self
                 .target
@@ -485,15 +501,27 @@ impl StreamCore {
     pub async fn abort(&mut self) -> Result<(), StreamError> {
         match &self.state {
             State::Open => {}
-            State::Aborted | State::Failed(_) => return Ok(()),
+            State::Aborted | State::Failed(_) => {
+                return match &self.abort_error {
+                    // The upload handle is gone, so the abort cannot be retried; report it as unresolved.
+                    Some(msg) => Err(StreamError::Failed(format!(
+                        "an earlier abort did not complete, so the multipart upload may remain: {msg}"
+                    ))),
+                    None => Ok(()),
+                };
+            }
             State::Closed => return Err(StreamError::Closed),
         }
         self.state = State::Aborted;
         self.partial = BytesMut::new();
         match self.writer.take() {
-            Some(writer) => drain_and_abort(writer, self.config.abort_drain_timeout)
-                .await
-                .map_err(StreamError::from),
+            Some(writer) => {
+                let result = drain_and_abort(writer, self.config.abort_drain_timeout).await;
+                if let Err(err) = &result {
+                    self.abort_error = Some(err.to_string());
+                }
+                result.map_err(StreamError::from)
+            }
             None => Ok(()),
         }
     }
@@ -505,6 +533,7 @@ impl StreamCore {
         if let Some(writer) = self.writer.take() {
             if let Err(abort_err) = drain_and_abort(writer, self.config.abort_drain_timeout).await {
                 msg = format!("{msg}; aborting the multipart upload also failed: {abort_err}");
+                self.abort_error = Some(abort_err.to_string());
             }
         }
         self.state = State::Failed(msg);
@@ -693,6 +722,17 @@ mod tests {
         }
     }
 
+    /// Waits for a condition that must become true; the timeout is a watchdog, not the evidence.
+    async fn wait_until(what: &str, ready: impl Fn() -> bool) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !ready() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+    }
+
     fn config(part_size: usize, max_inflight_parts: usize) -> StreamConfig {
         StreamConfig {
             part_size,
@@ -817,16 +857,21 @@ mod tests {
             core.close().await.unwrap();
             core
         });
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // The gate is closed, so exactly two parts can be in flight and the producer must stay blocked.
+        wait_until("two parts in flight", || {
+            counters.parts_submitted.load(Ordering::Relaxed) == 2
+                && counters.inflight_parts.load(Ordering::Relaxed) == 2
+        })
+        .await;
         assert!(!producer.is_finished());
-        assert_eq!(counters.parts_submitted.load(Ordering::Relaxed), 2);
-        assert_eq!(counters.inflight_parts.load(Ordering::Relaxed), 2);
         assert_eq!(counters.completed_bytes.load(Ordering::Relaxed), 0);
 
         gate.add_permits(1);
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(counters.parts_submitted.load(Ordering::Relaxed), 3);
-        assert_eq!(counters.completed_bytes.load(Ordering::Relaxed), 8);
+        wait_until("one part completed and a third submitted", || {
+            counters.parts_submitted.load(Ordering::Relaxed) == 3
+                && counters.completed_bytes.load(Ordering::Relaxed) == 8
+        })
+        .await;
 
         gate.add_permits(1_000);
         let core = producer.await.unwrap();
@@ -978,6 +1023,7 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(core.stats().abort_failed);
+        assert!(matches!(core.abort().await, Err(StreamError::Failed(msg)) if msg.contains("earlier abort")));
     }
 
     #[tokio::test]
@@ -1012,7 +1058,8 @@ mod tests {
         assert_eq!(target.aborts.load(Ordering::SeqCst), 1);
         assert!(target.read().await.is_none());
     }
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    // A paused clock only advances when every task is blocked, so the release runs after abort starts draining.
+    #[tokio::test(start_paused = true)]
     async fn test_abort_waits_for_inflight_parts_before_aborting() {
         let gate = Arc::new(Semaphore::new(0));
         let target = TestTarget::new(Faults::default(), Some(gate.clone()));
@@ -1053,8 +1100,18 @@ mod tests {
         );
         let mut core = StreamCore::new(target.clone(), config(8, 4));
         core.write_all(&payload(8)).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(matches!(core.flush().await, Err(StreamError::Store(_))));
+        // flush() never waits, so poll it until the failed part has finished.
+        let first = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match core.flush().await {
+                    Ok(()) => tokio::task::yield_now().await,
+                    Err(err) => return err,
+                }
+            }
+        })
+        .await
+        .expect("the failed part never finished");
+        assert!(matches!(first, StreamError::Store(_)));
         assert!(matches!(core.flush().await, Err(StreamError::Failed(_))));
     }
 }

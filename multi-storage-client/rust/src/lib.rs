@@ -905,9 +905,13 @@ impl RustClient {
             Some(size) => multipart_safe_chunk_size(size, requested)?,
             None => requested,
         };
+        // An inherited max_concurrency can be any parsed value (a negative one wraps), so bound it as well.
         let max_inflight_parts = max_inflight_parts.unwrap_or(self.max_concurrency);
-        if max_inflight_parts == 0 {
-            return Err(StorageError::ConfigError("max_inflight_parts must be at least 1".to_string()).into());
+        if max_inflight_parts == 0 || max_inflight_parts as u64 > S3_MAX_MULTIPART_PARTS {
+            return Err(StorageError::ConfigError(format!(
+                "max_inflight_parts must be between 1 and {S3_MAX_MULTIPART_PARTS}, got {max_inflight_parts}"
+            ))
+            .into());
         }
         let target = StoreTarget {
             store: Arc::clone(&self.store),
@@ -1233,6 +1237,8 @@ impl StreamingWriter {
         let len = data.len_bytes();
         let mut guard = self.lock()?;
         let core = guard.as_mut().ok_or(StreamError::Closed)?;
+        // Raise the sticky failure even for an empty write.
+        core.check_open()?;
         let runtime = pyo3_async_runtimes::tokio::get_runtime();
         let mut offset = 0;
         while offset < len {
@@ -1251,10 +1257,13 @@ impl StreamingWriter {
         Ok(len)
     }
 
-    /// Number of bytes accepted so far.
+    /// Number of bytes accepted so far; raises the stored failure after an upload failed.
     fn tell(&self) -> PyResult<u64> {
         let guard = self.lock()?;
-        Ok(guard.as_ref().map(StreamCore::accepted).unwrap_or(0))
+        match guard.as_ref() {
+            Some(core) => Ok(core.position()?),
+            None => Ok(0),
+        }
     }
 
     /// Raise errors from parts that already finished, without waiting for running parts.

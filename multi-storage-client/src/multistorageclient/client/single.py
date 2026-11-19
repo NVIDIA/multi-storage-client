@@ -70,12 +70,16 @@ class _RegisteringWriter(StreamingObjectWriter):
     """
     Registers the object with the metadata provider after the wrapped writer publishes it.
 
-    A close that fails in registration can be retried; it does not publish again. Abort after publication does nothing.
+    Unlike upload failures, a close that fails in registration can be retried: it registers without publishing
+    again. Abort after publication does nothing.
     """
 
-    def __init__(self, inner: StreamingObjectWriter, register: Callable[[], None]):
+    def __init__(
+        self, inner: StreamingObjectWriter, register: Callable[[], None], check_before_publish: Callable[[], Any]
+    ):
         self._inner = inner
         self._register = register
+        self._check_before_publish = check_before_publish
         self._size: int | None = None
         self._registered = False
 
@@ -93,6 +97,12 @@ class _RegisteringWriter(StreamingObjectWriter):
 
     def close(self) -> int:
         if self._size is None:
+            # Re-check the overwrite policy just before publishing, as buffered writes do at upload time.
+            try:
+                self._check_before_publish()
+            except Exception:
+                self._inner.abort()
+                raise
             self._size = self._inner.close()
         if not self._registered:
             self._register()
@@ -408,7 +418,11 @@ class SingleStorageClient(AbstractStorageClient):
             physical_path = self._resolve_write_path(path)
             # Attributes belong to logical metadata, so physical writes get none and registration stores them.
             writer = provider.open_streaming_writer(physical_path, None, options)
-            return _RegisteringWriter(writer, lambda: self._register_written_file(path, physical_path, attributes))
+            return _RegisteringWriter(
+                writer,
+                register=lambda: self._register_written_file(path, physical_path, attributes),
+                check_before_publish=lambda: self._resolve_write_path(path),
+            )
         return provider.open_streaming_writer(path, attributes, options)
 
     def _register_written_files(

@@ -186,7 +186,7 @@ def test_streaming_failure_is_sticky():
             f.write(_payload(2 * PART))
             f.close()
         assert not isinstance(first.value, RetryableError)
-        for operation in (lambda: f.write(b"x"), f.flush, f.close, f.close):
+        for operation in (lambda: f.write(b"x"), lambda: f.write(b""), f.tell, f.flush, f.close, f.close):
             with pytest.raises(Exception) as later:
                 operation()
             assert later.type in (RuntimeError, first.type)
@@ -299,6 +299,36 @@ def test_streaming_write_registers_with_metadata_provider():
         assert _multipart_uploads(bucket) == []
 
 
+def test_streaming_copies_non_contiguous_buffers_in_chunks():
+    import numpy as np
+
+    # 24 MiB of every other column: more than one 16 MiB conversion chunk.
+    strided = np.resize(np.arange(251, dtype=np.uint8), (6144, 8192))[:, ::2]
+    with _streaming_bucket() as (_, client):
+        with client.open("strided.bin", "wb", writer_options=OPTIONS) as f:
+            assert f.write(memoryview(strided)) == strided.nbytes
+        assert client.read("strided.bin") == strided.tobytes()
+
+
+def test_streaming_rechecks_the_overwrite_policy_before_publishing():
+    with tempdatastore.TemporaryAWSS3Bucket(enable_rust_client=True) as bucket:
+        profile = bucket.profile_config_dict() | {
+            "metadata_provider": {"type": "manifest", "options": {"manifest_path": ".msc_manifests", "writable": True}}
+        }
+        client = StorageClient(StorageClientConfig.from_dict({"profiles": {"m": profile}}, profile="m"))
+        first = client.open("same.bin", "wb", writer_options=OPTIONS)
+        second = client.open("same.bin", "wb", writer_options=OPTIONS)
+        first.write(_payload(PART + 1))
+        second.write(b"loser")
+        first.close()
+        client.commit_metadata()
+        with pytest.raises(FileExistsError):
+            second.close()
+        second.discard()
+        assert client.read("same.bin") == _payload(PART + 1)
+        assert _multipart_uploads(bucket) == []
+
+
 def test_streaming_writer_rejects_pickling_and_other_processes():
     with _streaming_bucket() as (_, client):
         f = client.open("pid.bin", "wb", writer_options=OPTIONS)
@@ -374,9 +404,10 @@ def test_streaming_write_releases_gil_while_waiting():
         thread = threading.Thread(target=spin)
         thread.start()
         try:
+            data = _payload(20 * PART)
             with client.open("gil.bin", "wb", writer_options=replace(OPTIONS, max_inflight_parts=1)) as f:
                 before = ticks
-                f.write(_payload(20 * PART))
+                f.write(data)
                 during = ticks - before
         finally:
             stop.set()

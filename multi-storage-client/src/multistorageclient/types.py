@@ -342,7 +342,8 @@ class StreamingObjectWriter(ABC):
 
     Accepted bytes are owned by the writer once :py:meth:`write` returns. The object is published only by a
     successful :py:meth:`close`; :py:meth:`abort` discards it without touching any existing object at the path.
-    A failure is sticky: every later call except :py:meth:`abort` raises.
+    An upload failure is sticky: every later call except :py:meth:`abort` raises. Abort is best effort: if it
+    fails, later aborts keep raising, and a bucket lifecycle rule must clean up the incomplete upload.
     """
 
     @abstractmethod
@@ -403,7 +404,7 @@ class StorageProvider(ABC):
 
         :param path: The path where the object will be stored.
         :param attributes: The attributes to add to the object.
-        :param options: Part size, in-flight budget and size limit for the upload.
+        :param options: Part size, in-flight budget and object size hint for the upload.
         :return: A writer that publishes the object on close.
         :raises NotImplementedError: If the provider has no streaming writer.
         """

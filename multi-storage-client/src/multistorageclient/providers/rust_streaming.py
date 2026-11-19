@@ -22,6 +22,9 @@ from ..types import StreamingObjectWriter
 
 _T = TypeVar("_T")
 
+# A non-contiguous buffer is copied this much at a time, so the copy does not grow with the buffer.
+_NON_CONTIGUOUS_CHUNK_BYTES = 16 * 1024 * 1024
+
 
 class RustStreamingWriter(StreamingObjectWriter):
     """
@@ -60,27 +63,40 @@ class RustStreamingWriter(StreamingObjectWriter):
             except Exception as translated:
                 # A failed stream stays failed, so retrying this file cannot succeed; don't surface RetryableError.
                 raise RuntimeError(
-                    f"Streaming upload failed and cannot be resumed; write the object again. {translated}"
+                    f"Streaming upload failed; this file cannot be resumed. {translated}"
                 ) from translated
 
     def write(self, data: Any) -> int:
+        """Copy a bytes-like object into the stream, blocking while the in-flight part budget is full."""
         view = data if isinstance(data, memoryview) else memoryview(data)
-        if not view.c_contiguous:
-            view = memoryview(view.tobytes())
-        if view.format != "B" or view.ndim != 1:
-            view = view.cast("B")
-        return self._call(lambda: self._native.write(view))
+        if view.c_contiguous:
+            if view.format != "B" or view.ndim != 1:
+                view = view.cast("B")
+            return self._call(lambda: self._native.write(view))
+        # The native writer needs contiguous bytes; copy a slice of rows at a time.
+        row_count = (view.shape or (0,))[0]
+        row_bytes = max(view.nbytes // row_count, 1) if row_count else 1
+        rows = max(_NON_CONTIGUOUS_CHUNK_BYTES // row_bytes, 1)
+        for start in range(0, row_count, rows):
+            chunk = memoryview(view[start : start + rows].tobytes())
+            self._call(lambda chunk=chunk: self._native.write(chunk))
+        return view.nbytes
 
     def tell(self) -> int:
+        """Return the number of bytes accepted so far; raises after the upload failed."""
         return self._native.tell()
 
     def flush(self) -> None:
+        """Raise errors from parts that already finished, without waiting for running parts."""
         self._call(self._native.flush)
 
     def sync(self) -> None:
+        """Wait for every submitted part. Does not publish the object."""
         self._call(self._native.sync)
 
     def close(self) -> int:
+        """Upload the remainder and publish the object; the provider's ``WRITE`` metric covers this call."""
+
         def _close() -> int:
             self._call(self._native.close)
             return self._native.tell()
@@ -88,4 +104,5 @@ class RustStreamingWriter(StreamingObjectWriter):
         return self._emit_write_metrics(_close)
 
     def abort(self) -> None:
+        """Abort the multipart upload without publishing; raises if an earlier abort did not complete."""
         self._call(self._native.abort)

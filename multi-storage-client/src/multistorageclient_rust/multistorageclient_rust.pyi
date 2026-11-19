@@ -39,10 +39,15 @@ class StreamingWriter:
     """
 
     def write(self, data: bytes | memoryview | bytearray) -> int:
-        """Copy ``data`` into the stream, blocking while the in-flight part budget is full."""
+        """
+        Copy ``data`` into the stream, blocking while the in-flight part budget is full.
+
+        ``data`` must be a C-contiguous buffer of unsigned bytes (format ``B``); cast or copy other views first. It
+        must not be modified by another thread until this call returns.
+        """
 
     def tell(self) -> int:
-        """Return the number of bytes accepted so far."""
+        """Return the number of bytes accepted so far; raises after the upload failed."""
 
     def flush(self) -> None:
         """Raise errors from parts that already finished, without waiting for running parts."""
@@ -57,7 +62,11 @@ class StreamingWriter:
         """Cancel in-flight parts and abort the multipart upload without publishing or deleting any object."""
 
     def stats(self) -> dict[str, Any]:
-        """Return stream counters (accepted/submitted/completed bytes, peak retained bytes, timings)."""
+        """
+        Return stream counters (accepted/submitted/completed bytes, peak retained bytes, timings).
+
+        Each counter is read separately while parts may still finish, so they are not one point-in-time snapshot.
+        """
 
 class RustClient:
     """

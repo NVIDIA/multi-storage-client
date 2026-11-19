@@ -220,6 +220,8 @@ class CompositeStorageClient(AbstractStorageClient):
         :raises ValueError: If ``writer_options`` is set with a mode other than ``"wb"``.
         :raises NotImplementedError: If the operation is not supported (e.g., write on CompositeStorageClient).
         """
+        if writer_options is not None and mode != "wb":
+            raise ValueError(f'writer_options requires mode "wb", got {mode!r}.')
         if mode not in ["r", "rb"]:
             raise NotImplementedError(
                 f"CompositeStorageClient only supports read mode (got '{mode}'). "
