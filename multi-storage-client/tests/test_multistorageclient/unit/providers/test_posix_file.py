@@ -20,6 +20,8 @@ import tempfile
 from io import StringIO
 from unittest.mock import patch
 
+import pytest
+
 from multistorageclient.providers.posix_file import PosixFileStorageProvider
 
 
@@ -291,3 +293,22 @@ def test_posix_list_objects_matches_s3_lexicographic_order_when_directory_prefix
         "POSIX list_objects_recursive must match S3 list_objects for the same tree layout (relative keys); "
         f"posix={recursive_keys!r}, expected={expected_relative_order!r}"
     )
+
+
+@pytest.mark.parametrize(
+    ("start_after", "end_at", "expected"),
+    [
+        ("dir/001", None, ["dir/002", "z"]),
+        ("dir.txt", None, ["dir/001", "dir/002", "z"]),
+        ("dir/001", "dir/002", ["dir/002"]),
+    ],
+)
+def test_list_objects_resumes_within_directory(tmp_path, start_after, end_at, expected):
+    (tmp_path / "dir").mkdir()
+    for key in ("dir.txt", "dir/001", "dir/002", "z"):
+        (tmp_path / key).touch()
+
+    provider = PosixFileStorageProvider(base_path=str(tmp_path))
+    keys = [obj.key for obj in provider.list_objects(path="", start_after=start_after, end_at=end_at)]
+
+    assert keys == expected
