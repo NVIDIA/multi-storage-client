@@ -238,17 +238,31 @@ Retry the same destination against the same backend and bucket to reuse complete
 chunks when the source object is unchanged. For ``/data/model.bin``, progress is
 saved in ``/data/.model.bin.msc-dl/``. No additional configuration is needed.
 
-After downloading all chunks, MSC merges them, atomically replaces the destination,
-and removes the state directory. An existing destination remains intact until
-publication. Each merge runs in one blocking task with an 8 MiB buffered reader
-to reduce filesystem I/O overhead. Merging requires approximately twice the object
-size in staging space, plus any existing destination. To discard progress, stop the
-download and remove its state directory.
+MSC writes chunks at their corresponding offsets in one staging file and records
+completed ranges in the state metadata. Response bodies are streamed in small
+write batches to limit memory use across concurrent requests. An incomplete
+response is not checkpointed, and a retry rewrites that range. Once all ranges
+are complete, MSC syncs that file, atomically replaces the destination, and
+removes the state directory.
+An existing destination remains intact until publication. Staging requires
+approximately the object size, plus any existing destination and small metadata
+files. No final merge or full-file reread is required. To discard progress, stop
+the download and remove its state directory.
 
 Resume requires a usable ETag or object version; changed objects start fresh.
 Missing state metadata restarts the download in the same directory; invalid or
 unreadable metadata reports an error and preserves its contents. Disposable cache
 and append staging is cleaned up even on failure and is not reused by later calls.
+Progress saved by the older chunk-file format is restarted once after upgrading.
+Resume covers process interruption; power-loss recovery and detection of external
+edits to staging data are not guaranteed.
+
+If final sync fails, MSC invalidates saved completion progress and downloads the
+ranges again on retry. A publication-only failure after a successful sync keeps
+the completed progress. State directories on Unix must be owned by the current
+user and private; unsafe existing directories are rejected without modification.
+Before downgrading, finish active downloads or stop them and remove their state
+directories, because older releases cannot read the new state format.
 
 Automatic sync excludes reserved staging paths; explicit ``source_files`` can
 select them for copying. See :doc:`/user_guide/cli` for the sync exclusion rules.

@@ -16,20 +16,98 @@
 use crate::StorageError;
 use object_store::{path::Path, GetOptions, ObjectMeta, ObjectStore, ObjectStoreExt};
 use serde::{Deserialize, Serialize};
-use std::fs::{OpenOptions, TryLockError};
+use std::collections::BTreeMap;
+use std::fs::{File, OpenOptions, TryLockError};
+use std::io::Write;
+use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path as LocalPath, PathBuf};
 use std::sync::Arc;
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
 use tokio::task::JoinSet;
 
-const STATE_FORMAT: &str = "msc-download-v1";
+// Bound response buffering independently of multipart size and parallel file count.
+const WRITE_BATCH_SIZE_IN_BYTES: usize = 2 * 1024 * 1024;
+
+const STATE_FORMAT: &str = "msc-download-v2";
+const LEGACY_STATE_FORMAT: &str = "msc-download-v1";
 const STATE_SUFFIX: &str = ".msc-dl";
 const TEMP_FILE_RANDOM_LENGTH: usize = 6;
-const MERGE_BUFFER_SIZE: usize = 8 * 1024 * 1024;
+const DATA_FILE: &str = "download.part";
+
+/// Completed chunk indices as disjoint ascending half-open ranges, so each
+/// checkpoint write stays proportional to the number of gaps, not chunks.
+#[derive(Clone, Debug, Default)]
+struct Completed(BTreeMap<u64, u64>);
+
+impl Completed {
+    fn insert(&mut self, index: u64) {
+        let mut start = index;
+        let mut end = index + 1;
+        if let Some((&before, &before_end)) = self.0.range(..=index).next_back() {
+            if before_end > index {
+                return;
+            }
+            if before_end == index {
+                start = before;
+                self.0.remove(&before);
+            }
+        }
+        if let Some((&after, &after_end)) = self.0.range(end..).next() {
+            if after == end {
+                end = after_end;
+                self.0.remove(&after);
+            }
+        }
+        self.0.insert(start, end);
+    }
+
+    fn contains(&self, index: u64) -> bool {
+        self.0
+            .range(..=index)
+            .next_back()
+            .is_some_and(|(_, &end)| end > index)
+    }
+
+    fn within(&self, count: u64) -> bool {
+        self.0
+            .iter()
+            .next_back()
+            .is_none_or(|(_, &end)| end <= count)
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl Serialize for Completed {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.iter().map(|(&start, &end)| [start, end]))
+    }
+}
+
+impl<'de> Deserialize<'de> for Completed {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut ranges = BTreeMap::new();
+        let mut previous = None;
+        for [start, end] in Vec::<[u64; 2]>::deserialize(deserializer)? {
+            if start >= end || previous.is_some_and(|previous| start <= previous) {
+                return Err(serde::de::Error::custom("invalid completed ranges"));
+            }
+            previous = Some(end);
+            ranges.insert(start, end);
+        }
+        Ok(Completed(ranges))
+    }
+}
 
 /// Resume metadata for retries against the same storage backend and bucket.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct DownloadState {
     format: String,
     key: String,
@@ -37,6 +115,8 @@ struct DownloadState {
     etag: Option<String>,
     version: Option<String>,
     chunk_size: u64,
+    #[serde(default)]
+    completed: Completed,
 }
 
 impl DownloadState {
@@ -48,6 +128,47 @@ impl DownloadState {
     }
 }
 
+enum Staging {
+    Persistent {
+        dir: PathBuf,
+        _lock: same_file::Handle,
+    },
+    Transient(tempfile::TempDir),
+}
+
+impl Staging {
+    fn dir(&self) -> &LocalPath {
+        match self {
+            Staging::Persistent { dir, .. } => dir,
+            Staging::Transient(temporary) => temporary.path(),
+        }
+    }
+
+    fn persistent(&self) -> bool {
+        matches!(self, Staging::Persistent { .. })
+    }
+}
+
+struct DownloadFiles {
+    staging: Staging,
+    // Keep range writes and writeback error reporting on the same open file description.
+    data: File,
+}
+
+impl DownloadFiles {
+    fn dir(&self) -> &LocalPath {
+        self.staging.dir()
+    }
+
+    fn persistent(&self) -> bool {
+        self.staging.persistent()
+    }
+
+    fn write_range(&self, data: &[u8], offset: u64) -> std::io::Result<()> {
+        self.data.write_all_at(data, offset)
+    }
+}
+
 fn invalid_state(message: impl Into<String>) -> StorageError {
     std::io::Error::new(std::io::ErrorKind::InvalidData, message.into()).into()
 }
@@ -55,32 +176,45 @@ fn invalid_state(message: impl Into<String>) -> StorageError {
 fn create_private_temp(
     dir: &LocalPath,
     prefix: &str,
-) -> std::io::Result<(fs::File, tempfile::TempPath)> {
+) -> std::io::Result<(File, tempfile::TempPath)> {
     let (file, path) = tempfile::Builder::new()
         .prefix(prefix)
         .rand_bytes(TEMP_FILE_RANDOM_LENGTH)
         .suffix(".tmp")
         .tempfile_in(dir)?
         .into_parts();
-    Ok((fs::File::from_std(file), path))
+    Ok((file, path))
 }
 
-async fn write_private_atomic(dir: &LocalPath, name: &str, data: &[u8]) -> std::io::Result<()> {
+fn write_private_atomic(dir: &LocalPath, name: &str, data: &[u8]) -> std::io::Result<()> {
     let (mut file, path) = create_private_temp(dir, &format!("{name}."))?;
-    file.write_all(data).await?;
-    file.flush().await?;
+    file.write_all(data)?;
+    file.flush()?;
     drop(file);
     path.persist(dir.join(name)).map_err(|error| error.error)?;
     Ok(())
 }
 
-async fn clear_download_files(dir: &LocalPath, completed_chunks: bool) -> std::io::Result<()> {
+fn persist_state(dir: &LocalPath, state: &DownloadState) -> Result<(), StorageError> {
+    let encoded = serde_json::to_vec(state).map_err(|error| invalid_state(error.to_string()))?;
+    write_private_atomic(dir, "state.json", &encoded)?;
+    Ok(())
+}
+
+#[derive(PartialEq)]
+enum Clear {
+    TempsOnly,
+    All,
+}
+
+async fn clear_download_files(dir: &LocalPath, scope: Clear) -> std::io::Result<()> {
     let mut entries = fs::read_dir(dir).await?;
     while let Some(entry) = entries.next_entry().await? {
         let filename = entry.file_name();
         let Some(name) = filename.to_str() else {
             continue;
         };
+        // Chunk and "merged" names are msc-download-v1 artifacts; remove with LEGACY_STATE_FORMAT.
         let chunk = |name: &str| {
             name.strip_suffix(".chunk").is_some_and(|index| {
                 index.len() >= 6 && index.bytes().all(|byte| byte.is_ascii_digit())
@@ -90,11 +224,13 @@ async fn clear_download_files(dir: &LocalPath, completed_chunks: bool) -> std::i
             .strip_suffix(".tmp")
             .and_then(|name| name.rsplit_once('.'))
             .is_some_and(|(prefix, id)| {
-                (prefix == "merged" || prefix == "state.json" || chunk(prefix))
+                (prefix == "merged" || prefix == "state.json" || prefix == "data" || chunk(prefix))
                     && id.len() == TEMP_FILE_RANDOM_LENGTH
                     && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
             });
-        if (temporary || completed_chunks && chunk(name)) && entry.file_type().await?.is_file() {
+        if (temporary || scope == Clear::All && (chunk(name) || name == DATA_FILE))
+            && entry.file_type().await?.is_file()
+        {
             fs::remove_file(entry.path()).await?;
         }
     }
@@ -104,7 +240,7 @@ async fn clear_download_files(dir: &LocalPath, completed_chunks: bool) -> std::i
 async fn remove_state(dir: &LocalPath) -> std::io::Result<()> {
     let marker = dir.join("state.json");
     let encoded = fs::read(&marker).await?;
-    clear_download_files(dir, true).await?;
+    clear_download_files(dir, Clear::All).await?;
     fs::remove_file(&marker).await?;
     let cleanup: std::io::Result<()> = async {
         fs::remove_file(dir.join("lock")).await?;
@@ -112,7 +248,7 @@ async fn remove_state(dir: &LocalPath) -> std::io::Result<()> {
     }
     .await;
     if let Err(error) = cleanup {
-        let _ = write_private_atomic(dir, "state.json", &encoded).await;
+        let _ = write_private_atomic(dir, "state.json", &encoded);
         return Err(error);
     }
     Ok(())
@@ -132,6 +268,11 @@ async fn read_state(dir: &LocalPath) -> Result<Option<DownloadState>, StorageErr
             dir.display()
         )));
     }
+    if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
+        return Err(invalid_state(
+            "Download state directory must be owned by the current user and private",
+        ));
+    }
     match fs::symlink_metadata(&state_path).await {
         Ok(metadata) if metadata.is_file() => {}
         Ok(_) => return Err(invalid_state("Download state marker is not a regular file")),
@@ -145,13 +286,64 @@ async fn read_state(dir: &LocalPath) -> Result<Option<DownloadState>, StorageErr
     };
     let saved: DownloadState = serde_json::from_slice(&encoded)
         .map_err(|e| invalid_state(format!("Invalid download state at {}: {e}", dir.display())))?;
-    if saved.format != STATE_FORMAT || saved.chunk_size == 0 {
+    if !matches!(saved.format.as_str(), STATE_FORMAT | LEGACY_STATE_FORMAT)
+        || saved.chunk_size == 0
+        || !saved
+            .completed
+            .within(saved.size.div_ceil(saved.chunk_size))
+    {
         return Err(invalid_state(format!(
             "Unrecognized download state at {}",
             dir.display()
         )));
     }
     Ok(Some(saved))
+}
+
+async fn prepare_data(staging: &Staging, state: &mut DownloadState) -> Result<File, StorageError> {
+    let dir = staging.dir();
+    let path = dir.join(DATA_FILE);
+    match fs::symlink_metadata(&path).await {
+        Ok(metadata) if !metadata.is_file() => {
+            return Err(invalid_state("Download staging data is not a regular file"));
+        }
+        Ok(metadata) if metadata.len() == state.size => {
+            let mut options = OpenOptions::new();
+            options.read(true).write(true);
+            options.custom_flags(libc::O_NOFOLLOW);
+            let file = options.open(&path)?;
+            let opened = file.metadata()?;
+            if !opened.is_file() || opened.len() != state.size {
+                return Err(invalid_state(
+                    "Download staging data changed during preparation",
+                ));
+            }
+            return Ok(file);
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    // Invalidate progress before replacing missing or truncated data, including on cancellation.
+    state.completed.clear();
+    if staging.persistent() {
+        persist_state(dir, state)?;
+    }
+    let (file, temporary) = create_private_temp(dir, "data.")?;
+    file.set_len(state.size)?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    Ok(file)
+}
+
+fn persistent_staging_dir(target: &LocalPath, parent: &LocalPath) -> Result<PathBuf, StorageError> {
+    let mut filename = std::ffi::OsString::from(".");
+    filename.push(
+        target
+            .file_name()
+            .ok_or_else(|| invalid_state("Download destination requires a file name"))?,
+    );
+    filename.push(STATE_SUFFIX);
+    Ok(parent.join(filename))
 }
 
 fn try_lock_state(dir: &LocalPath) -> Result<Option<same_file::Handle>, StorageError> {
@@ -166,11 +358,7 @@ fn try_lock_state(dir: &LocalPath) -> Result<Option<same_file::Handle>, StorageE
     }
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
+    options.mode(0o600);
     let file = match options.open(&path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -196,7 +384,6 @@ async fn prepare_state(
     state: DownloadState,
 ) -> Result<(DownloadState, Option<same_file::Handle>), StorageError> {
     let mut builder = fs::DirBuilder::new();
-    #[cfg(unix)]
     builder.mode(0o700);
     let created = match builder.create(dir).await {
         Ok(()) => true,
@@ -211,15 +398,14 @@ async fn prepare_state(
             return Ok((state, None));
         };
         if let Some(saved) = read_state(dir).await? {
-            if saved.same_object(&state) {
-                clear_download_files(dir, false).await?;
+            if saved.format == STATE_FORMAT && saved.same_object(&state) {
+                clear_download_files(dir, Clear::TempsOnly).await?;
                 return Ok((saved, Some(lock)));
             }
         }
         // Discard untracked chunks before publishing a marker that makes them reusable.
-        clear_download_files(dir, true).await?;
-        let encoded = serde_json::to_vec(&state).map_err(|e| invalid_state(e.to_string()))?;
-        write_private_atomic(dir, "state.json", &encoded).await?;
+        clear_download_files(dir, Clear::All).await?;
+        persist_state(dir, &state)?;
         Ok((state, Some(lock)))
     }
     .await;
@@ -236,11 +422,10 @@ async fn prepare_state(
 async fn download_chunk(
     store: Arc<dyn ObjectStore>,
     remote_path: Path,
-    dir: PathBuf,
+    files: Arc<DownloadFiles>,
     index: u64,
     state: Arc<DownloadState>,
-    _state_lock: Option<Arc<same_file::Handle>>,
-) -> Result<(), StorageError> {
+) -> Result<u64, StorageError> {
     let start = index * state.chunk_size;
     let end = start.saturating_add(state.chunk_size).min(state.size);
     let options = GetOptions::default()
@@ -266,50 +451,140 @@ async fn download_chunk(
             "Remote object changed or returned an unexpected range",
         ));
     }
-    let data = result.bytes().await.map_err(StorageError::from)?;
-    if data.len() as u64 != end - start {
+    let mut stream = result.into_stream();
+    let mut data = Vec::new();
+    let mut received_in_bytes = 0u64;
+    let mut buffered_in_bytes = 0usize;
+    let mut write_offset_in_bytes = start;
+    while let Some(segment) =
+        std::future::poll_fn(|context| stream.as_mut().poll_next(context)).await
+    {
+        let mut segment = segment.map_err(StorageError::from)?;
+        received_in_bytes = received_in_bytes.saturating_add(segment.len() as u64);
+        if received_in_bytes > end - start {
+            return Err(invalid_state("Downloaded chunk has an unexpected length"));
+        }
+        while !segment.is_empty() {
+            let take_in_bytes = (WRITE_BATCH_SIZE_IN_BYTES - buffered_in_bytes).min(segment.len());
+            data.push(segment.split_to(take_in_bytes));
+            buffered_in_bytes += take_in_bytes;
+            if buffered_in_bytes == WRITE_BATCH_SIZE_IN_BYTES {
+                write_segment_batch(
+                    Arc::clone(&files),
+                    std::mem::take(&mut data),
+                    write_offset_in_bytes,
+                )
+                .await?;
+                write_offset_in_bytes += buffered_in_bytes as u64;
+                buffered_in_bytes = 0;
+            }
+        }
+    }
+    if received_in_bytes != end - start {
         return Err(invalid_state("Downloaded chunk has an unexpected length"));
     }
-    write_private_atomic(&dir, &format!("{index:06}.chunk"), &data).await?;
-    Ok(())
+    if !data.is_empty() {
+        write_segment_batch(files, data, write_offset_in_bytes).await?;
+    }
+    Ok(index)
 }
 
-async fn finish_chunk(tasks: &mut JoinSet<Result<(), StorageError>>) -> Result<(), StorageError> {
+async fn write_segment_batch(
+    files: Arc<DownloadFiles>,
+    data: Vec<bytes::Bytes>,
+    offset: u64,
+) -> Result<(), StorageError> {
+    tokio::task::spawn_blocking(move || {
+        // Cancellation cannot stop a blocking write; retain its lock and transient directory.
+        files.write_range(&data.concat(), offset)?;
+        drop(files);
+        Ok(())
+    })
+    .await
+    .map_err(|error| invalid_state(format!("Download write task failed: {error}")))?
+}
+
+async fn checkpoint_next_chunk(
+    tasks: &mut JoinSet<Result<u64, StorageError>>,
+    files: &DownloadFiles,
+    state: &mut DownloadState,
+) -> Result<(), StorageError> {
     match tasks.join_next().await {
-        Some(Ok(result)) => result,
+        Some(Ok(result)) => {
+            state.completed.insert(result?);
+            if files.persistent() {
+                persist_state(files.dir(), state)?;
+            }
+            Ok(())
+        }
         Some(Err(e)) => Err(invalid_state(format!("Download task failed: {e}"))),
         None => Ok(()),
     }
 }
 
-async fn merge_chunks(
-    dir: PathBuf,
+fn verify_staging_identity(files: &DownloadFiles) -> Result<PathBuf, StorageError> {
+    let path = files.dir().join(DATA_FILE);
+    if !std::fs::symlink_metadata(&path)?.is_file()
+        || same_file::Handle::from_file(files.data.try_clone()?)?
+            != same_file::Handle::from_path(&path)?
+    {
+        return Err(invalid_state("Download staging data was replaced"));
+    }
+    Ok(path)
+}
+
+fn sync_and_checkpoint(
+    files: &DownloadFiles,
+    state: &DownloadState,
+    sync: impl FnOnce(&File) -> std::io::Result<()>,
+) -> Result<(), StorageError> {
+    if files.persistent() {
+        // Failed fsync may discard dirty pages; invalidate progress before the non-cancellable sync.
+        let mut untrusted = state.clone();
+        untrusted.completed.clear();
+        persist_state(files.dir(), &untrusted)?;
+    }
+    verify_staging_identity(files)?;
+    sync(&files.data)?;
+    if files.persistent() {
+        persist_state(files.dir(), state)?;
+    }
+    Ok(())
+}
+
+async fn sync_data(
+    files: Arc<DownloadFiles>,
     state: Arc<DownloadState>,
-    state_lock: Option<Arc<same_file::Handle>>,
-    temporary_dir: Option<tempfile::TempDir>,
-) -> Result<(tempfile::TempPath, Option<tempfile::TempDir>), StorageError> {
+) -> Result<(), StorageError> {
+    tokio::task::spawn_blocking(move || sync_and_checkpoint(&files, &state, File::sync_all))
+        .await
+        .map_err(|error| invalid_state(format!("Download sync task failed: {error}")))?
+}
+
+async fn publish_data(
+    files: Arc<DownloadFiles>,
+    state: Arc<DownloadState>,
+    target: PathBuf,
+) -> Result<(), StorageError> {
     tokio::task::spawn_blocking(move || {
-        // A cancelled waiter cannot stop this task, so it must retain the staging resources.
-        let _state_lock = state_lock;
-        let mut merged = tempfile::Builder::new()
-            .prefix("merged.")
-            .rand_bytes(TEMP_FILE_RANDOM_LENGTH)
-            .suffix(".tmp")
-            .tempfile_in(&dir)?;
-        let mut merged_size = 0;
-        for index in 0..state.size.div_ceil(state.chunk_size) {
-            let chunk = std::fs::File::open(dir.join(format!("{index:06}.chunk")))?;
-            let mut chunk = std::io::BufReader::with_capacity(MERGE_BUFFER_SIZE, chunk);
-            merged_size += std::io::copy(&mut chunk, merged.as_file_mut())?;
+        // Cancellation cannot stop a blocking rename; retain its lock and transient directory.
+        match verify_staging_identity(&files) {
+            Ok(path) => std::fs::rename(path, target)?,
+            Err(error) => {
+                // A same-length replacement must not be reused on retry.
+                if files.persistent() {
+                    let mut untrusted = (*state).clone();
+                    untrusted.completed.clear();
+                    persist_state(files.dir(), &untrusted)?;
+                }
+                return Err(error);
+            }
         }
-        if merged_size != state.size {
-            return Err(invalid_state("Merged download has an unexpected length"));
-        }
-        merged.as_file().sync_all()?;
-        Ok((merged.into_temp_path(), temporary_dir))
+        drop(files);
+        Ok(())
     })
     .await
-    .map_err(|error| invalid_state(format!("Download merge task failed: {error}")))?
+    .map_err(|error| invalid_state(format!("Download publish task failed: {error}")))?
 }
 
 pub(crate) async fn download(
@@ -344,59 +619,47 @@ pub(crate) async fn download(
         etag,
         version,
         chunk_size: chunk_size as u64,
+        completed: Completed::default(),
     };
-    let (persistent_dir, state_lock) = if state.etag.is_some() || state.version.is_some() {
-        let mut filename = std::ffi::OsString::from(".");
-        filename.push(
-            target
-                .file_name()
-                .ok_or_else(|| invalid_state("Download destination requires a file name"))?,
-        );
-        filename.push(STATE_SUFFIX);
-        let dir = parent.join(filename);
+    let mut staging = None;
+    if state.etag.is_some() || state.version.is_some() {
+        let dir = persistent_staging_dir(target, parent)?;
         let (prepared, lock) = prepare_state(&dir, state).await?;
         state = prepared;
-        (lock.as_ref().map(|_| dir), lock.map(Arc::new))
-    } else {
-        (None, None)
-    };
-    let (dir, temporary_dir) = match persistent_dir {
-        Some(dir) => (dir, None),
+        staging = lock.map(|lock| Staging::Persistent { dir, _lock: lock });
+    }
+    let staging = match staging {
+        Some(staging) => staging,
         None => {
-            let temp = tempfile::Builder::new()
-                .prefix(".msc-dl-")
-                .suffix(STATE_SUFFIX)
-                .tempdir_in(parent)?;
-            (temp.path().to_path_buf(), Some(temp))
+            let mut builder = tempfile::Builder::new();
+            builder.prefix(".msc-dl-").suffix(STATE_SUFFIX);
+            builder.permissions(std::fs::Permissions::from_mode(0o700));
+            Staging::Transient(builder.tempdir_in(parent)?)
         }
     };
-    let state = Arc::new(state);
+    let data = prepare_data(&staging, &mut state).await?;
+    let files = Arc::new(DownloadFiles { staging, data });
+    let revision = Arc::new(state.clone());
     let count = state.size.div_ceil(state.chunk_size);
     let mut tasks = JoinSet::new();
     let downloads: Result<(), StorageError> = async {
         for index in 0..count {
-            let expected = state.chunk_size.min(state.size - index * state.chunk_size);
-            let path = dir.join(format!("{index:06}.chunk"));
-            match fs::symlink_metadata(&path).await {
-                Ok(metadata) if metadata.is_file() && metadata.len() == expected => continue,
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
+            if state.completed.contains(index) {
+                continue;
             }
             if tasks.len() >= concurrency {
-                finish_chunk(&mut tasks).await?;
+                checkpoint_next_chunk(&mut tasks, &files, &mut state).await?;
             }
             tasks.spawn(download_chunk(
                 Arc::clone(&store),
                 remote_path.clone(),
-                dir.clone(),
+                Arc::clone(&files),
                 index,
-                Arc::clone(&state),
-                state_lock.clone(),
+                Arc::clone(&revision),
             ));
         }
         while !tasks.is_empty() {
-            finish_chunk(&mut tasks).await?;
+            checkpoint_next_chunk(&mut tasks, &files, &mut state).await?;
         }
         Ok(())
     }
@@ -405,30 +668,144 @@ pub(crate) async fn download(
         tasks.shutdown().await;
         return Err(error);
     }
-    let (merged_path, temporary_dir) =
-        merge_chunks(dir.clone(), Arc::clone(&state), state_lock.clone(), temporary_dir).await?;
-    merged_path.persist(target).map_err(|error| error.error)?;
-    let cleanup = if temporary_dir.is_some() {
-        fs::remove_dir_all(&dir).await
+    let size = state.size;
+    let state = Arc::new(state);
+    sync_data(Arc::clone(&files), Arc::clone(&state)).await?;
+    publish_data(Arc::clone(&files), state, target.to_path_buf()).await?;
+    let cleanup = if files.persistent() {
+        remove_state(files.dir()).await
     } else {
-        remove_state(&dir).await
+        fs::remove_dir_all(files.dir()).await
     };
     if let Err(error) = cleanup {
         eprintln!(
             "Downloaded file to {}, but could not remove download state at {}: {error}",
             target.display(),
-            dir.display()
+            files.dir().display()
         );
     }
-    Ok(state.size)
+    Ok(size)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn failed_writeback_invalidates_checkpoints_before_retry() {
+        let parent = tempfile::tempdir().unwrap();
+        let target = parent.path().join("download");
+        std::fs::write(&target, b"existing destination").unwrap();
+        let dir = parent.path().join(".download.msc-dl");
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let remote_path = Path::from("key");
+        let body = b"abcdefghijk";
+        store
+            .put(&remote_path, bytes::Bytes::from_static(body).into())
+            .await
+            .unwrap();
+        let meta = store.head(&remote_path).await.unwrap();
+        let state = DownloadState {
+            format: STATE_FORMAT.to_string(),
+            key: "key".to_string(),
+            size: body.len() as u64,
+            etag: meta.e_tag,
+            version: meta.version,
+            chunk_size: 4,
+            completed: Completed::default(),
+        };
+        let (mut state, lock) = prepare_state(&dir, state).await.unwrap();
+        let staging = Staging::Persistent {
+            dir: dir.clone(),
+            _lock: lock.unwrap(),
+        };
+        let data = prepare_data(&staging, &mut state).await.unwrap();
+        let files = Arc::new(DownloadFiles { staging, data });
+        files.write_range(body, 0).unwrap();
+        for index in [0, 1, 2] {
+            state.completed.insert(index);
+        }
+        persist_state(&dir, &state).unwrap();
+
+        let result = sync_and_checkpoint(&files, &state, |file| {
+            file.set_len(0)?;
+            file.set_len(body.len() as u64)?;
+            Err(std::io::Error::from_raw_os_error(libc::EIO))
+        });
+        assert!(result.is_err());
+        assert!(read_state(&dir)
+            .await
+            .unwrap()
+            .unwrap()
+            .completed
+            .is_empty());
+        assert_eq!(files.data.metadata().unwrap().len(), body.len() as u64);
+        assert_ne!(std::fs::read(dir.join(DATA_FILE)).unwrap(), body);
+        assert_eq!(std::fs::read(&target).unwrap(), b"existing destination");
+        drop(files);
+
+        let size = download(
+            store,
+            remote_path,
+            target.to_string_lossy().into_owned(),
+            4,
+            2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(size, body.len() as u64);
+        assert_eq!(std::fs::read(&target).unwrap(), body);
+        assert!(!dir.exists());
+    }
+
+    #[tokio::test]
+    async fn publication_rejects_replaced_staging_data() {
+        let parent = tempfile::tempdir().unwrap();
+        let target = parent.path().join("download");
+        let dir = parent.path().join(".download.msc-dl");
+        let body = b"abcdefghijk";
+        let state = DownloadState {
+            format: STATE_FORMAT.to_string(),
+            key: "key".to_string(),
+            size: body.len() as u64,
+            etag: Some("revision-1".to_string()),
+            version: None,
+            chunk_size: 4,
+            completed: Completed::default(),
+        };
+        let (mut state, lock) = prepare_state(&dir, state).await.unwrap();
+        let staging = Staging::Persistent {
+            dir: dir.clone(),
+            _lock: lock.unwrap(),
+        };
+        let data = prepare_data(&staging, &mut state).await.unwrap();
+        let files = Arc::new(DownloadFiles { staging, data });
+        files.write_range(body, 0).unwrap();
+        for index in [0, 1, 2] {
+            state.completed.insert(index);
+        }
+        persist_state(&dir, &state).unwrap();
+
+        let replacement = parent.path().join("replacement");
+        std::fs::write(&replacement, b"IMPOSTOR!!!").unwrap();
+        std::fs::rename(&replacement, dir.join(DATA_FILE)).unwrap();
+        assert!(
+            publish_data(Arc::clone(&files), Arc::new(state), target.clone())
+                .await
+                .is_err()
+        );
+        assert!(!target.exists());
+        assert!(read_state(&dir)
+            .await
+            .unwrap()
+            .unwrap()
+            .completed
+            .is_empty());
+        assert_eq!(std::fs::read(dir.join(DATA_FILE)).unwrap(), b"IMPOSTOR!!!");
+    }
+
     #[test]
-    fn cancelled_merge_keeps_staging_resources_until_task_finishes() {
+    fn cancelled_file_operations_keep_staging_resources_until_task_finishes() {
         use std::future::Future;
         use std::task::{Context, Waker};
 
@@ -438,39 +815,77 @@ mod tests {
             .build()
             .unwrap();
         runtime.block_on(async {
-            for disposable in [false, true] {
+            let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+            let remote_path = Path::from("key");
+            store
+                .put(&remote_path, bytes::Bytes::from_static(b"data").into())
+                .await
+                .unwrap();
+            let metadata = store.head(&remote_path).await.unwrap();
+            let revision = Arc::new(DownloadState {
+                format: STATE_FORMAT.to_string(),
+                key: "key".to_string(),
+                size: 4,
+                etag: metadata.e_tag,
+                version: metadata.version,
+                chunk_size: 4,
+                completed: Completed::default(),
+            });
+            for (disposable, operation) in [false, true].into_iter().flat_map(|disposable| {
+                ["sync", "write", "publish"].map(|operation| (disposable, operation))
+            }) {
                 let dir = tempfile::tempdir().unwrap();
                 let path = dir.path().to_path_buf();
-                std::fs::write(path.join("000000.chunk"), b"data").unwrap();
-                let lock = try_lock_state(&path).unwrap().unwrap();
-                let state = Arc::new(DownloadState {
-                    format: STATE_FORMAT.to_string(),
-                    key: "key".to_string(),
-                    size: 4,
-                    etag: Some("revision-1".to_string()),
-                    version: None,
-                    chunk_size: 4,
-                });
-                let (temporary_dir, _persistent_dir) = if disposable {
-                    (Some(dir), None)
+                std::fs::write(path.join(DATA_FILE), b"old!").unwrap();
+                let (staging, _persistent_dir) = if disposable {
+                    (Staging::Transient(dir), None)
                 } else {
-                    (None, Some(dir))
+                    let lock = try_lock_state(&path).unwrap().unwrap();
+                    (
+                        Staging::Persistent {
+                            dir: path.clone(),
+                            _lock: lock,
+                        },
+                        Some(dir),
+                    )
                 };
                 let (release, blocked) = std::sync::mpsc::channel();
                 let blocker = tokio::task::spawn_blocking(move || blocked.recv().unwrap());
-                let mut merge = Box::pin(merge_chunks(
-                    path.clone(),
-                    state,
-                    Some(Arc::new(lock)),
-                    temporary_dir,
-                ));
-                assert!(merge
+                let files = Arc::new(DownloadFiles {
+                    data: OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(path.join(DATA_FILE))
+                        .unwrap(),
+                    staging,
+                });
+                let published = path.join("published");
+                let mut pending = Box::pin(async {
+                    match operation {
+                        "write" => download_chunk(
+                            Arc::clone(&store),
+                            remote_path.clone(),
+                            files,
+                            0,
+                            Arc::clone(&revision),
+                        )
+                        .await
+                        .map(|_| ()),
+                        "publish" => {
+                            publish_data(files, Arc::clone(&revision), published.clone()).await
+                        }
+                        _ => sync_data(files, Arc::clone(&revision)).await,
+                    }
+                });
+                assert!(pending
                     .as_mut()
                     .poll(&mut Context::from_waker(Waker::noop()))
                     .is_pending());
-                drop(merge);
+                drop(pending);
                 assert!(path.is_dir());
-                assert!(try_lock_state(&path).unwrap().is_none());
+                if !disposable {
+                    assert!(try_lock_state(&path).unwrap().is_none());
+                }
                 release.send(()).unwrap();
                 blocker.await.unwrap();
                 tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -480,15 +895,7 @@ mod tests {
                                 break;
                             }
                         } else if let Some(_lock) = try_lock_state(&path).unwrap() {
-                            if std::fs::read_dir(&path).unwrap().all(|entry| {
-                                !entry
-                                    .unwrap()
-                                    .file_name()
-                                    .to_string_lossy()
-                                    .starts_with("merged.")
-                            }) {
-                                break;
-                            }
+                            break;
                         }
                         tokio::task::yield_now().await;
                     }
@@ -496,7 +903,19 @@ mod tests {
                 .await
                 .unwrap();
                 if !disposable {
-                    assert_eq!(std::fs::read(path.join("000000.chunk")).unwrap(), b"data");
+                    if operation == "publish" {
+                        assert_eq!(std::fs::read(&published).unwrap(), b"old!");
+                        assert!(!path.join(DATA_FILE).exists());
+                    } else {
+                        assert_eq!(
+                            std::fs::read(path.join(DATA_FILE)).unwrap(),
+                            if operation == "write" {
+                                b"data"
+                            } else {
+                                b"old!"
+                            }
+                        );
+                    }
                 }
             }
         });
@@ -522,6 +941,7 @@ mod tests {
                 etag: Some(key.to_string()),
                 version: None,
                 chunk_size: 4,
+                completed: Completed::default(),
             };
             let (release, blocked) = std::sync::mpsc::channel();
             let blocker = tokio::task::spawn_blocking(move || blocked.recv().unwrap());
@@ -557,6 +977,7 @@ mod tests {
     #[tokio::test]
     async fn cleanup_failure_restores_valid_marker() {
         let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let encoded = serde_json::to_vec(&serde_json::json!({
             "format": STATE_FORMAT,
             "key": "key",

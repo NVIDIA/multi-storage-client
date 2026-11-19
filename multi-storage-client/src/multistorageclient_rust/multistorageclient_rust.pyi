@@ -168,10 +168,13 @@ class RustClient:
         those chunks in parallel. This approach provides better performance for large files
         compared to download() method.
 
-        Retain completed chunks in .<local-file-name>.msc-dl/ after interruption.
+        Retain one staging file and completed-range metadata in
+        .<local-file-name>.msc-dl/ after interruption.
         Retrying the same destination against the same backend and bucket resumes
         an unchanged object when a usable ETag/version is available. On success,
-        merge the chunks, atomically replace the destination, and remove the state.
+        sync the staging file, atomically replace the destination, and remove the state.
+        A failed final sync invalidates completion progress; a publication-only
+        failure after successful sync preserves it for retry.
 
         :param remote_path: The source path in the storage backend.
         :param local_path: Path to the local file to save the download.
