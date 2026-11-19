@@ -523,7 +523,13 @@ You can also sync to specific replicas instead of all replicas by using the ``--
 Fine-tuning Parallelism
 =======================
 
-MSC automatically determines optimal parallelism based on your system's CPU count, but you can fine-tune it using environment variables.
+MSC determines parallelism based on your system's CPU count and storage providers, but you can fine-tune it using environment variables.
+
+For local syncs involving a Python remote storage provider, including S3 without RustClient, the default number of worker processes is ``min(8, CPU_count)``. Each process runs ``max(1, CPU_count // processes // 16)`` sync threads by default. Each sync thread handles one batch with up to 16 concurrent file transfers, so an 8-process sync defaults to 128 concurrent file transfers on hosts with 8 to 128 available CPUs. This accounts for batch parallelism without multiplying the previous file concurrency by 16.
+
+When both clients use RustClient or POSIX storage, local sync instead defaults to one process with eight sync threads. Ray execution retains its default of eight sync threads per worker process. Calls that calculate parallelism without storage clients, such as manifest generation, retain the default of ``max(16, CPU_count // processes)`` threads per process.
+
+An explicit ``MSC_NUM_THREADS_PER_PROCESS`` overrides the calculated thread default. This controls sync threads, not individual file transfers: each thread can start up to 16 file transfers, and multipart transfers add further concurrency. These defaults do not impose a total memory limit. Use fewer threads and processes when syncing large objects on hosts with limited memory.
 
 .. code-block:: shell
    :caption: Environment variables for parallelism
@@ -531,7 +537,7 @@ MSC automatically determines optimal parallelism based on your system's CPU coun
    # Set number of worker processes (default: min(8, CPU_count))
    $ export MSC_NUM_PROCESSES=4
 
-   # Set threads per process (default: max(16, CPU_count/processes))
+   # Override threads per process (sync defaults depend on storage providers)
    $ export MSC_NUM_THREADS_PER_PROCESS=8
 
    # Disable parallel source/target listing during sync

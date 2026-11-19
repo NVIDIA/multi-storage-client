@@ -361,6 +361,60 @@ def test_calculate_worker_processes_and_threads_both_custom(mock_get_cpu_count):
 @patch("multistorageclient.utils.get_available_cpu_count")
 @patch("multistorageclient.StorageClient")
 @patch("multistorageclient.StorageClient")
+@pytest.mark.parametrize("cpu_count,expected", [(4, (4, 1)), (16, (8, 1)), (128, (8, 1)), (256, (8, 2))])
+@pytest.mark.parametrize(
+    "source_kind,target_kind",
+    [("python", "python"), ("python", "rust"), ("rust", "python"), ("python", "posix"), ("posix", "python")],
+)
+def test_calculate_worker_processes_and_threads_python_sync(
+    target_client, source_client, mock_get_cpu_count, cpu_count, expected, source_kind, target_kind
+):
+    mock_get_cpu_count.return_value = cpu_count
+    for client, kind in ((source_client, source_kind), (target_client, target_kind)):
+        client._is_rust_client_enabled.return_value = kind == "rust"
+        client._is_posix_file_storage_provider.return_value = kind == "posix"
+
+    with patch.dict(os.environ, {}, clear=True):
+        assert (
+            calculate_worker_processes_and_threads(source_client=source_client, target_client=target_client) == expected
+        )
+
+
+@patch("multistorageclient.utils.get_available_cpu_count", return_value=256)
+@patch("multistorageclient.StorageClient")
+@patch("multistorageclient.StorageClient")
+@pytest.mark.parametrize(
+    "processes,environment,execution_mode,expected",
+    [
+        (None, {"MSC_NUM_PROCESSES": "4"}, ExecutionMode.LOCAL, (4, 4)),
+        (2, {"MSC_NUM_PROCESSES": "4"}, ExecutionMode.LOCAL, (2, 8)),
+        (None, {"MSC_NUM_THREADS_PER_PROCESS": "10"}, ExecutionMode.LOCAL, (8, 10)),
+        (2, {"MSC_NUM_THREADS_PER_PROCESS": "3"}, ExecutionMode.LOCAL, (2, 3)),
+        (None, {}, ExecutionMode.RAY, (8, 8)),
+    ],
+)
+def test_calculate_worker_processes_and_threads_python_sync_overrides(
+    target_client, source_client, mock_get_cpu_count, processes, environment, execution_mode, expected
+):
+    for client in (source_client, target_client):
+        client._is_rust_client_enabled.return_value = False
+        client._is_posix_file_storage_provider.return_value = False
+
+    with patch.dict(os.environ, environment, clear=True):
+        assert (
+            calculate_worker_processes_and_threads(
+                num_worker_processes=processes,
+                execution_mode=execution_mode,
+                source_client=source_client,
+                target_client=target_client,
+            )
+            == expected
+        )
+
+
+@patch("multistorageclient.utils.get_available_cpu_count")
+@patch("multistorageclient.StorageClient")
+@patch("multistorageclient.StorageClient")
 def test_calculate_worker_processes_and_threads_use_single_process(target_client, source_client, mock_get_cpu_count):
     with patch.dict(os.environ, {}, clear=True):
         # Both clients are using the Rust client — default is 8 (batch APIs handle internal concurrency).
