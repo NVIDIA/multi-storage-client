@@ -191,12 +191,12 @@ class _StreamingFile(IOBase):
     Close publishes the object; a failed close keeps raising. The finalizer aborts instead of publishing.
     """
 
-    def __init__(self, writer: StreamingObjectWriter, on_close: Callable[[], None] | None, name: str):
+    def __init__(self, writer: StreamingObjectWriter, name: str):
         self._writer = writer
-        self._on_close = on_close
         self._name = name
         self._published = False
         self._aborted = False
+        self._placeholder: IO | None = None
 
     @property
     def closed(self) -> bool:
@@ -233,7 +233,19 @@ class _StreamingFile(IOBase):
         raise io.UnsupportedOperation(f"Streaming writes to {self._name} do not support truncate.")
 
     def fileno(self) -> int:
-        raise io.UnsupportedOperation(f"Streaming writes to {self._name} have no file descriptor.")
+        """
+        Return a placeholder descriptor, as buffered files do, so ``os.fsync(f.fileno())`` succeeds cheaply.
+
+        It is not the object: bytes written to it are lost and syncing it does not wait for parts (use :py:meth:`sync`).
+        """
+        if self._placeholder is None:
+            self._placeholder = tempfile.TemporaryFile()  # noqa: SIM115
+        return self._placeholder.fileno()
+
+    def _release_placeholder(self) -> None:
+        if self._placeholder is not None:
+            self._placeholder.close()
+            self._placeholder = None
 
     def flush(self) -> None:
         if not self.closed:
@@ -247,21 +259,21 @@ class _StreamingFile(IOBase):
         if self.closed:
             return
         self._writer.close()
-        if self._on_close:
-            self._on_close()
         self._published = True
+        self._release_placeholder()
 
     def abort(self) -> None:
         if self.closed:
             return
         self._aborted = True
+        self._release_placeholder()
         self._writer.abort()
 
     def __del__(self) -> None:
         if self.closed:
             return
         logger.warning(
-            "Streaming write to %s was not closed; aborting the upload instead of publishing it.", self._name
+            "Streaming write to %s was not closed successfully; aborting any unpublished upload.", self._name
         )
         try:
             self.abort()
@@ -292,7 +304,7 @@ class ObjectFile(IOBase, IO):
 
     _local_path: str | None = None
     _attributes: dict[str, Any] | None = None
-    _streaming_writer: tuple[StreamingObjectWriter, Callable[[], None] | None] | None = None
+    _streaming_writer: StreamingObjectWriter | None = None
 
     def __init__(
         self,
@@ -305,7 +317,7 @@ class ObjectFile(IOBase, IO):
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
         attributes: dict[str, Any] | None = None,
         prefetch_file: bool | None = None,
-        streaming_writer: tuple[StreamingObjectWriter, Callable[[], None] | None] | None = None,
+        streaming_writer: StreamingObjectWriter | None = None,
     ):
         """
         Initialize the ObjectFile instance.
@@ -319,8 +331,8 @@ class ObjectFile(IOBase, IO):
         :param check_source_version: Whether to check the source version of cached objects.
         :param attributes: The attributes to add to the file if a new file is created.
         :param prefetch_file: If True, downloads the entire file to cache in the background for faster subsequent reads. If False, uses RemoteFileReader for streaming reads without caching. If None, inherits from cache configuration.
-        :param streaming_writer: A writer and an optional callback to run after it publishes the object. Only valid
-            with mode 'wb', which then streams the object instead of buffering it until close.
+        :param streaming_writer: A writer that publishes the object on close. Only valid with mode 'wb', which then
+            streams the object instead of buffering it until close.
         """
         if mode not in ("r", "w", "rb", "wb", "a", "ab"):
             raise ValueError(f'Invalid mode "{mode}", only "w", "r", "a", "wb", "rb" and "ab" are supported.')
@@ -425,8 +437,7 @@ class ObjectFile(IOBase, IO):
         Create a file-like object depends on the mode.
         """
         if self._streaming_writer is not None:
-            writer, on_close = self._streaming_writer
-            self._file = cast(IO, _StreamingFile(writer, on_close, self._remote_path))
+            self._file = cast(IO, _StreamingFile(self._streaming_writer, self._remote_path))
             return
 
         if self._mode in ("rb", "wb", "ab"):

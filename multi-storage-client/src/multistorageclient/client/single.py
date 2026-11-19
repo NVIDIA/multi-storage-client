@@ -66,6 +66,47 @@ from .types import AbstractStorageClient
 logger = logging.getLogger(__name__)
 
 
+class _RegisteringWriter(StreamingObjectWriter):
+    """
+    Registers the object with the metadata provider after the wrapped writer publishes it.
+
+    A close that fails in registration can be retried; it does not publish again. Abort after publication does nothing.
+    """
+
+    def __init__(self, inner: StreamingObjectWriter, register: Callable[[], None]):
+        self._inner = inner
+        self._register = register
+        self._size: int | None = None
+        self._registered = False
+
+    def write(self, data: Any) -> int:
+        return self._inner.write(data)
+
+    def tell(self) -> int:
+        return self._inner.tell()
+
+    def flush(self) -> None:
+        self._inner.flush()
+
+    def sync(self) -> None:
+        self._inner.sync()
+
+    def close(self) -> int:
+        if self._size is None:
+            self._size = self._inner.close()
+        if not self._registered:
+            self._register()
+            self._registered = True
+        return self._size
+
+    def abort(self) -> None:
+        if self._size is None:
+            self._inner.abort()
+
+    def stats(self) -> dict[str, Any]:
+        return self._inner.stats()
+
+
 class SingleStorageClient(AbstractStorageClient):
     """
     Storage client for single-backend configurations.
@@ -353,14 +394,16 @@ class SingleStorageClient(AbstractStorageClient):
 
     def _open_streaming_writer(
         self, path: str, attributes: dict[str, Any] | None, options: StreamingWriterOptions
-    ) -> tuple[StreamingObjectWriter, Callable[[], None] | None]:
+    ) -> StreamingObjectWriter:
         """
         Open a streaming writer through the storage provider.
+
+        With a metadata provider, the object is written to its physical path and registered after it is published.
 
         :param path: The logical path of the object to write.
         :param attributes: The attributes to add to the object.
         :param options: The streaming writer options.
-        :return: The writer and an optional callback to run after it publishes the object.
+        :return: A writer that publishes (and registers) the object on close.
         :raises NotImplementedError: If the storage provider does not support streaming writes.
         """
         provider = self._storage_provider
@@ -368,8 +411,8 @@ class SingleStorageClient(AbstractStorageClient):
             physical_path = self._resolve_write_path(path)
             # Attributes belong to logical metadata, so physical writes get none and registration stores them.
             writer = provider.open_streaming_writer(physical_path, None, options)
-            return writer, lambda: self._register_written_file(path, physical_path, attributes)
-        return provider.open_streaming_writer(path, attributes, options), None
+            return _RegisteringWriter(writer, lambda: self._register_written_file(path, physical_path, attributes))
+        return provider.open_streaming_writer(path, attributes, options)
 
     def _register_written_files(
         self,

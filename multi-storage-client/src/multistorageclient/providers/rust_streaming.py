@@ -53,7 +53,15 @@ class RustStreamingWriter(StreamingObjectWriter):
             def _reraise(caught: Exception = error) -> _T:
                 raise caught
 
-            return self._translate_errors(_reraise)
+            try:
+                return self._translate_errors(_reraise)
+            except PermissionError:
+                raise
+            except Exception as translated:
+                # A failed stream stays failed, so retrying this file cannot succeed; don't surface RetryableError.
+                raise RuntimeError(
+                    f"Streaming upload failed and cannot be resumed; write the object again. {translated}"
+                ) from translated
 
     def write(self, data: Any) -> int:
         view = data if isinstance(data, memoryview) else memoryview(data)

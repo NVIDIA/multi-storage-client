@@ -1229,14 +1229,17 @@ impl StreamingWriter {
         if !data.is_c_contiguous() {
             return Err(pyo3::exceptions::PyValueError::new_err("StreamingWriter.write requires a C-contiguous buffer"));
         }
-        // SAFETY: `data` keeps the exporter's buffer alive, and bytes are only read while attached to the interpreter.
-        let bytes = unsafe { std::slice::from_raw_parts(data.buf_ptr() as *const u8, data.len_bytes()) };
+        let ptr = data.buf_ptr() as *const u8;
+        let len = data.len_bytes();
         let mut guard = self.lock()?;
         let core = guard.as_mut().ok_or(StreamError::Closed)?;
         let runtime = pyo3_async_runtimes::tokio::get_runtime();
         let mut offset = 0;
-        while offset < bytes.len() {
-            match core.accept(&bytes[offset..]) {
+        while offset < len {
+            // SAFETY: `data` keeps the exporter's buffer alive. The slice is rebuilt per call and dropped before the
+            // GIL is released, so no reference outlives `py.detach`; callers must not mutate the buffer during write.
+            let rest = unsafe { std::slice::from_raw_parts(ptr.add(offset), len - offset) };
+            match core.accept(rest) {
                 Ok(n) => offset += n,
                 Err(err @ StreamError::Limit(_)) => return Err(py.detach(|| runtime.block_on(core.fail(err))).into()),
                 Err(err) => return Err(err.into()),
@@ -1245,7 +1248,7 @@ impl StreamingWriter {
                 py.detach(|| runtime.block_on(core.submit_part()))?;
             }
         }
-        Ok(bytes.len())
+        Ok(len)
     }
 
     /// Number of bytes accepted so far.

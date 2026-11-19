@@ -170,7 +170,8 @@ class RustClient:
         Open a forward-only writer that uploads ``remote_path`` through a bounded multipart upload.
 
         Objects smaller than one part are written with a single PUT on close. Native memory held by the writer
-        stays below ``(max_inflight_parts + 1) * part_size``.
+        stays below ``(max_inflight_parts + 1) * part_size``, using the part size after ``max_object_size`` adjusts it
+        (``stats()["part_size"]``).
 
         :param remote_path: The remote object path in the storage backend.
         :param part_size: Multipart part size in bytes, between 5 MiB and 5 GiB (default: client multipart_chunksize).

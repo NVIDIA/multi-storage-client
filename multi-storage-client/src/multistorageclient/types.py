@@ -305,12 +305,15 @@ class StreamingWriterOptions:
     Options for streaming a binary write through a bounded multipart upload.
 
     Pass them to ``open(path, "wb", writer_options=...)`` to upload parts while data is written, instead of
-    buffering the whole object until close. Host memory stays near ``(max_inflight_parts + 1) * part_size_bytes``.
+    buffering the whole object until close. Host memory per open file stays below
+    ``(max_inflight_parts + 1) * part size``, where the part size is ``part_size_bytes`` unless
+    ``max_object_size_bytes`` raises it (the writer's ``stats()["part_size"]`` reports the size in use).
 
     :param part_size_bytes: Size of each uploaded part, from 5 MiB to 5 GiB.
     :param max_inflight_parts: Parts allowed to upload concurrently before :py:meth:`StreamingObjectWriter.write`
         blocks. At least 1.
-    :param max_object_size_bytes: Optional limit on the object size; writes past it fail and the upload is aborted.
+    :param max_object_size_bytes: Largest expected object size, not a limit. When set, the part size is raised if
+        needed so the object fits in 10,000 parts. Without it, writes beyond ``10,000 * part_size_bytes`` fail.
     """
 
     part_size_bytes: int = 64 * _MiB
@@ -346,6 +349,8 @@ class StreamingObjectWriter(ABC):
     def write(self, data: Any) -> int:
         """
         Append bytes from a buffer-protocol object, blocking while the in-flight upload budget is full.
+
+        The buffer must not be modified by another thread until this call returns.
 
         :param data: A bytes-like object.
         :return: The number of bytes accepted.

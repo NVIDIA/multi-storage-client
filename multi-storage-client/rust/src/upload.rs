@@ -338,7 +338,10 @@ impl StreamCore {
             let target = needed
                 .max(self.partial.capacity() * 2)
                 .min(self.config.part_size);
-            self.partial.reserve(target - self.partial.len());
+            // Grow to exactly `target`: `BytesMut::reserve` can double past `part_size`.
+            let mut grown = BytesMut::with_capacity(target);
+            grown.extend_from_slice(&self.partial);
+            self.partial = grown;
         }
         self.partial.extend_from_slice(&data[..n]);
         self.accepted += n as u64;
@@ -742,12 +745,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_parts_after_the_first_are_allocated_at_part_size() {
+    async fn test_part_buffers_never_exceed_part_size() {
         let target = TestTarget::new(Faults::default(), None);
         let mut core = StreamCore::new(target.clone(), config(8, 2));
         let data = payload(8 * 4 + 3);
         for chunk in data.chunks(3) {
             core.write_all(chunk).await.unwrap();
+            assert!(core.partial.capacity() <= 8, "capacity {}", core.partial.capacity());
             if core.started_multipart && !core.partial.is_empty() {
                 assert_eq!(core.partial.capacity(), 8);
             }

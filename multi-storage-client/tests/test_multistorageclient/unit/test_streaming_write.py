@@ -38,6 +38,7 @@ from multistorageclient.file import ObjectFile
 from multistorageclient.providers import s3 as s3_provider
 from multistorageclient.providers.s3 import S3StorageProvider
 from multistorageclient.providers.s8k import S8KStorageProvider
+from multistorageclient.types import RetryableError
 from test_multistorageclient.unit.utils import config, tempdatastore
 
 torch = cast(Any, torch_module)
@@ -122,9 +123,11 @@ def test_streaming_file_is_forward_only():
             f.write(b"abc")
             assert f.seek(3) == 3
             assert f.seek(0, os.SEEK_CUR) == 3
-            for operation in (lambda: f.seek(0), lambda: f.truncate(), f.fileno):
+            for operation in (lambda: f.seek(0), lambda: f.truncate()):
                 with pytest.raises(io.UnsupportedOperation):
                     operation()
+            # A placeholder descriptor, as for buffered files, so DCP's os.fsync(fileno()) needs no host-wide sync.
+            os.fsync(f.fileno())
             f.fsync()
         assert f.closed
         f.close()
@@ -178,9 +181,10 @@ def test_streaming_failure_is_sticky():
     with _streaming_bucket() as (bucket, client):
         bucket._client.delete_bucket(Bucket=bucket._bucket_name)
         f = client.open("missing.bin", "wb", writer_options=OPTIONS)
-        with pytest.raises(Exception) as first:
+        with pytest.raises(RuntimeError) as first:
             f.write(_payload(2 * PART))
             f.close()
+        assert not isinstance(first.value, RetryableError)
         for operation in (lambda: f.write(b"x"), f.flush, f.close, f.close):
             with pytest.raises(Exception) as later:
                 operation()
@@ -250,6 +254,48 @@ def test_streaming_rejects_unsupported_providers():
         )
         with pytest.raises(NotImplementedError, match="POSIX"):
             client.open("local.bin", "wb", writer_options=OPTIONS)
+
+
+def test_streaming_max_object_size_raises_the_part_size():
+    with _streaming_bucket() as (_, client):
+        hint = replace(OPTIONS, max_object_size_bytes=10_000 * PART + 1)
+        with client.open("hint.bin", "wb", writer_options=hint) as f:
+            assert _stats(f)["part_size"] > PART
+            f.write(b"not a limit")
+        assert client.read("hint.bin") == b"not a limit"
+
+
+def test_streaming_write_registers_with_metadata_provider():
+    with tempdatastore.TemporaryAWSS3Bucket(enable_rust_client=True) as bucket:
+        profile = bucket.profile_config_dict() | {
+            "metadata_provider": {"type": "manifest", "options": {"manifest_path": ".msc_manifests", "writable": True}}
+        }
+        client = StorageClient(StorageClientConfig.from_dict({"profiles": {"m": profile}}, profile="m"))
+        single = cast(Any, client)._delegate
+        register = single._register_written_file
+        calls: list[tuple] = []
+
+        def flaky_register(*args: Any) -> None:
+            calls.append(args)
+            if len(calls) == 1:
+                raise RuntimeError("registration failed")
+            register(*args)
+
+        data = _payload(PART + 1)
+        with patch.object(single, "_register_written_file", flaky_register):
+            f = client.open("dir/object.bin", "wb", attributes={"owner": "test"}, writer_options=OPTIONS)
+            f.write(data)
+            with pytest.raises(RuntimeError, match="registration failed"):
+                f.close()
+            # The object is already published; a retried close only retries registration.
+            f.close()
+        assert f.closed and len(calls) == 2
+        client.commit_metadata()
+        assert client.read("dir/object.bin") == data
+        assert client.info("dir/object.bin").metadata == {"owner": "test"}
+        physical_path = calls[0][1]
+        assert not single._storage_provider.get_object_metadata(physical_path).metadata
+        assert _multipart_uploads(bucket) == []
 
 
 def test_streaming_writer_rejects_pickling_and_other_processes():

@@ -155,8 +155,10 @@ By default, a file opened with ``mode="wb"`` on object storage buffers the whole
 ``close()``. Passing :py:class:`multistorageclient.types.StreamingWriterOptions` as ``writer_options`` instead streams the
 write through a bounded multipart upload: each full part uploads while the caller keeps writing, and the Rust client
 blocks the writer once ``max_inflight_parts`` parts are in flight. Memory held per open file stays below
-``(max_inflight_parts + 1) * part_size_bytes``. Objects smaller than one part are written with a single request on
-``close()``. The profile needs the Rust client (``rust_client``); streaming is chosen per call, not in the profile.
+``(max_inflight_parts + 1)`` times the part size. That is ``part_size_bytes`` unless ``max_object_size_bytes`` raises
+it to keep the object within 10,000 parts; the writer's ``stats()["part_size"]`` reports the size in use.
+``max_object_size_bytes`` is a size hint, not a limit. Objects smaller than one part are written with a single request
+on ``close()``. The profile needs the Rust client (``rust_client``); streaming is chosen per call, not in the profile.
 
 .. code-block:: python
    :caption: Streaming a binary write.
@@ -166,7 +168,7 @@ blocks the writer once ``max_inflight_parts`` parts are in flight. Memory held p
    options = msc.StreamingWriterOptions(
        part_size_bytes=64 * 1024 * 1024,  # 5 MiB to 5 GiB.
        max_inflight_parts=8,
-       max_object_size_bytes=None,  # Optional: raises the part size to stay within 10,000 parts.
+       max_object_size_bytes=None,  # Optional size hint: raises the part size to stay within 10,000 parts.
    )
    with msc.open("msc://my-profile/checkpoints/shard.bin", "wb", writer_options=options) as f:
        f.write(data)
@@ -178,27 +180,38 @@ worker processes.
 Streaming files differ from buffered files in these ways:
 
 * They are forward-only. ``seekable()`` is ``False``; ``tell()`` and seeking to the current position work, other
-  seeks and ``truncate()`` raise :py:class:`io.UnsupportedOperation`. ``fileno()`` raises
-  :py:class:`io.UnsupportedOperation` instead of returning a temporary file descriptor.
+  seeks and ``truncate()`` raise :py:class:`io.UnsupportedOperation`. Like buffered files, ``fileno()`` returns a
+  placeholder temporary-file descriptor, so ``os.fsync(f.fileno())`` (as in PyTorch DCP) succeeds cheaply. Syncing it
+  does not wait for parts; ``fsync()`` on the file does.
+* ``write()`` copies the caller's buffer before returning; the buffer must not be modified by another thread while
+  ``write()`` runs.
 * ``flush()`` raises errors from parts that already finished but does not wait, because serializers such as
   ``torch.save`` flush after every record. ``fsync()`` waits for every submitted part. Only ``close()`` publishes
   the object.
 * Leaving a ``with`` block because of an exception, or calling ``discard()``, aborts the multipart upload without
   publishing. An existing object at the same path is left unchanged. A file that is garbage-collected without being
-  closed is also aborted, so close streaming files explicitly or use a ``with`` block.
-* Errors are sticky: after a failed upload, every later ``write()``, ``flush()`` and ``close()`` raises. A failure
-  while completing the multipart upload is reported as ambiguous, because the service may have committed the object
-  before the response was lost.
+  closed is also aborted, so close streaming files explicitly or use a ``with`` block. Abort first waits up to 60
+  seconds for parts already in flight (a part the service already received could otherwise recreate the upload), so
+  an exception, ``discard()`` or garbage collection can block for that long on a slow connection.
+* Errors are sticky: after a failed upload, every later ``write()``, ``flush()`` and ``close()`` raises. Upload
+  failures are raised as :py:class:`RuntimeError` (with the cause chained), not as a retryable error, because the
+  file cannot be resumed. A failure while completing the multipart upload is reported as ambiguous, because the
+  service may have committed the object before the response was lost.
 * Each request is retried by the Rust client's ``retry`` settings. Unlike buffered writes, MSC cannot re-upload the
   whole object after a retryable failure, because the written bytes are no longer held; the caller must write the
   file again.
 * A writer belongs to the process that opened it. Forked children that use MSC must not inherit Rust I/O that the
   parent already started, as with other Rust client operations.
+* A writer serves one caller at a time. Calling its ``stats()`` or ``tell()`` from another thread while ``write()`` is
+  waiting for upload capacity raises :py:class:`RuntimeError`.
+* The ``WRITE`` operation metric is recorded around ``close()``, so its latency covers the last part and the upload
+  completion, not the whole transfer. Per-part timings are in the writer's ``stats()``.
 
 Streaming writes are supported by the ``s3``, ``s8k`` (without ``infer_content_type``), ``gcs_s3`` and ``ais_s3``
-providers with the Rust client, except S3 directory buckets. ``open`` raises instead of falling back to a buffered
-write when ``writer_options`` is passed with any other provider (including POSIX and S3 without the Rust client) or
-with a mode other than ``"wb"``.
+providers with the Rust client, except S3 directory buckets and keys the Rust client cannot represent. ``open`` raises
+:py:class:`NotImplementedError` instead of falling back to a buffered write when ``writer_options`` is passed with any
+other provider (including POSIX and S3 without the Rust client), and :py:class:`ValueError` with a mode other than
+``"wb"``.
 
 ********************
 Performance Benefits

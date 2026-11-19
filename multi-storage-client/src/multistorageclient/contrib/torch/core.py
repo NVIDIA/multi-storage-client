@@ -62,5 +62,5 @@ def save(
             return _torch.save(obj, fp, *args, **kwargs)
     else:
         if writer_options is not None:
-            raise ValueError("writer_options requires a path, not an open file.")
+            raise ValueError(f"writer_options needs f to be a str or MultiStoragePath, got {type(f).__name__}.")
         return _torch.save(obj, f, *args, **kwargs)

@@ -325,7 +325,9 @@ class S3StorageProvider(BaseStorageProvider):
         if self._is_directory_bucket(bucket):
             raise NotImplementedError(f"Streaming writes do not support S3 directory bucket {bucket}.")
         if bucket != self._rust_bucket or not RustClient.supports_path(key):
-            raise ValueError(f"Streaming writes cannot represent {bucket}/{key} with the configured Rust client.")
+            raise NotImplementedError(
+                f"Streaming writes cannot represent {bucket}/{key} with the configured Rust client."
+            )
         validated_attributes = validate_attributes(attributes)
         rust_attributes = {"attributes": validated_attributes} if validated_attributes else {}
         native = self._translate_errors(
