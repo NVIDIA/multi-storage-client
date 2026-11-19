@@ -426,14 +426,22 @@ class PosixFileStorageProvider(BaseStorageProvider):
 
                 relative_path = os.path.relpath(full_path, self._base_path)
 
-                if (start_after is None or start_after < relative_path) and (end_at is None or relative_path <= end_at):
+                if end_at is not None and relative_path > end_at:
+                    continue
+                if start_after is None or relative_path > start_after:
                     if os.path.isfile(full_path):
                         entries.append((relative_path, full_path, _EntryType.FILE))
-                    elif os.path.isdir(full_path):
-                        if include_directories:
-                            entries.append((relative_path, full_path, _EntryType.DIRECTORY))
-                        else:
-                            entries.append((relative_path, full_path, _EntryType.DIRECTORY_TO_EXPLORE))
+                        continue
+                elif include_directories:
+                    continue
+                else:
+                    descendant_prefix = relative_path + "/"
+                    if descendant_prefix < start_after and not start_after.startswith(descendant_prefix):
+                        continue
+
+                if os.path.isdir(full_path):
+                    entry_type = _EntryType.DIRECTORY if include_directories else _EntryType.DIRECTORY_TO_EXPLORE
+                    entries.append((relative_path, full_path, entry_type))
 
             # Sort keys must mirror the keys S3 ``list_objects_v2`` would return so POSIX
             # listings stay in the same raw-UTF-8-byte order. For directories (expanded or
