@@ -43,6 +43,15 @@ pub(super) fn absolute(path: &Path) -> Result<PathBuf, ConfigError> {
     Ok(normalized)
 }
 
+#[derive(serde::Deserialize)]
+struct SharedDocument {
+    // This mapping rejects duplicate scheme registrations in both JSON and YAML.
+    #[serde(default)]
+    url_resolvers: serde_yaml::Mapping,
+    #[serde(flatten)]
+    fields: serde_json::Map<String, Value>,
+}
+
 pub(super) fn read_document(
     source: &Path,
     environment: &BTreeMap<String, String>,
@@ -63,7 +72,7 @@ pub(super) fn read_document(
     let content = std::fs::read_to_string(source).map_err(|_| {
         ConfigError::new("/", "cannot read UTF-8 configuration file").at_source(source)
     })?;
-    let mut document: Value = if extension == "json" {
+    let parsed: SharedDocument = if extension == "json" {
         serde_json::from_str(&content).map_err(|error| {
             ConfigError::new(
                 "/",
@@ -83,6 +92,7 @@ pub(super) fn read_document(
             ConfigError::new("/", format!("invalid YAML{location}")).at_source(source)
         })?
     };
+    let mut document = Value::Object(parsed.fields);
     reject_unknown(
         &document,
         &[
@@ -98,6 +108,13 @@ pub(super) fn read_document(
     )
     .map_err(|error| error.at_source(source))?;
     expand(&mut document, "", environment, secrets).map_err(|error| error.at_source(source))?;
+    if !parsed.url_resolvers.is_empty() {
+        // Only Python consumes resolver options and expands their environment variables.
+        document["url_resolvers"] = serde_json::to_value(parsed.url_resolvers).map_err(|_| {
+            ConfigError::new("/url_resolvers", "expected a scheme-to-resolver mapping")
+                .at_source(source)
+        })?;
+    }
     Ok(document)
 }
 
@@ -233,7 +250,12 @@ pub(super) fn merge_document(
                 base.insert(section.clone(), value.clone());
                 record_origins(value, &path, source, origins);
             }
-            Some(existing) if matches!(section.as_str(), "profiles" | "path_mapping") => {
+            Some(existing)
+                if matches!(
+                    section.as_str(),
+                    "profiles" | "path_mapping" | "url_resolvers"
+                ) =>
+            {
                 let existing = existing.as_object_mut().ok_or_else(|| {
                     locate(ConfigError::new(&path, "expected a mapping"), origins)
                 })?;
@@ -243,7 +265,7 @@ pub(super) fn merge_document(
                 for (key, value) in entries {
                     let entry_path = format!("{path}/{}", pointer(key));
                     match existing.get(key) {
-                        Some(prior) if prior != value => {
+                        Some(prior) if section == "url_resolvers" || prior != value => {
                             return Err(conflict(&entry_path, source, origins));
                         }
                         Some(_) => {}

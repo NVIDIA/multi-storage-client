@@ -95,6 +95,8 @@ class PosixFileStorageProvider(BaseStorageProvider):
     A concrete implementation of the :py:class:`multistorageclient.types.StorageProvider` for interacting with POSIX file systems.
     """
 
+    _restrict_to_base_path: bool = False
+
     def __init__(
         self,
         base_path: str,
@@ -122,6 +124,12 @@ class PosixFileStorageProvider(BaseStorageProvider):
             telemetry_provider=telemetry_provider,
         )
         self._real_base_path = os.path.realpath(base_path)
+
+    def _prepend_base_path(self, path: str) -> str:
+        full_path = super()._prepend_base_path(path)
+        if self._restrict_to_base_path and self._symlink_target_is_external(os.path.realpath(full_path)):
+            raise PermissionError(f"Reference path outside the bound storage directory: {path!r}")
+        return full_path
 
     def _translate_errors(
         self,
@@ -549,6 +557,9 @@ class PosixFileStorageProvider(BaseStorageProvider):
             return self._translate_errors(_invoke_api, operation="GET", path=remote_path)
 
     def glob(self, pattern: str, attribute_filter_expression: str | None = None) -> list[str]:
+        if self._restrict_to_base_path:
+            # Inventory traversal checks directory symlinks before descending into them.
+            return super().glob(pattern, attribute_filter_expression)
         pattern = self._prepend_base_path(pattern)
         keys = list(glob.glob(pattern, recursive=True))
         if attribute_filter_expression:

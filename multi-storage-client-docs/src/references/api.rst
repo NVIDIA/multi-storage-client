@@ -43,6 +43,16 @@ Configuration
 .. autoclass:: multistorageclient.StorageClientConfig
    :members:
 
+URL resolution
+==============
+
+.. autoclass:: multistorageclient.references.URLResolver
+   :members:
+
+.. autoclass:: multistorageclient.references.ParsedReference
+
+.. autoclass:: multistorageclient.references.BoundProfile
+
 *******
 Pathlib
 *******

@@ -129,6 +129,27 @@ The schema is the same as file-based configurations.
 
    client = StorageClient(config=config)
 
+Reading a catalog revision
+==========================
+
+For a training run with a fixed input, configure the dataset in a named profile and use
+``msc://training/shards/0001.tar`` throughout the script. For applications that receive
+different dataset URLs at runtime, install the catalog integration and register its
+:ref:`URL resolver <url-resolvers>` once.
+
+In this example the integration owns the ``catalog://`` scheme and the meaning of
+``latest``. Resolve it once at the start of the job. Use the returned client for sibling
+files and send its pinned URL to workers that have the same catalog integration.
+
+.. code-block:: python
+
+   import multistorageclient as msc
+
+   client, root = msc.resolve_storage_client("catalog://research/images/latest/files/")
+   for item in client.list(root):
+       file_url = client.url(item.key)
+       # A worker can later open this exact revision with msc.open(file_url, "rb").
+
 Rclone-Based
 ============
 
