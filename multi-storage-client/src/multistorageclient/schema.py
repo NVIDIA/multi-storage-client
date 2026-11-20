@@ -15,8 +15,11 @@
 
 from collections import Counter
 from typing import Any
+from urllib.parse import urlsplit
 
 from jsonschema import validate
+
+SUPPORTED_IMPLICIT_PROFILE_PROTOCOLS = ("s3", "gs", "ais", "file")
 
 EXTENSION_SCHEMA = {
     "type": "object",
@@ -242,6 +245,14 @@ CONFIG_SCHEMA = {
         "cache": CACHE_SCHEMA,
         "opentelemetry": OTEL_SCHEMA,
         "path_mapping": PATH_MAPPING_SCHEMA,
+        "url_resolvers": {
+            "type": "object",
+            "propertyNames": {"pattern": "^[a-z][a-z0-9+.-]*$"},
+            "additionalProperties": {
+                **EXTENSION_SCHEMA,
+                "additionalProperties": False,
+            },
+        },
         "posix": POSIX_SCHEMA,
     },
     "additionalProperties": False,
@@ -271,6 +282,15 @@ def validate_config(config_dict: dict[str, Any]) -> None:
         validate(instance=config_dict, schema=CONFIG_SCHEMA)
     except Exception as e:
         raise RuntimeError("Failed to validate the config file", e)
+
+    schemes = config_dict.get("url_resolvers", {}).keys()
+    if schemes:
+        reserved = schemes & {"msc", *SUPPORTED_IMPLICIT_PROFILE_PROTOCOLS}
+        if reserved:
+            raise ValueError(f"Cannot register URL resolver for reserved scheme {min(reserved)!r}")
+        mapped = schemes & {urlsplit(source).scheme for source in config_dict.get("path_mapping", {})}
+        if mapped:
+            raise ValueError(f"URL resolver and path mapping both registered for scheme {min(mapped)!r}")
 
     # Custom validation: ensure replica_profile uniqueness within each profile's replicas
     profiles = config_dict.get("profiles", {})

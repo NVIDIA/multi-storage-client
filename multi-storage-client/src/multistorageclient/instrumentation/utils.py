@@ -38,6 +38,7 @@ def file_metrics(operation):
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         def wrapper(self, *args: Any, **kwargs: Any) -> Any:
+            self._check_stream_process()
             storage_provider = self._storage_client._storage_provider
             return storage_provider._emit_metrics(operation=operation, f=lambda: func(self, *args, **kwargs))
 

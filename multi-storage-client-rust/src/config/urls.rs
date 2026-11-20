@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use super::schema::ProfileConfig;
@@ -39,6 +39,12 @@ impl ResolvedConfig {
     /// Returns an error for missing profiles, unsupported schemes, relative paths,
     /// malformed encodings, or traversal segments.
     pub fn resolve(&self, input: &str) -> Result<ResolvedUrl, ConfigError> {
+        if owns_python_scheme(&self.python_schemes, input) {
+            return Err(ConfigError::new(
+                "/url/scheme",
+                "use the Python MSC client for this configured URL resolver",
+            ));
+        }
         let file_path = file_url_path(input)?;
         let input = file_path.as_deref().unwrap_or(input);
         if input.starts_with('/') {
@@ -115,7 +121,10 @@ impl ResolvedConfig {
     /// # Errors
     /// Returns a diagnostic for a relative base, invalid UTF-8, or invalid routing.
     pub fn resolve_with_base(&self, input: &str, base: &Path) -> Result<ResolvedUrl, ConfigError> {
-        if input.starts_with('/') || input.contains("://") {
+        if input.starts_with('/')
+            || input.contains("://")
+            || owns_python_scheme(&self.python_schemes, input)
+        {
             return self.resolve(input);
         }
         if !base.is_absolute() {
@@ -252,10 +261,31 @@ fn hex(byte: u8) -> Option<u8> {
     }
 }
 
+fn owns_python_scheme(schemes: &BTreeSet<String>, input: &str) -> bool {
+    !schemes.is_empty()
+        && input
+            .split_once(':')
+            .is_some_and(|(scheme, _)| schemes.contains(&scheme.to_ascii_lowercase()))
+}
+
 pub(super) fn validate_mappings(
     mappings: &BTreeMap<String, String>,
     profiles: &BTreeMap<String, ProfileConfig>,
+    python_schemes: &BTreeSet<String>,
 ) -> Result<(), ConfigError> {
+    for scheme in python_schemes {
+        if !scheme.starts_with(|c: char| c.is_ascii_lowercase())
+            || !scheme
+                .bytes()
+                .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'+' | b'-' | b'.'))
+            || matches!(scheme.as_str(), "msc" | "file" | "s3" | "gs" | "ais")
+        {
+            return Err(ConfigError::new(
+                format!("/url_resolvers/{}", pointer(scheme)),
+                "expected a lowercase, non-reserved URI scheme",
+            ));
+        }
+    }
     for (source, target) in mappings {
         if let Ok(url) = url::Url::parse(source)
             && (!url.username().is_empty()
@@ -269,6 +299,12 @@ pub(super) fn validate_mappings(
             ));
         }
         let path = format!("/path_mapping/{}", pointer(source));
+        if owns_python_scheme(python_schemes, source) {
+            return Err(ConfigError::new(
+                &path,
+                "scheme is already owned by a Python URL resolver",
+            ));
+        }
         if !source.ends_with('/')
             || !(source.starts_with('/')
                 || source

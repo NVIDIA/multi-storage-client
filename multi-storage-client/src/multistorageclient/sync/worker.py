@@ -205,6 +205,60 @@ class BatchSyncHandler(ABC):
         self.error_queue = error_queue
         self.temp_dir = temp_dir
         self.progress = progress
+        self._reference_target_root: str | None = None
+        source_config = getattr(source_client, "_config", None)
+        if (
+            source_config is not None
+            and source_config.read_only is True
+            and target_client._is_posix_file_storage_provider()
+        ):
+            physical_root = target_client.get_posix_path(target_path)
+            if physical_root is None:
+                raise ValueError(f"POSIX sync destination has no physical path: {target_path!r}")
+            self._reference_target_root = os.path.realpath(physical_root)
+
+    def _check_reference_target(self, operation: OperationType, item: ObjectMetadata) -> None:
+        """Confine catalog keys and preserved links to the selected POSIX destination."""
+        root = self._reference_target_root
+        if root is None:
+            return
+        key = (
+            item.key
+            if operation == OperationType.DELETE
+            else build_target_file_path(self.source_path, self.target_path, item)
+        )
+        relative_key = key.removeprefix(self.target_path.rstrip("/") + "/")
+        if ".." in relative_key.split("/"):
+            raise ValueError(f"Unsafe catalog sync path {key!r} for POSIX destination {root!r}")
+        physical = self.target_client.get_posix_path(key)
+        if physical is None:
+            raise ValueError(f"POSIX sync destination has no physical path: {key!r}")
+
+        parent = os.path.dirname(physical)
+        destinations = [os.path.realpath(physical), os.path.realpath(parent)]
+        if operation == OperationType.SYMLINK and item.symlink_target is not None:
+            target = ObjectMetadata.resolve_symlink_target(key, item.symlink_target)
+            link = ObjectMetadata.encode_symlink_target(key, target)
+            destinations.append(os.path.realpath(os.path.join(parent, link)))
+        if any(os.path.commonpath((root, path)) != root for path in destinations) or destinations[0] == root:
+            raise ValueError(f"Catalog sync path {key!r} escapes POSIX destination {root!r}")
+        if operation == OperationType.ADD and os.path.isdir(physical):
+            raise IsADirectoryError(f"Cannot write catalog file {key!r} over a POSIX directory")
+        if operation == OperationType.SYMLINK and self.target_client._metadata_provider is None:
+            # Establish the link's real parent before encoding a parent-relative target there.
+            safe_makedirs(parent)
+            if os.path.realpath(parent) != os.path.normpath(os.path.join(root, os.path.dirname(relative_key))):
+                raise ValueError(f"Cannot preserve catalog symlink {key!r} through a symlinked POSIX directory")
+
+    def _validate_reference_batch(self, worker_id: str, batch: OperationBatch) -> bool:
+        if self._reference_target_root is not None:
+            for item, _ in batch.items:
+                try:
+                    self._check_reference_target(batch.operation, item)
+                except Exception as error:
+                    self._report_error(worker_id, error, item.key, batch.operation)
+                    return False
+        return True
 
     def _transfer_callback(
         self,
@@ -227,6 +281,8 @@ class BatchSyncHandler(ABC):
         batch: OperationBatch,
     ) -> None:
         """Process an ADD batch: filter items via skip/track, then transfer."""
+        if not self._validate_reference_batch(worker_id, batch):
+            return
         transfer_items: list[tuple[ObjectMetadata, str]] = []
 
         if self.target_client._metadata_provider:
@@ -288,6 +344,8 @@ class BatchSyncHandler(ABC):
 
     def process_delete_batch(self, worker_id: str, batch: OperationBatch) -> None:
         """Process a DELETE batch."""
+        if not self._validate_reference_batch(worker_id, batch):
+            return
         keys = [file_metadata.key for file_metadata, _ in batch.items]
         try:
             self.target_client.delete_many(keys)
@@ -314,6 +372,7 @@ class BatchSyncHandler(ABC):
                 if file_metadata.symlink_target is None:
                     raise RuntimeError(f"SYMLINK batch item has no symlink_target: {file_metadata.key}")
 
+                self._check_reference_target(batch.operation, file_metadata)
                 target_file_path = build_target_file_path(self.source_path, self.target_path, file_metadata)
                 translated_target = ObjectMetadata.resolve_symlink_target(
                     target_file_path, file_metadata.symlink_target

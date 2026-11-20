@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import os
 import queue
 import time
@@ -22,7 +23,8 @@ import pytest
 import ray
 import ray.runtime_env
 
-from multistorageclient import StorageClient, StorageClientConfig
+import test_multistorageclient
+from multistorageclient import StorageClient, StorageClientConfig, resolve_storage_client
 from multistorageclient.contrib.ray import SharedEvent, SharedQueue
 from multistorageclient.sync.producer import OperationType
 from multistorageclient.types import ExecutionMode, ObjectMetadata
@@ -41,6 +43,7 @@ def ray_cluster():
         ignore_reinit_error=True,
         runtime_env=ray.runtime_env.RuntimeEnv(
             working_dir=os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../..")),
+            py_modules=[os.path.dirname(test_multistorageclient.__file__)],
             # Ensure workers can import from the project and inherit env vars
             env_vars={
                 "MSC_NUM_PROCESSES": "2",
@@ -151,6 +154,29 @@ def test_ray_shared_event(ray_cluster):
     event.clear()
 
     assert not event.is_set()
+
+
+def test_worker_reopens_pinned_reference(ray_cluster, tmp_path, monkeypatch):
+    from test_multistorageclient.unit.utils.catalog import CatalogResolver
+
+    config_path = tmp_path / "catalog.json"
+    config_path.write_text(
+        json.dumps({"url_resolvers": {"catalog": {"type": f"{CatalogResolver.__module__}.CatalogResolver"}}})
+    )
+    monkeypatch.setenv("MSC_CONFIG", str(config_path))
+    monkeypatch.setenv("MSC_TEST_REVISION", "r1")
+    driver, _ = resolve_storage_client("catalog://alias/latest/files/")
+
+    @ray.remote
+    def check(client: StorageClient):
+        sibling, key = resolve_storage_client(client.url("second"))
+        return client.url(key), [(ref.root_url, ref.access_scope) for ref in CatalogResolver.binds], sibling.profile
+
+    env = {"MSC_CONFIG": str(config_path), "MSC_TEST_REVISION": "r2", "MSC_TEST_SCOPE": "worker"}
+    url, binds, profile = ray.get(check.options(runtime_env={"env_vars": env}).remote(driver))
+    assert url == "catalog://ns/r1/files/second"
+    assert binds == [("catalog://ns/r1/files/", "worker")]
+    assert profile != driver.profile
 
 
 def test_storage_client_sync_no_files(ray_cluster):

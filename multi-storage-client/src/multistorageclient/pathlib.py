@@ -15,14 +15,17 @@
 
 import logging
 import os
+import posixpath
 import stat
+from fnmatch import fnmatchcase
+from glob import escape
 from pathlib import Path, PurePath, PurePosixPath
 from types import NotImplementedType
 
 from .client import StorageClient
-from .shortcuts import resolve_storage_client
-from .types import MSC_PROTOCOL, ObjectMetadata
-from .utils import _decode_buffer, _ensure_bytes, join_paths
+from .shortcuts import _reopen_reference_path, resolve_storage_client
+from .types import ObjectMetadata
+from .utils import _decode_buffer, _ensure_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +76,7 @@ class MultiStoragePath:
     A path object similar to pathlib.Path that supports both local and remote file systems.
 
     MultiStoragePath provides a unified interface for working with paths across different storage systems,
-    including local files, S3, GCS, Azure Blob Storage, and more. It uses the "msc://" protocol
-    prefix to identify remote storage paths.
+    including local files, S3, GCS, Azure Blob Storage, and configured reference URIs.
 
     This implementation is based on Python 3.9's pathlib.Path interface, providing compatible behavior
     for local filesystem operations while extending support to remote storage systems.
@@ -89,6 +91,9 @@ class MultiStoragePath:
     _internal_path: PurePosixPath
     _storage_client: StorageClient
     _path: str
+    _key: str
+    _profile: str
+    _is_reference: bool
 
     def __init__(self, path: str | os.PathLike):
         """
@@ -96,17 +101,44 @@ class MultiStoragePath:
 
         :param path: String, Path, or MultiStoragePath. Relative paths are automatically converted to absolute.
         """
-        self._path = str(path)
-        self._storage_client, relative_path = resolve_storage_client(self._path)
-        self._internal_path = PurePosixPath(relative_path)
+        if isinstance(path, MultiStoragePath) and path._is_reference:
+            self._set_reference(path._storage_client, path._key, path._profile)
+            return
 
-        if self._storage_client.is_default_profile():
+        self._path = str(path)
+        client, key = resolve_storage_client(self._path)
+        if client._config.canonical_root_url is not None:
+            self._set_reference(client, key, client.profile)
+            return
+
+        self._storage_client = client
+        self._profile = client.profile
+        self._is_reference = False
+        self._internal_path = PurePosixPath(key)
+        if client.is_default_profile():
             self._internal_path = PurePosixPath("/") / self._internal_path
+        self._key = str(self._internal_path)
+
+    def _set_reference(self, client: StorageClient, key: str, profile: str) -> None:
+        self._storage_client = client
+        self._profile = profile
+        self._is_reference = True
+        self._key = key
+        self._internal_path = PurePosixPath(key)
+
+    def _with_key(self, key: str) -> "MultiStoragePath":
+        if self._is_reference:
+            child = type(self).__new__(type(self))
+            child._set_reference(self._storage_client, key, self._profile)
+            return child
+        if self._storage_client.is_default_profile():
+            return MultiStoragePath(key)
+        return MultiStoragePath(self._storage_client.url(key))
 
     def __str__(self) -> str:
         if self._storage_client.is_default_profile():
-            return str(self._internal_path)
-        return join_paths(f"{MSC_PROTOCOL}{self._storage_client.profile}", str(self._internal_path))
+            return self._key
+        return self._storage_client.url(self._key)
 
     def __repr__(self) -> str:
         return f"MultiStoragePath({str(self)!r})"
@@ -114,10 +146,7 @@ class MultiStoragePath:
     def __eq__(self, other) -> bool:
         if not isinstance(other, MultiStoragePath):
             return False
-        return (
-            self._storage_client.profile == other._storage_client.profile
-            and self._internal_path == other._internal_path
-        )
+        return self._ordering_key() == other._ordering_key()
 
     def __lt__(self, other):
         """
@@ -163,15 +192,15 @@ class MultiStoragePath:
             return MultiStoragePath(other)
         return NotImplemented
 
-    def _ordering_key(self) -> tuple[str, PurePosixPath]:
+    def _ordering_key(self) -> tuple[str, bool, tuple[str, ...]]:
         """
         Return the resolved profile and internal path used for equality-compatible ordering.
         """
-        return (self._storage_client.profile, self._internal_path)
+        return (self._profile, self._is_reference, self.parts)
 
     def __hash__(self) -> int:
         """Return hash of the path."""
-        return hash((self._storage_client.profile, self._internal_path))
+        return hash(self._ordering_key())
 
     def __fspath__(self) -> str:
         return str(self)
@@ -186,18 +215,29 @@ class MultiStoragePath:
             return NotImplemented
 
     def __rtruediv__(self, key):
+        if self._is_reference:
+            return self if isinstance(key, (str, os.PathLike)) else NotImplemented
         try:
             return self.with_segments(key, self)
         except TypeError:
             return NotImplemented
 
     def __getstate__(self):
+        if self._is_reference:
+            return {"reference_url": str(self), "root_url": self._storage_client.url()}
         return {"_path": self._path, "_internal_path": self._internal_path}
 
     def __setstate__(self, state):
+        if "reference_url" in state:
+            client, key = _reopen_reference_path(state["reference_url"], state["root_url"])
+            self._set_reference(client, key, client.profile)
+            return
+        self._is_reference = False
         self._path = state["_path"]
         self._internal_path = state["_internal_path"]
+        self._key = str(self._internal_path)
         self._storage_client, _ = resolve_storage_client(self._path)
+        self._profile = self._storage_client.profile
 
     @property
     def anchor(self) -> str:
@@ -211,6 +251,8 @@ class MultiStoragePath:
         """
         The final path component, if any.
         """
+        if self._is_reference:
+            return self._key.rstrip("/").rpartition("/")[2]
         return self._internal_path.name
 
     @property
@@ -218,6 +260,8 @@ class MultiStoragePath:
         """
         The final path component, if any.
         """
+        if self._is_reference:
+            return PurePosixPath(self.name).suffix
         return self._internal_path.suffix
 
     @property
@@ -227,6 +271,8 @@ class MultiStoragePath:
 
         These include the leading periods. For example: ['.tar', '.gz']
         """
+        if self._is_reference:
+            return PurePosixPath(self.name).suffixes
         return self._internal_path.suffixes
 
     @property
@@ -234,6 +280,8 @@ class MultiStoragePath:
         """
         The final path component, minus its last suffix.
         """
+        if self._is_reference:
+            return self.name.removesuffix(self.suffix)
         return self._internal_path.stem
 
     @property
@@ -241,30 +289,35 @@ class MultiStoragePath:
         """
         The logical parent of the path.
         """
-        parent_path = self._internal_path.parent
-        if self._storage_client.is_default_profile():
-            return MultiStoragePath(str(parent_path))
-        return MultiStoragePath(join_paths(f"{MSC_PROTOCOL}{self._storage_client.profile}", str(parent_path)))
+        if self._is_reference:
+            prefix, separator, _ = self._key.rstrip("/").rpartition("/")
+            if not prefix or prefix.endswith("/"):
+                prefix += separator
+            return self._with_key(prefix)
+        return self._with_key(str(self._internal_path.parent))
 
     @property
     def parents(self) -> list["MultiStoragePath"]:
         """
         A sequence of this path's logical parents.
         """
-        if self._storage_client.is_default_profile():
-            return [MultiStoragePath(str(p)) for p in self._internal_path.parents]
-        else:
-            return [
-                MultiStoragePath(join_paths(f"{MSC_PROTOCOL}{self._storage_client.profile}", str(p)))
-                for p in self._internal_path.parents
-            ]
+        if self._is_reference:
+            result = []
+            path = self
+            while path._key:
+                path = path.parent
+                result.append(path)
+            return result
+        return [self._with_key(str(p)) for p in self._internal_path.parents]
 
     @property
-    def parts(self):
+    def parts(self) -> tuple[str, ...]:
         """
         An object providing sequence-like access to the components in the filesystem path (does not
         include the msc:// and the profile name).
         """
+        if self._is_reference:
+            return tuple(self._key.split("/")) if self._key else ()
         return self._internal_path.parts
 
     def as_posix(self) -> str:
@@ -279,7 +332,7 @@ class MultiStoragePath:
             return self._internal_path.as_posix()
 
         # Return the local path of the file
-        with self._storage_client.open(str(self._internal_path), mode="rb") as fp:
+        with self._storage_client.open(self._key, mode="rb") as fp:
             return fp.resolve_filesystem_path()
 
     def is_absolute(self) -> bool:
@@ -292,11 +345,16 @@ class MultiStoragePath:
         """
         Return True if the path is relative to another path in the same storage profile, or False otherwise.
         """
-        return (
-            isinstance(other, MultiStoragePath)
-            and self._storage_client.profile == other._storage_client.profile
-            and self._internal_path.is_relative_to(other._internal_path)
-        )
+        if not isinstance(other, MultiStoragePath) or self._profile != other._profile:
+            return False
+        if self._is_reference != other._is_reference:
+            return False
+        if self._is_reference:
+            return self._key == other._key or self._key.startswith(other._directory_prefix())
+        return self._internal_path.is_relative_to(other._internal_path)
+
+    def _directory_prefix(self) -> str:
+        return self._key + "/" if self._key and not self._key.endswith("/") else self._key
 
     def is_reserved(self) -> bool:
         if self._storage_client.is_default_profile():
@@ -307,6 +365,15 @@ class MultiStoragePath:
         """
         Return True if this path matches the given pattern.
         """
+        if self._is_reference:
+            pattern = os.fspath(pattern)
+            if not pattern:
+                raise ValueError("Empty pattern")
+            components = pattern.split("/")
+            parts = self.parts
+            if len(components) > len(parts) or (pattern.startswith("/") and len(components) != len(parts)):
+                return False
+            return all(fnmatchcase(part, rule) for part, rule in zip(reversed(parts), reversed(components)))
         return Path(self._internal_path).match(pattern)
 
     def relative_to(self, other: "MultiStoragePath") -> PurePosixPath:
@@ -319,7 +386,8 @@ class MultiStoragePath:
         - The other path is not a MultiStoragePath instance
 
         Note: This method returns a PurePosixPath (not a MultiStoragePath) because
-        MultiStoragePath always represents absolute paths.
+        MultiStoragePath always represents absolute paths. The returned PurePosixPath applies
+        its normal component and separator normalization.
 
         :param other: The base path to calculate relative path from
         :return: A PurePosixPath representing the relative path
@@ -330,11 +398,16 @@ class MultiStoragePath:
             raise TypeError(f"'{type(other).__name__}' object cannot be used as relative base")
 
         # Check if both paths use the same storage profile
-        if self._storage_client.profile != other._storage_client.profile:
+        if self._profile != other._profile:
             raise ValueError(
                 f"Cannot compute relative path between different storage profiles: "
-                f"'{self._storage_client.profile}' and '{other._storage_client.profile}'"
+                f"'{self._profile}' and '{other._profile}'"
             )
+
+        if self._is_reference or other._is_reference:
+            if not self.is_relative_to(other):
+                raise ValueError(f"{str(self)!r} is not in the subpath of {str(other)!r}")
+            return PurePosixPath(self._key[len(other._directory_prefix()) :])
 
         # Use the internal PurePosixPath.relative_to() method
         try:
@@ -347,48 +420,39 @@ class MultiStoragePath:
         """
         Return a new path with the file name changed.
         """
-        if self._storage_client.is_default_profile():
-            return MultiStoragePath(str(self._internal_path.with_name(name)))
-        else:
-            return MultiStoragePath(
-                join_paths(f"{MSC_PROTOCOL}{self._storage_client.profile}", str(self._internal_path.with_name(name)))
-            )
+        if self._is_reference:
+            if not self.name or not name or "/" in name:
+                raise ValueError(f"Invalid name {name!r} for {self!r}")
+            path = self._key.rstrip("/")
+            prefix, separator, _ = path.rpartition("/")
+            return self._with_key(prefix + separator + name + self._key[len(path) :])
+        return self._with_key(str(self._internal_path.with_name(name)))
 
     def with_stem(self, stem: str) -> "MultiStoragePath":
         """
         Return a new path with the stem changed.
         """
-        if self._storage_client.is_default_profile():
-            return MultiStoragePath(str(self._internal_path.with_stem(stem)))
-        else:
-            return MultiStoragePath(
-                join_paths(f"{MSC_PROTOCOL}{self._storage_client.profile}", str(self._internal_path.with_stem(stem)))
-            )
+        if self._is_reference:
+            return self.with_name(stem + self.suffix)
+        return self._with_key(str(self._internal_path.with_stem(stem)))
 
     def with_suffix(self, suffix: str) -> "MultiStoragePath":
         """
         Return a new path with the file suffix changed. If the path has no suffix, add given suffix.
         If the given suffix is an empty string, remove the suffix from the path.
         """
-        if self._storage_client.is_default_profile():
-            return MultiStoragePath(str(self._internal_path.with_suffix(suffix)))
-        else:
-            return MultiStoragePath(
-                join_paths(
-                    f"{MSC_PROTOCOL}{self._storage_client.profile}", str(self._internal_path.with_suffix(suffix))
-                )
-            )
+        if self._is_reference:
+            PurePosixPath("name").with_suffix(suffix)
+            return self.with_name(self.stem + suffix)
+        return self._with_key(str(self._internal_path.with_suffix(suffix)))
 
     def with_segments(self, *pathsegments) -> "MultiStoragePath":
         """
         Construct a new path object from any number of path-like objects.
         """
-        if self._storage_client.is_default_profile():
-            new_path = self._internal_path.joinpath(*pathsegments)
-            return MultiStoragePath(str(new_path))
-        else:
-            new_path = self._internal_path.joinpath(*pathsegments)
-            return MultiStoragePath(join_paths(f"{MSC_PROTOCOL}{self._storage_client.profile}", str(new_path)))
+        if self._is_reference:
+            return self._with_key(posixpath.join(self._key, *pathsegments))
+        return self._with_key(str(self._internal_path.joinpath(*pathsegments)))
 
     # Expanding and resolving paths
 
@@ -428,7 +492,7 @@ class MultiStoragePath:
         """
         if self._storage_client.is_default_profile():
             return MultiStoragePath(str(Path(self._internal_path).resolve(strict=strict)))
-        return MultiStoragePath(join_paths(f"{MSC_PROTOCOL}{self._storage_client.profile}", str(self._internal_path)))
+        return self._with_key(self._key)
 
     def readlink(self):
         """
@@ -450,7 +514,7 @@ class MultiStoragePath:
         """
         if self._storage_client.is_default_profile():
             return Path(self._internal_path).stat()
-        info = self._storage_client.info(str(self._internal_path))
+        info = self._storage_client.info(self._key)
         return StatResult(info)
 
     def lstat(self):
@@ -462,7 +526,7 @@ class MultiStoragePath:
         """
         if self._storage_client.is_default_profile():
             return Path(self._internal_path).lstat()
-        info = self._storage_client.info(str(self._internal_path))
+        info = self._storage_client.info(self._key)
         return StatResult(info)
 
     def exists(self) -> bool:
@@ -473,7 +537,7 @@ class MultiStoragePath:
             return Path(self._internal_path).exists()
         else:
             try:
-                self._storage_client.info(str(self._internal_path))
+                self._storage_client.info(self._key)
                 return True
             except FileNotFoundError:
                 return False
@@ -484,20 +548,9 @@ class MultiStoragePath:
         """
         if self._storage_client.is_default_profile():
             return Path(self._internal_path).is_file()
-        else:
-            try:
-                # If the path ends with a "/", assume it is a directory.
-                path = str(self._internal_path)
-                if path.endswith("/"):
-                    return False
-
-                meta = self._storage_client.info(path, strict=strict)
-                return meta.type == "file"
-            except FileNotFoundError:
-                return False
-            except Exception as e:
-                logger.warning("Error occurred while fetching file info at %s, caused by: %s", self._internal_path, e)
-                return False
+        if not self._is_reference and self._key.endswith("/"):
+            return False
+        return self._matches_type(self._key, "file", strict)
 
     def is_dir(self, strict: bool = True) -> bool:
         """
@@ -505,20 +558,19 @@ class MultiStoragePath:
         """
         if self._storage_client.is_default_profile():
             return Path(self._internal_path).is_dir()
-        else:
-            try:
-                # If the path does not end with a "/", append it to ensure the path is a directory.
-                path = str(self._internal_path)
-                if not path.endswith("/"):
-                    path += "/"
+        path = self._key if self._is_reference else self._directory_prefix()
+        return self._matches_type(path, "directory", strict)
 
-                meta = self._storage_client.info(path, strict=strict)
-                return meta.type == "directory"
-            except FileNotFoundError:
-                return False
-            except Exception as e:
-                logger.warning("Error occurred while fetching file info at %s, caused by: %s", self._internal_path, e)
-                return False
+    def _matches_type(self, path: str, object_type: str, strict: bool) -> bool:
+        try:
+            return self._storage_client.info(path, strict=strict).type == object_type
+        except FileNotFoundError:
+            return False
+        except Exception as e:
+            if self._is_reference:
+                raise
+            logger.warning("Error occurred while fetching file info at %s, caused by: %s", path, e)
+            return False
 
     def is_symlink(self):
         """
@@ -603,34 +655,32 @@ class MultiStoragePath:
         :param newline: Controls universal newlines mode.
         :param kwargs: Additional arguments passed to client.open (e.g., check_source_version, prefetch_file, etc.)
         """
-        return self._storage_client.open(
-            str(self._internal_path), mode=mode, buffering=buffering, encoding=encoding, **kwargs
-        )
+        return self._storage_client.open(self._key, mode=mode, buffering=buffering, encoding=encoding, **kwargs)
 
     def read_bytes(self) -> bytes:
         """
         Open the file in bytes mode, read it, and close the file.
         """
-        return _ensure_bytes(self._storage_client.read(str(self._internal_path)))
+        return _ensure_bytes(self._storage_client.read(self._key))
 
     def read_text(self, encoding: str = "utf-8", errors: str = "strict") -> str:
         """
         Open the file in text mode, read it, and close the file.
         """
-        result = self._storage_client.read(str(self._internal_path))
+        result = self._storage_client.read(self._key)
         return _decode_buffer(result, encoding, errors)
 
     def write_bytes(self, data: bytes) -> None:
         """
         Open the file in bytes mode, write to it, and close the file.
         """
-        self._storage_client.write(str(self._internal_path), data)
+        self._storage_client.write(self._key, data)
 
     def write_text(self, data: str, encoding: str = "utf-8", errors: str = "strict") -> None:
         """
         Open the file in text mode, write to it, and close the file.
         """
-        self._storage_client.write(str(self._internal_path), data.encode(encoding, errors))
+        self._storage_client.write(self._key, data.encode(encoding, errors))
 
     # Reading directories
 
@@ -638,11 +688,14 @@ class MultiStoragePath:
         """
         Yield path objects of the directory contents.
         """
-        if self._storage_client.is_default_profile():
+        if self._is_reference:
+            for item in self._storage_client.list(self._directory_prefix(), include_directories=True):
+                yield self._with_key(item.key)
+        elif self._storage_client.is_default_profile():
             for item in Path(self._internal_path).iterdir():
                 yield MultiStoragePath(str(item))
         else:
-            path = str(self._internal_path)
+            path = self._key
             if not path.endswith("/"):
                 path += "/"
             for item in self._storage_client.list(path, include_directories=True, include_url_prefix=True):
@@ -653,6 +706,9 @@ class MultiStoragePath:
         Iterate over this subtree and yield all existing files (of any kind, including directories)
         matching the given relative pattern.
         """
+        if self._is_reference:
+            key_pattern = posixpath.join(escape(self._key), pattern)
+            return [self._with_key(key) for key in self._storage_client.glob(key_pattern)]
         if self._storage_client.is_default_profile():
             return [MultiStoragePath(str(p)) for p in Path(self._internal_path).glob(pattern)]
         else:
@@ -666,6 +722,8 @@ class MultiStoragePath:
         Recursively yield all existing files (of any kind, including directories) matching the
         given relative pattern, anywhere in this subtree.
         """
+        if self._is_reference:
+            return self.glob(f"**/{pattern}")
         if self._storage_client.is_default_profile():
             return [MultiStoragePath(str(p)) for p in Path(self._internal_path).rglob(pattern)]
         else:
@@ -693,6 +751,7 @@ class MultiStoragePath:
         """
         Create this file with the given access mode, if it doesn't exist.
         """
+        self._storage_client._ensure_writable()
         if self._storage_client.is_default_profile():
             Path(self._internal_path).touch(mode, exist_ok)
         else:
@@ -700,7 +759,7 @@ class MultiStoragePath:
                 # object storage does not support updating the last modified time of an object without writing the object
                 logger.warning("MultiStoragePath.touch() is not supported for remote storage paths")
             else:
-                self._storage_client.write(str(self._internal_path), b"")
+                self._storage_client.write(self._key, b"")
 
     def mkdir(self, mode=0o777, parents=False, exist_ok=False) -> None:
         """
@@ -708,6 +767,7 @@ class MultiStoragePath:
 
         For remote storage paths, this operation is a no-op.
         """
+        self._storage_client._ensure_writable()
         if self._storage_client.is_default_profile():
             Path(self._internal_path).mkdir(mode, parents, exist_ok)
 
@@ -717,6 +777,7 @@ class MultiStoragePath:
 
         Not supported for remote storage paths.
         """
+        self._storage_client._ensure_writable()
         if self._storage_client.is_default_profile():
             Path(self._internal_path).symlink_to(target, target_is_directory)
         else:
@@ -728,15 +789,17 @@ class MultiStoragePath:
         """
         Rename this path to the target path.
         """
+        self._storage_client._ensure_writable()
         if not isinstance(target, MultiStoragePath):
             target = MultiStoragePath(target)
 
+        target._storage_client._ensure_writable()
         if self._storage_client.is_default_profile():
             Path(self._internal_path).rename(str(target._internal_path))
         else:
             # Note: This operation is not atomic, and the target path must be a single file.
-            self._storage_client.copy(str(self._internal_path), str(target._internal_path))
-            self._storage_client.delete(str(self._internal_path))
+            self._storage_client.copy(self._key, str(target._internal_path))
+            self._storage_client.delete(self._key)
 
         return target
 
@@ -746,6 +809,9 @@ class MultiStoragePath:
 
         Not supported for remote storage paths.
         """
+        self._storage_client._ensure_writable()
+        if isinstance(target, MultiStoragePath):
+            target._storage_client._ensure_writable()
         if self._storage_client.is_default_profile():
             Path(self._internal_path).replace(target)
         else:
@@ -755,11 +821,12 @@ class MultiStoragePath:
         """
         Remove this file or link. If the path is a directory, use rmdir() instead.
         """
+        self._storage_client._ensure_writable()
         if self._storage_client.is_default_profile():
             Path(self._internal_path).unlink(missing_ok=missing_ok)
         else:
             try:
-                self._storage_client.delete(str(self._internal_path))
+                self._storage_client.delete(self._key)
             except FileNotFoundError:
                 if not missing_ok:
                     raise
@@ -770,6 +837,7 @@ class MultiStoragePath:
 
         Not supported for remote storage paths.
         """
+        self._storage_client._ensure_writable()
         if self._storage_client.is_default_profile():
             Path(self._internal_path).rmdir()
         else:
@@ -803,6 +871,7 @@ class MultiStoragePath:
 
         Not supported for remote storage paths.
         """
+        self._storage_client._ensure_writable()
         if self._storage_client.is_default_profile():
             Path(self._internal_path).chmod(mode)
         else:
@@ -815,6 +884,7 @@ class MultiStoragePath:
 
         Not supported for remote storage paths.
         """
+        self._storage_client._ensure_writable()
         if self._storage_client.is_default_profile():
             Path(self._internal_path).lchmod(mode)
         else:
