@@ -302,12 +302,31 @@ def test_streaming_write_registers_with_metadata_provider():
 def test_streaming_copies_non_contiguous_buffers_in_chunks():
     import numpy as np
 
-    # 24 MiB of every other column: more than one 16 MiB conversion chunk.
+    # 24 MiB of every other column: several one-part conversion chunks of whole rows.
     strided = np.resize(np.arange(251, dtype=np.uint8), (6144, 8192))[:, ::2]
     with _streaming_bucket() as (_, client):
         with client.open("strided.bin", "wb", writer_options=OPTIONS) as f:
             assert f.write(memoryview(strided)) == strided.nbytes
         assert client.read("strided.bin") == strided.tobytes()
+
+
+def test_streaming_bounds_non_contiguous_conversion_to_one_part():
+    import numpy as np
+
+    with _streaming_bucket() as (_, client):
+        # A 1-D strided view larger than a part is split by element.
+        flat = np.resize(np.arange(251, dtype=np.uint8), 3 * PART)[::2]
+        with client.open("flat.bin", "wb", writer_options=OPTIONS) as f:
+            assert f.write(memoryview(flat)) == flat.nbytes
+        assert client.read("flat.bin") == flat.tobytes()
+
+        # A 2-D view whose rows exceed a part cannot be split; it is rejected before any bytes are accepted.
+        wide = np.zeros((2, 4 * PART), dtype=np.uint8)[:, ::2]
+        with client.open("wide.bin", "wb", writer_options=OPTIONS) as f:
+            with pytest.raises(ValueError, match="pass a contiguous buffer"):
+                f.write(memoryview(wide))
+            assert f.tell() == 0
+        assert not client.is_file("wide.bin") or client.read("wide.bin") == b""
 
 
 def test_streaming_rechecks_the_overwrite_policy_before_publishing():

@@ -22,9 +22,6 @@ from ..types import StreamingObjectWriter
 
 _T = TypeVar("_T")
 
-# A non-contiguous buffer is copied this much at a time, so the copy does not grow with the buffer.
-_NON_CONTIGUOUS_CHUNK_BYTES = 16 * 1024 * 1024
-
 
 class RustStreamingWriter(StreamingObjectWriter):
     """
@@ -47,6 +44,8 @@ class RustStreamingWriter(StreamingObjectWriter):
         self._native = native
         self._translate_errors = translate_errors
         self._emit_write_metrics = emit_write_metrics
+        # A non-contiguous buffer is copied at most one part at a time, so conversion adds at most one part.
+        self._conversion_bytes = int(native.stats()["part_size"])
 
     def _call(self, f: Callable[[], _T]) -> _T:
         try:
@@ -73,12 +72,26 @@ class RustStreamingWriter(StreamingObjectWriter):
             if view.format != "B" or view.ndim != 1:
                 view = view.cast("B")
             return self._call(lambda: self._native.write(view))
-        # The native writer needs contiguous bytes; copy a slice of rows at a time.
-        row_count = (view.shape or (0,))[0]
-        row_bytes = max(view.nbytes // row_count, 1) if row_count else 1
-        rows = max(_NON_CONTIGUOUS_CHUNK_BYTES // row_bytes, 1)
-        for start in range(0, row_count, rows):
-            chunk = memoryview(view[start : start + rows].tobytes())
+        return self._write_non_contiguous(view)
+
+    def _write_non_contiguous(self, view: memoryview) -> int:
+        # The native writer needs contiguous bytes. memoryview slices only along the first axis, so a
+        # multi-dimensional view is copied whole rows at a time and must not have a row larger than one part.
+        count = (view.shape or (0,))[0]
+        if not count:
+            return 0
+        if view.ndim == 1:
+            step = max(self._conversion_bytes // view.itemsize, 1)
+        else:
+            row_bytes = view.nbytes // count
+            if row_bytes > self._conversion_bytes:
+                raise ValueError(
+                    f"Streaming writes copy a non-contiguous buffer in pieces of at most one part "
+                    f"({self._conversion_bytes} bytes), but its rows are {row_bytes} bytes; pass a contiguous buffer."
+                )
+            step = self._conversion_bytes // row_bytes
+        for start in range(0, count, step):
+            chunk = memoryview(view[start : start + step].tobytes())
             self._call(lambda chunk=chunk: self._native.write(chunk))
         return view.nbytes
 

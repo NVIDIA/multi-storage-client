@@ -719,7 +719,7 @@ class BaseStorageProvider(StorageProvider):
 
         :param path: The path where the object will be stored.
         :param attributes: The attributes to add to the object.
-        :param options: Part size, in-flight budget and size limit for the upload.
+        :param options: Part size, in-flight budget and object size hint for the upload.
         :return: A writer that publishes the object on close.
         :raises NotImplementedError: If the provider has no streaming writer.
         """

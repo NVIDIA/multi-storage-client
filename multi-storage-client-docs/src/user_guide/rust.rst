@@ -184,8 +184,9 @@ Streaming files differ from buffered files in these ways:
   placeholder temporary-file descriptor, so ``os.fsync(f.fileno())`` (as in PyTorch DCP) succeeds cheaply. Syncing it
   does not wait for parts; ``fsync()`` on the file does.
 * ``write()`` copies the caller's buffer before returning; the buffer must not be modified by another thread while
-  ``write()`` runs. A non-contiguous buffer (such as a strided view) is copied 16 MiB at a time, so it does not
-  break the memory bound. The native ``multistorageclient_rust.StreamingWriter.write`` itself accepts only
+  ``write()`` runs. A non-contiguous buffer (such as a strided view) is copied at most one part at a time, which
+  adds up to one part to the memory bound; a multi-dimensional one whose rows are larger than a part is rejected
+  before any bytes are accepted. The native ``multistorageclient_rust.StreamingWriter.write`` itself accepts only
   C-contiguous unsigned-byte buffers.
 * ``flush()`` raises errors from parts that already finished but does not wait, because serializers such as
   ``torch.save`` flush after every record. ``fsync()`` waits for every submitted part. Only ``close()`` publishes
@@ -216,8 +217,10 @@ Streaming files differ from buffered files in these ways:
   completion, not the whole transfer.
 * With a metadata provider that disallows overwrites, the overwrite check runs when the file is opened and again just
   before ``close()`` publishes it; a path that was registered in the meantime makes ``close()`` abort the upload and
-  raise :py:class:`FileExistsError`. As with buffered writes, two writers that finish at nearly the same time for a
-  path that is not yet committed can still both publish; the object comes whole from one of them.
+  raise :py:class:`FileExistsError`. The check sees only committed registrations: until
+  ``commit_metadata()`` runs, a path another writer registered is still treated as absent, so a second writer can
+  replace it, even when the two close one after the other. This is the same for buffered writes; the object always
+  comes whole from one of the writers.
 
 Streaming writes are supported by the ``s3``, ``s8k`` (without ``infer_content_type``), ``gcs_s3`` and ``ais_s3``
 providers with the Rust client, except S3 directory buckets and keys the Rust client cannot represent. ``open`` raises

@@ -228,7 +228,8 @@ enum State {
     Failed(String),
 }
 
-/// Point-in-time stream counters. Times are nanoseconds since the stream opened; zero means not observed.
+/// Stream counters, each read independently while parts may still finish (not one snapshot). Times are
+/// nanoseconds since the stream opened; zero means not observed.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct StreamStats {
     pub accepted_bytes: u64,
@@ -502,8 +503,15 @@ impl StreamCore {
         match &self.state {
             State::Open => {}
             State::Aborted | State::Failed(_) => {
-                return match &self.abort_error {
-                    // The upload handle is gone, so the abort cannot be retried; report it as unresolved.
+                // The upload handle is gone, so the abort cannot be retried; report it as unresolved. The counter
+                // also catches the cleanup abort that `WriteMultipart::finish` runs itself when the last part fails.
+                let failed = self.abort_error.clone().or_else(|| {
+                    self.counters
+                        .abort_failed
+                        .load(Ordering::Relaxed)
+                        .then(|| "the cleanup abort after a failed close also failed".to_string())
+                });
+                return match failed {
                     Some(msg) => Err(StreamError::Failed(format!(
                         "an earlier abort did not complete, so the multipart upload may remain: {msg}"
                     ))),
@@ -1022,6 +1030,24 @@ mod tests {
             ),
             other => panic!("{other:?}"),
         }
+        assert!(core.stats().abort_failed);
+        assert!(matches!(core.abort().await, Err(StreamError::Failed(msg)) if msg.contains("earlier abort")));
+    }
+
+    #[tokio::test]
+    async fn test_abort_reports_a_failed_cleanup_inside_close() {
+        // One full part, then a 4-byte tail that `finish` uploads; the tail fails and so does its cleanup abort.
+        let target = TestTarget::new(
+            Faults {
+                fail_part: Some(1),
+                fail_abort: true,
+                ..Default::default()
+            },
+            None,
+        );
+        let mut core = StreamCore::new(target.clone(), config(8, 1));
+        core.write_all(&payload(12)).await.unwrap();
+        assert!(core.close().await.is_err());
         assert!(core.stats().abort_failed);
         assert!(matches!(core.abort().await, Err(StreamError::Failed(msg)) if msg.contains("earlier abort")));
     }
