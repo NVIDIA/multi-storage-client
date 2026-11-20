@@ -23,6 +23,7 @@ import pytest
 import ray
 import ray.runtime_env
 
+import test_multistorageclient
 from multistorageclient import StorageClient, StorageClientConfig, resolve_storage_client
 from multistorageclient.contrib.ray import SharedEvent, SharedQueue
 from multistorageclient.sync.producer import OperationType
@@ -42,6 +43,7 @@ def ray_cluster():
         ignore_reinit_error=True,
         runtime_env=ray.runtime_env.RuntimeEnv(
             working_dir=os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../..")),
+            py_modules=[os.path.dirname(test_multistorageclient.__file__)],
             # Ensure workers can import from the project and inherit env vars
             env_vars={
                 "MSC_NUM_PROCESSES": "2",
