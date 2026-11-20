@@ -80,8 +80,9 @@ class RustStreamingWriter(StreamingObjectWriter):
         # The native writer needs contiguous bytes. memoryview slices only along the first axis, so the smallest
         # piece is one element (1-D) or one row; reject a buffer whose pieces cannot fit before accepting any bytes.
         count = (view.shape or (0,))[0]
-        if not count:
-            return 0
+        if not view.nbytes:
+            # Empty input still goes through the native state check, so a failed or closed stream raises.
+            return self._call(functools.partial(self._native.write, b""))
         piece_bytes = view.nbytes // count
         if piece_bytes > self._conversion_bytes:
             raise ValueError(

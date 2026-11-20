@@ -186,7 +186,16 @@ def test_streaming_failure_is_sticky():
             f.write(_payload(2 * PART))
             f.close()
         assert not isinstance(first.value, RetryableError)
-        for operation in (lambda: f.write(b"x"), lambda: f.write(b""), f.tell, f.flush, f.close, f.close):
+        empty_strided = memoryview(b"")[::2]
+        for operation in (
+            lambda: f.write(b"x"),
+            lambda: f.write(b""),
+            lambda: f.write(empty_strided),
+            f.tell,
+            f.flush,
+            f.close,
+            f.close,
+        ):
             with pytest.raises(Exception) as later:
                 operation()
             assert later.type in (RuntimeError, first.type)
