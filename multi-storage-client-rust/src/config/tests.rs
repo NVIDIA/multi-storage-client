@@ -687,11 +687,30 @@ fn deferred_configuration_is_validated_only_when_profiles_are_selected() {
 #[tokio::test]
 async fn shared_python_config_can_build_a_supported_profile() {
     let directory = tempfile::tempdir().unwrap();
-    let resolved = config(&json!({"opentelemetry":{"enabled":true},"cache":{"size":"1GiB"},"profiles":{
-        "local":{"storage_provider":{"type":"file","options":{"base_path":directory.path()}}},
-        "future":{"metadata_provider":{"type":"python.module.Metadata"},"storage_provider":{"type":"gcs","options":{"base_path":"bucket"}}},
-        "composite":{"storage_provider_profiles":["local"]}
-    }})).unwrap();
+    let resolved = config(&json!({
+        "opentelemetry": {"enabled": true}, "cache": {"size": "1GiB"},
+        "url_resolvers": {"catalog": {"type": "missing.Resolver", "options": {"endpoint": "${PYTHON_ONLY_ENDPOINT}"}}},
+        "path_mapping": {"legacy://host/data/": "msc://local/"},
+        "profiles": {
+            "local": {"storage_provider": {"type": "file", "options": {"base_path": directory.path()}}},
+            "future": {"metadata_provider": {"type": "python.module.Metadata"}, "storage_provider": {"type": "gcs", "options": {"base_path": "bucket"}}},
+            "composite": {"storage_provider_profiles": ["local"]}
+        }
+    })).unwrap();
+    for input in ["msc://local/a", "legacy://host/data/a"] {
+        assert_eq!(resolved.resolve(input).unwrap().profile, "local");
+    }
+    for input in [
+        "catalog://host/files/a",
+        "CATALOG://host/files/../a",
+        "catalog:opaque",
+    ] {
+        let error = resolved
+            .resolve_with_base(input, Path::new("/tmp"))
+            .unwrap_err();
+        assert_eq!(error.field_path, "/url/scheme");
+        assert!(error.message.contains("Python MSC client"));
+    }
     let client = crate::StorageClient::builder(resolved, "local")
         .build()
         .await
@@ -745,4 +764,61 @@ fn runtime_validation_keeps_escaped_profile_paths_and_source_files() {
     let error = resolved.validate_runtime_support().unwrap_err();
     assert_eq!(error.field_path, "/profiles/a~0~1b/storage_provider/type");
     assert_eq!(error.source.as_deref(), Some(path.as_path()));
+}
+
+#[test]
+fn shared_config_rejects_conflicting_scheme_owners() {
+    let extension = json!({"type": "example.Resolver"});
+    for scheme in ["msc", "file", "s3", "gs", "ais", "Bad", "1invalid"] {
+        assert!(
+            config(&json!({"url_resolvers": {scheme: extension}})).is_err(),
+            "accepted {scheme}"
+        );
+    }
+    assert!(
+        config(&json!({
+            "profiles": {"data": profile("bucket")}, "url_resolvers": {"catalog": extension},
+            "path_mapping": {"CATALOG://host/": "msc://data/"}
+        }))
+        .unwrap_err()
+        .message
+        .contains("already owned")
+    );
+
+    let temp = TempDir::new().unwrap();
+    let main = temp.path().join("main.json");
+    let child = temp.path().join("child.yaml");
+    std::fs::write(
+        &main,
+        r#"{"include":["child.yaml"],"url_resolvers":{"catalog":{"type":"example.Resolver"}}}"#,
+    )
+    .unwrap();
+    let loader = ConfigLoader::new().with_explicit_paths([&main]);
+    std::fs::write(&child, "url_resolvers: {another: {type: other.Resolver}}").unwrap();
+    assert!(
+        loader
+            .load()
+            .unwrap()
+            .resolve("another://host/a")
+            .unwrap_err()
+            .message
+            .contains("Python MSC")
+    );
+    std::fs::write(&child, "url_resolvers: {catalog: {type: example.Resolver}}").unwrap();
+    assert_eq!(
+        loader.load().unwrap_err().field_path,
+        "/url_resolvers/catalog"
+    );
+    std::fs::write(
+        &main,
+        r#"{"url_resolvers":{"catalog":{"type":"a.A"},"catalog":{"type":"b.B"}}}"#,
+    )
+    .unwrap();
+    assert!(loader.load().is_err());
+    std::fs::write(
+        &main,
+        r#"{"url_resolvers":{"catalog":{"type":"a.A"}},"url_resolvers":{}}"#,
+    )
+    .unwrap();
+    assert!(loader.load().is_err());
 }

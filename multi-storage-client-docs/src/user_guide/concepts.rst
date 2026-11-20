@@ -2,7 +2,7 @@
 Concepts
 ********
 
-MSC has 3 main concepts:
+MSC uses the following concepts:
 
 .. glossary::
 
@@ -26,3 +26,9 @@ MSC has 3 main concepts:
       The client exposes generic object and file operations such as create, read, update, delete, and list.
       It does validation and path translation before calling a :term:`provider`. A client may bundle several
       providers together.
+
+   URL resolver
+      An optional integration that turns a catalog URI into a read-only MSC client
+      bound to a particular dataset revision and a logical file key. A named profile
+      identifies storage chosen during configuration. A URL resolver lets an
+      application choose the dataset at runtime. See :ref:`url-resolvers`.

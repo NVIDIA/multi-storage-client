@@ -513,3 +513,117 @@ def test_pathlib_local_and_remote_with_rust_client(
     with temp_data_store_type(enable_rust_client=True) as temp_data_store:
         config.setup_msc_config(config_dict={"profiles": {"test": temp_data_store.profile_config_dict()}})
         verify_pathlib(profile="test", prefix="files")
+
+
+@pytest.fixture
+def reference_resolver(tmp_path):
+    from test_multistorageclient.unit.utils.catalog import CatalogResolver
+
+    CatalogResolver.binds.clear()
+    config.setup_msc_config(
+        {
+            "url_resolvers": {
+                "catalog": {
+                    "type": "test_multistorageclient.unit.utils.catalog.CatalogResolver",
+                    "options": {
+                        "profile": {"storage_provider": {"type": "file", "options": {"base_path": str(tmp_path)}}}
+                    },
+                }
+            }
+        }
+    )
+    return CatalogResolver
+
+
+def test_reference_path_preserves_keys_and_binding(reference_resolver, monkeypatch):
+    monkeypatch.setenv("MSC_TEST_SCOPE", "")
+    root = msc.Path("catalog://alias/latest/files/")
+    directory = root / "dir/./.."
+    key = "dir/./../café%2F?#.txt//"
+    file = directory / "café%2F?#.txt//"
+
+    assert str(file) == "catalog://ns/r1/files/dir/./../caf%C3%A9%252F%3F%23.txt//"
+    assert file.name == "café%2F?#.txt"
+    assert file.parts == ("dir", ".", "..", "café%2F?#.txt", "", "")
+    assert str(file.with_name(".")) == "catalog://ns/r1/files/dir/./.././/"
+    assert str(file.with_suffix(".md")) == "catalog://ns/r1/files/dir/./../caf%C3%A9%252F%3F%23.md//"
+    assert file.with_stem("new") == directory / "new.txt//"
+    assert file.parent == directory
+    assert file.parents == [directory, root / "dir/.", root / "dir", root]
+    assert root.parent == root
+    assert root.parents == []
+    nested = root / "dir///file"
+    assert str(nested.parent) == "catalog://ns/r1/files/dir///"
+    assert nested.parent / nested.name == nested
+    assert file.is_relative_to(directory)
+    assert not file.is_relative_to(root / "dir/..")
+    assert file.match("dir/./../*.txt//")
+    assert not file.match("dir/../*.txt//")
+
+    assert len({file, root / key, msc.Path(file), file.resolve()}) == 1
+    assert len({file, root / key.rstrip("/"), root / key.replace("/./", "/")}) == 3
+    assert len(reference_resolver.binds) == 1
+    with patch.object(file._storage_client, "read", return_value=b"data") as read:
+        assert file.read_bytes() == b"data"
+        read.assert_called_once_with(key)
+
+    reopened = msc.Path(str(file))
+    assert len(reference_resolver.binds) == 2
+    assert str(reopened) == str(file)
+    assert len({file, reopened}) == 2
+    assert not file.is_relative_to(reopened.parent)
+
+
+@pytest.mark.parametrize("scope", ["alice", ""])
+def test_reference_path_traversal_reuses_parent(scope, reference_resolver, monkeypatch, tmp_path):
+    monkeypatch.setenv("MSC_TEST_SCOPE", scope)
+    for name in ["dir?/a.txt", "dir?/sub/b.txt", "dirX/unrelated.txt"]:
+        backing = tmp_path / name
+        backing.parent.mkdir(exist_ok=True, parents=True)
+        backing.write_text(name)
+
+    root = msc.Path("catalog://ns/r1/files/")
+    directory = root / "dir?"
+    files = [directory / "a.txt", directory / "sub/b.txt"]
+    assert {item.name for item in directory.iterdir()} == {"a.txt", "sub"}
+    assert list(directory.glob("*.txt")) == files[:1]
+    assert sorted(directory.rglob("*.txt")) == files
+    assert sorted(item.read_text() for item in directory.rglob("*.txt")) == ["dir?/a.txt", "dir?/sub/b.txt"]
+    assert len(reference_resolver.binds) == 1
+
+
+def test_reference_path_pickle_reopens_pinned_revision(reference_resolver, monkeypatch):
+    file = msc.Path("catalog://alias/latest/files/dir/./%252F%23/")
+    state = file.__getstate__()
+    state["root_url"] = "catalog://other/r1/files/"
+    with pytest.raises(ValueError, match="canonical root"):
+        msc.Path.__new__(msc.Path).__setstate__(state)
+    assert len(reference_resolver.binds) == 1
+
+    saved = pickle.dumps(file)
+    assert str(file).encode() in saved
+    assert b"latest" not in saved
+    monkeypatch.setenv("MSC_TEST_SCOPE", "bob")
+    monkeypatch.setenv("MSC_TEST_REVISION", "r2")
+    reopened = pickle.loads(saved)
+    assert str(reopened) == str(file) == "catalog://ns/r1/files/dir/./%252F%23/"
+    assert reopened != file
+    assert [(ref.root_url, ref.access_scope) for ref in reference_resolver.binds] == [
+        ("catalog://alias/latest/files/", "alice"),
+        ("catalog://ns/r1/files/", "bob"),
+    ]
+    monkeypatch.setenv("MSC_TEST_SCOPE", "denied")
+    with pytest.raises(PermissionError):
+        pickle.loads(saved)
+
+
+def test_reference_path_read_only_before_side_effects(reference_resolver, tmp_path):
+    local_file = tmp_path / "file"
+    local_file.write_bytes(b"original")
+    file = msc.Path("catalog://ns/r1/files/file")
+    for mutate in [file.touch, file.mkdir, file.unlink, lambda: file.open("r+"), lambda: file.rename(local_file)]:
+        with pytest.raises(PermissionError):
+            mutate()
+    with pytest.raises(PermissionError):
+        msc.Path(local_file).rename(file)
+    assert local_file.read_bytes() == b"original"

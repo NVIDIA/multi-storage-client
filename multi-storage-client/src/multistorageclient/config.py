@@ -20,6 +20,7 @@ import os
 import tempfile
 from collections import defaultdict
 from collections.abc import Callable, Iterable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -30,7 +31,7 @@ from .cache import DEFAULT_CACHE_LINE_SIZE, DEFAULT_CACHE_SIZE, CacheManager
 from .caching.cache_config import CacheConfig, EvictionPolicyConfig
 from .providers.manifest_metadata import ManifestMetadataProvider
 from .rclone import read_rclone_config
-from .schema import validate_config
+from .schema import SUPPORTED_IMPLICIT_PROFILE_PROTOCOLS, validate_config
 from .telemetry import Telemetry
 from .telemetry import init as telemetry_init
 from .types import (
@@ -52,7 +53,6 @@ from .types import (
 from .utils import build_full_path, expand_env_vars, import_class, merge_dictionaries_no_overwrite
 
 # Constants related to implicit profiles
-SUPPORTED_IMPLICIT_PROFILE_PROTOCOLS = ("s3", "gs", "ais", "file")
 PROTOCOL_TO_PROVIDER_TYPE_MAPPING = {
     "s3": "s3",
     "gs": "gcs",
@@ -105,6 +105,34 @@ CREDENTIALS_PROVIDER_MAPPING = {
     "HuggingFaceCredentials": "HuggingFaceCredentialsProvider",
     "FileBasedCredentials": "FileBasedCredentialsProvider",
 }
+
+
+def _load_config(text: str, *, is_json: bool) -> Any:
+    """Load config and reject duplicate resolver registrations before a mapping can discard them."""
+    config = json.loads(text) if is_json else None
+    if is_json and (not isinstance(config, dict) or "url_resolvers" not in config):
+        return config
+
+    loader = yaml.SafeLoader(text)
+    try:
+        root = loader.get_single_node()
+        if root is None:
+            return None
+        if isinstance(root, yaml.MappingNode):
+            loader.flatten_mapping(root)
+            sections = [value for key, value in root.value if key.value == "url_resolvers"]
+            if len(sections) > 1:
+                raise ValueError("Duplicate url_resolvers section")
+            if sections and isinstance(sections[0], yaml.MappingNode):
+                loader.flatten_mapping(sections[0])
+                schemes = set()
+                for key, _ in sections[0].value:
+                    if key.value in schemes:
+                        raise ValueError(f"Duplicate URL resolver registration for scheme {key.value!r}")
+                    schemes.add(key.value)
+        return config if is_json else loader.construct_document(root)
+    finally:
+        loader.dispose()
 
 
 def _resolve_include_path(include_path: str, parent_config_path: str) -> str:
@@ -283,6 +311,14 @@ def _merge_configs(
         if key == "profiles":
             result["profiles"] = _merge_profiles(base_value or {}, new_value or {}, base_path, new_path)
 
+        elif key == "url_resolvers":
+            base_resolvers = base_config[key]
+            new_resolvers = new_config[key]
+            duplicates = base_resolvers.keys() & new_resolvers.keys()
+            if duplicates:
+                raise ValueError(f"Duplicate URL resolver registration for scheme {min(duplicates)!r}")
+            result[key] = {**base_resolvers, **new_resolvers}
+
         elif key in ("path_mapping", "experimental_features"):
             merged, conflicts = merge_dictionaries_no_overwrite(
                 (base_value or {}).copy(), new_value or {}, allow_idempotent=True
@@ -344,10 +380,7 @@ def _load_and_merge_includes(
 
         try:
             with open(resolved_path) as f:
-                if resolved_path.endswith(".json"):
-                    included_config = json.load(f)
-                else:
-                    included_config = yaml.safe_load(f)
+                included_config = _load_config(f.read(), is_json=resolved_path.endswith(".json"))
         except Exception as e:
             raise ValueError(f"Failed to load included config {resolved_path}: {e}")
 
@@ -1321,6 +1354,99 @@ class StorageClientConfig:
         self.replicas = replicas
         self.autocommit_config = autocommit_config
 
+    canonical_root_url: str | None = None
+    access_scope: str | None = None
+    _reference_pid: int | None = None
+    _reference_route: tuple[str, ...] = ()
+
+    @property
+    def read_only(self) -> bool:
+        """Whether this configuration belongs to a read-only reference binding."""
+        return self.canonical_root_url is not None
+
+    @property
+    def resolver_identity(self) -> tuple[str, str] | None:
+        """The scheme and namespace of this reference's canonical root."""
+        if self.canonical_root_url is None:
+            return None
+        uri = urlparse(self.canonical_root_url)
+        return uri.scheme, uri.netloc
+
+    @property
+    def _inherited_reference(self) -> bool:
+        return self._reference_pid is not None and self._reference_pid != os.getpid()
+
+    @staticmethod
+    def _from_bound_profile(
+        config_dict: dict[str, Any],
+        profile: str,
+        canonical_root_url: str,
+        access_scope: str | None,
+        telemetry_provider: Callable[[], Telemetry] | None = None,
+        *,
+        binding_profile: str | None = None,
+        route: tuple[str, ...] = (),
+    ) -> "StorageClientConfig":
+        autocommit = config_dict["profiles"][profile].get("autocommit", {})
+        if autocommit.get("at_exit") or autocommit.get("interval_minutes"):
+            raise ValueError("Metadata autocommit is not supported for a read-only reference.")
+        # A deployment replica's ordinary cache namespace can span multiple bindings.
+        if access_scope is None or route:
+            config_dict = {k: v for k, v in config_dict.items() if k != "cache"}
+        config = StorageClientConfig.from_dict(
+            config_dict, profile, skip_validation=True, telemetry_provider=telemetry_provider
+        )
+        config._set_reference(binding_profile or profile, canonical_root_url, access_scope, route)
+        return config
+
+    def _set_reference(self, identity: str, root: str, scope: str | None, route: tuple[str, ...]) -> None:
+        self.autocommit_config = None
+        self.profile = identity
+        self.canonical_root_url = root
+        self.access_scope = scope
+        self._reference_pid = os.getpid()
+        self._reference_route = route
+        if self.cache_manager is not None:
+            self.cache_manager._opaque_keys = True
+        self.replicas = [replace(replica, read_only=True) for replica in self.replicas]
+        for name, child in (self.child_configs or {}).items():
+            child._set_reference(identity, root, scope, (*route, name))
+
+    def _related_config(self, name: str) -> "StorageClientConfig":
+        if self.child_configs and name in self.child_configs:
+            return self.child_configs[name]
+        if self._config_dict is None:
+            raise ValueError(f"Cannot initialize related profile '{name}' without a configuration.")
+        if self.canonical_root_url is not None:
+            return StorageClientConfig._from_bound_profile(
+                self._config_dict,
+                name,
+                self.canonical_root_url,
+                self.access_scope,
+                binding_profile=self.profile,
+                route=(*self._reference_route, name),
+            )
+        return StorageClientConfig.from_dict(self._config_dict, name)
+
+    def _current_process_config(self) -> "StorageClientConfig":
+        if self._inherited_reference:
+            from .shortcuts import _reopen_reference
+
+            assert self.canonical_root_url is not None
+            root = _reopen_reference(self.canonical_root_url, expected_scope=self.access_scope)._config
+            return root._component_config(self._reference_route)
+        return self
+
+    def _component_config(self, route: tuple[str, ...]) -> "StorageClientConfig":
+        config = self
+        for name in route:
+            if name not in (config.storage_provider_profiles or ()) and not any(
+                replica.replica_profile == name for replica in config.replicas
+            ):
+                raise ValueError(f"Reopened reference no longer declares backend or replica '{name}'.")
+            config = config._related_config(name)
+        return config
+
     @staticmethod
     def from_json(
         config_json: str,
@@ -1334,7 +1460,7 @@ class StorageClientConfig:
         :param profile: Profile to use.
         :param telemetry_provider: A function that provides a telemetry instance. The function must be defined at the top level of a module to work with pickling.
         """
-        config_dict = json.loads(config_json)
+        config_dict = _load_config(config_json, is_json=True)
         return StorageClientConfig.from_dict(
             config_dict=config_dict, profile=profile, telemetry_provider=telemetry_provider
         )
@@ -1352,7 +1478,7 @@ class StorageClientConfig:
         :param profile: Profile to use.
         :param telemetry_provider: A function that provides a telemetry instance. The function must be defined at the top level of a module to work with pickling.
         """
-        config_dict = yaml.safe_load(config_yaml) or {}
+        config_dict = _load_config(config_yaml, is_json=False) or {}
         return StorageClientConfig.from_dict(
             config_dict=config_dict, profile=profile, telemetry_provider=telemetry_provider
         )
@@ -1504,10 +1630,7 @@ class StorageClientConfig:
             if os.path.exists(path):
                 try:
                     with open(path) as f:
-                        if path.endswith(".json"):
-                            config_dict = json.load(f)
-                        else:
-                            config_dict = yaml.safe_load(f)
+                        config_dict = _load_config(f.read(), is_json=path.endswith(".json"))
                         config_file_path = path
                     # Use the first config file.
                     break
@@ -1525,6 +1648,8 @@ class StorageClientConfig:
 
             if "include" in config_dict and config_file_path:
                 config_dict = _load_and_merge_includes(config_file_path, config_dict)
+                if "url_resolvers" in config_dict:
+                    validate_config(config_dict)
 
         return config_dict, config_file_path
 
@@ -1547,6 +1672,12 @@ class StorageClientConfig:
             return PathMapping()
 
     def __getstate__(self) -> dict[str, Any]:
+        if self.canonical_root_url is not None:
+            return {
+                "canonical_root_url": self.canonical_root_url,
+                "resolver_identity": self.resolver_identity,
+                "route": self._reference_route,
+            }
         state = self.__dict__.copy()
         if not state.get("_config_dict"):
             raise ValueError("StorageClientConfig is not serializable")
@@ -1559,6 +1690,17 @@ class StorageClientConfig:
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
+        if "canonical_root_url" in state:
+            from .shortcuts import _reopen_reference
+
+            root = state["canonical_root_url"]
+            uri = urlparse(root)
+            if (uri.scheme, uri.netloc) != state["resolver_identity"]:
+                raise ValueError("Serialized reference does not match its recorded resolver identity.")
+            config = _reopen_reference(root)._config._component_config(state["route"])
+            self.__dict__.update(config.__dict__)
+            return
+
         # Presence checked by __getstate__.
         config_dict = state["_config_dict"]
         loader = StorageClientConfigLoader(

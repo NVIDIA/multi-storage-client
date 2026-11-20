@@ -35,7 +35,6 @@ from ..retry import batch_retry, retry
 from ..sync import SyncManager
 from ..types import (
     AWARE_DATETIME_MIN,
-    MSC_PROTOCOL,
     BatchTransferCallback,
     ExecutionMode,
     ObjectMetadata,
@@ -56,7 +55,6 @@ from ..utils import (
     _invoke_batch_transfer,
     _transfer_notification,
     create_attribute_filter_evaluator,
-    join_paths,
     matches_attribute_filter_expression,
 )
 from .types import AbstractStorageClient
@@ -84,8 +82,17 @@ class SingleStorageClient(AbstractStorageClient):
         :param config: Storage client configuration with storage_provider set
         :raises ValueError: If config has storage_provider_profiles (multi-backend)
         """
+        config = config._current_process_config()
         self._initialize_providers(config)
         self._initialize_replicas(config.replicas)
+
+    def _ensure_current_process(self) -> None:
+        if self._config._inherited_reference:
+            config = self._config._current_process_config()
+            fresh = SingleStorageClient(config)
+            if self._replica_manager is None:
+                fresh._replica_manager = None
+            object.__setattr__(self, "__dict__", vars(fresh))
 
     def _initialize_providers(self, config: StorageClientConfig) -> None:
         if config.storage_provider_profiles:
@@ -104,6 +111,8 @@ class SingleStorageClient(AbstractStorageClient):
         self._cache_config = self._config.cache_config
         self._retry_config = self._config.retry_config
         self._cache_manager = self._config.cache_manager
+        if config.read_only and isinstance(self._storage_provider, PosixFileStorageProvider):
+            self._storage_provider._restrict_to_base_path = True
         self._autocommit_config = self._config.autocommit_config
 
         if self._autocommit_config:
@@ -137,11 +146,7 @@ class SingleStorageClient(AbstractStorageClient):
         replica_clients = []
         writable_replica_clients = []
         for replica in sorted_replicas:
-            if self._config._config_dict is None:
-                raise ValueError(f"Cannot initialize replica '{replica.replica_profile}' without a config")
-            replica_config = StorageClientConfig.from_dict(
-                config_dict=self._config._config_dict, profile=replica.replica_profile
-            )
+            replica_config = self._config._related_config(replica.replica_profile)
 
             storage_client = StorageClientFacade(config=replica_config)
             replica_clients.append(storage_client)
@@ -230,6 +235,11 @@ class SingleStorageClient(AbstractStorageClient):
                 self._commit_thread.join(timeout=5.0)
 
     def __getstate__(self) -> dict[str, Any]:
+        if self._config.read_only:
+            state: dict[str, Any] = {"_config": self._config}
+            if self._replica_manager is None:
+                state["_replica_manager"] = None
+            return state
         state = self.__dict__.copy()
         del state["_credentials_provider"]
         del state["_storage_provider"]
@@ -254,8 +264,10 @@ class SingleStorageClient(AbstractStorageClient):
         config = state["_config"]
         self._initialize_providers(config)
 
-        # Replica manager could be disabled if it's set to None in the state.
+        # Sync disables replica reads on the source client before dispatching workers.
         if "_replica_manager" in state and state["_replica_manager"] is None:
+            self._replicas = []
+            self._writable_replicas = []
             self._replica_manager = None
         else:
             self._initialize_replicas(config.replicas)
@@ -281,7 +293,8 @@ class SingleStorageClient(AbstractStorageClient):
         """
         :return: List of replica storage clients, sorted by read priority.
         """
-        return self._replicas
+        # Replica clients accept physical paths that bypass a bound reference's metadata inventory.
+        return [] if self._config.read_only else self._replicas
 
     @property
     def writable_replicas(self) -> list[AbstractStorageClient]:
@@ -470,6 +483,8 @@ class SingleStorageClient(AbstractStorageClient):
         :return: The object content as Python bytes or, with Rust enabled, a buffer supporting Python's buffer protocol.
         :raises FileNotFoundError: If the file at the specified path does not exist.
         """
+        self._ensure_current_process()
+        logical_path = path
         if self._metadata_provider:
             path = self._resolve_read_path(path)
 
@@ -537,7 +552,7 @@ class SingleStorageClient(AbstractStorageClient):
                     check_source_version == SourceVersionCheckMode.INHERIT
                     and self._cache_manager.check_source_version()
                 ):
-                    source_version = self._get_source_version(path)
+                    source_version = self._get_source_version(logical_path)
 
                 data = self._cache_manager.read(path, source_version)
                 if data is None:
@@ -566,7 +581,11 @@ class SingleStorageClient(AbstractStorageClient):
         :return: ObjectMetadata containing file information (size, last modified, etc.).
         :raises FileNotFoundError: If the file at the specified path does not exist.
         """
-        if not path or path == ".":  # empty path or '.' provided by the user
+        self._ensure_current_process()
+        if self._config.read_only and self._metadata_provider:
+            return self._metadata_provider.get_object_metadata(path, include_pending=not strict)
+
+        if not path or (path == "." and not self._config.read_only):  # empty path or '.' provided by the user
             if self._is_posix_file_storage_provider():
                 root = cast(PosixFileStorageProvider, self._storage_provider)._prepend_base_path("")
                 last_modified = datetime.fromtimestamp(os.path.getmtime(root), tz=UTC)
@@ -589,6 +608,7 @@ class SingleStorageClient(AbstractStorageClient):
         :param metadata: Optional metadata for this object, as returned by :py:meth:`info`, to avoid a provider lookup.
         :raises FileNotFoundError: If the remote file does not exist.
         """
+        self._ensure_current_process()
         if self._metadata_provider:
             physical_path = self._resolve_read_path(remote_path)
             metadata = self._metadata_provider.get_object_metadata(remote_path)
@@ -619,6 +639,7 @@ class SingleStorageClient(AbstractStorageClient):
         :raises ValueError: If remote_paths and local_paths have different lengths.
         :raises FileNotFoundError: If any remote file does not exist.
         """
+        self._ensure_current_process()
         if len(remote_paths) != len(local_paths):
             raise ValueError("remote_paths and local_paths must have the same length")
 
@@ -649,6 +670,7 @@ class SingleStorageClient(AbstractStorageClient):
             file path, or a file-like object (e.g., an open file handle).
         :param attributes: The attributes to add to the file if a new file is created.
         """
+        self._ensure_writable()
         virtual_path = remote_path
         if self._metadata_provider:
             physical_path = self._resolve_write_path(remote_path)
@@ -680,6 +702,7 @@ class SingleStorageClient(AbstractStorageClient):
         :raises ValueError: If remote_paths and local_paths have different lengths.
         :raises ValueError: If attributes is provided and has a different length than remote_paths.
         """
+        self._ensure_writable()
         if len(remote_paths) != len(local_paths):
             raise ValueError("remote_paths and local_paths must have the same length")
 
@@ -714,6 +737,7 @@ class SingleStorageClient(AbstractStorageClient):
         :param body: The content to write as bytes.
         :param attributes: Optional attributes to add to the file.
         """
+        self._ensure_writable()
         virtual_path = path
         if self._metadata_provider:
             physical_path = self._resolve_write_path(path)
@@ -731,6 +755,7 @@ class SingleStorageClient(AbstractStorageClient):
         :param dest_path: The logical path where the object will be copied to.
         :raises FileNotFoundError: If the source file does not exist.
         """
+        self._ensure_writable()
         virtual_dest_path = dest_path
         if self._metadata_provider:
             src_path = self._resolve_read_path(src_path)
@@ -747,6 +772,7 @@ class SingleStorageClient(AbstractStorageClient):
         :param path: The logical path where the symlink will be created.
         :param target: The logical key that the symlink points to.
         """
+        self._ensure_writable()
         if self._metadata_provider:
             try:
                 self._metadata_provider.get_object_metadata(path)
@@ -775,6 +801,7 @@ class SingleStorageClient(AbstractStorageClient):
         :param path: The logical path of the object or directory to delete.
         :param recursive: Whether to delete objects in the path recursively.
         """
+        self._ensure_writable()
         obj_metadata = self.info(path)
         is_dir = obj_metadata and obj_metadata.type == "directory"
         is_file = obj_metadata and obj_metadata.type == "file"
@@ -840,6 +867,7 @@ class SingleStorageClient(AbstractStorageClient):
 
         :param paths: List of logical paths of the files to delete.
         """
+        self._ensure_writable()
         physical_paths_to_delete: list[str] = []
         metadata_paths_to_remove: set[str] = set()
         for path in paths:
@@ -886,13 +914,14 @@ class SingleStorageClient(AbstractStorageClient):
         :param attribute_filter_expression: The attribute filter expression to apply to the result.
         :return: A list of object paths that match the specified pattern.
         """
+        self._ensure_current_process()
         if self._metadata_provider:
             results = self._metadata_provider.glob(pattern, attribute_filter_expression)
         else:
             results = self._storage_provider.glob(pattern, attribute_filter_expression)
 
         if include_url_prefix:
-            results = [join_paths(f"{MSC_PROTOCOL}{self._config.profile}", path) for path in results]
+            results = [self.url(path) for path in results]
 
         return results
 
@@ -942,15 +971,16 @@ class SingleStorageClient(AbstractStorageClient):
                     object_metadata = self._with_url_prefix(object_metadata)
                 return object_metadata, path
             except FileNotFoundError:
-                return None, path.rstrip("/") + "/"
-        else:
-            return None, path.rstrip("/") + "/"
+                pass
+        if self._config.read_only and path.endswith("/"):
+            return None, path
+        return None, path.rstrip("/") + "/"
 
     def _with_url_prefix(self, obj: ObjectMetadata) -> ObjectMetadata:
         # Return a copy: listed objects may be owned by the metadata provider and must not be mutated.
         if self.is_default_profile():
             return obj.replace(key=str(PurePosixPath("/") / obj.key))
-        return obj.replace(key=join_paths(f"{MSC_PROTOCOL}{self._config.profile}", obj.key))
+        return obj.replace(key=self.url(obj.key))
 
     def _filter_and_decorate(
         self,
@@ -958,7 +988,7 @@ class SingleStorageClient(AbstractStorageClient):
         include_url_prefix: bool,
         pattern_matcher: PatternMatcher | None,
     ) -> Iterator[ObjectMetadata]:
-        for obj in objects:
+        for obj in self._process_local_listing(objects):
             if pattern_matcher and not pattern_matcher.should_include_file(obj.key):
                 continue
             if include_url_prefix:
@@ -990,6 +1020,7 @@ class SingleStorageClient(AbstractStorageClient):
         :param symlink_handling: How to handle symbolic links during listing. Only applicable for POSIX file storage providers.
         :return: An iterator over ObjectMetadata for matching files.
         """
+        self._ensure_current_process()
         pattern_matcher = PatternMatcher(patterns) if patterns else None
 
         single_file, effective_path = self._resolve_single_file(
@@ -1055,6 +1086,8 @@ class SingleStorageClient(AbstractStorageClient):
         :return: A file-like object (PosixFile or ObjectFile) for the specified path.
         :raises FileNotFoundError: If the file does not exist (read mode).
         """
+        self._ensure_open_mode(mode)
+        self._ensure_current_process()
         if self._is_posix_file_storage_provider():
             return PosixFile(
                 self, path=path, mode=mode, buffering=buffering, encoding=encoding, atomic=atomic, attributes=attributes
@@ -1082,12 +1115,15 @@ class SingleStorageClient(AbstractStorageClient):
         :param path: The path to resolve (may be a symlink or virtual path).
         :return: Physical POSIX filesystem path if POSIX storage, None otherwise.
         """
+        self._ensure_current_process()
         if not self._is_posix_file_storage_provider():
             return None
 
         if self._metadata_provider:
-            resolved = self._metadata_provider.realpath(path)
-            realpath = resolved.physical_path
+            if self._config.read_only:
+                realpath = self._resolve_read_path(path)
+            else:
+                realpath = self._metadata_provider.realpath(path).physical_path
         else:
             realpath = path
 
@@ -1100,6 +1136,7 @@ class SingleStorageClient(AbstractStorageClient):
         :param path: The logical path to check.
         :return: ``True`` if the key points to a file, ``False`` otherwise.
         """
+        self._ensure_current_process()
         if self._metadata_provider:
             resolved = self._metadata_provider.realpath(path)
             return resolved.exists
@@ -1112,6 +1149,7 @@ class SingleStorageClient(AbstractStorageClient):
 
         :param prefix: If provided, scans the prefix to find files to commit.
         """
+        self._ensure_writable()
         if self._metadata_provider:
             with self._metadata_provider_lock or contextlib.nullcontext():
                 if prefix:
@@ -1134,6 +1172,7 @@ class SingleStorageClient(AbstractStorageClient):
         :param path: The logical path to check (typically a directory or folder prefix).
         :return: ``True`` if no objects exist under the specified path prefix, ``False`` otherwise.
         """
+        self._ensure_current_process()
         if self._metadata_provider:
             objects = self._metadata_provider.list_objects(path)
         else:
@@ -1201,6 +1240,7 @@ class SingleStorageClient(AbstractStorageClient):
         :raises ValueError: If both source_files and patterns are provided.
         :raises RuntimeError: If errors occur during sync operations. The sync will stop on first error (fail-fast).
         """
+        self._ensure_writable()
         if source_files and patterns:
             raise ValueError("Cannot specify both 'source_files' and 'patterns'. Please use only one filtering method.")
 
@@ -1263,6 +1303,7 @@ class SingleStorageClient(AbstractStorageClient):
             :py:attr:`SymlinkHandling.PRESERVE` recreates symlinks on each replica via
             :py:meth:`make_symlink` instead of copying bytes.
         """
+        self._ensure_writable()
         if not self._replicas:
             logger.warning(
                 "No replicas found in profile '%s'. Add a 'replicas' section to your profile configuration to enable "
@@ -1337,6 +1378,7 @@ class SingleStorageClient(AbstractStorageClient):
         :param symlink_handling: How to handle symbolic links during listing. Only applicable for POSIX file storage providers.
         :return: An iterator over ObjectMetadata for matching objects.
         """
+        self._ensure_current_process()
         pattern_matcher = PatternMatcher(patterns) if patterns else None
 
         single_file, effective_path = self._resolve_single_file(
@@ -1382,6 +1424,8 @@ class SingleStorageClient(AbstractStorageClient):
         signer_type: SignerType | None = None,
         signer_options: dict[str, Any] | None = None,
     ) -> str:
+        self._ensure_signing_method(method)
+        self._ensure_current_process()
         if self._metadata_provider:
             if method.upper() not in ("GET", "HEAD"):
                 raise ValueError(

@@ -62,7 +62,7 @@ class ReplicaManager:
         read_from_read_only_replica = False
         replicas_that_need_updates = []
 
-        for replica_client in self._storage_client.replicas:
+        for replica_client in self._storage_client._replicas:
             try:
                 if replica_client.is_file(remote_path):
                     replica_client.download_file(remote_path, file)
@@ -184,7 +184,7 @@ class ReplicaManager:
 
         :param path: path to the file to delete
         """
-        for replica_client in self._storage_client.replicas:
+        for replica_client in self._storage_client._replicas:
             if replica_client not in self._storage_client.writable_replicas:
                 continue
             try:

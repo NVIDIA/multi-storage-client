@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import glob
+import hashlib
 import logging
 import os
 import stat
@@ -49,6 +50,8 @@ class CacheManager:
     """
 
     DEFAULT_FILE_LOCK_TIMEOUT = 600
+
+    _opaque_keys: bool = False
 
     def __init__(self, profile: str, cache_config: CacheConfig):
         """
@@ -245,6 +248,9 @@ class CacheManager:
 
     def _get_cache_file_path(self, key: str) -> str:
         """Return the path to the local cache file for the given key."""
+        if self._opaque_keys:
+            # Object keys can contain literal dot segments, repeated separators and cache-reserved filenames.
+            return os.path.join(self._cache_path, hashlib.sha256(key.encode()).hexdigest())
         # Handle absolute paths by making them relative to the cache directory
         if os.path.isabs(key):
             # For absolute paths, use os.path.relpath() to preserve the full path structure
@@ -401,6 +407,8 @@ class CacheManager:
 
     def delete(self, key: str) -> None:
         """Delete a file from the cache."""
+        if self._opaque_keys:
+            key = os.path.basename(self._get_cache_file_path(key))
         self.delete_file(key)
 
     def cache_size(self) -> int:
@@ -439,7 +447,9 @@ class CacheManager:
 
     def acquire_lock(self, key: str) -> BaseFileLock:
         """Create a FileLock object for a given key."""
-        cache_path = self._get_cache_file_path(key)
+        return self._lock_for_cache_path(self._get_cache_file_path(key))
+
+    def _lock_for_cache_path(self, cache_path: str) -> BaseFileLock:
         file_dir = os.path.dirname(cache_path)
 
         # Create lock file in the same directory as the file
@@ -655,7 +665,7 @@ class CacheManager:
         chunk_path = self._get_chunk_path(cache_path, chunk_idx)
         chunk_lock_key = f"{cache_path}#chunk{chunk_idx}"
 
-        with self.acquire_lock(os.path.relpath(chunk_lock_key, self._get_cache_dir())):
+        with self._lock_for_cache_path(chunk_lock_key):
             # Double-check if chunk was created by another thread
             if os.path.exists(chunk_path):
                 return
