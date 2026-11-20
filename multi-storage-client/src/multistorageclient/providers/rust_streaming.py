@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 from collections.abc import Callable
 from typing import Any, TypeVar
 
@@ -44,8 +45,9 @@ class RustStreamingWriter(StreamingObjectWriter):
         self._native = native
         self._translate_errors = translate_errors
         self._emit_write_metrics = emit_write_metrics
-        # A non-contiguous buffer is copied at most one part at a time, so conversion adds at most one part.
-        self._conversion_bytes = int(native.stats()["part_size"])
+        # Non-contiguous input is copied in pieces of half a part: ``tobytes()`` can briefly hold about two copies,
+        # so conversion adds at most one part.
+        self._conversion_bytes = max(int(native.stats()["part_size"]) // 2, 1)
 
     def _call(self, f: Callable[[], _T]) -> _T:
         try:
@@ -75,24 +77,24 @@ class RustStreamingWriter(StreamingObjectWriter):
         return self._write_non_contiguous(view)
 
     def _write_non_contiguous(self, view: memoryview) -> int:
-        # The native writer needs contiguous bytes. memoryview slices only along the first axis, so a
-        # multi-dimensional view is copied whole rows at a time and must not have a row larger than one part.
+        # The native writer needs contiguous bytes. memoryview slices only along the first axis, so the smallest
+        # piece is one element (1-D) or one row; reject a buffer whose pieces cannot fit before accepting any bytes.
         count = (view.shape or (0,))[0]
         if not count:
             return 0
-        if view.ndim == 1:
-            step = max(self._conversion_bytes // view.itemsize, 1)
-        else:
-            row_bytes = view.nbytes // count
-            if row_bytes > self._conversion_bytes:
-                raise ValueError(
-                    f"Streaming writes copy a non-contiguous buffer in pieces of at most one part "
-                    f"({self._conversion_bytes} bytes), but its rows are {row_bytes} bytes; pass a contiguous buffer."
-                )
-            step = self._conversion_bytes // row_bytes
+        piece_bytes = view.nbytes // count
+        if piece_bytes > self._conversion_bytes:
+            raise ValueError(
+                f"Streaming writes copy a non-contiguous buffer in pieces of at most {self._conversion_bytes} bytes "
+                f"(half a part), but its {'elements' if view.ndim == 1 else 'rows'} are {piece_bytes} bytes; "
+                "pass a contiguous buffer."
+            )
+        step = self._conversion_bytes // max(piece_bytes, 1)
         for start in range(0, count, step):
             chunk = memoryview(view[start : start + step].tobytes())
-            self._call(lambda chunk=chunk: self._native.write(chunk))
+            self._call(functools.partial(self._native.write, chunk))
+            # Free this piece before the next is allocated.
+            del chunk
         return view.nbytes
 
     def tell(self) -> int:

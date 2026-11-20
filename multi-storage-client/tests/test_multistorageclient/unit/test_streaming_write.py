@@ -311,22 +311,32 @@ def test_streaming_copies_non_contiguous_buffers_in_chunks():
 
 
 def test_streaming_bounds_non_contiguous_conversion_to_one_part():
+    import tracemalloc
+
     import numpy as np
 
     with _streaming_bucket() as (_, client):
-        # A 1-D strided view larger than a part is split by element.
-        flat = np.resize(np.arange(251, dtype=np.uint8), 3 * PART)[::2]
+        # A 1-D strided view of three parts is split by element; Python-side conversion peaks within one part.
+        flat = np.resize(np.arange(251, dtype=np.uint8), 6 * PART)[::2]
         with client.open("flat.bin", "wb", writer_options=OPTIONS) as f:
-            assert f.write(memoryview(flat)) == flat.nbytes
+            tracemalloc.start()
+            try:
+                assert f.write(memoryview(flat)) == flat.nbytes
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+        assert peak <= PART + MiB, peak
         assert client.read("flat.bin") == flat.tobytes()
 
-        # A 2-D view whose rows exceed a part cannot be split; it is rejected before any bytes are accepted.
+        # Rows or elements larger than half a part cannot be split; they are rejected before any bytes are accepted.
         wide = np.zeros((2, 4 * PART), dtype=np.uint8)[:, ::2]
-        with client.open("wide.bin", "wb", writer_options=OPTIONS) as f:
-            with pytest.raises(ValueError, match="pass a contiguous buffer"):
-                f.write(memoryview(wide))
-            assert f.tell() == 0
-        assert not client.is_file("wide.bin") or client.read("wide.bin") == b""
+        big_items = np.zeros(4, dtype=[("a", "u1", (PART,))])[::2]
+        for name, buffer in (("wide.bin", wide), ("items.bin", big_items)):
+            with client.open(name, "wb", writer_options=OPTIONS) as f:
+                with pytest.raises(ValueError, match="pass a contiguous buffer"):
+                    f.write(memoryview(buffer))
+                assert f.tell() == 0
+            assert client.read(name) == b""
 
 
 def test_streaming_rechecks_the_overwrite_policy_before_publishing():

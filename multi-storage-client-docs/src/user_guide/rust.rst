@@ -184,8 +184,8 @@ Streaming files differ from buffered files in these ways:
   placeholder temporary-file descriptor, so ``os.fsync(f.fileno())`` (as in PyTorch DCP) succeeds cheaply. Syncing it
   does not wait for parts; ``fsync()`` on the file does.
 * ``write()`` copies the caller's buffer before returning; the buffer must not be modified by another thread while
-  ``write()`` runs. A non-contiguous buffer (such as a strided view) is copied at most one part at a time, which
-  adds up to one part to the memory bound; a multi-dimensional one whose rows are larger than a part is rejected
+  ``write()`` runs. A non-contiguous buffer (such as a strided view) is copied in pieces of half a part, which adds
+  up to one part to the memory bound; one whose elements (1-D) or rows are larger than half a part is rejected
   before any bytes are accepted. The native ``multistorageclient_rust.StreamingWriter.write`` itself accepts only
   C-contiguous unsigned-byte buffers.
 * ``flush()`` raises errors from parts that already finished but does not wait, because serializers such as
