@@ -42,16 +42,18 @@ from multistorageclient.providers.s3 import S3StorageProvider
 from multistorageclient.providers.s8k import S8KStorageProvider
 from multistorageclient.types import RetryableError
 from test_multistorageclient.unit.utils import config, tempdatastore
+from test_multistorageclient.unit.utils.streaming_processes import (
+    fork_writers,
+    payload,
+    run_in_processes,
+    write_object,
+)
 
 torch = cast(Any, torch_module)
 
 MiB = 1024 * 1024
 PART = 5 * MiB
 OPTIONS = StreamingWriterOptions(part_size_bytes=PART, max_inflight_parts=2)
-
-
-def _payload(size: int) -> bytes:
-    return (bytes(range(251)) * (size // 251 + 1))[:size]
 
 
 @contextmanager
@@ -74,7 +76,7 @@ def _stats(f: Any) -> dict[str, Any]:
 @pytest.mark.parametrize("size", [0, 1, PART - 1, PART, PART + 1, 3 * PART, 3 * PART + 7])
 @pytest.mark.parametrize("write_size", [64 * 1024, None])
 def test_streaming_write_roundtrip(size: int, write_size: int | None):
-    data = _payload(size)
+    data = payload(size)
     with _streaming_bucket() as (bucket, client):
         with client.open("dir/object.bin", "wb", attributes={"owner": "test"}, writer_options=OPTIONS) as f:
             assert isinstance(f, ObjectFile)
@@ -99,7 +101,7 @@ def test_streaming_write_uploads_before_close_without_whole_object_calls():
         calls.append(method)
         return original(rust_client, method, *args, **kwargs)
 
-    data = _payload(8 * PART + 3)
+    data = payload(8 * PART + 3)
     with _streaming_bucket() as (_, client):
         with (
             patch.object(s3_provider, "run_async_rust_client_method", record),
@@ -141,7 +143,7 @@ def test_streaming_file_is_forward_only():
 
 def test_streaming_writer_owns_accepted_bytes():
     with _streaming_bucket() as (_, client):
-        buffer = bytearray(_payload(PART + 11))
+        buffer = bytearray(payload(PART + 11))
         floats = array.array("f", [1.5, -2.25, 3.0])
         strided = memoryview(bytes(range(16)))[::2]
         with client.open("owned.bin", "wb", writer_options=OPTIONS) as f:
@@ -149,19 +151,19 @@ def test_streaming_writer_owns_accepted_bytes():
             buffer[:] = b"\0" * len(buffer)
             f.write(memoryview(floats))
             f.write(strided)
-        assert client.read("owned.bin") == _payload(PART + 11) + floats.tobytes() + bytes(range(0, 16, 2))
+        assert client.read("owned.bin") == payload(PART + 11) + floats.tobytes() + bytes(range(0, 16, 2))
 
 
 def test_streaming_exception_or_discard_aborts_and_keeps_old_object():
     with _streaming_bucket() as (bucket, client):
         client.write("ckpt.bin", b"old")
         with pytest.raises(KeyError), client.open("ckpt.bin", "wb", writer_options=OPTIONS) as f:
-            f.write(_payload(3 * PART))
+            f.write(payload(3 * PART))
             raise KeyError("serialization failed")
         assert client.read("ckpt.bin") == b"old"
 
         f = client.open("ckpt.bin", "wb", writer_options=OPTIONS)
-        f.write(_payload(2 * PART))
+        f.write(payload(2 * PART))
         f.discard()
         assert f.closed
         f.close()
@@ -172,7 +174,7 @@ def test_streaming_exception_or_discard_aborts_and_keeps_old_object():
 def test_streaming_unclosed_file_is_aborted_not_published(caplog):
     with _streaming_bucket() as (_, client):
         f = client.open("unclosed.bin", "wb", writer_options=OPTIONS)
-        f.write(_payload(2 * PART))
+        f.write(payload(2 * PART))
         with caplog.at_level(logging.WARNING):
             del f
             gc.collect()
@@ -185,7 +187,7 @@ def test_streaming_failure_is_sticky():
         bucket._client.delete_bucket(Bucket=bucket._bucket_name)
         f = client.open("missing.bin", "wb", writer_options=OPTIONS)
         with pytest.raises(RuntimeError) as first:
-            f.write(_payload(2 * PART))
+            f.write(payload(2 * PART))
             f.close()
         assert not isinstance(first.value, RetryableError)
         empty_strided = memoryview(b"")[::2]
@@ -297,7 +299,7 @@ def test_streaming_write_registers_with_metadata_provider():
                 raise RuntimeError("registration failed")
             register(*args)
 
-        data = _payload(PART + 1)
+        data = payload(PART + 1)
         with patch.object(single, "_register_written_file", flaky_register):
             f = client.open("dir/object.bin", "wb", attributes={"owner": "test"}, writer_options=OPTIONS)
             f.write(data)
@@ -362,14 +364,14 @@ def test_streaming_rechecks_the_overwrite_policy_before_publishing():
         client = StorageClient(StorageClientConfig.from_dict({"profiles": {"m": profile}}, profile="m"))
         first = client.open("same.bin", "wb", writer_options=OPTIONS)
         second = client.open("same.bin", "wb", writer_options=OPTIONS)
-        first.write(_payload(PART + 1))
+        first.write(payload(PART + 1))
         second.write(b"loser")
         first.close()
         client.commit_metadata()
         with pytest.raises(FileExistsError):
             second.close()
         second.discard()
-        assert client.read("same.bin") == _payload(PART + 1)
+        assert client.read("same.bin") == payload(PART + 1)
         assert _multipart_uploads(bucket) == []
 
 
@@ -390,30 +392,20 @@ def test_streaming_writer_rejects_pickling_and_other_processes():
 
         ctx = multiprocessing.get_context("fork")
         queue = ctx.Queue()
-        process = ctx.Process(target=child, args=(queue,))
+        process = ctx.Process(target=child, args=(queue,), daemon=True)
         process.start()
-        process.join(30)
-        assert process.exitcode == 0
-        assert "cannot be used in process" in queue.get(timeout=5)
+        try:
+            assert "cannot be used in process" in queue.get(timeout=30)
+            process.join(10)
+            assert process.exitcode == 0
+        finally:
+            if process.is_alive():
+                process.kill()
+                process.join()
 
         f.write(b"-more")
         f.close()
         assert client.read("pid.bin") == b"parent-more"
-
-
-def _child_write(config_dict: dict[str, Any], path: str, size: int) -> int:
-    client = StorageClient(StorageClientConfig.from_dict(config_dict, profile="stream"))
-    with client.open(path, "wb", writer_options=OPTIONS) as f:
-        f.write(_payload(size))
-        return f.tell()
-
-
-def _fork_writers(config_dict: dict[str, Any], count: int, results: Any) -> None:
-    # Forked children cannot use a Rust runtime their parent already started, as with buffered Rust uploads,
-    # so this parent opens no streams before forking, like NVRx's multiprocess writer.
-    StorageClient(StorageClientConfig.from_dict(config_dict, profile="stream"))
-    with multiprocessing.get_context("fork").Pool(count) as pool:
-        results.put(pool.starmap(_child_write, [(config_dict, f"fork-{i}.bin", PART + i) for i in range(count)]))
 
 
 def test_streaming_write_in_child_processes():
@@ -421,18 +413,14 @@ def test_streaming_write_in_child_processes():
         client.write("warmup", b"parent uses the client first")
         config_dict = {"profiles": {"stream": client._config._config_dict["profiles"]["stream"]}}  # pyright: ignore
         spawn = multiprocessing.get_context("spawn")
-        with spawn.Pool(2) as pool:
-            sizes = pool.starmap(_child_write, [(config_dict, f"spawn-{i}.bin", PART + i) for i in range(2)])
-        assert sizes == [PART, PART + 1]
-        results = spawn.Queue()
-        parent = spawn.Process(target=_fork_writers, args=(config_dict, 2, results))
-        parent.start()
-        assert results.get(timeout=120) == [PART, PART + 1]
-        parent.join(30)
-        assert parent.exitcode == 0
-        for prefix in ("spawn", "fork"):
-            for i in range(2):
-                assert client.read(f"{prefix}-{i}.bin") == _payload(PART + i)
+        spawned = [(f"spawn-{i}.bin", PART + i) for i in range(2)]
+        forked = [(f"fork-{i}.bin", PART + i) for i in range(2)]
+        args = [(config_dict, path, size, OPTIONS) for path, size in spawned]
+        assert run_in_processes(spawn, write_object, args, timeout=45) == [size for _, size in spawned]
+        sizes = run_in_processes(spawn, fork_writers, [(config_dict, forked, OPTIONS, 30)], timeout=50)
+        assert sizes == [[size for _, size in forked]]
+        for path, size in spawned + forked:
+            assert client.read(path) == payload(size)
 
 
 def test_streaming_write_releases_gil_while_waiting():
@@ -448,7 +436,7 @@ def test_streaming_write_releases_gil_while_waiting():
         thread = threading.Thread(target=spin)
         thread.start()
         try:
-            data = _payload(20 * PART)
+            data = payload(20 * PART)
             with client.open("gil.bin", "wb", writer_options=replace(OPTIONS, max_inflight_parts=1)) as f:
                 before = ticks
                 f.write(data)
