@@ -320,6 +320,19 @@ impl StreamCore {
         self.ensure_open()
     }
 
+    /// Rejects `len` more bytes if they would pass the part limit. Checking a whole write up front avoids uploading
+    /// parts of a write that is going to fail.
+    pub fn check_limit(&self, len: usize) -> Result<(), StreamError> {
+        let limit = self.config.part_size as u64 * self.config.max_parts;
+        if self.accepted + len as u64 > limit {
+            return Err(StreamError::Limit(format!(
+                "Streaming upload exceeds {} bytes ({} parts of {} bytes); configure a larger part size",
+                limit, self.config.max_parts, self.config.part_size
+            )));
+        }
+        Ok(())
+    }
+
     fn ensure_open(&self) -> Result<(), StreamError> {
         match &self.state {
             State::Open => Ok(()),
@@ -338,13 +351,7 @@ impl StreamCore {
         }
         let room = self.config.part_size - self.partial.len();
         let n = room.min(data.len());
-        let limit = self.config.part_size as u64 * self.config.max_parts;
-        if self.accepted + n as u64 > limit {
-            return Err(StreamError::Limit(format!(
-                "Streaming upload exceeds {} bytes ({} parts of {} bytes); configure a larger part size",
-                limit, self.config.max_parts, self.config.part_size
-            )));
-        }
+        self.check_limit(n)?;
         if self.started_multipart && self.partial.is_empty() && self.partial.capacity() < self.config.part_size {
             // Every later part fills completely, so allocate it at its final size instead of growing it.
             self.partial = BytesMut::with_capacity(self.config.part_size);
@@ -410,6 +417,10 @@ impl StreamCore {
     /// Copies all of `data`, submitting parts as they fill. Used by tests and non-Python callers.
     #[cfg(test)]
     pub async fn write_all(&mut self, data: &[u8]) -> Result<(), StreamError> {
+        self.ensure_open()?;
+        if let Err(err) = self.check_limit(data.len()) {
+            return Err(self.fail(err).await);
+        }
         let mut offset = 0;
         while offset < data.len() {
             offset += match self.accept(&data[offset..]) {
@@ -1083,6 +1094,29 @@ mod tests {
         assert!(matches!(core.close().await, Err(StreamError::Failed(_))));
         assert_eq!(target.aborts.load(Ordering::SeqCst), 1);
         assert!(target.read().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_a_write_past_the_part_limit_uploads_nothing() {
+        let target = TestTarget::new(Faults::default(), None);
+        let mut core = StreamCore::new(
+            target.clone(),
+            StreamConfig {
+                part_size: 8,
+                max_inflight_parts: 2,
+                max_parts: 2,
+                abort_drain_timeout: Duration::from_millis(200),
+            },
+        );
+        // One write crossing the limit is rejected before any of its parts is uploaded.
+        assert!(matches!(
+            core.write_all(&payload(24)).await,
+            Err(StreamError::Limit(_))
+        ));
+        assert_eq!(core.accepted(), 0);
+        assert_eq!(target.multipart_starts.load(Ordering::SeqCst), 0);
+        assert_eq!(target.puts.load(Ordering::SeqCst), 0);
+        assert!(matches!(core.close().await, Err(StreamError::Failed(_))));
     }
     // A paused clock only advances when every task is blocked, so the release runs after abort starts draining.
     #[tokio::test(start_paused = true)]

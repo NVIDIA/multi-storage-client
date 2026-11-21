@@ -36,6 +36,8 @@ import multistorageclient as msc
 from multistorageclient import StorageClient, StorageClientConfig, StreamingWriterOptions
 from multistorageclient.file import ObjectFile
 from multistorageclient.providers import s3 as s3_provider
+from multistorageclient.providers.ais import StaticAISCredentialProvider
+from multistorageclient.providers.ais_s3 import AIStoreS3StorageProvider
 from multistorageclient.providers.s3 import S3StorageProvider
 from multistorageclient.providers.s8k import S8KStorageProvider
 from multistorageclient.types import RetryableError
@@ -245,6 +247,10 @@ def test_streaming_rejects_unsupported_providers():
         )
     with pytest.raises(NotImplementedError, match="Rust client"):
         S3StorageProvider(**options).open_streaming_writer("key", None, OPTIONS)
+    with pytest.raises(NotImplementedError, match="JWT"):
+        AIStoreS3StorageProvider(
+            **options, credentials_provider=StaticAISCredentialProvider(token="t"), rust_client=dict(rust_client)
+        ).open_streaming_writer("key", None, OPTIONS)
     with pytest.raises(NotImplementedError, match="directory bucket"):
         S3StorageProvider(**{**options, "base_path": "b--x-s3"}, rust_client=dict(rust_client)).open_streaming_writer(
             "key", None, OPTIONS

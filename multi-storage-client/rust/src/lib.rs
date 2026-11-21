@@ -1240,6 +1240,10 @@ impl StreamingWriter {
         // Raise the sticky failure even for an empty write.
         core.check_open()?;
         let runtime = pyo3_async_runtimes::tokio::get_runtime();
+        // Reject a write that crosses the part limit before uploading any of its parts.
+        if let Err(err) = core.check_limit(len) {
+            return Err(py.detach(|| runtime.block_on(core.fail(err))).into());
+        }
         let mut offset = 0;
         while offset < len {
             // SAFETY: `data` keeps the exporter's buffer alive. The slice is rebuilt per call and dropped before the

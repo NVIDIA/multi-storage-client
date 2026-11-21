@@ -223,10 +223,10 @@ Streaming files differ from buffered files in these ways:
   comes whole from one of the writers.
 
 Streaming writes are supported by the ``s3``, ``s8k`` (without ``infer_content_type``), ``gcs_s3`` and ``ais_s3``
-providers with the Rust client, except S3 directory buckets and keys the Rust client cannot represent. ``open`` raises
-:py:class:`NotImplementedError` instead of falling back to a buffered write when ``writer_options`` is passed with any
-other provider (including POSIX and S3 without the Rust client), and :py:class:`ValueError` with a mode other than
-``"wb"``.
+(without JWT authentication) providers with the Rust client, except S3 directory buckets and keys the Rust client
+cannot represent. ``open`` raises :py:class:`NotImplementedError` instead of falling back to a buffered write when
+``writer_options`` is passed with any other provider (including POSIX and S3 without the Rust client), and
+:py:class:`ValueError` with a mode other than ``"wb"``.
 
 ********************
 Performance Benefits
