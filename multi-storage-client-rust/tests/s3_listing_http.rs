@@ -18,8 +18,8 @@
 
 use futures::{StreamExt, TryStreamExt};
 use multi_storage_client::{
-    ByteRange, ErrorKind, InfoOptions, ListOptions, ObjectKind, ObjectPath, ReadOptions,
-    RetryPolicy, StorageClient, StorageClientBuilder,
+    ByteRange, ErrorKind, InfoOptions, ListOptions, ManifestMetadataProvider, MetadataProvider,
+    ObjectKind, ObjectPath, ReadOptions, RetryPolicy, StorageClient, StorageClientBuilder,
     credentials::{AwsCredentials, SecretString},
     provider::s3::{S3Options, S3Provider},
 };
@@ -156,6 +156,62 @@ impl Drop for Server {
         self.task.abort();
     }
 }
+
+#[tokio::test]
+async fn manifest_reads_python_index_and_relative_parts_from_s3() {
+    let index =
+        br#"{"version":"1","parts":[{"path":"parts/first.jsonl"},{"path":"parts/second.jsonl"}]}"#;
+    let first = br#"{"key":"logical/file","size_bytes":42,"last_modified":"2026-10-01T00:00:00Z","physical_path":"physical/file"}"#;
+    let second =
+        br#"{"key":"logical/second","size_bytes":3,"last_modified":"2026-10-01T00:00:00Z"}"#;
+    let server = Server::start_responses(vec![
+        Reply {
+            length: index.len(),
+            ..Reply::bytes(200, b"", None)
+        },
+        Reply::bytes(200, index, None),
+        Reply::bytes(200, first, None),
+        Reply::bytes(200, second, None),
+    ])
+    .await;
+
+    let provider =
+        ManifestMetadataProvider::load(&server.client().await, "snapshots/msc_manifest_index.json")
+            .await
+            .unwrap();
+    assert_eq!(
+        provider
+            .realpath("logical/file")
+            .await
+            .unwrap()
+            .physical_path
+            .as_str(),
+        "physical/file"
+    );
+    assert_eq!(
+        provider
+            .get_object_metadata("logical/second", false)
+            .await
+            .unwrap()
+            .content_length,
+        3
+    );
+    let requests = server.requests.lock().unwrap();
+    let requests = requests
+        .iter()
+        .map(|request| (request.method.as_str(), request.target.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        requests,
+        [
+            ("HEAD", "/bucket/base/snapshots/msc_manifest_index.json"),
+            ("GET", "/bucket/base/snapshots/msc_manifest_index.json"),
+            ("GET", "/bucket/base/snapshots/parts/first.jsonl"),
+            ("GET", "/bucket/base/snapshots/parts/second.jsonl"),
+        ]
+    );
+}
+
 fn object(key: &str) -> String {
     format!(
         "<Contents><Key>{}</Key><Size>3</Size><LastModified>2026-10-07T00:00:00Z</LastModified><ETag>&quot;etag&quot;</ETag></Contents>",
@@ -166,6 +222,36 @@ fn page(contents: &str) -> String {
     format!(
         "<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">{contents}</ListBucketResult>"
     )
+}
+
+#[tokio::test]
+async fn manifest_discovers_latest_complete_snapshot_from_s3() {
+    let root = "project/.msc_manifests";
+    let old = format!("{root}/2026-10-01T00:00:00Z/msc_manifest_index.json");
+    let latest = format!("{root}/2026-10-02T00:00:00Z/msc_manifest_index.json");
+    let incomplete = format!("{root}/2026-10-03T00:00:00Z/parts/files.jsonl");
+    let contents = [old, latest.clone(), incomplete].map(|key| object(&format!("base/{key}")));
+    let server = Server::start_responses(vec![
+        Reply::bytes(404, b"", None),
+        Reply::bytes(404, b"", None),
+        Reply::bytes(200, page(&contents.concat()).as_bytes(), None),
+        Reply::bytes(200, br#"{"version":"1","parts":[]}"#, None),
+    ])
+    .await;
+
+    ManifestMetadataProvider::load(&server.client().await, "project")
+        .await
+        .unwrap();
+
+    let requests = server.requests.lock().unwrap();
+    assert_eq!(requests.len(), 4);
+    let listing = url::Url::parse(&format!("{}{}", server.endpoint, requests[2].target)).unwrap();
+    let query: BTreeMap<_, _> = listing.query_pairs().collect();
+    assert_eq!(query["prefix"], "base/project/.msc_manifests");
+    assert_eq!(
+        requests[3].target,
+        format!("/bucket/base/{}", latest.replace(':', "%3A"))
+    );
 }
 
 #[tokio::test]

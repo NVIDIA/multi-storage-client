@@ -26,6 +26,7 @@ mod ranges;
 mod registry;
 mod traits;
 
+pub mod manifest;
 pub mod posix;
 #[cfg(feature = "s3")]
 pub mod s3;
@@ -39,6 +40,7 @@ pub use registry::{ProviderFactory, ProviderRegistry};
 pub use traits::StorageProvider;
 
 pub(crate) use metadata::resolve_metadata;
+pub use metadata::{MetadataProvider, ResolvedPath, ResolvedPathState};
 pub(crate) use ranges::suffix_fallback;
 #[cfg(feature = "s3")]
 pub(crate) use ranges::{range_bytes, requested_bounds};

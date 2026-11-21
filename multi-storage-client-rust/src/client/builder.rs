@@ -16,7 +16,7 @@
 use super::{StorageClient, StorageClientBuilder};
 use crate::provider::DEFAULT_MEMORY_LIMIT;
 use crate::{
-    BaseStorageProvider, ProviderRegistry, Result, RetryPolicy, StorageBackend,
+    BaseStorageProvider, MetadataProvider, ProviderRegistry, Result, RetryPolicy, StorageBackend,
     config::ResolvedConfig,
 };
 use std::sync::Arc;
@@ -45,6 +45,7 @@ impl StorageClientBuilder {
         Self {
             source,
             registry: ProviderRegistry::default(),
+            metadata_provider: None,
             retry: None,
             max_in_memory_bytes: DEFAULT_MEMORY_LIMIT,
         }
@@ -55,6 +56,13 @@ impl StorageClientBuilder {
     #[must_use]
     pub fn with_provider_registry(mut self, registry: ProviderRegistry) -> Self {
         self.registry = registry;
+        self
+    }
+
+    /// Use application-supplied logical metadata and path resolution.
+    #[must_use]
+    pub fn with_metadata_provider(mut self, provider: Arc<dyn MetadataProvider>) -> Self {
+        self.metadata_provider = Some(provider);
         self
     }
 
@@ -80,12 +88,16 @@ impl StorageClientBuilder {
     /// # Errors
     /// Returns configuration, credential or provider construction errors.
     pub async fn build(self) -> Result<StorageClient> {
-        let (provider, default_retry) = match self.source {
+        let (provider, default_retry, profile) = match self.source {
             ClientSource::Profile { config, profile } => {
-                let profile = config.profile(&profile)?;
-                (self.registry.build(profile).await?, profile.retry.clone())
+                let config = config.profile(&profile)?;
+                (
+                    self.registry.build(config).await?,
+                    config.retry.clone(),
+                    Some(profile),
+                )
             }
-            ClientSource::Provider(provider) => (provider, RetryPolicy::default()),
+            ClientSource::Provider(provider) => (provider, RetryPolicy::default(), None),
         };
         let provider = BaseStorageProvider::configured(
             provider,
@@ -93,7 +105,9 @@ impl StorageClientBuilder {
             self.max_in_memory_bytes,
         );
         Ok(StorageClient {
-            provider: Arc::new(provider),
+            provider,
+            metadata_provider: self.metadata_provider,
+            profile,
         })
     }
 }

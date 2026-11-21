@@ -321,7 +321,7 @@ pub struct ReadOptions {
 pub struct InfoOptions {
     /// Probe virtual S3 directories when an exact object is missing. Defaults to true.
     /// Explicit remote paths ending in `/` query directories for either value.
-    /// Both values query physical metadata until metadata providers support pending updates.
+    /// With a logical metadata provider, use false to include staged updates.
     pub strict: bool,
 }
 

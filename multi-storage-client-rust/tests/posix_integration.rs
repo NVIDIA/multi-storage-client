@@ -415,6 +415,45 @@ async fn posix_listing_matches_python_directory_delimiter_order() {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
+async fn posix_listing_resumes_within_directories_and_skips_subtrees_before_cursor() {
+    use futures::TryStreamExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("dir")).unwrap();
+    for key in ["dir.txt", "dir/001", "dir/002", "z"] {
+        std::fs::write(directory.path().join(key), []).unwrap();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let invalid = std::ffi::OsStr::from_bytes(b"invalid-\xff");
+        std::fs::create_dir(directory.path().join("archived")).unwrap();
+        std::fs::write(directory.path().join("archived").join(invalid), []).unwrap();
+    }
+    let (_, client) = client(&directory).await;
+    for (start, end, expected) in [
+        ("dir/001", None, &["dir/002", "z"][..]),
+        ("dir.txt", None, &["dir/001", "dir/002", "z"][..]),
+        ("dir/001", Some("dir/002"), &["dir/002"][..]),
+    ] {
+        let keys = client
+            .list(ListOptions {
+                start_after: Some(ObjectPath::new(start).unwrap()),
+                end_at: end.map(|key| ObjectPath::new(key).unwrap()),
+                ..ListOptions::default()
+            })
+            .await
+            .unwrap()
+            .map_ok(|entry| entry.key.to_string())
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(keys, expected);
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
 async fn posix_listing_uses_exact_directories_and_visits_descendants_lazily() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(directory.path().join("data/sub")).unwrap();

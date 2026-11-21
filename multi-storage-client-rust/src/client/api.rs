@@ -16,8 +16,9 @@
 //! Public client operations over private policy and transfer implementations.
 use super::{StorageClient, StorageClientBuilder};
 use crate::{
-    BatchResult, CopyOptions, DeleteOptions, InfoOptions, ListOptions, MetadataStream,
-    ObjectMetadata, ObjectPath, ReadOptions, Result, WriteOptions, config::ResolvedConfig,
+    BatchFailure, BatchResult, CopyOptions, DeleteOptions, ErrorKind, InfoOptions, ListOptions,
+    MetadataStream, MscError, ObjectKind, ObjectMetadata, ObjectPath, ReadOptions,
+    ResolvedPathState, Result, StorageProvider, WriteOptions, config::ResolvedConfig,
 };
 use bytes::Bytes;
 use futures::StreamExt;
@@ -31,7 +32,7 @@ impl StorageClient {
     }
 
     /// Query metadata with strict virtual-directory detection by default.
-    /// Relative symlinks resolve internally with an eight-hop bound.
+    /// With logical metadata, return the logical entry. Otherwise, follow physical symlinks.
     ///
     /// # Errors
     /// Returns invalid paths, missing objects, symlink cycles, or provider errors.
@@ -40,7 +41,15 @@ impl StorageClient {
         path: impl AsRef<str>,
         options: InfoOptions,
     ) -> Result<ObjectMetadata> {
-        crate::provider::resolve_metadata(self.provider.as_ref(), path.as_ref(), options).await
+        if let Some(metadata) = &self.metadata_provider {
+            if path.as_ref().is_empty() {
+                return Ok(ObjectMetadata::directory(ObjectPath::default()));
+            }
+            return metadata
+                .get_object_metadata(path.as_ref(), !options.strict)
+                .await;
+        }
+        crate::provider::resolve_metadata(&self.provider, path.as_ref(), options).await
     }
 
     /// Test whether a path resolves to a regular object. Missing objects return false.
@@ -48,17 +57,27 @@ impl StorageClient {
     /// # Errors
     /// Returns path, symlink-resolution, or provider errors other than missing objects.
     pub async fn is_file(&self, path: impl AsRef<str>) -> Result<bool> {
+        if let Some(metadata) = &self.metadata_provider {
+            return match self.info(path, InfoOptions::default()).await {
+                Ok(entry) if entry.kind == ObjectKind::Symlink => {
+                    Ok(metadata.realpath(entry.key.as_str()).await?.state
+                        == ResolvedPathState::Exists)
+                }
+                Ok(entry) => Ok(entry.kind == ObjectKind::File),
+                Err(error) if error.kind == ErrorKind::NotFound => Ok(false),
+                Err(error) => Err(error),
+            };
+        }
         self.provider.is_file(path.as_ref()).await
     }
 
-    /// Test whether any keys start with the normalized lexical prefix.
+    /// Test whether the backend or logical namespace lists any keys for the given prefix.
     ///
     /// # Errors
     /// Returns invalid paths or listing errors.
     pub async fn is_empty(&self, prefix: impl AsRef<str>) -> Result<bool> {
         let mut listing = self
-            .provider
-            .list_objects(ListOptions {
+            .list(ListOptions {
                 prefix: ObjectPath::new(prefix)?,
                 ..ListOptions::default()
             })
@@ -72,7 +91,8 @@ impl StorageClient {
     /// # Errors
     /// Returns path, provider, size-limit, version-condition, or integrity errors.
     pub async fn read(&self, path: impl AsRef<str>, options: ReadOptions) -> Result<Bytes> {
-        self.provider.get_object(path.as_ref(), options).await
+        let path = self.read_path(path.as_ref()).await?;
+        self.provider.get_object(&path, options).await
     }
 
     /// Download `remote` to `local`, creating missing parent directories and
@@ -87,8 +107,9 @@ impl StorageClient {
         local: impl AsRef<Path>,
         options: ReadOptions,
     ) -> Result<()> {
+        let remote = self.read_path(remote.as_ref()).await?;
         self.provider
-            .download_file(remote.as_ref(), local.as_ref(), options)
+            .download_file(&remote, local.as_ref(), options)
             .await
     }
 
@@ -102,8 +123,14 @@ impl StorageClient {
         bytes: Bytes,
         options: WriteOptions,
     ) -> Result<()> {
-        self.provider
-            .put_object(path.as_ref(), bytes, options)
+        let logical = path.as_ref();
+        let physical = self.write_path(logical).await?;
+        let attributes = self
+            .metadata_provider
+            .as_ref()
+            .map(|_| options.attributes.clone());
+        self.provider.put_object(&physical, bytes, options).await?;
+        self.register_write(logical, &physical, attributes.into_iter().flatten())
             .await
     }
 
@@ -120,8 +147,16 @@ impl StorageClient {
         local: impl AsRef<Path>,
         options: WriteOptions,
     ) -> Result<()> {
+        let logical = remote.as_ref();
+        let physical = self.write_path(logical).await?;
+        let attributes = self
+            .metadata_provider
+            .as_ref()
+            .map(|_| options.attributes.clone());
         self.provider
-            .upload_file(remote.as_ref(), local.as_ref(), options)
+            .upload_file(&physical, local.as_ref(), options)
+            .await?;
+        self.register_write(logical, &physical, attributes.into_iter().flatten())
             .await
     }
 
@@ -137,8 +172,17 @@ impl StorageClient {
         destination: impl AsRef<str>,
         options: CopyOptions,
     ) -> Result<()> {
+        let logical = destination.as_ref();
+        let physical = self.write_path(logical).await?;
+        let source = self.read_path(source.as_ref()).await?;
+        let attributes = self
+            .metadata_provider
+            .as_ref()
+            .map(|_| options.destination.attributes.clone());
         self.provider
-            .copy_object(source.as_ref(), destination.as_ref(), options)
+            .copy_object(&source, &physical, options)
+            .await?;
+        self.register_write(logical, &physical, attributes.into_iter().flatten())
             .await
     }
 
@@ -147,7 +191,35 @@ impl StorageClient {
     /// # Errors
     /// Returns invalid/escaping targets, unsupported symlinks, or provider errors.
     pub async fn make_symlink(&self, path: impl AsRef<str>, target: &str) -> Result<()> {
-        self.provider.make_symlink(path.as_ref(), target).await
+        let path = path.as_ref();
+        if let Some(metadata) = self.writable_metadata()? {
+            let key = ObjectPath::new(path)?;
+            let target = ObjectPath::new(target)?;
+            if key.is_root() || target.is_root() {
+                return Err(MscError::new(
+                    ErrorKind::InvalidPath,
+                    "symlink requires nonempty keys",
+                ));
+            }
+            if !metadata.allow_overwrites() {
+                match metadata.get_object_metadata(path, true).await {
+                    Ok(_) => {
+                        return Err(MscError::new(
+                            ErrorKind::AlreadyExists,
+                            "logical object already exists",
+                        ));
+                    }
+                    Err(error) if error.kind == ErrorKind::NotFound => (),
+                    Err(error) => return Err(error),
+                }
+            }
+            let mut entry = ObjectMetadata::file(key.clone(), 0);
+            entry.kind = ObjectKind::Symlink;
+            entry.symlink_target = Some(crate::path::relative_link_target(&key, &target));
+            entry.last_modified = Some(chrono::Utc::now());
+            return metadata.add_file(path, entry).await;
+        }
+        self.provider.make_symlink(path, target).await
     }
 
     /// Delete one exact key, failing if the requested object does not exist.
@@ -166,6 +238,9 @@ impl StorageClient {
                 "recursive deletion; list and delete exact keys instead",
             ));
         }
+        if let Some(metadata) = self.writable_metadata()? {
+            return self.delete_mapped(metadata, path.as_ref(), options).await;
+        }
         self.provider.delete_object(path.as_ref(), options).await
     }
 
@@ -178,6 +253,25 @@ impl StorageClient {
         paths: &[ObjectPath],
         options: DeleteOptions,
     ) -> Result<BatchResult> {
+        if let Some(metadata) = self.writable_metadata()? {
+            let mut result = BatchResult::default();
+            for (index, path) in paths.iter().enumerate() {
+                match self
+                    .delete_mapped(metadata, path.as_str(), options.clone())
+                    .await
+                {
+                    Ok(()) => result.succeeded.push(index),
+                    Err(error) if error.kind == ErrorKind::NotFound => result.succeeded.push(index),
+                    Err(error) => result.failed.push(BatchFailure {
+                        index,
+                        source: path.clone(),
+                        destination: None,
+                        error,
+                    }),
+                }
+            }
+            return Ok(result);
+        }
         self.provider.delete_objects(paths, options).await
     }
 
@@ -186,6 +280,9 @@ impl StorageClient {
     /// # Errors
     /// Returns invalid listing bounds; provider/ordering errors appear in the stream.
     pub async fn list(&self, options: ListOptions) -> Result<MetadataStream> {
+        if let Some(metadata) = &self.metadata_provider {
+            return metadata.list_objects(options).await;
+        }
         self.provider.list_objects(options).await
     }
 
@@ -193,8 +290,20 @@ impl StorageClient {
     ///
     /// # Errors
     /// Returns invalid listing bounds; provider/ordering errors appear in the stream.
-    pub async fn list_recursive(&self, options: ListOptions) -> Result<MetadataStream> {
-        self.provider.list_objects_recursive(options).await
+    pub async fn list_recursive(&self, mut options: ListOptions) -> Result<MetadataStream> {
+        options.recursive = true;
+        self.list(options).await
+    }
+
+    /// Persist staged logical metadata changes.
+    ///
+    /// # Errors
+    /// Returns unsupported for read-only metadata and commit errors from writable providers.
+    pub async fn commit_updates(&self) -> Result<()> {
+        if let Some(metadata) = self.writable_metadata()? {
+            metadata.commit_updates().await?;
+        }
+        Ok(())
     }
 
     /// Drain provider-owned cleanup, including cancelled multipart uploads.
