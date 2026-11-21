@@ -321,7 +321,7 @@ def test_streaming_copies_non_contiguous_buffers_in_chunks():
     strided = np.resize(np.arange(251, dtype=np.uint8), (6144, 8192))[:, ::2]
     with _streaming_bucket() as (_, client):
         with client.open("strided.bin", "wb", writer_options=OPTIONS) as f:
-            assert f.write(memoryview(strided)) == strided.nbytes
+            assert f.write(strided) == strided.nbytes
         assert client.read("strided.bin") == strided.tobytes()
 
 
@@ -336,7 +336,7 @@ def test_streaming_bounds_non_contiguous_conversion_to_one_part():
         with client.open("flat.bin", "wb", writer_options=OPTIONS) as f:
             tracemalloc.start()
             try:
-                assert f.write(memoryview(flat)) == flat.nbytes
+                assert f.write(flat) == flat.nbytes
                 _, peak = tracemalloc.get_traced_memory()
             finally:
                 tracemalloc.stop()
@@ -349,7 +349,7 @@ def test_streaming_bounds_non_contiguous_conversion_to_one_part():
         for name, buffer in (("wide.bin", wide), ("items.bin", big_items)):
             with client.open(name, "wb", writer_options=OPTIONS) as f:
                 with pytest.raises(ValueError, match="pass a contiguous buffer"):
-                    f.write(memoryview(buffer))
+                    f.write(buffer)
                 assert f.tell() == 0
             assert client.read(name) == b""
 
