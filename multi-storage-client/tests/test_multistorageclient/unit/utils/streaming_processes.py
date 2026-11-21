@@ -61,13 +61,15 @@ def run_in_processes(ctx: Any, target: Callable[..., Any], args_list: list[tuple
     Run ``target(*args)`` in one ``ctx`` process per entry of ``args_list`` and return the results in order.
 
     Unlike ``multiprocessing.Pool``, which waits forever for a task whose worker died, a child that dies or stalls
-    fails this call within ``timeout``.
+    fails this call within ``timeout``. So does a child that reports a result but does not then exit cleanly.
     """
     results = ctx.Queue()
-    processes = [ctx.Process(target=_report, args=(results, i, target, args)) for i, args in enumerate(args_list)]
-    for process in processes:
-        process.start()
+    processes: list[Any] = []
     try:
+        for i, args in enumerate(args_list):
+            process = ctx.Process(target=_report, args=(results, i, target, args))
+            process.start()
+            processes.append(process)
         deadline = time.monotonic() + timeout
         outcomes: dict[int, Any] = {}
         while len(outcomes) < len(processes):
@@ -83,10 +85,14 @@ def run_in_processes(ctx: Any, target: Callable[..., Any], args_list: list[tuple
             if error is not None:
                 raise RuntimeError(f"Child process {index} failed: {error}")
             outcomes[index] = value
+        for process in processes:
+            process.join(timeout=5)
+        exitcodes = [process.exitcode for process in processes]
+        if any(code != 0 for code in exitcodes):
+            raise RuntimeError(f"Child processes did not exit cleanly (exit codes): {exitcodes}")
         return [outcomes[i] for i in range(len(processes))]
     finally:
         for process in processes:
-            process.join(timeout=5)
             if process.is_alive():
                 # Kill, not terminate: a Python SIGTERM handler never runs while the child is stuck in native code.
                 process.kill()
