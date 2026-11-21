@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 import io
 import logging
 import os
@@ -45,6 +46,8 @@ from ..types import (
     Range,
     RetryableError,
     SignerType,
+    StreamingObjectWriter,
+    StreamingWriterOptions,
     SuffixRange,
     SymlinkHandling,
 )
@@ -55,6 +58,7 @@ from ..utils import (
     validate_attributes,
 )
 from .base import BaseStorageProvider, _translate_iterator_errors
+from .rust_streaming import RustStreamingWriter
 
 logger = logging.getLogger(__name__)
 
@@ -310,6 +314,39 @@ class S3StorageProvider(BaseStorageProvider):
                 f"Unsupported checksum_algorithm '{value}'. Supported: {sorted(SUPPORTED_CHECKSUM_ALGORITHMS)}."
             )
         return normalized
+
+    def _open_streaming_writer(
+        self, path: str, attributes: dict[str, str] | None, options: StreamingWriterOptions
+    ) -> StreamingObjectWriter:
+        if self._rust_client is None:
+            raise NotImplementedError("Streaming writes require the Rust client (rust_client in the profile options).")
+        rust_client = self._rust_client
+        bucket, key = split_path(path)
+        if self._is_directory_bucket(bucket):
+            raise NotImplementedError(f"Streaming writes do not support S3 directory bucket {bucket}.")
+        if bucket != self._rust_bucket or not RustClient.supports_path(key):
+            raise NotImplementedError(
+                f"Streaming writes cannot represent {bucket}/{key} with the configured Rust client."
+            )
+        validated_attributes = validate_attributes(attributes)
+        rust_attributes = {"attributes": validated_attributes} if validated_attributes else {}
+        native = self._translate_errors(
+            lambda: rust_client.open_streaming_writer(
+                key,
+                part_size=options.part_size_bytes,
+                max_inflight_parts=options.max_inflight_parts,
+                max_object_size=options.max_object_size_bytes,
+                **rust_attributes,
+            ),
+            operation="PUT",
+            bucket=bucket,
+            key=key,
+        )
+        return RustStreamingWriter(
+            native,
+            translate_errors=functools.partial(self._translate_errors, operation="PUT", bucket=bucket, key=key),
+            emit_write_metrics=functools.partial(self._emit_metrics, BaseStorageProvider._Operation.WRITE),
+        )
 
     def _is_directory_bucket(self, bucket: str) -> bool:
         """
