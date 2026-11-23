@@ -1190,14 +1190,8 @@ class SingleStorageClient(AbstractStorageClient):
         if not self._is_posix_file_storage_provider():
             return None
 
-        if self._metadata_provider:
-            if self._config.read_only:
-                realpath = self._resolve_read_path(path)
-            else:
-                realpath = self._metadata_provider.realpath(path).physical_path
-        else:
-            realpath = path
-
+        self._ensure_path_export_allowed()
+        realpath = self._metadata_provider.realpath(path).physical_path if self._metadata_provider else path
         return cast(PosixFileStorageProvider, self._storage_provider)._prepend_base_path(realpath)
 
     def is_file(self, path: str) -> bool:

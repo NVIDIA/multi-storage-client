@@ -21,6 +21,7 @@ from io import BytesIO, StringIO
 
 import pytest
 
+import multistorageclient as msc
 from multistorageclient import StorageClient, StorageClientConfig, resolve_storage_client
 from multistorageclient.types import BatchTransferError, Range, SuffixRange
 from test_multistorageclient.unit.utils import catalog
@@ -139,3 +140,29 @@ def test_reference_posix_sync_preserves_file_mode(tmp_path, monkeypatch):
     copied = dest / "entry"
     assert copied.read_bytes() == b"image"
     assert stat.S_IMODE(copied.stat().st_mode) == 0o751
+
+
+@pytest.mark.parametrize("access", ["get_posix_path", "as_posix", "load", "memmap"])
+def test_reference_denies_backing_path_exports(tmp_path, monkeypatch, access):
+    import numpy as np
+
+    key = "input.npy"
+    monkeypatch.setattr(catalog, "LOGICAL", key)
+    client = catalog.configure_inventory(tmp_path, monkeypatch)
+    source = tmp_path / "primary" / catalog.PHYSICAL
+    with source.open("wb") as stream:
+        np.save(stream, np.array([7]))
+    url = client.url(key)
+    with pytest.raises(PermissionError, match="download_file"):
+        if access == "get_posix_path":
+            client.get_posix_path(key)
+        elif access == "as_posix":
+            msc.Path(url).as_posix()
+        elif access == "load":
+            mapped = msc.numpy.load(url, mmap_mode="r+")
+            mapped[0] = 11
+            mapped.flush()
+        else:
+            msc.numpy.memmap(url, mode="r")
+    with client.open(key, "rb") as stream:
+        assert np.load(stream).tolist() == [7]

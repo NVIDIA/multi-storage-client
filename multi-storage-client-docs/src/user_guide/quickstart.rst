@@ -150,6 +150,21 @@ files and send its pinned URL to workers that have the same catalog integration.
        file_url = client.url(item.key)
        # A worker can later open this exact revision with msc.open(file_url, "rb").
 
+Catalog references expose a read-only stream. Pass the stream to libraries that accept
+file objects. This example reads a NumPy array.
+
+.. code-block:: python
+
+   import numpy as np
+
+   with client.open("arrays/input.npy", "rb") as stream:
+       array = np.load(stream)
+
+For APIs that require a filesystem path, including NumPy memory mapping, use
+``client.download_file(key, local_path)`` to create a copy you control. MSC prevents
+catalog references from exposing a backing file or shared cache path through
+``get_posix_path()``, ``as_posix()``, or ``resolve_filesystem_path()``.
+
 Rclone-Based
 ============
 

@@ -201,6 +201,7 @@ class StorageClient(AbstractStorageClient):
 
         :param path: The path to resolve (may be a symlink or virtual path).
         :return: Physical POSIX filesystem path if POSIX storage, None otherwise.
+        :raises PermissionError: If a read-only reference uses POSIX storage.
         """
         return self._delegate.get_posix_path(path)
 

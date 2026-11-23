@@ -885,6 +885,7 @@ class ObjectFile(_ProcessLocalStream, IOBase, IO):
 
         :return: Path to local file in read mode, raises a ValueError in write mode
         """
+        self._storage_client._ensure_path_export_allowed()
         if self.readable():
             self._wait_for_download()
             if self._cache_manager:
@@ -1098,6 +1099,8 @@ class PosixFile(_ProcessLocalStream, IOBase, IO):
                     logger.warning("Failed to set extended attributes on %s: %s", self._real_path, e)
 
     def resolve_filesystem_path(self) -> str:
+        """Return the local filename for an ordinary POSIX profile."""
+        self._storage_client._ensure_path_export_allowed()
         return self._file.name
 
     def fsync(self) -> None:

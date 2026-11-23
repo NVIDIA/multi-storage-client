@@ -468,18 +468,22 @@ class PosixToPosixHandler(BatchSyncHandler):
         transfer_items: list[tuple[ObjectMetadata, str]],
     ) -> None:
         for file_metadata, target_file_path in transfer_items:
-            source_physical_path = self.source_client.get_posix_path(file_metadata.key)
+            source_path = (
+                file_metadata.key
+                if self._reference_target_root is not None
+                else self.source_client.get_posix_path(file_metadata.key)
+            )
             target_physical_path = self.target_client.get_posix_path(target_file_path)
-            if source_physical_path is None:
+            if source_path is None:
                 raise ValueError(f"Source key '{file_metadata.key}' has no POSIX path")
             if target_physical_path is None:
                 raise ValueError(f"Target path '{target_file_path}' has no POSIX path")
             transfer_callback = self._transfer_callback(
-                [(file_metadata, target_file_path)], [source_physical_path], local_source=True
+                [(file_metadata, target_file_path)], [source_path], local_source=True
             )
-            with _transfer_notification(transfer_callback, source_physical_path, target_physical_path):
+            with _transfer_notification(transfer_callback, source_path, target_physical_path):
                 if self._reference_target_root is None:
-                    self._copy_to_posix_target(source_physical_path, target_physical_path)
+                    self._copy_to_posix_target(source_path, target_physical_path)
                 else:
                     self._copy_reference_to_posix_target(file_metadata.key, target_physical_path)
             update_posix_metadata(self.target_client, target_physical_path, target_file_path, file_metadata)

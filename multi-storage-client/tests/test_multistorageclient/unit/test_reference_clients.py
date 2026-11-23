@@ -268,7 +268,6 @@ def test_bound_posix_storage_stays_inside_configured_root(tmp_path):
             client.read,
             client.info,
             client.open,
-            client.get_posix_path,
             lambda path: list(client.list(path)),
         ):
             with pytest.raises(PermissionError, match="outside the bound storage directory"):
@@ -280,6 +279,9 @@ def test_bound_posix_storage_stays_inside_configured_root(tmp_path):
 
     ordinary = StorageClient(StorageClientConfig.from_dict(config, "dataset"))
     assert ordinary.read("link/secret") == b"secret"
+    assert ordinary.get_posix_path("item") == str(directory / "item")
+    with ordinary.open("item") as stream:
+        assert stream.resolve_filesystem_path() == str(directory / "item")
 
 
 def test_scoped_cache_separates_object_keys_and_authorizes_cached_opens(tmp_path):
@@ -321,6 +323,9 @@ def test_scoped_cache_separates_object_keys_and_authorizes_cached_opens(tmp_path
     assert client.read(LOGICAL) == data
     with client.open(LOGICAL) as stream:
         assert stream.read() == data
+        with pytest.raises(PermissionError, match="download_file"):
+            stream.resolve_filesystem_path()
+    assert cache.read(physical) == data
     provider.get_object.assert_not_called()
     provider.download_file.assert_not_called()
 

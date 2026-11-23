@@ -88,6 +88,13 @@ class AbstractStorageClient(ABC):
         if self._config.read_only:
             raise PermissionError("The bound reference is read-only.")
 
+    def _ensure_path_export_allowed(self) -> None:
+        if self._config.read_only is True:
+            raise PermissionError(
+                "A read-only reference cannot expose its backing filesystem path. "
+                "Read the open stream or use download_file() to create a local copy."
+            )
+
     def _ensure_open_mode(self, mode: str) -> None:
         if mode not in ("r", "rb", "rt"):
             self._ensure_writable()
