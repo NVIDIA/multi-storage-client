@@ -1505,6 +1505,13 @@ each time it is resolved. A missing scope or reuse deadline disables client reus
 Use :py:meth:`multistorageclient.StorageClient.url` to generate a pinned URL to persist.
 Each worker reopens the revision with its own credentials.
 
+Workers that use the same disk cache can reuse cached content for the same
+canonical root and known scope. MSC identifies a configuration by the paths and
+filesystem metadata of the main file and its includes when loaded. Replacing a
+file or deploying a separate copy gives a fresh cache namespace. The integration
+must distinguish any environment-dependent catalog or access context through the
+canonical root and scope. An unknown scope disables shared content caching.
+
 Inventory-based reads select any replica through the bound client. When syncing
 catalog files to a POSIX directory, keys must map inside the selected destination.
 An object key containing a ``..`` component cannot be copied as a POSIX filename.

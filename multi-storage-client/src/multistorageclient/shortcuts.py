@@ -256,10 +256,11 @@ def _read_cached_routes() -> tuple[PathMapping, dict[str, _ConfiguredResolver]]:
         with _PATH_MAPPING_CACHE_LOCK:
             routes = _PATH_MAPPING_CACHE.get(cache_key)
             if routes is None:
-                config, _ = StorageClientConfig.read_msc_config()
+                generations = []
+                config, _ = StorageClientConfig._read_msc_config(generations=generations)
                 config = config or {}
                 registration = config.get("url_resolvers", {})
-                identity = uuid4().hex if registration else ""
+                identity = hashlib.sha256(json.dumps(generations).encode()).hexdigest() if registration else ""
                 routes = (
                     PathMapping.from_config(config),
                     {scheme: _ConfiguredResolver(scheme, config, identity) for scheme in registration},

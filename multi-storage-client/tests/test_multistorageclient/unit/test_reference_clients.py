@@ -21,13 +21,14 @@ from unittest.mock import patch
 
 import pytest
 
-from multistorageclient import Path, StorageClient, StorageClientConfig
+from multistorageclient import Path, StorageClient, StorageClientConfig, resolve_storage_client
 from multistorageclient.client.composite import CompositeStorageClient
 from multistorageclient.file import ObjectFile
 from multistorageclient.types import (
     ObjectMetadata,
     ResolvedPath,
     ResolvedPathState,
+    StorageProvider,
 )
 from test_multistorageclient.unit.utils.catalog import (
     ENCODED,
@@ -173,6 +174,7 @@ def _fork_worker(output, scope, client, delegate, config, path, listing, posix_s
             _try_read(lambda: StorageClient(config).read(LOGICAL)),
             path in paths and hash(path) == prior_hash and Path(path) in paths and path.parent / path.name in paths,
             len(CatalogResolver.binds) - before,
+            Path(str(path)) in paths,
         )
     )
     output.close()
@@ -220,7 +222,7 @@ def test_forked_handles_authorize_prior_scope_and_discard_streams(
             receiver.close()
     assert process.exitcode == 0
     value = b"image" if allowed else "denied"
-    assert result == (False, "denied", "denied", "denied", value, value, value, value, True, int(allowed))
+    assert result == (False, "denied", "denied", "denied", value, value, value, value, True, int(allowed), allowed)
 
 
 def _spawn_worker(output, payload):
@@ -231,6 +233,40 @@ def _spawn_worker(output, payload):
         output.send("denied")
     finally:
         output.close()
+
+
+def _read_cached_reference(url, scope):
+    os.environ["MSC_TEST_SCOPE"] = scope
+    before = len(CatalogResolver.binds)
+    client, key = resolve_storage_client(url)
+    with patch.object(client.delegate, "_storage_provider", spec=StorageProvider) as origin:
+        origin.get_object.return_value = b"origin"
+        value = client.read(key)
+    return client.profile, value, [(ref.root_url, ref.access_scope) for ref in CatalogResolver.binds[before:]]
+
+
+@pytest.mark.parametrize(
+    "method", [method for method in ("fork", "spawn") if method in multiprocessing.get_all_start_methods()]
+)
+def test_worker_authorizes_and_reads_parent_disk_cache(tmp_path, catalog_config, method):
+    profile = {
+        "storage_provider": {"type": "file", "options": {"base_path": str(tmp_path)}},
+        "metadata_provider": {"type": f"{Inventory.__module__}.Inventory"},
+        "caching_enabled": True,
+    }
+    catalog_config(
+        options={"profile": profile}, cache={"location": str(tmp_path / "cache"), "check_source_version": False}
+    )
+    client, key = resolve_storage_client(ROOT + ENCODED)
+    with patch.object(client.delegate, "_storage_provider", spec=StorageProvider) as origin:
+        origin.get_object.return_value = b"parent"
+        assert client.read(key) == b"parent"
+    with multiprocessing.get_context(method).Pool(1) as pool:
+        alice = pool.apply_async(_read_cached_reference, (client.url(key), "alice")).get(timeout=30)
+        bob = pool.apply_async(_read_cached_reference, (client.url(key), "bob")).get(timeout=30)
+    assert alice == (client.profile, b"parent", [(ROOT, "alice")])
+    assert bob[0] != client.profile
+    assert bob[1:] == (b"origin", [(ROOT, "bob")])
 
 
 @pytest.mark.parametrize("scope", ["new-user", "denied"])
@@ -287,7 +323,7 @@ def test_bound_posix_storage_stays_inside_configured_root(tmp_path):
 def test_scoped_cache_separates_object_keys_and_authorizes_cached_opens(tmp_path):
     from unittest.mock import Mock
 
-    from multistorageclient.types import Range, StorageProvider
+    from multistorageclient.types import Range
 
     cache_root = tmp_path / "cache"
     profile = {

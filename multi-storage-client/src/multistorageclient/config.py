@@ -150,6 +150,27 @@ def _load_config(text: str, *, is_json: bool) -> Any:
         loader.dispose()
 
 
+_ConfigFileGeneration = tuple[str, int, int, int, int, int]
+
+
+def _config_file_generation(path: str, fd: int) -> _ConfigFileGeneration:
+    stat = os.fstat(fd)
+    return path, stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+def _read_config_file(path: str, generations: list[_ConfigFileGeneration] | None) -> Any:
+    with open(path) as f:
+        if generations is None:
+            text = f.read()
+        else:
+            generation = _config_file_generation(path, f.fileno())
+            text = f.read()
+            if generation != _config_file_generation(path, f.fileno()):
+                raise ValueError(f"Configuration file changed while reading: {path}")
+            generations.append(generation)
+    return _load_config(text, is_json=path.endswith(".json"))
+
+
 def _resolve_include_path(include_path: str, parent_config_path: str) -> str:
     """
     Resolve include path (absolute or relative to parent config file).
@@ -367,6 +388,7 @@ def _merge_configs(
 def _load_and_merge_includes(
     main_config_path: str,
     main_config_dict: dict[str, Any],
+    generations: list[_ConfigFileGeneration] | None = None,
 ) -> dict[str, Any]:
     """
     Load and merge included config files.
@@ -394,8 +416,7 @@ def _load_and_merge_includes(
             raise ValueError(f"Included config file not found: {resolved_path} (from {main_config_path})")
 
         try:
-            with open(resolved_path) as f:
-                included_config = _load_config(f.read(), is_json=resolved_path.endswith(".json"))
+            included_config = _read_config_file(resolved_path, generations)
         except Exception as e:
             raise ValueError(f"Failed to load included config {resolved_path}: {e}")
 
@@ -1619,6 +1640,14 @@ class StorageClientConfig:
                  dictionary or empty dict if no config was found. ``config_file_path`` is the absolute
                  path of the config file used, or ``None`` if no config file was found.
         """
+        return StorageClientConfig._read_msc_config(config_file_paths)
+
+    @staticmethod
+    def _read_msc_config(
+        config_file_paths: Iterable[str] | None = None,
+        *,
+        generations: list[_ConfigFileGeneration] | None = None,
+    ) -> tuple[dict[str, Any] | None, str | None]:
         config_dict: dict[str, Any] = {}
         config_file_path: str | None = None
 
@@ -1644,9 +1673,8 @@ class StorageClientConfig:
         for path in config_file_paths:
             if os.path.exists(path):
                 try:
-                    with open(path) as f:
-                        config_dict = _load_config(f.read(), is_json=path.endswith(".json"))
-                        config_file_path = path
+                    config_dict = _read_config_file(path, generations)
+                    config_file_path = path
                     # Use the first config file.
                     break
                 except Exception as e:
@@ -1662,7 +1690,7 @@ class StorageClientConfig:
             validate_config(config_dict)
 
             if "include" in config_dict and config_file_path:
-                config_dict = _load_and_merge_includes(config_file_path, config_dict)
+                config_dict = _load_and_merge_includes(config_file_path, config_dict, generations)
                 if "url_resolvers" in config_dict:
                     validate_config(config_dict)
 

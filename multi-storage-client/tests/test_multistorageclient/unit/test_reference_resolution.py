@@ -41,7 +41,7 @@ def test_pinned_hit_has_no_configuration_or_catalog_work(catalog_config, monkeyp
     def unexpected(*args, **kwargs):
         pytest.fail("Repeated cold initialization while resolving a pinned sibling")
 
-    monkeypatch.setattr(StorageClientConfig, "read_msc_config", unexpected)
+    monkeypatch.setattr(StorageClientConfig, "_read_msc_config", unexpected)
     monkeypatch.setattr(shortcuts, "validate_config", unexpected)
     monkeypatch.setattr(shortcuts, "import_class", unexpected)
     monkeypatch.setattr(CatalogResolver, "bind", unexpected)
@@ -65,7 +65,7 @@ def test_warm_existing_routes_skip_configuration_and_imports(catalog_config, mon
     def unexpected(*args, **kwargs):
         pytest.fail("A warm shortcut reinitialized its configuration or imported a plugin")
 
-    monkeypatch.setattr(StorageClientConfig, "read_msc_config", unexpected)
+    monkeypatch.setattr(StorageClientConfig, "_read_msc_config", unexpected)
     for module in (msc_config, shortcuts):
         monkeypatch.setattr(module, "validate_config", unexpected)
         monkeypatch.setattr(module, "import_class", unexpected)
@@ -127,6 +127,23 @@ def test_config_and_scope_isolation(catalog_config, monkeypatch, tmp_path):
     assert msc.resolve_storage_client(PINNED)[0].profile != alice.profile
     monkeypatch.setenv("MSC_CONFIG", str(first_config))
     assert msc.resolve_storage_client(PINNED)[0] is alice
+
+
+@pytest.mark.parametrize("change", ["main", "include"])
+def test_reloaded_profile_tracks_main_and_included_file_generations(catalog_config, tmp_path, change):
+    included = tmp_path / "included.json"
+    included.write_text("{}")
+    main = catalog_config(include=[str(included)])
+    profile = msc.resolve_storage_client(PINNED)[0].profile
+    shortcuts._PATH_MAPPING_CACHE.clear()
+    assert msc.resolve_storage_client(PINNED)[0].profile == profile
+
+    changed = main if change == "main" else included
+    replacement = tmp_path / "replacement.json"
+    replacement.write_text(changed.read_text())
+    replacement.replace(changed)
+    shortcuts._PATH_MAPPING_CACHE.clear()
+    assert msc.resolve_storage_client(PINNED)[0].profile != profile
 
 
 def test_unscoped_binds_have_fresh_identity_and_no_content_cache(catalog_config, monkeypatch, tmp_path):
