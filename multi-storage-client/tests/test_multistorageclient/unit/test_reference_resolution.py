@@ -26,39 +26,14 @@ import multistorageclient as msc
 from multistorageclient import config as msc_config
 from multistorageclient import shortcuts
 from multistorageclient.config import StorageClientConfig
-from test_multistorageclient.unit.utils.catalog import CatalogResolver
+from test_multistorageclient.unit.utils.catalog import RESOLVER, CatalogResolver
 
-RESOLVER = "test_multistorageclient.unit.utils.catalog.CatalogResolver"
 PINNED = "catalog://ns/r1/files/"
 LATEST = "catalog://alias/latest/files/"
 
 
-@pytest.fixture
-def configure(tmp_path, monkeypatch):
-    CatalogResolver.binds.clear()
-    monkeypatch.delenv("MSC_TEST_SCOPE", raising=False)
-    monkeypatch.delenv("MSC_TEST_REVISION", raising=False)
-
-    def install(*, registrations=None, options=None, **config):
-        path = tmp_path / f"msc-{len(list(tmp_path.iterdir()))}.json"
-        path.write_text(
-            json.dumps(
-                {
-                    "url_resolvers": registrations
-                    if registrations is not None
-                    else {"catalog": {"type": RESOLVER, "options": options or {}}},
-                    **config,
-                }
-            )
-        )
-        monkeypatch.setenv("MSC_CONFIG", str(path))
-        return path
-
-    return install
-
-
-def test_pinned_hit_has_no_configuration_or_catalog_work(configure, monkeypatch):
-    configure()
+def test_pinned_hit_has_no_configuration_or_catalog_work(catalog_config, monkeypatch):
+    catalog_config()
     client, key = msc.resolve_storage_client(PINNED + "x%25%3F%23/%E4%B8%8A/.././child/")
     assert key == "x%?#/上/.././child/"
     assert client.url(key) == PINNED + "x%25%3F%23/%E4%B8%8A/.././child/"
@@ -75,11 +50,11 @@ def test_pinned_hit_has_no_configuration_or_catalog_work(configure, monkeypatch)
 
 
 @pytest.mark.parametrize("enable_resolver", [False, True])
-def test_warm_existing_routes_skip_configuration_and_imports(configure, monkeypatch, tmp_path, enable_resolver):
+def test_warm_existing_routes_skip_configuration_and_imports(catalog_config, monkeypatch, tmp_path, enable_resolver):
     monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
-    configure(
+    catalog_config(
         registrations={"unused": {"type": "missing_catalog.Resolver"}} if enable_resolver else {},
         profiles={"training": {"storage_provider": {"type": "file", "options": {"base_path": str(tmp_path)}}}},
         path_mapping={"s3://mapped/": "msc://training/"},
@@ -99,8 +74,8 @@ def test_warm_existing_routes_skip_configuration_and_imports(configure, monkeypa
             assert msc.resolve_storage_client(root + str(index))[0] is client
 
 
-def test_mutable_always_binds_and_seeds_its_pinned_revision(configure, monkeypatch):
-    configure()
+def test_mutable_always_binds_and_seeds_its_pinned_revision(catalog_config, monkeypatch):
+    catalog_config()
     r1, _ = msc.resolve_storage_client(LATEST)
     assert msc.resolve_storage_client(PINNED)[0] is r1
     monkeypatch.setenv("MSC_TEST_REVISION", "r2")
@@ -113,8 +88,8 @@ def test_mutable_always_binds_and_seeds_its_pinned_revision(configure, monkeypat
 
 
 @pytest.mark.parametrize("ttl", [None, -1])
-def test_ineligible_deadline_rebinds_with_same_scoped_identity(configure, ttl):
-    configure(options={"ttl": ttl})
+def test_ineligible_deadline_rebinds_with_same_scoped_identity(catalog_config, ttl):
+    catalog_config(options={"ttl": ttl})
     first, _ = msc.resolve_storage_client(PINNED)
     second, _ = msc.resolve_storage_client(PINNED)
     assert first is not second
@@ -122,8 +97,8 @@ def test_ineligible_deadline_rebinds_with_same_scoped_identity(configure, ttl):
     assert len(CatalogResolver.binds) == 2
 
 
-def test_expiry_and_capacity_evict_grants(configure, monkeypatch):
-    configure()
+def test_expiry_and_capacity_evict_grants(catalog_config, monkeypatch):
+    catalog_config()
     monkeypatch.setattr(shortcuts, "_MAX_REFERENCE_BINDINGS", 2)
     first, _ = msc.resolve_storage_client(PINNED)
     for rev in ("r2", "r3"):
@@ -138,8 +113,8 @@ def test_expiry_and_capacity_evict_grants(configure, monkeypatch):
     assert not resolvers["catalog"]._clients
 
 
-def test_config_and_scope_isolation(configure, monkeypatch, tmp_path):
-    first_config = configure()
+def test_config_and_scope_isolation(catalog_config, monkeypatch, tmp_path):
+    first_config = catalog_config()
     alice, _ = msc.resolve_storage_client(PINNED)
     monkeypatch.setenv("MSC_TEST_SCOPE", "bob")
     bob, _ = msc.resolve_storage_client(PINNED)
@@ -148,15 +123,15 @@ def test_config_and_scope_isolation(configure, monkeypatch, tmp_path):
     with pytest.raises(PermissionError):
         msc.resolve_storage_client(PINNED)
     monkeypatch.setenv("MSC_TEST_SCOPE", "alice")
-    configure(options={"profile": {"storage_provider": {"type": "file", "options": {"base_path": str(tmp_path)}}}})
+    catalog_config(options={"profile": {"storage_provider": {"type": "file", "options": {"base_path": str(tmp_path)}}}})
     assert msc.resolve_storage_client(PINNED)[0].profile != alice.profile
     monkeypatch.setenv("MSC_CONFIG", str(first_config))
     assert msc.resolve_storage_client(PINNED)[0] is alice
 
 
-def test_unscoped_binds_have_fresh_identity_and_no_content_cache(configure, monkeypatch, tmp_path):
+def test_unscoped_binds_have_fresh_identity_and_no_content_cache(catalog_config, monkeypatch, tmp_path):
     monkeypatch.setenv("MSC_TEST_SCOPE", "")
-    configure(
+    catalog_config(
         options={
             "profile": {"storage_provider": {"type": "file", "options": {"base_path": "/"}}, "caching_enabled": True}
         },
@@ -169,8 +144,8 @@ def test_unscoped_binds_have_fresh_identity_and_no_content_cache(configure, monk
     assert len(CatalogResolver.binds) == 2
 
 
-def test_mutable_unscoped_bind_does_not_infer_scope_from_pinned_root(configure, monkeypatch):
-    configure()
+def test_mutable_unscoped_bind_does_not_infer_scope_from_pinned_root(catalog_config, monkeypatch):
+    catalog_config()
     monkeypatch.setenv("MSC_TEST_SCOPE", "")
     original_parse = CatalogResolver.parse
 
@@ -187,8 +162,8 @@ def test_mutable_unscoped_bind_does_not_infer_scope_from_pinned_root(configure, 
     assert len(CatalogResolver.binds) == 2
 
 
-def test_cold_binds_are_independent_and_same_pinned_callers_share(configure, monkeypatch):
-    configure()
+def test_cold_binds_are_independent_and_same_pinned_callers_share(catalog_config, monkeypatch):
+    catalog_config()
     entered, release = threading.Event(), threading.Event()
     original = CatalogResolver.bind
 
@@ -213,8 +188,8 @@ def test_cold_binds_are_independent_and_same_pinned_callers_share(configure, mon
     assert len(CatalogResolver.binds) == 2
 
 
-def test_explicit_profile_and_mapping_with_missing_plugin(configure):
-    configure(
+def test_explicit_profile_and_mapping_with_missing_plugin(catalog_config):
+    catalog_config(
         registrations={"unused": {"type": "missing_catalog_does_not_exist.Resolver"}},
         profiles={"static": {"storage_provider": {"type": "file", "options": {"base_path": "/"}}}},
         path_mapping={"mapped://bucket/prefix/": "msc://static/"},
@@ -230,16 +205,16 @@ def test_explicit_profile_and_mapping_with_missing_plugin(configure):
 
 
 @pytest.mark.parametrize("scheme", ["msc", "s3", "gs", "ais", "file"])
-def test_reserved_schemes_rejected(configure, scheme):
-    configure(registrations={scheme: {"type": RESOLVER}})
+def test_reserved_schemes_rejected(catalog_config, scheme):
+    catalog_config(registrations={scheme: {"type": RESOLVER}})
     with pytest.raises(ValueError, match="reserved scheme"):
         msc.resolve_storage_client("/tmp/file")
 
 
-def test_conflicting_ownership_in_include(configure, tmp_path):
+def test_conflicting_ownership_in_include(catalog_config, tmp_path):
     included = tmp_path / "included.yaml"
     included.write_text("path_mapping: {'catalog://bucket/prefix/': 'msc://test/'}")
-    configure(include=[str(included)])
+    catalog_config(include=[str(included)])
     with pytest.raises(ValueError, match="both registered"):
         msc.resolve_storage_client(PINNED)
     included.write_text(f"url_resolvers: {{catalog: {{type: {RESOLVER}}}}}")
@@ -248,12 +223,31 @@ def test_conflicting_ownership_in_include(configure, tmp_path):
 
 
 @pytest.mark.parametrize("extension", ["json", "yaml"])
-def test_duplicate_registration_in_one_file(tmp_path, monkeypatch, extension):
+@pytest.mark.parametrize(
+    "text, error",
+    [
+        ('{"url_resolvers":{"catalog":{"type":"one.R"},"catalog":{"type":"two.R"}}}', "Duplicate URL resolver"),
+        ('{"url_resolvers":{},"url_resolvers":{}}', "Duplicate url_resolvers section"),
+    ],
+)
+def test_duplicate_registration_in_one_file(tmp_path, monkeypatch, extension, text, error):
     config = tmp_path / f"config.{extension}"
-    config.write_text('{"url_resolvers":{"catalog":{"type":"one.R"},"catalog":{"type":"two.R"}}}')
+    config.write_text(text)
     monkeypatch.setenv("MSC_CONFIG", str(config))
-    with pytest.raises(ValueError, match="Duplicate URL resolver"):
+    with pytest.raises(ValueError, match=error):
         msc.resolve_storage_client(PINNED)
+
+
+def test_json_resolver_config_uses_json_syntax_and_values(tmp_path):
+    config = tmp_path / "config.json"
+    config.write_text(
+        '{\n\t"url_resolvers": {"catalog": {"type": "example.Resolver", "options": {'
+        '"url_resolvers": {"nested": 1, "nested": 2}, "values": [1e2, null, true, "on"]}}}}'
+    )
+    loaded, _ = StorageClientConfig.read_msc_config([str(config)])
+    assert loaded == json.loads(config.read_text())
+    with pytest.raises(json.JSONDecodeError):
+        StorageClientConfig.from_json('{"url_resolvers": {},}')
 
 
 @pytest.mark.parametrize(
@@ -269,8 +263,10 @@ def test_duplicate_registration_in_one_file(tmp_path, monkeypatch, extension):
         (LATEST, "catalog://user@ns/r1/files/"),
     ],
 )
-def test_canonical_redirects_or_invalid_pins_fail_before_provider_build(configure, monkeypatch, input_url, returned):
-    configure()
+def test_canonical_redirects_or_invalid_pins_fail_before_provider_build(
+    catalog_config, monkeypatch, input_url, returned
+):
+    catalog_config()
     original = CatalogResolver.bind
     monkeypatch.setattr(
         CatalogResolver, "bind", lambda self, ref: replace(original(self, ref), canonical_root_url=returned)
@@ -282,19 +278,19 @@ def test_canonical_redirects_or_invalid_pins_fail_before_provider_build(configur
         msc.resolve_storage_client(input_url)
 
 
-def test_worker_cannot_reopen_removed_or_changed_namespace(configure):
-    configure()
+def test_worker_cannot_reopen_removed_or_changed_namespace(catalog_config):
+    catalog_config()
     client, _ = msc.resolve_storage_client(PINNED)
-    configure(options={"namespace": "another"})
+    catalog_config(options={"namespace": "another"})
     with pytest.raises(ValueError, match="Unknown catalog namespace"):
         shortcuts._reopen_reference(client.url())
-    configure(registrations={}, path_mapping={"catalog://ns/r1/files/": "msc://test/"})
+    catalog_config(registrations={}, path_mapping={"catalog://ns/r1/files/": "msc://test/"})
     with pytest.raises(ValueError, match="No URL resolver configured"):
         shortcuts._reopen_reference(client.url())
 
 
-def test_bind_errors_are_not_cached(configure, monkeypatch):
-    configure()
+def test_bind_errors_are_not_cached(catalog_config, monkeypatch):
+    catalog_config()
     with pytest.raises(FileNotFoundError):
         msc.resolve_storage_client("catalog://ns/missing/files/file")
     original = CatalogResolver.bind

@@ -18,7 +18,7 @@ import json
 import logging
 import os
 import tempfile
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 from pathlib import Path
@@ -109,8 +109,23 @@ CREDENTIALS_PROVIDER_MAPPING = {
 
 def _load_config(text: str, *, is_json: bool) -> Any:
     """Load config and reject duplicate resolver registrations before a mapping can discard them."""
-    config = json.loads(text) if is_json else None
-    if is_json and (not isinstance(config, dict) or "url_resolvers" not in config):
+    if is_json:
+        duplicates: list[tuple[dict[str, Any], list[str]]] = []
+
+        def load_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            obj = dict(pairs)
+            if len(obj) < len(pairs):
+                counts = Counter(key for key, _ in pairs)
+                duplicates.append((obj, [key for key, count in counts.items() if count > 1]))
+            return obj
+
+        config = json.loads(text, object_pairs_hook=load_object)
+        if isinstance(config, dict):
+            for obj, keys in reversed(duplicates):
+                if obj is config and "url_resolvers" in keys:
+                    raise ValueError("Duplicate url_resolvers section")
+                if obj is config.get("url_resolvers"):
+                    raise ValueError(f"Duplicate URL resolver registration for scheme {keys[0]!r}")
         return config
 
     loader = yaml.SafeLoader(text)
@@ -130,7 +145,7 @@ def _load_config(text: str, *, is_json: bool) -> Any:
                     if key.value in schemes:
                         raise ValueError(f"Duplicate URL resolver registration for scheme {key.value!r}")
                     schemes.add(key.value)
-        return config if is_json else loader.construct_document(root)
+        return loader.construct_document(root)
     finally:
         loader.dispose()
 

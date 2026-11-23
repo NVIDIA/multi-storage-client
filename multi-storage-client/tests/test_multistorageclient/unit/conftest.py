@@ -23,6 +23,7 @@ import os
 import socket
 import tempfile
 import uuid
+from functools import partial
 
 import pytest
 
@@ -107,6 +108,14 @@ def file_storage_config_with_path_mapping():
     config_filename = setup_config_file(CONFIG_YAML_WITH_PATH_MAPPING)
     yield config_filename
     delete_config_file(config_filename)
+
+
+@pytest.fixture
+def catalog_config(tmp_path, monkeypatch):
+    from test_multistorageclient.unit.utils.catalog import CatalogResolver, install_catalog_config
+
+    CatalogResolver.binds.clear()
+    return partial(install_catalog_config, tmp_path, monkeypatch)
 
 
 @pytest.fixture(autouse=True, scope="function")

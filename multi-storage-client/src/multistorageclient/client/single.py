@@ -285,29 +285,10 @@ class SingleStorageClient(AbstractStorageClient):
                 self._commit_thread.join(timeout=5.0)
 
     def __getstate__(self) -> dict[str, Any]:
-        if self._config.read_only:
-            state: dict[str, Any] = {"_config": self._config}
-            if self._replica_manager is None:
-                state["_replica_manager"] = None
-            return state
-        state = self.__dict__.copy()
-        del state["_credentials_provider"]
-        del state["_storage_provider"]
-        del state["_metadata_provider"]
-        del state["_cache_manager"]
-
-        if "_metadata_provider_lock" in state:
-            del state["_metadata_provider_lock"]
-
-        if "_replicas" in state:
-            del state["_replicas"]
-        if "_writable_replicas" in state:
-            del state["_writable_replicas"]
-
         # Replica manager could be disabled if it's set to None in the state.
-        if "_replica_manager" in state and state["_replica_manager"] is not None:
-            del state["_replica_manager"]
-
+        state: dict[str, Any] = {"_config": self._config}
+        if self._replica_manager is None:
+            state["_replica_manager"] = None
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:

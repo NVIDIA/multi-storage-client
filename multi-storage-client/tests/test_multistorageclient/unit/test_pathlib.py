@@ -516,22 +516,10 @@ def test_pathlib_local_and_remote_with_rust_client(
 
 
 @pytest.fixture
-def reference_resolver(tmp_path):
+def reference_resolver(tmp_path, catalog_config):
     from test_multistorageclient.unit.utils.catalog import CatalogResolver
 
-    CatalogResolver.binds.clear()
-    config.setup_msc_config(
-        {
-            "url_resolvers": {
-                "catalog": {
-                    "type": "test_multistorageclient.unit.utils.catalog.CatalogResolver",
-                    "options": {
-                        "profile": {"storage_provider": {"type": "file", "options": {"base_path": str(tmp_path)}}}
-                    },
-                }
-            }
-        }
-    )
+    catalog_config(options={"profile": {"storage_provider": {"type": "file", "options": {"base_path": str(tmp_path)}}}})
     return CatalogResolver
 
 
@@ -572,6 +560,20 @@ def test_reference_path_preserves_keys_and_binding(reference_resolver, monkeypat
     assert str(reopened) == str(file)
     assert len({file, reopened}) == 2
     assert not file.is_relative_to(reopened.parent)
+
+
+@pytest.mark.parametrize("revision", ["r1", "r2"])
+def test_join_bound_reference_path_uses_operand_binding(reference_resolver, monkeypatch, tmp_path, revision):
+    monkeypatch.setenv("MSC_TEST_SCOPE", "")
+    root = msc.Path("catalog://ns/r1/files/")
+    child = msc.Path(f"catalog://ns/{revision}/files/a//./%252F%23/")
+
+    assert root / child == child
+    assert msc.Path(tmp_path) / child == child
+    joined = root.joinpath("ignored", root, child, "..", "leaf//")
+    assert joined._storage_client is child._storage_client
+    assert str(joined) == f"catalog://ns/{revision}/files/a//./%252F%23/../leaf//"
+    assert len(reference_resolver.binds) == 2
 
 
 @pytest.mark.parametrize("scope", ["alice", ""])

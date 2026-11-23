@@ -20,6 +20,7 @@ import os
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 from urllib.parse import unquote
+from uuid import uuid4
 
 from multistorageclient import resolve_storage_client
 from multistorageclient.references import BoundProfile, ParsedReference
@@ -77,6 +78,16 @@ ROOT = "catalog://ns/r1/files/"
 LOGICAL = "./images/../café%?#"
 ENCODED = "./images/../caf%C3%A9%25%3F%23"
 PHYSICAL = "blob.001"
+RESOLVER = f"{__name__}.CatalogResolver"
+
+
+def install_catalog_config(tmp_path, monkeypatch, *, registrations=None, options=None, **config):
+    if registrations is None:
+        registrations = {"catalog": {"type": RESOLVER, "options": options or {}}}
+    path = tmp_path / f"msc-{uuid4().hex}.json"
+    path.write_text(json.dumps({"url_resolvers": registrations, **config}))
+    monkeypatch.setenv("MSC_CONFIG", str(path))
+    return path
 
 
 class Inventory(_Inventory):
@@ -132,19 +143,5 @@ def configure_inventory(tmp_path, monkeypatch, multi=False, autocommit=None, rep
         profile["autocommit"] = autocommit
     if replica_autocommit:
         mirror["autocommit"] = replica_autocommit
-    config_file = tmp_path / "msc.json"
-    config_file.write_text(
-        json.dumps(
-            {
-                "profiles": {"mirror": mirror},
-                "url_resolvers": {
-                    "catalog": {
-                        "type": f"{__name__}.CatalogResolver",
-                        "options": {"profile": profile},
-                    }
-                },
-            }
-        )
-    )
-    monkeypatch.setenv("MSC_CONFIG", str(config_file))
+    install_catalog_config(tmp_path, monkeypatch, options={"profile": profile}, profiles={"mirror": mirror})
     return resolve_storage_client("catalog://alias/latest/files/")[0]

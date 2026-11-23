@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
 import os
 import queue
 import time
@@ -156,14 +155,10 @@ def test_ray_shared_event(ray_cluster):
     assert not event.is_set()
 
 
-def test_worker_reopens_pinned_reference(ray_cluster, tmp_path, monkeypatch):
+def test_worker_reopens_pinned_reference(ray_cluster, catalog_config, monkeypatch):
     from test_multistorageclient.unit.utils.catalog import CatalogResolver
 
-    config_path = tmp_path / "catalog.json"
-    config_path.write_text(
-        json.dumps({"url_resolvers": {"catalog": {"type": f"{CatalogResolver.__module__}.CatalogResolver"}}})
-    )
-    monkeypatch.setenv("MSC_CONFIG", str(config_path))
+    config_path = catalog_config()
     monkeypatch.setenv("MSC_TEST_REVISION", "r1")
     driver, _ = resolve_storage_client("catalog://alias/latest/files/")
 

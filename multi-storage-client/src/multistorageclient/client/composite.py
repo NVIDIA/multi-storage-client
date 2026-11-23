@@ -159,6 +159,12 @@ class CompositeStorageClient(AbstractStorageClient):
 
         return self._child_clients[profile]
 
+    def _resolve_child(self, path: str) -> tuple[SingleStorageClient, str]:
+        resolved = self._metadata_provider.realpath(path)
+        if not resolved.exists:
+            raise FileNotFoundError(f"Path '{path}' not found")
+        return self._get_child_client(resolved.profile), resolved.physical_path
+
     def read(
         self,
         path: str,
@@ -166,12 +172,8 @@ class CompositeStorageClient(AbstractStorageClient):
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
     ) -> bytes:
         self._ensure_current_process()
-        resolved = self._metadata_provider.realpath(path)
-        if not resolved.exists:
-            raise FileNotFoundError(f"Path '{path}' not found")
-
-        child = self._get_child_client(resolved.profile)
-        return child.read(resolved.physical_path, byte_range, check_source_version)
+        child, physical_path = self._resolve_child(path)
+        return child.read(physical_path, byte_range, check_source_version)
 
     def open(
         self,
@@ -223,13 +225,9 @@ class CompositeStorageClient(AbstractStorageClient):
                 "Write operations are not implemented for multi-location datasets."
             )
 
-        resolved = self._metadata_provider.realpath(path)
-        if not resolved.exists:
-            raise FileNotFoundError(f"Path '{path}' not found")
-
-        child = self._get_child_client(resolved.profile)
+        child, physical_path = self._resolve_child(path)
         return child.open(
-            resolved.physical_path,
+            physical_path,
             mode=mode,
             buffering=buffering,
             encoding=encoding,
@@ -244,12 +242,8 @@ class CompositeStorageClient(AbstractStorageClient):
 
     def download_file(self, remote_path: str, local_path: str | IO, metadata: ObjectMetadata | None = None) -> None:
         self._ensure_current_process()
-        resolved = self._metadata_provider.realpath(remote_path)
-        if not resolved.exists:
-            raise FileNotFoundError(f"Path '{remote_path}' not found")
-
-        child = self._get_child_client(resolved.profile)
-        child.download_file(resolved.physical_path, local_path, metadata)
+        child, physical_path = self._resolve_child(remote_path)
+        child.download_file(physical_path, local_path, metadata)
 
     def download_files(
         self,
@@ -263,26 +257,17 @@ class CompositeStorageClient(AbstractStorageClient):
         if len(remote_paths) != len(local_paths):
             raise ValueError("remote_paths and local_paths must have the same length")
 
-        groups: dict[str, tuple[list[str], list[str], list[ObjectMetadata | None]]] = {}
+        groups: dict[SingleStorageClient, tuple[list[str], list[str], list[ObjectMetadata | None]]] = {}
         for i, (remote_path, local_path) in enumerate(zip(remote_paths, local_paths)):
-            resolved = self._metadata_provider.realpath(remote_path)
-            if not resolved.exists:
-                raise FileNotFoundError(f"Path '{remote_path}' not found")
+            child, physical_path = self._resolve_child(remote_path)
+            if child not in groups:
+                groups[child] = ([], [], [])
+            paths, destinations, entries = groups[child]
+            paths.append(physical_path)
+            destinations.append(local_path)
+            entries.append(metadata[i] if metadata is not None else None)
 
-            profile = resolved.profile
-            if profile is None:
-                raise ValueError(
-                    "CompositeStorageClient requires profile from ResolvedPath for routing. "
-                    "Metadata provider must return ResolvedPath with profile set."
-                )
-            if profile not in groups:
-                groups[profile] = ([], [], [])
-            groups[profile][0].append(resolved.physical_path)
-            groups[profile][1].append(local_path)
-            groups[profile][2].append(metadata[i] if metadata is not None else None)
-
-        for profile, (physical_paths, group_local_paths, group_metadata) in groups.items():
-            child = self._get_child_client(profile)
+        for child, (physical_paths, group_local_paths, group_metadata) in groups.items():
             has_any_metadata = any(m is not None for m in group_metadata)
             _invoke_batch_transfer(
                 child.download_files,
@@ -509,13 +494,9 @@ class CompositeStorageClient(AbstractStorageClient):
     ) -> str:
         self._ensure_signing_method(method)
         self._ensure_current_process()
-        resolved = self._metadata_provider.realpath(path)
-        if not resolved.exists:
-            raise FileNotFoundError(f"Path '{path}' not found")
-
-        child = self._get_child_client(resolved.profile)
+        child, physical_path = self._resolve_child(path)
         return child.generate_presigned_url(
-            resolved.physical_path, method=method, signer_type=signer_type, signer_options=signer_options
+            physical_path, method=method, signer_type=signer_type, signer_options=signer_options
         )
 
     def __getstate__(self) -> dict[str, Any]:

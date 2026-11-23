@@ -450,8 +450,14 @@ class MultiStoragePath:
         """
         Construct a new path object from any number of path-like objects.
         """
-        if self._is_reference:
-            return self._with_key(posixpath.join(self._key, *pathsegments))
+        base = self
+        start = 0
+        for index, segment in enumerate(pathsegments, 1):
+            if isinstance(segment, MultiStoragePath) and segment._is_reference:
+                base = segment
+                start = index
+        if base._is_reference:
+            return base._with_key(posixpath.join(base._key, *pathsegments[start:]))
         return self._with_key(str(self._internal_path.joinpath(*pathsegments)))
 
     # Expanding and resolving paths
@@ -688,52 +694,34 @@ class MultiStoragePath:
         """
         Yield path objects of the directory contents.
         """
-        if self._is_reference:
-            for item in self._storage_client.list(self._directory_prefix(), include_directories=True):
-                yield self._with_key(item.key)
-        elif self._storage_client.is_default_profile():
+        if self._storage_client.is_default_profile():
             for item in Path(self._internal_path).iterdir():
                 yield MultiStoragePath(str(item))
         else:
-            path = self._key
-            if not path.endswith("/"):
-                path += "/"
-            for item in self._storage_client.list(path, include_directories=True, include_url_prefix=True):
-                yield MultiStoragePath(item.key)
+            for item in self._storage_client.list(self._directory_prefix(), include_directories=True):
+                yield self._with_key(item.key)
 
     def glob(self, pattern):
         """
         Iterate over this subtree and yield all existing files (of any kind, including directories)
         matching the given relative pattern.
         """
-        if self._is_reference:
-            key_pattern = posixpath.join(escape(self._key), pattern)
-            return [self._with_key(key) for key in self._storage_client.glob(key_pattern)]
         if self._storage_client.is_default_profile():
             return [MultiStoragePath(str(p)) for p in Path(self._internal_path).glob(pattern)]
+        if self._is_reference:
+            key_pattern = posixpath.join(escape(self._key), pattern)
         else:
-            return [
-                MultiStoragePath(str(p))
-                for p in self._storage_client.glob(str(self._internal_path / pattern), include_url_prefix=True)
-            ]
+            key_pattern = str(self._internal_path / pattern)
+        return [self._with_key(key) for key in self._storage_client.glob(key_pattern)]
 
     def rglob(self, pattern):
         """
         Recursively yield all existing files (of any kind, including directories) matching the
         given relative pattern, anywhere in this subtree.
         """
-        if self._is_reference:
-            return self.glob(f"**/{pattern}")
         if self._storage_client.is_default_profile():
             return [MultiStoragePath(str(p)) for p in Path(self._internal_path).rglob(pattern)]
-        else:
-            recursive_pattern = f"**/{pattern}"
-            return [
-                MultiStoragePath(str(p))
-                for p in self._storage_client.glob(
-                    str(self._internal_path / recursive_pattern), include_url_prefix=True
-                )
-            ]
+        return self.glob(f"**/{pattern}")
 
     def walk(self, top_down=True, on_error=None, follow_symlinks=False):
         """

@@ -175,6 +175,11 @@ def update_posix_metadata(
 # ---------------------------------------------------------------------------
 
 
+def _is_reference_source(client: "AbstractStorageClient") -> bool:
+    config = getattr(client, "_config", None)
+    return config is not None and config.read_only is True
+
+
 class BatchSyncHandler(ABC):
     """Abstract base for batch sync operations between source and target storage.
 
@@ -206,12 +211,7 @@ class BatchSyncHandler(ABC):
         self.temp_dir = temp_dir
         self.progress = progress
         self._reference_target_root: str | None = None
-        source_config = getattr(source_client, "_config", None)
-        if (
-            source_config is not None
-            and source_config.read_only is True
-            and target_client._is_posix_file_storage_provider()
-        ):
+        if _is_reference_source(source_client) and target_client._is_posix_file_storage_provider():
             physical_root = target_client.get_posix_path(target_path)
             if physical_root is None:
                 raise ValueError(f"POSIX sync destination has no physical path: {target_path!r}")
@@ -451,6 +451,17 @@ class PosixToPosixHandler(BatchSyncHandler):
         safe_makedirs(os.path.dirname(target_physical_path))
         shutil.copy2(source_physical_path, target_physical_path)
 
+    def _copy_reference_to_posix_target(self, key: str, target_path: str) -> None:
+        with self.source_client.open(key, "rb") as source:
+            safe_makedirs(os.path.dirname(target_path))
+            with open(target_path, "ab") as target:
+                if os.path.sameopenfile(source.fileno(), target.fileno()):
+                    raise shutil.SameFileError(f"Reference key {key!r} and {target_path!r} refer to the same file")
+                target.truncate(0)
+                shutil.copyfileobj(source, target)
+            # POSIX copystat reads stat and extended attributes from the source fd.
+            shutil.copystat(source.fileno(), target_path)  # type: ignore[arg-type]
+
     def _execute_batch_transfer(
         self,
         worker_id: str,
@@ -467,7 +478,10 @@ class PosixToPosixHandler(BatchSyncHandler):
                 [(file_metadata, target_file_path)], [source_physical_path], local_source=True
             )
             with _transfer_notification(transfer_callback, source_physical_path, target_physical_path):
-                self._copy_to_posix_target(source_physical_path, target_physical_path)
+                if self._reference_target_root is None:
+                    self._copy_to_posix_target(source_physical_path, target_physical_path)
+                else:
+                    self._copy_reference_to_posix_target(file_metadata.key, target_physical_path)
             update_posix_metadata(self.target_client, target_physical_path, target_file_path, file_metadata)
 
 
@@ -599,7 +613,8 @@ def create_sync_handler(
     handler_class: type[BatchSyncHandler]
     if source_is_posix and target_is_posix:
         handler_class = PosixToPosixHandler
-    elif source_is_posix:
+    elif source_is_posix and not _is_reference_source(source_client):
+        # Bound sources need a confined download before passing local paths to a remote uploader.
         handler_class = PosixToRemoteHandler
     elif target_is_posix:
         handler_class = RemoteToPosixHandler

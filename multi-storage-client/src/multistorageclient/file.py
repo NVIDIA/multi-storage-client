@@ -35,6 +35,7 @@ from .cache import CacheManager
 from .constants import MEMORY_LOAD_LIMIT
 from .instrumentation.utils import file_metrics
 from .providers.base import BaseStorageProvider
+from .providers.posix_file import PosixFileStorageProvider
 from .types import Range, SourceVersionCheckMode, StreamingObjectWriter
 from .utils import _ensure_bytes, safe_makedirs, validate_attributes
 
@@ -952,7 +953,7 @@ class PosixFile(_ProcessLocalStream, IOBase, IO):
             realpath = path
 
         # Required to get the absolute POSIX path.
-        storage_provider = cast(BaseStorageProvider, storage_client._storage_provider)
+        storage_provider = cast(PosixFileStorageProvider, storage_client._storage_provider)
         self._real_path = storage_provider._prepend_base_path(realpath)
 
         self._path = path
@@ -970,7 +971,7 @@ class PosixFile(_ProcessLocalStream, IOBase, IO):
             )
             self._file = open(self._temp_path, mode=mode, buffering=buffering, encoding=encoding)  # noqa: SIM115
         else:
-            self._file = open(self._real_path, mode=mode, buffering=buffering, encoding=encoding)  # noqa: SIM115
+            self._file = storage_provider._open_file(self._real_path, mode=mode, buffering=buffering, encoding=encoding)
 
         self._file_descriptor_open_time = time.perf_counter()
         self._file_descriptor_close_callback: Callable[[float], None] | None = None
