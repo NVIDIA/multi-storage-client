@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         Range,
         RetryConfig,
         StorageProvider,
+        StreamingWriterOptions,
         SuffixRange,
     )
 
@@ -134,6 +135,7 @@ class AbstractStorageClient(ABC):
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
         attributes: dict[str, Any] | None = None,
         prefetch_file: bool | None = None,
+        writer_options: StreamingWriterOptions | None = None,
     ) -> PosixFile | ObjectFile:
         """
         Open a file for reading or writing.
@@ -154,8 +156,11 @@ class AbstractStorageClient(ABC):
         :param prefetch_file: Whether to prefetch the file content.
             This parameter is only applicable to ObjectFile when the mode is "r" or "rb".
             If None, inherits from cache configuration.
+        :param writer_options: Stream the object through a bounded multipart upload instead of buffering it in memory.
+            Only valid with mode ``"wb"`` on a storage provider that supports streaming writes.
         :return: A file-like object (PosixFile or ObjectFile) for the specified path.
         :raises FileNotFoundError: If the file does not exist (read mode).
+        :raises ValueError: If ``writer_options`` is set with a mode other than ``"wb"``.
         :raises NotImplementedError: If the operation is not supported (e.g., write on CompositeStorageClient).
         """
 

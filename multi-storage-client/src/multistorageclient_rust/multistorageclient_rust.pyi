@@ -32,6 +32,42 @@ def cuobj_get_rdma_token(addr: int, size: int, offset: int, is_put: bool) -> str
 def cuobj_put_rdma_token(token: str) -> None:
     """Release an RDMA descriptor returned by :func:`cuobj_get_rdma_token`."""
 
+class StreamingWriter:
+    """
+    Forward-only writer for one object. Methods block without holding the GIL. A writer is not thread-safe and
+    cannot be used in a process other than the one that created it. Failures are sticky.
+    """
+
+    def write(self, data: bytes | memoryview | bytearray) -> int:
+        """
+        Copy ``data`` into the stream, blocking while the in-flight part budget is full.
+
+        ``data`` must be a C-contiguous buffer of unsigned bytes (format ``B``); cast or copy other views first. It
+        must not be modified by another thread until this call returns.
+        """
+
+    def tell(self) -> int:
+        """Return the number of bytes accepted so far; raises after the upload failed."""
+
+    def flush(self) -> None:
+        """Raise errors from parts that already finished, without waiting for running parts."""
+
+    def sync(self) -> None:
+        """Wait for all submitted parts. Does not publish the object."""
+
+    def close(self) -> None:
+        """Upload the remainder and publish the object. Repeated calls after success do nothing."""
+
+    def abort(self) -> None:
+        """Cancel in-flight parts and abort the multipart upload without publishing or deleting any object."""
+
+    def stats(self) -> dict[str, Any]:
+        """
+        Return stream counters (accepted/submitted/completed bytes, peak retained bytes, timings).
+
+        Each counter is read separately while parts may still finish, so they are not one point-in-time snapshot.
+        """
+
 class RustClient:
     """
     RustClient provides asynchronous methods for interacting with an object storage backend (e.g., S3).
@@ -129,6 +165,29 @@ class RustClient:
         :param max_concurrency: The maximum number of concurrent operations.
         :param attributes: Optional user-defined object metadata.
         :return: The number of bytes uploaded.
+        """
+
+    def open_streaming_writer(
+        self,
+        remote_path: str,
+        part_size: int | None = ...,
+        max_inflight_parts: int | None = ...,
+        max_object_size: int | None = ...,
+        attributes: dict[str, str] | None = ...,
+    ) -> StreamingWriter:
+        """
+        Open a forward-only writer that uploads ``remote_path`` through a bounded multipart upload.
+
+        Objects smaller than one part are written with a single PUT on close. Native memory held by the writer
+        stays below ``(max_inflight_parts + 1) * part_size``, using the part size after ``max_object_size`` adjusts it
+        (``stats()["part_size"]``).
+
+        :param remote_path: The remote object path in the storage backend.
+        :param part_size: Multipart part size in bytes, between 5 MiB and 5 GiB (default: client multipart_chunksize).
+        :param max_inflight_parts: Maximum parts uploading at once (default: client max_concurrency).
+        :param max_object_size: Largest expected object size; raises part_size when needed to stay within 10,000 parts.
+        :param attributes: Optional attributes stored as user metadata on the object.
+        :return: A StreamingWriter for the object.
         """
 
     async def upload_multipart_from_bytes(

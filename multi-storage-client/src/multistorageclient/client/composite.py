@@ -30,6 +30,7 @@ from ..types import (
     Range,
     SignerType,
     SourceVersionCheckMode,
+    StreamingWriterOptions,
     SuffixRange,
     SymlinkHandling,
     SyncResult,
@@ -191,6 +192,7 @@ class CompositeStorageClient(AbstractStorageClient):
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
         attributes: dict[str, Any] | None = None,
         prefetch_file: bool | None = None,
+        writer_options: StreamingWriterOptions | None = None,
     ) -> PosixFile | ObjectFile:
         """
         Open a file for reading or writing.
@@ -211,10 +213,15 @@ class CompositeStorageClient(AbstractStorageClient):
         :param prefetch_file: Whether to prefetch the file content.
             This parameter is only applicable to ObjectFile when the mode is "r" or "rb".
             If None, inherits from cache configuration.
+        :param writer_options: Stream the object through a bounded multipart upload instead of buffering it in memory.
+            Only valid with mode ``"wb"`` on a storage provider that supports streaming writes.
         :return: A file-like object (PosixFile or ObjectFile) for the specified path.
         :raises FileNotFoundError: If the file does not exist (read mode).
+        :raises ValueError: If ``writer_options`` is set with a mode other than ``"wb"``.
         :raises NotImplementedError: If the operation is not supported (e.g., write on CompositeStorageClient).
         """
+        if writer_options is not None and mode != "wb":
+            raise ValueError(f'writer_options requires mode "wb", got {mode!r}.')
         if mode not in ["r", "rb"]:
             raise NotImplementedError(
                 f"CompositeStorageClient only supports read mode (got '{mode}'). "
@@ -228,15 +235,16 @@ class CompositeStorageClient(AbstractStorageClient):
         child = self._get_child_client(resolved.profile)
         return child.open(
             resolved.physical_path,
-            mode,
-            buffering,
-            encoding,
-            disable_read_cache,
-            memory_load_limit,
-            atomic,
-            check_source_version,
-            attributes,
-            prefetch_file,
+            mode=mode,
+            buffering=buffering,
+            encoding=encoding,
+            disable_read_cache=disable_read_cache,
+            memory_load_limit=memory_load_limit,
+            atomic=atomic,
+            check_source_version=check_source_version,
+            attributes=attributes,
+            prefetch_file=prefetch_file,
+            writer_options=writer_options,
         )
 
     def download_file(self, remote_path: str, local_path: str | IO, metadata: ObjectMetadata | None = None) -> None:

@@ -21,7 +21,14 @@ from typing import Any
 from aistore.botocore_patch import botocore  # noqa: F401
 
 from ..telemetry import Telemetry
-from ..types import AWARE_DATETIME_MIN, CredentialsProvider, ObjectMetadata, RetryableError
+from ..types import (
+    AWARE_DATETIME_MIN,
+    CredentialsProvider,
+    ObjectMetadata,
+    RetryableError,
+    StreamingObjectWriter,
+    StreamingWriterOptions,
+)
 from .s3 import S3StorageProvider, StaticS3CredentialsProvider
 
 PROVIDER = "ais_s3"
@@ -88,6 +95,14 @@ class AIStoreS3StorageProvider(S3StorageProvider):
     def _can_use_rust_metadata(self, bucket: str, key: str) -> bool:
         # JWT authorization is injected only by the boto3 event hook.
         return not self._ais_credentials_provider and super()._can_use_rust_metadata(bucket, key)
+
+    def _open_streaming_writer(
+        self, path: str, attributes: dict[str, str] | None, options: StreamingWriterOptions
+    ) -> StreamingObjectWriter:
+        # Streaming uses the Rust client, which cannot carry the JWT the boto3 hook injects.
+        if self._ais_credentials_provider:
+            raise NotImplementedError("Streaming writes are not supported for ais_s3 with JWT authentication.")
+        return super()._open_streaming_writer(path, attributes, options)
 
     def _get_object_metadata(self, path: str, strict: bool = True) -> ObjectMetadata:
         """

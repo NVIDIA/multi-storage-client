@@ -18,7 +18,7 @@ import contextlib
 import logging
 import os
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from io import BytesIO
@@ -46,6 +46,8 @@ from ..types import (
     SignerType,
     SourceVersionCheckMode,
     StorageProvider,
+    StreamingObjectWriter,
+    StreamingWriterOptions,
     SuffixRange,
     SymlinkHandling,
     SyncResult,
@@ -62,6 +64,54 @@ from ..utils import (
 from .types import AbstractStorageClient
 
 logger = logging.getLogger(__name__)
+
+
+class _RegisteringWriter(StreamingObjectWriter):
+    """
+    Registers the object with the metadata provider after the wrapped writer publishes it.
+
+    Unlike upload failures, a close that fails in registration can be retried: it registers without publishing
+    again. Abort after publication does nothing.
+    """
+
+    def __init__(
+        self, inner: StreamingObjectWriter, register: Callable[[], None], check_before_publish: Callable[[], Any]
+    ):
+        self._inner = inner
+        self._register = register
+        self._check_before_publish = check_before_publish
+        self._size: int | None = None
+        self._registered = False
+
+    def write(self, data: Any) -> int:
+        return self._inner.write(data)
+
+    def tell(self) -> int:
+        return self._inner.tell()
+
+    def flush(self) -> None:
+        self._inner.flush()
+
+    def sync(self) -> None:
+        self._inner.sync()
+
+    def close(self) -> int:
+        if self._size is None:
+            # Re-check the overwrite policy just before publishing, as buffered writes do at upload time.
+            try:
+                self._check_before_publish()
+            except Exception:
+                self._inner.abort()
+                raise
+            self._size = self._inner.close()
+        if not self._registered:
+            self._register()
+            self._registered = True
+        return self._size
+
+    def abort(self) -> None:
+        if self._size is None:
+            self._inner.abort()
 
 
 class SingleStorageClient(AbstractStorageClient):
@@ -348,6 +398,32 @@ class SingleStorageClient(AbstractStorageClient):
             obj_metadata.metadata = (obj_metadata.metadata or {}) | attributes
         with self._metadata_provider_lock or contextlib.nullcontext():
             self._metadata_provider.add_file(virtual_path, obj_metadata)
+
+    def _open_streaming_writer(
+        self, path: str, attributes: dict[str, Any] | None, options: StreamingWriterOptions
+    ) -> StreamingObjectWriter:
+        """
+        Open a streaming writer through the storage provider.
+
+        With a metadata provider, the object is written to its physical path and registered after it is published.
+
+        :param path: The logical path of the object to write.
+        :param attributes: The attributes to add to the object.
+        :param options: The streaming writer options.
+        :return: A writer that publishes (and registers) the object on close.
+        :raises NotImplementedError: If the storage provider does not support streaming writes.
+        """
+        provider = self._storage_provider
+        if self._metadata_provider:
+            physical_path = self._resolve_write_path(path)
+            # Attributes belong to logical metadata, so physical writes get none and registration stores them.
+            writer = provider.open_streaming_writer(physical_path, None, options)
+            return _RegisteringWriter(
+                writer,
+                register=lambda: self._register_written_file(path, physical_path, attributes),
+                check_before_publish=lambda: self._resolve_write_path(path),
+            )
+        return provider.open_streaming_writer(path, attributes, options)
 
     def _register_written_files(
         self,
@@ -1032,6 +1108,7 @@ class SingleStorageClient(AbstractStorageClient):
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
         attributes: dict[str, Any] | None = None,
         prefetch_file: bool | None = None,
+        writer_options: StreamingWriterOptions | None = None,
     ) -> PosixFile | ObjectFile:
         """
         Open a file for reading or writing.
@@ -1052,10 +1129,18 @@ class SingleStorageClient(AbstractStorageClient):
         :param prefetch_file: Whether to prefetch the file content.
             This parameter is only applicable to ObjectFile when the mode is "r" or "rb".
             If None, inherits from cache configuration.
+        :param writer_options: Stream the object through a bounded multipart upload instead of buffering it in memory.
+            Only valid with mode ``"wb"`` on a storage provider that supports streaming writes.
         :return: A file-like object (PosixFile or ObjectFile) for the specified path.
         :raises FileNotFoundError: If the file does not exist (read mode).
+        :raises ValueError: If ``writer_options`` is set with a mode other than ``"wb"``.
+        :raises NotImplementedError: If ``writer_options`` is set and the storage provider does not support streaming writes.
         """
+        if writer_options is not None and mode != "wb":
+            raise ValueError(f'writer_options requires mode "wb", got {mode!r}.')
         if self._is_posix_file_storage_provider():
+            if writer_options is not None:
+                raise NotImplementedError("Streaming writes are not supported by POSIX file storage providers.")
             return PosixFile(
                 self, path=path, mode=mode, buffering=buffering, encoding=encoding, atomic=atomic, attributes=attributes
             )
@@ -1073,6 +1158,11 @@ class SingleStorageClient(AbstractStorageClient):
                 check_source_version=check_source_version,
                 attributes=attributes,
                 prefetch_file=prefetch_file,
+                streaming_writer=(
+                    self._open_streaming_writer(path, attributes, writer_options)
+                    if writer_options is not None
+                    else None
+                ),
             )
 
     def get_posix_path(self, path: str) -> str | None:
