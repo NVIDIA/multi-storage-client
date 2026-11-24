@@ -20,12 +20,14 @@ import os
 import shutil
 import tempfile
 import threading
+import time
 import traceback
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 import xattr
 
@@ -135,17 +137,18 @@ def check_skip_and_track_with_metadata_provider(
 
 def update_posix_metadata(
     target_client: "AbstractStorageClient",
-    target_physical_path: str,
+    target_physical_path: str | int,
     target_file_path: str,
     file_metadata: ObjectMetadata,
 ) -> None:
     """Update metadata for POSIX target (metadata provider or xattr)."""
     if target_client._metadata_provider:
         metadata_copy = dict(file_metadata.metadata) if file_metadata.metadata else None
+        target_stat = os.stat(target_physical_path)
         physical_metadata = ObjectMetadata(
             key=target_file_path,
-            content_length=os.path.getsize(target_physical_path),
-            last_modified=datetime.fromtimestamp(os.path.getmtime(target_physical_path), tz=UTC),
+            content_length=target_stat.st_size,
+            last_modified=datetime.fromtimestamp(target_stat.st_mtime, tz=UTC),
             metadata=metadata_copy,
         )
         with target_client._metadata_provider_lock or contextlib.nullcontext():
@@ -451,16 +454,68 @@ class PosixToPosixHandler(BatchSyncHandler):
         safe_makedirs(os.path.dirname(target_physical_path))
         shutil.copy2(source_physical_path, target_physical_path)
 
-    def _copy_reference_to_posix_target(self, key: str, target_path: str) -> None:
-        with self.source_client.open(key, "rb") as source:
-            safe_makedirs(os.path.dirname(target_path))
-            with open(target_path, "ab") as target:
-                if os.path.sameopenfile(source.fileno(), target.fileno()):
+    @contextlib.contextmanager
+    def _reference_target_directory(self, target_path: str) -> Iterator[int]:
+        parent = os.path.realpath(os.path.dirname(target_path))
+        root = self._reference_target_root
+        if root is None or os.path.commonpath((root, parent)) != root:
+            raise ValueError(f"Catalog sync path {target_path!r} escapes POSIX destination {root!r}")
+
+        # Pin the checked directory so a replaced path component cannot redirect the copy.
+        flags = getattr(os, "O_SEARCH", getattr(os, "O_PATH", os.O_RDONLY)) | os.O_DIRECTORY | os.O_NOFOLLOW
+        directory = os.open("/", flags)
+        try:
+            for part in filter(None, parent.split("/")):
+                for attempt in range(6):
+                    try:
+                        child = os.open(part, flags, dir_fd=directory)
+                        break
+                    except FileNotFoundError:
+                        if attempt == 5:
+                            raise
+                        with contextlib.suppress(FileExistsError, FileNotFoundError):
+                            os.mkdir(part, dir_fd=directory)
+                        if attempt:
+                            time.sleep(0.01 * 2 ** (attempt - 1) + time.time() % 0.01)
+                os.close(directory)
+                directory = child
+            yield directory
+        finally:
+            os.close(directory)
+
+    def _copy_reference_to_posix_target(self, file_metadata: ObjectMetadata, target_key: str, target_path: str) -> None:
+        key = file_metadata.key
+        name = os.path.basename(target_path)
+        with self.source_client.open(key, "rb") as source, self._reference_target_directory(target_path) as directory:
+            with contextlib.suppress(FileNotFoundError):
+                if os.path.samestat(os.fstat(source.fileno()), os.stat(name, dir_fd=directory)):
                     raise shutil.SameFileError(f"Reference key {key!r} and {target_path!r} refer to the same file")
-                target.truncate(0)
-                shutil.copyfileobj(source, target)
-            # POSIX copystat reads stat and extended attributes from the source fd.
-            shutil.copystat(source.fileno(), target_path)  # type: ignore[arg-type]
+
+            staging = f".msc-{uuid4().hex}"
+            fd = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory)
+            with contextlib.ExitStack() as handles:
+                flags_fd = None
+                try:
+                    with os.fdopen(fd, "wb") as target:
+                        shutil.copyfileobj(source, target)
+                        target.flush()
+                        # BSD chflags needs a path. /dev/fd addresses the open staging inode.
+                        metadata_target = f"/dev/fd/{fd}" if hasattr(os, "chflags") else fd
+                        shutil.copystat(source.fileno(), metadata_target)  # type: ignore[arg-type]
+                        if hasattr(os, "chflags") and (flags := os.fstat(fd).st_flags):
+                            # Immutable and append-only files cannot be renamed with their flags set.
+                            os.chflags(f"/dev/fd/{fd}", 0)
+                            flags_fd = os.dup(fd)
+                            handles.callback(os.close, flags_fd)
+                        if not self.target_client._metadata_provider:
+                            update_posix_metadata(self.target_client, fd, target_key, file_metadata)
+                    os.replace(staging, name, src_dir_fd=directory, dst_dir_fd=directory)
+                except BaseException:
+                    with contextlib.suppress(FileNotFoundError):
+                        os.unlink(staging, dir_fd=directory)
+                    raise
+                if flags_fd is not None:
+                    os.chflags(f"/dev/fd/{flags_fd}", flags)
 
     def _execute_batch_transfer(
         self,
@@ -485,8 +540,9 @@ class PosixToPosixHandler(BatchSyncHandler):
                 if self._reference_target_root is None:
                     self._copy_to_posix_target(source_path, target_physical_path)
                 else:
-                    self._copy_reference_to_posix_target(file_metadata.key, target_physical_path)
-            update_posix_metadata(self.target_client, target_physical_path, target_file_path, file_metadata)
+                    self._copy_reference_to_posix_target(file_metadata, target_file_path, target_physical_path)
+            if self._reference_target_root is None or self.target_client._metadata_provider:
+                update_posix_metadata(self.target_client, target_physical_path, target_file_path, file_metadata)
 
 
 class PosixToRemoteHandler(BatchSyncHandler):

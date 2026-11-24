@@ -23,7 +23,8 @@ import pytest
 
 import multistorageclient as msc
 from multistorageclient import StorageClient, StorageClientConfig, resolve_storage_client
-from multistorageclient.types import BatchTransferError, Range, SuffixRange
+from multistorageclient.file import PosixFile
+from multistorageclient.types import BatchTransferError, Range, SuffixRange, SyncError
 from test_multistorageclient.unit.utils import catalog
 
 
@@ -140,6 +141,46 @@ def test_reference_posix_sync_preserves_file_mode(tmp_path, monkeypatch):
     copied = dest / "entry"
     assert copied.read_bytes() == b"image"
     assert stat.S_IMODE(copied.stat().st_mode) == 0o751
+
+
+def test_reference_posix_sync_replaces_hardlinked_destination(tmp_path, monkeypatch):
+    monkeypatch.setattr(catalog, "LOGICAL", "entry")
+    source = catalog.configure_inventory(tmp_path, monkeypatch)
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"original outside contents")
+    dest = tmp_path / "chosen"
+    dest.mkdir()
+    entry = dest / "entry"
+    entry.hardlink_to(outside)
+    target, prefix = resolve_storage_client(str(dest))
+
+    target.sync_from(source, target_path=prefix, num_worker_processes=1)
+
+    assert outside.read_bytes() == b"original outside contents"
+    assert entry.read_bytes() == b"image"
+
+
+def test_reference_posix_sync_preserves_destination_after_partial_copy(tmp_path, monkeypatch):
+    monkeypatch.setattr(catalog, "LOGICAL", "entry")
+    source = catalog.configure_inventory(tmp_path, monkeypatch)
+    dest = tmp_path / "chosen"
+    dest.mkdir()
+    entry = dest / "entry"
+    entry.write_bytes(b"previous contents")
+    target, prefix = resolve_storage_client(str(dest))
+    original_read = PosixFile.read
+
+    def fail_after_prefix(stream, size=-1):
+        if stream.tell():
+            raise OSError("injected source read failure")
+        return original_read(stream, 2)
+
+    monkeypatch.setattr(PosixFile, "read", fail_after_prefix)
+    with pytest.raises(SyncError, match="injected source read failure"):
+        target.sync_from(source, target_path=prefix, num_worker_processes=1)
+
+    assert entry.read_bytes() == b"previous contents"
+    assert list(dest.iterdir()) == [entry]
 
 
 @pytest.mark.parametrize("access", ["get_posix_path", "as_posix", "load", "memmap"])

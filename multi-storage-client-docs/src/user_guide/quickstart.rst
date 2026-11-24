@@ -165,6 +165,10 @@ For APIs that require a filesystem path, including NumPy memory mapping, use
 catalog references from exposing a backing file or shared cache path through
 ``get_posix_path()``, ``as_posix()``, or ``resolve_filesystem_path()``.
 
+When both the catalog source and the sync destination use POSIX storage, MSC
+replaces each destination file after the copy succeeds. A failed copy preserves
+the previous file, and other hard links keep their original contents.
+
 Rclone-Based
 ============
 
