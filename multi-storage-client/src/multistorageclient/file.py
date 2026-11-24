@@ -25,6 +25,7 @@ import tempfile
 import threading
 import time
 import types
+import weakref
 from collections.abc import Callable, Iterator
 from io import BytesIO, IOBase, StringIO
 from typing import IO, TYPE_CHECKING, Any, cast
@@ -35,6 +36,7 @@ from .cache import CacheManager
 from .constants import MEMORY_LOAD_LIMIT
 from .instrumentation.utils import file_metrics
 from .providers.base import BaseStorageProvider
+from .providers.posix_file import PosixFileStorageProvider
 from .types import Range, SourceVersionCheckMode, StreamingObjectWriter
 from .utils import _ensure_bytes, safe_makedirs, validate_attributes
 
@@ -344,7 +346,56 @@ class _StreamingFile(IOBase):
             logger.warning("Failed to abort the streaming upload to %s.", self._name, exc_info=True)
 
 
-class ObjectFile(IOBase, IO):
+_reference_descriptors: weakref.WeakSet[io.FileIO] = weakref.WeakSet()
+
+
+def _close_reference_descriptors() -> None:
+    # Closing the raw FD avoids inherited buffered-I/O locks.
+    for raw in list(_reference_descriptors):
+        raw.close()
+    _reference_descriptors.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_close_reference_descriptors)
+
+
+class _ProcessLocalStream:
+    _open_pid: int | None = None
+    _stream: IO
+
+    def _check_reference_open(self, client: AbstractStorageClient, mode: str) -> None:
+        if client._config.read_only is True:
+            client._ensure_open_mode(mode)
+            client._ensure_current_process()
+            self._open_pid = os.getpid()
+
+    def _inherited_stream(self) -> bool:
+        return self._open_pid is not None and self._open_pid != os.getpid()
+
+    def _check_stream_process(self) -> None:
+        if self._inherited_stream():
+            raise PermissionError("An open reference stream cannot be used after fork. Reopen the file in the child.")
+
+    @property
+    def _file(self) -> IO:
+        self._check_stream_process()
+        return self._stream
+
+    def _track_descriptor(self, stream: IO) -> None:
+        if self._open_pid is not None:
+            buffer = getattr(stream, "buffer", stream)
+            raw = getattr(buffer, "raw", buffer)
+            if isinstance(raw, io.FileIO):
+                _reference_descriptors.add(raw)
+
+    @_file.setter
+    def _file(self, value: IO) -> None:
+        self._track_descriptor(value)
+        self._stream = value
+
+
+class ObjectFile(_ProcessLocalStream, IOBase, IO):
     """
     A file-like object that handles remote file access with asynchronous downloads.
 
@@ -359,7 +410,6 @@ class ObjectFile(IOBase, IO):
     exception (or calling :py:meth:`discard`) aborts the upload without publishing.
     """
 
-    _file: IO
     _mode: str
     _remote_path: str
     _storage_client: AbstractStorageClient
@@ -398,6 +448,7 @@ class ObjectFile(IOBase, IO):
         :param streaming_writer: A writer that publishes the object on close. Only valid with mode 'wb', which then
             streams the object instead of buffering it until close.
         """
+        self._check_reference_open(storage_client, mode)
         if mode not in ("r", "w", "rb", "wb", "a", "ab"):
             raise ValueError(f'Invalid mode "{mode}", only "w", "r", "a", "wb", "rb" and "ab" are supported.')
 
@@ -686,6 +737,7 @@ class ObjectFile(IOBase, IO):
         return self._remote_path
 
     def _wait_for_download(self) -> None:
+        self._check_stream_process()
         self._download_complete.wait()
         if self._download_error is not None:
             raise OSError(f"Failed to download file {self._remote_path}") from self._download_error
@@ -693,6 +745,8 @@ class ObjectFile(IOBase, IO):
     @property
     def closed(self) -> bool:
         """Return whether the local file is unavailable or closed."""
+        if self._inherited_stream():
+            return True
         if self.readable() and hasattr(self, "_download_thread") and self._download_thread.is_alive():
             self._download_complete.wait()
         return not hasattr(self, "_file") or self._file.closed
@@ -795,18 +849,25 @@ class ObjectFile(IOBase, IO):
             # Create a temporary file once and return its file descriptor when needed for operations that require one.
             if not hasattr(self, "_temp_fd_holder"):
                 self._temp_fd_holder = tempfile.TemporaryFile()  # noqa: SIM115
+                self._track_descriptor(self._temp_fd_holder)
                 self._open_files.append(self._temp_fd_holder)
             return self._temp_fd_holder.fileno()
 
         return self._file.fileno()
 
     def write(self, b: Any) -> int:
+        if self._open_pid is not None:
+            self._storage_client._ensure_writable()
         return self._file.write(b)
 
     def writelines(self, lines: Any) -> None:
+        if self._open_pid is not None:
+            self._storage_client._ensure_writable()
         self._file.writelines(lines)
 
     def truncate(self, size: int | None = None) -> int:
+        if self._open_pid is not None:
+            self._storage_client._ensure_writable()
         return self._file.truncate(size)
 
     def flush(self) -> None:
@@ -894,6 +955,7 @@ class ObjectFile(IOBase, IO):
 
         :return: Path to local file in read mode, raises a ValueError in write mode
         """
+        self._storage_client._ensure_path_export_allowed()
         if self.readable():
             self._wait_for_download()
             if self._cache_manager:
@@ -924,7 +986,7 @@ class ObjectFile(IOBase, IO):
             cast(_StreamingFile, self._file).abort()
 
 
-class PosixFile(IOBase, IO):
+class PosixFile(_ProcessLocalStream, IOBase, IO):
     """
     A file-like object that wraps a POSIX file.
 
@@ -937,7 +999,6 @@ class PosixFile(IOBase, IO):
     """
 
     _storage_client: AbstractStorageClient
-    _file: IO
     _attributes: dict[str, Any] | None = None
 
     def __init__(
@@ -950,6 +1011,7 @@ class PosixFile(IOBase, IO):
         atomic: bool = True,
         attributes: dict[str, Any] | None = None,
     ):
+        self._check_reference_open(storage_client, mode)
         self._storage_client = storage_client
 
         # If metadata provider is enabled, resolve the logical path to physical path.
@@ -962,7 +1024,7 @@ class PosixFile(IOBase, IO):
             realpath = path
 
         # Required to get the absolute POSIX path.
-        storage_provider = cast(BaseStorageProvider, storage_client._storage_provider)
+        storage_provider = cast(PosixFileStorageProvider, storage_client._storage_provider)
         self._real_path = storage_provider._prepend_base_path(realpath)
 
         self._path = path
@@ -980,7 +1042,7 @@ class PosixFile(IOBase, IO):
             )
             self._file = open(self._temp_path, mode=mode, buffering=buffering, encoding=encoding)  # noqa: SIM115
         else:
-            self._file = open(self._real_path, mode=mode, buffering=buffering, encoding=encoding)  # noqa: SIM115
+            self._file = storage_provider._open_file(self._real_path, mode=mode, buffering=buffering, encoding=encoding)
 
         self._file_descriptor_open_time = time.perf_counter()
         self._file_descriptor_close_callback: Callable[[float], None] | None = None
@@ -997,7 +1059,7 @@ class PosixFile(IOBase, IO):
 
     @property
     def closed(self) -> bool:
-        return self._file.closed
+        return self._inherited_stream() or self._file.closed
 
     @file_metrics(operation=BaseStorageProvider._Operation.READ)
     def read(self, size: int = -1) -> Any:
@@ -1107,6 +1169,8 @@ class PosixFile(IOBase, IO):
                     logger.warning("Failed to set extended attributes on %s: %s", self._real_path, e)
 
     def resolve_filesystem_path(self) -> str:
+        """Return the local filename for an ordinary POSIX profile."""
+        self._storage_client._ensure_path_export_allowed()
         return self._file.name
 
     def fsync(self) -> None:

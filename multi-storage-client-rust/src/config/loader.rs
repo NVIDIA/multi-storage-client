@@ -21,7 +21,7 @@ use serde_json::{Map, Value};
 use super::ConfigError;
 use super::document::{absolute, locate, merge_document, read_document, record_origins};
 use super::redaction::redact;
-use super::schema::ProfileConfig;
+use super::schema::{ProfileConfig, ProviderConfig};
 use super::validation::{pointer, validate_document, validate_profiles};
 
 /// Loads the first existing path, then its ordered one-level includes.
@@ -161,12 +161,18 @@ impl ConfigLoader {
             deserialize(document.get("path_mapping"), "/path_mapping")
                 .map_err(|error| locate(error, &origins))?
                 .unwrap_or_default();
-        super::urls::validate_mappings(&path_mapping, &profiles)
+        let registrations: BTreeMap<String, ProviderConfig> =
+            deserialize(document.get("url_resolvers"), "/url_resolvers")
+                .map_err(|error| locate(error, &origins))?
+                .unwrap_or_default();
+        let python_schemes = registrations.into_keys().collect();
+        super::urls::validate_mappings(&path_mapping, &profiles, &python_schemes)
             .map_err(|error| locate(error, &origins))?;
         Ok(ResolvedConfig {
             profiles,
             path_mapping,
             sources,
+            python_schemes,
             origins,
             document,
             secret_paths,
@@ -185,6 +191,7 @@ pub struct ResolvedConfig {
     pub path_mapping: BTreeMap<String, String>,
     /// Primary and included files that contributed to this configuration.
     pub sources: Vec<PathBuf>,
+    pub(super) python_schemes: BTreeSet<String>,
     origins: BTreeMap<String, PathBuf>,
     document: Value,
     secret_paths: BTreeSet<String>,

@@ -17,12 +17,15 @@
 
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Sequence
 from typing import IO, TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from ..constants import MEMORY_LOAD_LIMIT
-from ..types import ExecutionMode, SignerType, SourceVersionCheckMode, SymlinkHandling, SyncResult
+from ..types import MSC_PROTOCOL, ExecutionMode, SignerType, SourceVersionCheckMode, SymlinkHandling, SyncResult
+from ..utils import join_paths
 
 if TYPE_CHECKING:
     from ..cache import CacheManager
@@ -58,6 +61,47 @@ class AbstractStorageClient(ABC):
     _retry_config: RetryConfig | None
     _cache_manager: CacheManager | None
     _replica_manager: Any | None  # ReplicaManager
+
+    def url(self, path: str = "") -> str:
+        """Format a logical key as a reopenable URL, pinned for resolver-created clients."""
+        root = self._config.canonical_root_url
+        if root is not None:
+            return root + quote(path, safe="/")
+        return join_paths(f"{MSC_PROTOCOL}{self.profile}", path)
+
+    def _ensure_current_process(self) -> None:
+        """Refresh a resolver binding before using providers inherited across fork."""
+
+    def _process_local_listing(self, objects: Iterator[ObjectMetadata]) -> Iterator[ObjectMetadata]:
+        owner = self._config._reference_pid
+        if owner is None:
+            yield from objects
+            return
+        while owner == os.getpid():
+            item = next(objects, None)
+            if item is None:
+                return
+            yield item
+        raise PermissionError("A reference listing opened before fork must be restarted in the child.")
+
+    def _ensure_writable(self) -> None:
+        if self._config.read_only:
+            raise PermissionError("The bound reference is read-only.")
+
+    def _ensure_path_export_allowed(self) -> None:
+        if self._config.read_only is True:
+            raise PermissionError(
+                "A read-only reference cannot expose its backing filesystem path. "
+                "Read the open stream or use download_file() to create a local copy."
+            )
+
+    def _ensure_open_mode(self, mode: str) -> None:
+        if mode not in ("r", "rb", "rt"):
+            self._ensure_writable()
+
+    def _ensure_signing_method(self, method: str) -> None:
+        if method.upper() not in ("GET", "HEAD"):
+            self._ensure_writable()
 
     @property
     @abstractmethod

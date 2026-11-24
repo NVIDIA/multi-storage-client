@@ -129,6 +129,48 @@ The schema is the same as file-based configurations.
 
    client = StorageClient(config=config)
 
+Reading a catalog revision
+==========================
+
+For a training run with a fixed input, configure the dataset in a named profile and use
+``msc://training/shards/0001.tar`` throughout the script. For applications that receive
+different dataset URLs at runtime, install the catalog integration and register its
+:ref:`URL resolver <url-resolvers>` once.
+
+In this example the integration owns the ``catalog://`` scheme and the meaning of
+``latest``. Resolve it once at the start of the job. Use the returned client for sibling
+files and send its pinned URL to workers that have the same catalog integration.
+
+.. code-block:: python
+
+   import multistorageclient as msc
+
+   client, root = msc.resolve_storage_client("catalog://research/images/latest/files/")
+   for item in client.list(root):
+       file_url = client.url(item.key)
+       # A worker can later open this exact revision with msc.open(file_url, "rb").
+
+Catalog references expose a read-only stream. Pass the stream to libraries that accept
+file objects. This example reads a NumPy array.
+
+.. code-block:: python
+
+   import numpy as np
+
+   with client.open("arrays/input.npy", "rb") as stream:
+       array = np.load(stream)
+
+Opening a remote catalog file again fetches it through the storage provider.
+For objects larger than ``memory_load_limit`` (512 MiB by default), use
+``"rb"`` for seekable range reads. To read a large text file line by line,
+work offline, or use NumPy memory mapping, download a copy with
+``client.download_file(key, local_path)``. Catalog references reject backing-path
+exports through ``get_posix_path()``, ``as_posix()``, and ``resolve_filesystem_path()``.
+
+When both the catalog source and the sync destination use POSIX storage, MSC
+replaces each destination file after the copy succeeds. A failed copy preserves
+the previous file, and other hard links keep their original contents.
+
 Rclone-Based
 ============
 

@@ -21,7 +21,6 @@ from ..config import StorageClientConfig
 from ..constants import MEMORY_LOAD_LIMIT
 from ..file import ObjectFile, PosixFile
 from ..types import (
-    MSC_PROTOCOL,
     BatchTransferCallback,
     ExecutionMode,
     MetadataProvider,
@@ -35,7 +34,7 @@ from ..types import (
     SymlinkHandling,
     SyncResult,
 )
-from ..utils import PatternMatcher, _invoke_batch_transfer, join_paths
+from ..utils import PatternMatcher, _invoke_batch_transfer
 from .single import SingleStorageClient
 from .types import AbstractStorageClient
 
@@ -61,6 +60,7 @@ class CompositeStorageClient(AbstractStorageClient):
         :param config: Storage client configuration with storage_provider_profiles set
         :raises ValueError: If config doesn't have storage_provider_profiles
         """
+        config = config._current_process_config()
         if not config.storage_provider_profiles:
             raise ValueError(
                 "CompositeStorageClient requires storage_provider_profiles. "
@@ -83,21 +83,13 @@ class CompositeStorageClient(AbstractStorageClient):
         self._child_clients: dict[str, SingleStorageClient] = {}
         self._child_profile_names = config.storage_provider_profiles
 
-        if config.child_configs:
-            # ProviderBundleV2 path: child configs are pre-built
-            for child_name, child_config in config.child_configs.items():
-                self._child_clients[child_name] = SingleStorageClient(child_config)
-        else:
-            # Config-dict path: child profiles have their own credentials defined
-            if not config._config_dict:
-                raise ValueError("CompositeStorageClient requires _config_dict to build child clients")
+        for name in self._child_profile_names:
+            self._child_clients[name] = SingleStorageClient(config._related_config(name))
 
-            for child_profile in self._child_profile_names:
-                child_config = StorageClientConfig.from_dict(
-                    config_dict=config._config_dict,
-                    profile=child_profile,
-                )
-                self._child_clients[child_profile] = SingleStorageClient(child_config)
+    def _ensure_current_process(self) -> None:
+        if self._config._inherited_reference:
+            fresh = CompositeStorageClient(self._config._current_process_config())
+            object.__setattr__(self, "__dict__", vars(fresh))
 
     @property
     def profile(self) -> str:
@@ -167,18 +159,21 @@ class CompositeStorageClient(AbstractStorageClient):
 
         return self._child_clients[profile]
 
+    def _resolve_child(self, path: str) -> tuple[SingleStorageClient, str]:
+        resolved = self._metadata_provider.realpath(path)
+        if not resolved.exists:
+            raise FileNotFoundError(f"Path '{path}' not found")
+        return self._get_child_client(resolved.profile), resolved.physical_path
+
     def read(
         self,
         path: str,
         byte_range: Range | SuffixRange | None = None,
         check_source_version: SourceVersionCheckMode = SourceVersionCheckMode.INHERIT,
     ) -> bytes:
-        resolved = self._metadata_provider.realpath(path)
-        if not resolved.exists:
-            raise FileNotFoundError(f"Path '{path}' not found")
-
-        child = self._get_child_client(resolved.profile)
-        return child.read(resolved.physical_path, byte_range, check_source_version)
+        self._ensure_current_process()
+        child, physical_path = self._resolve_child(path)
+        return child.read(physical_path, byte_range, check_source_version)
 
     def open(
         self,
@@ -220,21 +215,19 @@ class CompositeStorageClient(AbstractStorageClient):
         :raises ValueError: If ``writer_options`` is set with a mode other than ``"wb"``.
         :raises NotImplementedError: If the operation is not supported (e.g., write on CompositeStorageClient).
         """
+        self._ensure_open_mode(mode)
         if writer_options is not None and mode != "wb":
             raise ValueError(f'writer_options requires mode "wb", got {mode!r}.')
+        self._ensure_current_process()
         if mode not in ["r", "rb"]:
             raise NotImplementedError(
                 f"CompositeStorageClient only supports read mode (got '{mode}'). "
                 "Write operations are not implemented for multi-location datasets."
             )
 
-        resolved = self._metadata_provider.realpath(path)
-        if not resolved.exists:
-            raise FileNotFoundError(f"Path '{path}' not found")
-
-        child = self._get_child_client(resolved.profile)
+        child, physical_path = self._resolve_child(path)
         return child.open(
-            resolved.physical_path,
+            physical_path,
             mode=mode,
             buffering=buffering,
             encoding=encoding,
@@ -248,12 +241,9 @@ class CompositeStorageClient(AbstractStorageClient):
         )
 
     def download_file(self, remote_path: str, local_path: str | IO, metadata: ObjectMetadata | None = None) -> None:
-        resolved = self._metadata_provider.realpath(remote_path)
-        if not resolved.exists:
-            raise FileNotFoundError(f"Path '{remote_path}' not found")
-
-        child = self._get_child_client(resolved.profile)
-        child.download_file(resolved.physical_path, local_path, metadata)
+        self._ensure_current_process()
+        child, physical_path = self._resolve_child(remote_path)
+        child.download_file(physical_path, local_path, metadata)
 
     def download_files(
         self,
@@ -263,29 +253,21 @@ class CompositeStorageClient(AbstractStorageClient):
         max_workers: int = 16,
         transfer_callback: BatchTransferCallback | None = None,
     ) -> None:
+        self._ensure_current_process()
         if len(remote_paths) != len(local_paths):
             raise ValueError("remote_paths and local_paths must have the same length")
 
-        groups: dict[str, tuple[list[str], list[str], list[ObjectMetadata | None]]] = {}
+        groups: dict[SingleStorageClient, tuple[list[str], list[str], list[ObjectMetadata | None]]] = {}
         for i, (remote_path, local_path) in enumerate(zip(remote_paths, local_paths)):
-            resolved = self._metadata_provider.realpath(remote_path)
-            if not resolved.exists:
-                raise FileNotFoundError(f"Path '{remote_path}' not found")
+            child, physical_path = self._resolve_child(remote_path)
+            if child not in groups:
+                groups[child] = ([], [], [])
+            paths, destinations, entries = groups[child]
+            paths.append(physical_path)
+            destinations.append(local_path)
+            entries.append(metadata[i] if metadata is not None else None)
 
-            profile = resolved.profile
-            if profile is None:
-                raise ValueError(
-                    "CompositeStorageClient requires profile from ResolvedPath for routing. "
-                    "Metadata provider must return ResolvedPath with profile set."
-                )
-            if profile not in groups:
-                groups[profile] = ([], [], [])
-            groups[profile][0].append(resolved.physical_path)
-            groups[profile][1].append(local_path)
-            groups[profile][2].append(metadata[i] if metadata is not None else None)
-
-        for profile, (physical_paths, group_local_paths, group_metadata) in groups.items():
-            child = self._get_child_client(profile)
+        for child, (physical_paths, group_local_paths, group_metadata) in groups.items():
             has_any_metadata = any(m is not None for m in group_metadata)
             _invoke_batch_transfer(
                 child.download_files,
@@ -302,13 +284,14 @@ class CompositeStorageClient(AbstractStorageClient):
         include_url_prefix: bool = False,
         attribute_filter_expression: str | None = None,
     ) -> list[str]:
+        self._ensure_current_process()
         results = self._metadata_provider.glob(
             pattern,
             attribute_filter_expression=attribute_filter_expression,
         )
 
         if include_url_prefix:
-            results = [join_paths(f"{MSC_PROTOCOL}{self._config.profile}", path) for path in results]
+            results = [self.url(path) for path in results]
 
         return results
 
@@ -323,6 +306,7 @@ class CompositeStorageClient(AbstractStorageClient):
         patterns: PatternList | None = None,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
+        self._ensure_current_process()
         yield from self.list(
             path=path,
             start_after=start_after,
@@ -334,10 +318,12 @@ class CompositeStorageClient(AbstractStorageClient):
         )
 
     def is_file(self, path: str) -> bool:
+        self._ensure_current_process()
         resolved = self._metadata_provider.realpath(path)
         return resolved.exists
 
     def is_empty(self, path: str) -> bool:
+        self._ensure_current_process()
         objects = self._metadata_provider.list_objects(path)
 
         try:
@@ -348,6 +334,7 @@ class CompositeStorageClient(AbstractStorageClient):
         return True
 
     def info(self, path: str, strict: bool = True) -> ObjectMetadata:
+        self._ensure_current_process()
         return self._metadata_provider.get_object_metadata(path, include_pending=not strict)
 
     def write(
@@ -357,6 +344,7 @@ class CompositeStorageClient(AbstractStorageClient):
         attributes: dict[str, Any] | None = None,
     ) -> None:
         """Write operations not supported in read-only mode."""
+        self._ensure_writable()
         raise NotImplementedError(
             "CompositeStorageClient is read-only. "
             "Write operations are not implemented for multi-location datasets. "
@@ -365,24 +353,28 @@ class CompositeStorageClient(AbstractStorageClient):
 
     def delete(self, path: str, recursive: bool = False) -> None:
         """Delete operations not supported in read-only mode."""
+        self._ensure_writable()
         raise NotImplementedError(
             "CompositeStorageClient is read-only. Delete operations are not implemented for multi-location datasets."
         )
 
     def delete_many(self, paths: Sequence[str]) -> None:
         """Delete operations not supported in read-only mode."""
+        self._ensure_writable()
         raise NotImplementedError(
             "CompositeStorageClient is read-only. Delete operations are not implemented for multi-location datasets."
         )
 
     def copy(self, src_path: str, dest_path: str) -> None:
         """Copy operations not supported in read-only mode."""
+        self._ensure_writable()
         raise NotImplementedError(
             "CompositeStorageClient is read-only. Copy operations are not implemented for multi-location datasets."
         )
 
     def make_symlink(self, path: str, target: str) -> None:
         """Symlink operations not supported in read-only mode."""
+        self._ensure_writable()
         raise NotImplementedError(
             "CompositeStorageClient is read-only. Symlink operations are not implemented for multi-location datasets."
         )
@@ -394,6 +386,7 @@ class CompositeStorageClient(AbstractStorageClient):
         attributes: dict[str, Any] | None = None,
     ) -> None:
         """Upload operations not supported in read-only mode."""
+        self._ensure_writable()
         raise NotImplementedError(
             "CompositeStorageClient is read-only. Upload operations are not implemented for multi-location datasets."
         )
@@ -407,12 +400,14 @@ class CompositeStorageClient(AbstractStorageClient):
         transfer_callback: BatchTransferCallback | None = None,
     ) -> None:
         """Upload operations not supported in read-only mode."""
+        self._ensure_writable()
         raise NotImplementedError(
             "CompositeStorageClient is read-only. Upload operations are not implemented for multi-location datasets."
         )
 
     def commit_metadata(self, prefix: str | None = None) -> None:
         """No-op for read-only client."""
+        self._ensure_writable()
 
     def sync_from(
         self,
@@ -432,6 +427,7 @@ class CompositeStorageClient(AbstractStorageClient):
         dryrun_output_path: str | None = None,
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> SyncResult:
+        self._ensure_writable()
         raise NotImplementedError(
             "CompositeStorageClient cannot be used as sync target (write operation). "
             "Use CompositeStorageClient as source only, or use a single-location dataset as target."
@@ -450,6 +446,7 @@ class CompositeStorageClient(AbstractStorageClient):
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> None:
         """No-op for read-only client."""
+        self._ensure_writable()
 
     def list(
         self,
@@ -464,24 +461,26 @@ class CompositeStorageClient(AbstractStorageClient):
         symlink_handling: SymlinkHandling = SymlinkHandling.FOLLOW,
     ) -> Iterator[ObjectMetadata]:
         # Apply patterns to the objects
+        self._ensure_current_process()
         pattern_matcher = PatternMatcher(patterns) if patterns else None
 
         # Delegate to metadata provider (always present for CompositeStorageClient)
-        for obj in self._metadata_provider.list_objects(
+        objects = self._metadata_provider.list_objects(
             path,
             start_after=start_after,
             end_at=end_at,
             include_directories=include_directories,
             attribute_filter_expression=attribute_filter_expression,
             show_attributes=show_attributes,
-        ):
+        )
+        for obj in self._process_local_listing(objects):
             # Skip objects that do not match the patterns
             if pattern_matcher and not pattern_matcher.should_include_file(obj.key):
                 continue
 
             if include_url_prefix:
                 # Return a copy: the object is owned by the metadata provider and must not be mutated.
-                obj = obj.replace(key=join_paths(f"{MSC_PROTOCOL}{self._config.profile}", obj.key))
+                obj = obj.replace(key=self.url(obj.key))
 
             yield obj
 
@@ -493,13 +492,11 @@ class CompositeStorageClient(AbstractStorageClient):
         signer_type: SignerType | None = None,
         signer_options: dict[str, Any] | None = None,
     ) -> str:
-        resolved = self._metadata_provider.realpath(path)
-        if not resolved.exists:
-            raise FileNotFoundError(f"Path '{path}' not found")
-
-        child = self._get_child_client(resolved.profile)
+        self._ensure_signing_method(method)
+        self._ensure_current_process()
+        child, physical_path = self._resolve_child(path)
         return child.generate_presigned_url(
-            resolved.physical_path, method=method, signer_type=signer_type, signer_options=signer_options
+            physical_path, method=method, signer_type=signer_type, signer_options=signer_options
         )
 
     def __getstate__(self) -> dict[str, Any]:

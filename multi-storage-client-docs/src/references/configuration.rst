@@ -1466,6 +1466,61 @@ Here are examples of non-MSC URLs that are automatically translated to MSC URIs:
 
 Implicit profiles are identified by their leading underscore prefix, which is why user-defined profile names cannot start with an underscore.
 
+.. _url-resolvers:
+
+URL resolvers
+=============
+
+Register a separately installed integration under a URI scheme in the MSC config file.
+The resolver class receives its ``options`` as keyword arguments. The class name,
+connection options and URL syntax below illustrate an application-specific catalog.
+
+.. code-block:: yaml
+
+   url_resolvers:
+     catalog:
+       type: my_catalog.Resolver
+       options:
+         connections:
+           research:
+             endpoint: https://catalog.example.org
+             namespace_id: ns-7f91
+
+Implement :py:class:`multistorageclient.references.URLResolver`:
+
+* ``parse(url)`` runs on each lookup. Split the URL locally into a root and a decoded
+  file key. Mark only stable, pinned roots as canonical. Return a non-secret identifier
+  for the effective access scope, or ``None`` if it cannot be determined locally.
+* ``bind(reference)`` authorizes that scope and revision and returns one ordinary MSC
+  profile, the canonical root and a UTC reuse deadline. The profile can specify a
+  ``provider_bundle`` for metadata and storage routing. Build it from trusted configuration.
+  The integration verifies that the receiving connection addresses the expected catalog
+  namespace. The integration's providers must enforce access when a caller reads
+  through a retained client. The deadline governs reuse during URL resolution.
+
+An eligible canonical root can reuse its read-only client across file keys within the
+same process, configuration and scope until the deadline. A mutable selector is bound
+each time it is resolved. A missing scope or reuse deadline disables client reuse.
+Use :py:meth:`multistorageclient.StorageClient.url` to generate a pinned URL to persist.
+Each worker reopens the revision with its own credentials. If environment settings
+affect the catalog or caller identity, the integration must distinguish them in
+the canonical root or access scope.
+
+Resolver-created profiles always bypass MSC's on-disk content cache, including
+when the resolver returns a profile with ``caching_enabled: true``. Each new
+object read or open goes through the configured providers. Named profiles
+continue to follow their configured content-cache settings.
+
+Inventory-based reads select any replica through the bound client. When syncing
+catalog files to a POSIX directory, keys must map inside the selected destination.
+An object key containing a ``..`` component cannot be copied as a POSIX filename.
+
+Reserve a distinct scheme for each integration. A scheme owned by a resolver cannot
+also be owned by a path mapping or a built-in protocol. Upgrade the consuming
+processes before adding ``url_resolvers`` to a shared config. The standalone
+Rust client can use named profiles from this config. Opening a resolver URI
+requires the Python client.
+
 *********************
 Environment Variables
 *********************

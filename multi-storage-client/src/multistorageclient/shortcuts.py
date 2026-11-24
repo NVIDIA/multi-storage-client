@@ -14,26 +14,37 @@
 # limitations under the License.
 
 import builtins
+import hashlib
+import json
 import logging
 import os
 import re
 import threading
 from collections.abc import Callable, Iterator, Sequence
+from datetime import timedelta
+from time import time
 from typing import IO, Any
 from urllib.parse import urlparse
+from uuid import uuid4
+from weakref import WeakValueDictionary
 
 from .client import StorageClient
-from .config import RESERVED_POSIX_PROFILE_NAME, SUPPORTED_IMPLICIT_PROFILE_PROTOCOLS, PathMapping, StorageClientConfig
+from .config import RESERVED_POSIX_PROFILE_NAME, PathMapping, StorageClientConfig
 from .file import ObjectFile, PosixFile
+from .references import ParsedReference, URLResolver
+from .schema import SUPPORTED_IMPLICIT_PROFILE_PROTOCOLS, validate_config
 from .telemetry import Telemetry
 from .types import MSC_PROTOCOL, ExecutionMode, ObjectMetadata, PatternList, SignerType, SymlinkHandling, SyncResult
-from .utils import build_full_path
+from .utils import build_full_path, expand_env_vars, import_class
 
 _TELEMETRY_PROVIDER: Callable[[], Telemetry] | None = None
 _TELEMETRY_PROVIDER_LOCK = threading.Lock()
 _STORAGE_CLIENT_CACHE: dict[str, StorageClient] = {}
 _STORAGE_CLIENT_CACHE_LOCK = threading.Lock()
-_PATH_MAPPING_CACHE: dict[str | None, PathMapping] = {}
+_MAX_ROUTING_CONFIGS = 16
+_MAX_REFERENCE_BINDINGS = 128
+_ANY_SCOPE = object()
+_PATH_MAPPING_CACHE: dict[str | None, tuple[PathMapping, dict[str, "_ConfiguredResolver"]]] = {}
 _PATH_MAPPING_CACHE_LOCK = threading.Lock()
 _PROCESS_ID = os.getpid()
 
@@ -124,28 +135,160 @@ def _resolve_msc_url(url: str) -> tuple[str, str]:
     return profile, path
 
 
-def _read_cached_path_mapping() -> PathMapping:
-    """
-    Read path mapping once per ``MSC_CONFIG`` value for shortcut URL resolution.
+class _ConfiguredResolver:
+    def __init__(self, scheme: str, config: dict[str, Any], config_identity: str):
+        self.scheme = scheme
+        self._config = config
+        self._identity = config_identity
+        self._resolver: URLResolver | None = None
+        self._clients: dict[tuple[str, str | None], tuple[float, StorageClient]] = {}
+        self._inflight: WeakValueDictionary[tuple[str, str | None], threading.Lock] = WeakValueDictionary()
+        self._lock = threading.Lock()
 
-    Path mapping checks happen on every non-MSC shortcut call, including POSIX paths. Caching here keeps that hot path
-    from repeatedly loading and validating the full MSC config while preserving ``StorageClientConfig.read_path_mapping``
-    behavior for direct callers.
-    """
-    cache_key = os.getenv("MSC_CONFIG", None)
-    if cache_key in _PATH_MAPPING_CACHE:
-        return _PATH_MAPPING_CACHE[cache_key]
+    def _load(self) -> URLResolver:
+        if self._resolver is None:
+            with self._lock:
+                if self._resolver is None:
+                    spec = self._config["url_resolvers"][self.scheme]
+                    module, _, name = spec["type"].rpartition(".")
+                    if not module or not name:
+                        raise ValueError(f"Expected a fully qualified URL resolver class for {self.scheme!r}")
+                    self._resolver = import_class(name, module)(**expand_env_vars(spec.get("options", {})))
+        assert self._resolver is not None
+        return self._resolver
 
-    with _PATH_MAPPING_CACHE_LOCK:
-        if cache_key in _PATH_MAPPING_CACHE:
-            return _PATH_MAPPING_CACHE[cache_key]
+    def resolve(
+        self, url: str, *, expected_root: str | None = None, expected_scope: str | None | object = _ANY_SCOPE
+    ) -> tuple[StorageClient, str]:
+        resolver = self._load()
+        ref = resolver.parse(url)
+        if expected_root is not None and (
+            not ref.is_canonical or ref.root_url != expected_root or (url == expected_root and ref.relative_path)
+        ):
+            raise ValueError("The configured resolver did not recognize the recorded canonical root")
+        if expected_scope is not _ANY_SCOPE and (expected_scope is None or ref.access_scope != expected_scope):
+            raise PermissionError("The inherited reference belongs to a different or unknown access scope")
+        if ref.is_canonical and not url.startswith(ref.root_url):
+            raise ValueError("The parsed canonical root differs from the input URL")
+        if ref.is_canonical and ref.access_scope is not None:
+            key = ref.root_url, ref.access_scope
+            entry = self._clients.get(key)
+            if entry is not None and time() < entry[0]:
+                return entry[1], ref.relative_path
 
-        path_mapping = StorageClientConfig.read_path_mapping()
-        _PATH_MAPPING_CACHE[cache_key] = path_mapping
-        return path_mapping
+            # Serialize only cold binds for this revision and caller.
+            with self._lock:
+                lock = self._inflight.get(key)
+                if lock is None:
+                    self._inflight[key] = lock = threading.Lock()
+            with lock:
+                entry = self._clients.get(key)
+                if entry is not None and time() < entry[0]:
+                    return entry[1], ref.relative_path
+                return self._bind(resolver, ref), ref.relative_path
+        return self._bind(resolver, ref), ref.relative_path
+
+    def _bind(self, resolver: URLResolver, ref: ParsedReference) -> StorageClient:
+        bound = resolver.bind(ref)
+        root = bound.canonical_root_url
+        parsed_root = urlparse(root)
+        if (
+            not root.startswith(f"{self.scheme}://")
+            or not parsed_root.netloc
+            or not root.endswith("/")
+            or "?" in root
+            or "#" in root
+            or parsed_root.username is not None
+        ):
+            raise ValueError("A bound reference must return a canonical root URI ending in '/' for its scheme")
+        if ref.is_canonical:
+            if root != ref.root_url:
+                raise ValueError("Resolver redirected a canonical reference to a different root")
+        else:
+            pinned = resolver.parse(root)
+            if not pinned.is_canonical or pinned.root_url != root or pinned.relative_path:
+                raise ValueError("Resolver returned a mutable or invalid canonical root")
+            if (
+                ref.access_scope is not None
+                and pinned.access_scope is not None
+                and pinned.access_scope != ref.access_scope
+            ):
+                raise PermissionError("The caller scope changed while authorizing the reference")
+
+        deadline = bound.reuse_until
+        if deadline is not None and deadline.utcoffset() != timedelta(0):
+            raise ValueError("URL resolver reuse_until must be a timezone-aware UTC datetime")
+
+        # The underscore namespace is reserved for generated profiles.
+        if ref.access_scope is None:
+            identity = uuid4().hex
+        else:
+            identity = hashlib.sha256(json.dumps([self._identity, ref.access_scope, root]).encode()).hexdigest()
+        profile = f"_ref-{identity}"
+        json.dumps(bound.profile_config, allow_nan=False)
+        validate_config({"profiles": {"reference": bound.profile_config}})
+        config = {**self._config, "profiles": {**self._config.get("profiles", {}), profile: bound.profile_config}}
+        client = StorageClient(
+            config=StorageClientConfig._from_bound_profile(
+                config, profile, root, ref.access_scope, telemetry_provider=get_telemetry_provider()
+            )
+        )
+
+        if ref.access_scope is not None:
+            key = root, ref.access_scope
+            with self._lock:
+                now = time()
+                for stale in [k for k, entry in self._clients.items() if entry[0] <= now]:
+                    del self._clients[stale]
+                self._clients.pop(key, None)
+                if deadline is not None and deadline.timestamp() > now:
+                    if len(self._clients) >= _MAX_REFERENCE_BINDINGS:
+                        del self._clients[next(iter(self._clients))]
+                    self._clients[key] = deadline.timestamp(), client
+        return client
 
 
-def _resolve_non_msc_url(url: str) -> tuple[str, str]:
+def _read_cached_routes() -> tuple[PathMapping, dict[str, _ConfiguredResolver]]:
+    """Load shortcut routing once per MSC_CONFIG selection, importing extensions only on use."""
+    cache_key = os.getenv("MSC_CONFIG")
+    routes = _PATH_MAPPING_CACHE.get(cache_key)
+    if routes is None:
+        with _PATH_MAPPING_CACHE_LOCK:
+            routes = _PATH_MAPPING_CACHE.get(cache_key)
+            if routes is None:
+                generations = []
+                config, _ = StorageClientConfig._read_msc_config(generations=generations)
+                config = config or {}
+                registration = config.get("url_resolvers", {})
+                identity = hashlib.sha256(json.dumps(generations).encode()).hexdigest() if registration else ""
+                routes = (
+                    PathMapping.from_config(config),
+                    {scheme: _ConfiguredResolver(scheme, config, identity) for scheme in registration},
+                )
+                if len(_PATH_MAPPING_CACHE) >= _MAX_ROUTING_CONFIGS:
+                    del _PATH_MAPPING_CACHE[next(iter(_PATH_MAPPING_CACHE))]
+                _PATH_MAPPING_CACHE[cache_key] = routes
+    return routes
+
+
+def _reopen_reference_path(
+    url: str, root_url: str, *, expected_scope: str | None | object = _ANY_SCOPE
+) -> tuple[StorageClient, str]:
+    """Reopen a recorded URL through its owning resolver in the receiving caller's context."""
+    _check_and_reinitialize_if_forked()
+    _, resolvers = _read_cached_routes()
+    scheme = root_url.partition(":")[0]
+    resolver = resolvers.get(scheme)
+    if resolver is None:
+        raise ValueError(f"No URL resolver configured for the recorded scheme {scheme!r}")
+    return resolver.resolve(url, expected_root=root_url, expected_scope=expected_scope)
+
+
+def _reopen_reference(canonical_root_url: str, *, expected_scope: str | None | object = _ANY_SCOPE) -> StorageClient:
+    return _reopen_reference_path(canonical_root_url, canonical_root_url, expected_scope=expected_scope)[0]
+
+
+def _resolve_non_msc_url(url: str, path_mapping: PathMapping | None = None) -> tuple[str, str]:
     """
     Resolve a non-MSC URL to a profile name and path.
 
@@ -158,7 +301,8 @@ def _resolve_non_msc_url(url: str) -> tuple[str, str]:
     :return: A tuple of (profile_name, path)
     """
     # Check if we have a valid path mapping, if so check if there is a matching mapping
-    path_mapping = _read_cached_path_mapping()
+    if path_mapping is None:
+        path_mapping, _ = _read_cached_routes()
     if path_mapping:
         # Look for a matching mapping
         possible_mapping = path_mapping.find_mapping(url)
@@ -215,7 +359,8 @@ def resolve_storage_client(url: str) -> tuple[StorageClient, str]:
     gs://, ais://, file://), MSC will infer the storage provider based on the URL protocol and create an implicit
     profile with the naming convention "_protocol-bucket" (e.g., "_s3-bucket1", "_gs-bucket1").
 
-    Path mapping defined in the MSC configuration are also applied before creating implicit profiles.
+    Configured URL resolvers authorize catalog references and return clients pinned to a read-only revision.
+    Path mappings defined in the MSC configuration are applied before creating implicit profiles.
     This allows for explicit mappings between source paths and destination MSC profiles.
 
     This function is fork-safe: after a fork, the cache is automatically cleared and new client instances
@@ -241,7 +386,13 @@ def resolve_storage_client(url: str) -> tuple[StorageClient, str]:
         url = url.replace("msc:/", "msc://")
 
     # Resolve the URL to a profile name and path
-    profile, path = _resolve_msc_url(url) if url.startswith(MSC_PROTOCOL) else _resolve_non_msc_url(url)
+    if url.startswith(MSC_PROTOCOL):
+        profile, path = _resolve_msc_url(url)
+    else:
+        mappings, resolvers = _read_cached_routes()
+        if resolvers and ":" in url and (owner := resolvers.get(url.partition(":")[0].lower())) is not None:
+            return owner.resolve(url)
+        profile, path = _resolve_non_msc_url(url, mappings)
 
     # Check if the profile has already been instantiated
     if profile in _STORAGE_CLIENT_CACHE:
@@ -478,7 +629,7 @@ def list(
     :param patterns: PatternList for include/exclude filtering. If None, all files are included.
     :param symlink_handling: How to handle symbolic links. Only applicable for POSIX file storage.
     :return: An iterator of :py:class:`ObjectMetadata` objects representing the files (and optionally directories)
-             accessible under the specified URL prefix. The returned keys will always be prefixed with msc://.
+             accessible under the specified URL prefix. Keys are formatted using the client's canonical URL.
     """
     client, path = resolve_storage_client(url)
     return client.list(

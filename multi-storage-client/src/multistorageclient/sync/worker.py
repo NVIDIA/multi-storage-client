@@ -20,12 +20,14 @@ import os
 import shutil
 import tempfile
 import threading
+import time
 import traceback
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 import xattr
 
@@ -135,17 +137,18 @@ def check_skip_and_track_with_metadata_provider(
 
 def update_posix_metadata(
     target_client: "AbstractStorageClient",
-    target_physical_path: str,
+    target_physical_path: str | int,
     target_file_path: str,
     file_metadata: ObjectMetadata,
 ) -> None:
     """Update metadata for POSIX target (metadata provider or xattr)."""
     if target_client._metadata_provider:
         metadata_copy = dict(file_metadata.metadata) if file_metadata.metadata else None
+        target_stat = os.stat(target_physical_path)
         physical_metadata = ObjectMetadata(
             key=target_file_path,
-            content_length=os.path.getsize(target_physical_path),
-            last_modified=datetime.fromtimestamp(os.path.getmtime(target_physical_path), tz=UTC),
+            content_length=target_stat.st_size,
+            last_modified=datetime.fromtimestamp(target_stat.st_mtime, tz=UTC),
             metadata=metadata_copy,
         )
         with target_client._metadata_provider_lock or contextlib.nullcontext():
@@ -173,6 +176,11 @@ def update_posix_metadata(
 # ---------------------------------------------------------------------------
 # BatchSyncHandler class hierarchy
 # ---------------------------------------------------------------------------
+
+
+def _is_reference_source(client: "AbstractStorageClient") -> bool:
+    config = getattr(client, "_config", None)
+    return config is not None and config.read_only is True
 
 
 class BatchSyncHandler(ABC):
@@ -205,6 +213,55 @@ class BatchSyncHandler(ABC):
         self.error_queue = error_queue
         self.temp_dir = temp_dir
         self.progress = progress
+        self._reference_target_root: str | None = None
+        if _is_reference_source(source_client) and target_client._is_posix_file_storage_provider():
+            physical_root = target_client.get_posix_path(target_path)
+            if physical_root is None:
+                raise ValueError(f"POSIX sync destination has no physical path: {target_path!r}")
+            self._reference_target_root = os.path.realpath(physical_root)
+
+    def _check_reference_target(self, operation: OperationType, item: ObjectMetadata) -> None:
+        """Confine catalog keys and preserved links to the selected POSIX destination."""
+        root = self._reference_target_root
+        if root is None:
+            return
+        key = (
+            item.key
+            if operation == OperationType.DELETE
+            else build_target_file_path(self.source_path, self.target_path, item)
+        )
+        relative_key = key.removeprefix(self.target_path.rstrip("/") + "/")
+        if ".." in relative_key.split("/"):
+            raise ValueError(f"Unsafe catalog sync path {key!r} for POSIX destination {root!r}")
+        physical = self.target_client.get_posix_path(key)
+        if physical is None:
+            raise ValueError(f"POSIX sync destination has no physical path: {key!r}")
+
+        parent = os.path.dirname(physical)
+        destinations = [os.path.realpath(physical), os.path.realpath(parent)]
+        if operation == OperationType.SYMLINK and item.symlink_target is not None:
+            target = ObjectMetadata.resolve_symlink_target(key, item.symlink_target)
+            link = ObjectMetadata.encode_symlink_target(key, target)
+            destinations.append(os.path.realpath(os.path.join(parent, link)))
+        if any(os.path.commonpath((root, path)) != root for path in destinations) or destinations[0] == root:
+            raise ValueError(f"Catalog sync path {key!r} escapes POSIX destination {root!r}")
+        if operation == OperationType.ADD and os.path.isdir(physical):
+            raise IsADirectoryError(f"Cannot write catalog file {key!r} over a POSIX directory")
+        if operation == OperationType.SYMLINK and self.target_client._metadata_provider is None:
+            # Establish the link's real parent before encoding a parent-relative target there.
+            safe_makedirs(parent)
+            if os.path.realpath(parent) != os.path.normpath(os.path.join(root, os.path.dirname(relative_key))):
+                raise ValueError(f"Cannot preserve catalog symlink {key!r} through a symlinked POSIX directory")
+
+    def _validate_reference_batch(self, worker_id: str, batch: OperationBatch) -> bool:
+        if self._reference_target_root is not None:
+            for item, _ in batch.items:
+                try:
+                    self._check_reference_target(batch.operation, item)
+                except Exception as error:
+                    self._report_error(worker_id, error, item.key, batch.operation)
+                    return False
+        return True
 
     def _transfer_callback(
         self,
@@ -227,6 +284,8 @@ class BatchSyncHandler(ABC):
         batch: OperationBatch,
     ) -> None:
         """Process an ADD batch: filter items via skip/track, then transfer."""
+        if not self._validate_reference_batch(worker_id, batch):
+            return
         transfer_items: list[tuple[ObjectMetadata, str]] = []
 
         if self.target_client._metadata_provider:
@@ -288,6 +347,8 @@ class BatchSyncHandler(ABC):
 
     def process_delete_batch(self, worker_id: str, batch: OperationBatch) -> None:
         """Process a DELETE batch."""
+        if not self._validate_reference_batch(worker_id, batch):
+            return
         keys = [file_metadata.key for file_metadata, _ in batch.items]
         try:
             self.target_client.delete_many(keys)
@@ -314,6 +375,7 @@ class BatchSyncHandler(ABC):
                 if file_metadata.symlink_target is None:
                     raise RuntimeError(f"SYMLINK batch item has no symlink_target: {file_metadata.key}")
 
+                self._check_reference_target(batch.operation, file_metadata)
                 target_file_path = build_target_file_path(self.source_path, self.target_path, file_metadata)
                 translated_target = ObjectMetadata.resolve_symlink_target(
                     target_file_path, file_metadata.symlink_target
@@ -392,24 +454,96 @@ class PosixToPosixHandler(BatchSyncHandler):
         safe_makedirs(os.path.dirname(target_physical_path))
         shutil.copy2(source_physical_path, target_physical_path)
 
+    @contextlib.contextmanager
+    def _reference_target_directory(self, target_path: str) -> Iterator[int]:
+        parent = os.path.realpath(os.path.dirname(target_path))
+        root = self._reference_target_root
+        if root is None or os.path.commonpath((root, parent)) != root:
+            raise ValueError(f"Catalog sync path {target_path!r} escapes POSIX destination {root!r}")
+
+        # Pin the checked directory so a replaced path component cannot redirect the copy.
+        flags = getattr(os, "O_SEARCH", getattr(os, "O_PATH", os.O_RDONLY)) | os.O_DIRECTORY | os.O_NOFOLLOW
+        directory = os.open("/", flags)
+        try:
+            for part in filter(None, parent.split("/")):
+                for attempt in range(6):
+                    try:
+                        child = os.open(part, flags, dir_fd=directory)
+                        break
+                    except FileNotFoundError:
+                        if attempt == 5:
+                            raise
+                        with contextlib.suppress(FileExistsError, FileNotFoundError):
+                            os.mkdir(part, dir_fd=directory)
+                        if attempt:
+                            time.sleep(0.01 * 2 ** (attempt - 1) + time.time() % 0.01)
+                os.close(directory)
+                directory = child
+            yield directory
+        finally:
+            os.close(directory)
+
+    def _copy_reference_to_posix_target(self, file_metadata: ObjectMetadata, target_key: str, target_path: str) -> None:
+        key = file_metadata.key
+        name = os.path.basename(target_path)
+        with self.source_client.open(key, "rb") as source, self._reference_target_directory(target_path) as directory:
+            with contextlib.suppress(FileNotFoundError):
+                if os.path.samestat(os.fstat(source.fileno()), os.stat(name, dir_fd=directory)):
+                    raise shutil.SameFileError(f"Reference key {key!r} and {target_path!r} refer to the same file")
+
+            staging = f".msc-{uuid4().hex}"
+            fd = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory)
+            with contextlib.ExitStack() as handles:
+                set_flags = getattr(os, "chflags", None)
+                flags_fd = None
+                try:
+                    with os.fdopen(fd, "wb") as target:
+                        shutil.copyfileobj(source, target)
+                        target.flush()
+                        # BSD chflags needs a path. /dev/fd addresses the open staging inode.
+                        metadata_target = f"/dev/fd/{fd}" if set_flags is not None else fd
+                        shutil.copystat(source.fileno(), metadata_target)  # type: ignore[arg-type]
+                        if set_flags is not None and (flags := getattr(os.fstat(fd), "st_flags", 0)):
+                            # Immutable and append-only files cannot be renamed with their flags set.
+                            set_flags(f"/dev/fd/{fd}", 0)
+                            flags_fd = os.dup(fd)
+                            handles.callback(os.close, flags_fd)
+                        if not self.target_client._metadata_provider:
+                            update_posix_metadata(self.target_client, fd, target_key, file_metadata)
+                    os.replace(staging, name, src_dir_fd=directory, dst_dir_fd=directory)
+                except BaseException:
+                    with contextlib.suppress(FileNotFoundError):
+                        os.unlink(staging, dir_fd=directory)
+                    raise
+                if set_flags is not None and flags_fd is not None:
+                    set_flags(f"/dev/fd/{flags_fd}", flags)
+
     def _execute_batch_transfer(
         self,
         worker_id: str,
         transfer_items: list[tuple[ObjectMetadata, str]],
     ) -> None:
         for file_metadata, target_file_path in transfer_items:
-            source_physical_path = self.source_client.get_posix_path(file_metadata.key)
+            source_path = (
+                file_metadata.key
+                if self._reference_target_root is not None
+                else self.source_client.get_posix_path(file_metadata.key)
+            )
             target_physical_path = self.target_client.get_posix_path(target_file_path)
-            if source_physical_path is None:
+            if source_path is None:
                 raise ValueError(f"Source key '{file_metadata.key}' has no POSIX path")
             if target_physical_path is None:
                 raise ValueError(f"Target path '{target_file_path}' has no POSIX path")
             transfer_callback = self._transfer_callback(
-                [(file_metadata, target_file_path)], [source_physical_path], local_source=True
+                [(file_metadata, target_file_path)], [source_path], local_source=True
             )
-            with _transfer_notification(transfer_callback, source_physical_path, target_physical_path):
-                self._copy_to_posix_target(source_physical_path, target_physical_path)
-            update_posix_metadata(self.target_client, target_physical_path, target_file_path, file_metadata)
+            with _transfer_notification(transfer_callback, source_path, target_physical_path):
+                if self._reference_target_root is None:
+                    self._copy_to_posix_target(source_path, target_physical_path)
+                else:
+                    self._copy_reference_to_posix_target(file_metadata, target_file_path, target_physical_path)
+            if self._reference_target_root is None or self.target_client._metadata_provider:
+                update_posix_metadata(self.target_client, target_physical_path, target_file_path, file_metadata)
 
 
 class PosixToRemoteHandler(BatchSyncHandler):
@@ -540,7 +674,8 @@ def create_sync_handler(
     handler_class: type[BatchSyncHandler]
     if source_is_posix and target_is_posix:
         handler_class = PosixToPosixHandler
-    elif source_is_posix:
+    elif source_is_posix and not _is_reference_source(source_client):
+        # Bound sources need a confined download before passing local paths to a remote uploader.
         handler_class = PosixToRemoteHandler
     elif target_is_posix:
         handler_class = RemoteToPosixHandler

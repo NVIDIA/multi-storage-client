@@ -95,6 +95,8 @@ class PosixFileStorageProvider(BaseStorageProvider):
     A concrete implementation of the :py:class:`multistorageclient.types.StorageProvider` for interacting with POSIX file systems.
     """
 
+    _restrict_to_base_path: bool = False
+
     def __init__(
         self,
         base_path: str,
@@ -122,6 +124,34 @@ class PosixFileStorageProvider(BaseStorageProvider):
             telemetry_provider=telemetry_provider,
         )
         self._real_base_path = os.path.realpath(base_path)
+
+    def _prepend_base_path(self, path: str) -> str:
+        full_path = super()._prepend_base_path(path)
+        if self._restrict_to_base_path and self._symlink_target_is_external(os.path.realpath(full_path)):
+            raise PermissionError(f"Reference path outside the bound storage directory: {path!r}")
+        return full_path
+
+    def _open_reference_fd(self, path: str, flags: int) -> int:
+        resolved = os.path.realpath(path, strict=True)
+        if self._symlink_target_is_external(resolved):
+            raise PermissionError(f"Reference path outside the bound storage directory: {path!r}")
+
+        # Walk the checked components from / so a replacement symlink, even above the base, cannot redirect the open.
+        directory_flags = getattr(os, "O_SEARCH", getattr(os, "O_PATH", os.O_RDONLY)) | os.O_DIRECTORY | os.O_NOFOLLOW
+        components = resolved.lstrip("/").split("/")
+        parent_fd = os.open("/", directory_flags)
+        try:
+            for component in components[:-1]:
+                child_fd = os.open(component, directory_flags, dir_fd=parent_fd)
+                os.close(parent_fd)
+                parent_fd = child_fd
+            return os.open(components[-1] or ".", flags | os.O_NOFOLLOW, dir_fd=parent_fd)
+        finally:
+            os.close(parent_fd)
+
+    def _open_file(self, path: str, mode: str, buffering: int = -1, encoding: str | None = None) -> IO:
+        opener = self._open_reference_fd if self._restrict_to_base_path else None
+        return open(path, mode=mode, buffering=buffering, encoding=encoding, opener=opener)
 
     def _translate_errors(
         self,
@@ -165,17 +195,13 @@ class PosixFileStorageProvider(BaseStorageProvider):
 
     def _get_object(self, path: str, byte_range: Range | SuffixRange | None = None) -> bytes:
         def _invoke_api() -> bytes:
-            if isinstance(byte_range, SuffixRange):
-                with open(path, "rb") as f:
+            with self._open_file(path, "rb") as f:
+                if isinstance(byte_range, SuffixRange):
                     f.seek(max(os.fstat(f.fileno()).st_size - byte_range.size, 0))
-                    return f.read()
-            elif byte_range:
-                with open(path, "rb") as f:
+                elif byte_range:
                     f.seek(byte_range.offset)
                     return f.read(byte_range.size)
-            else:
-                with open(path, "rb") as f:
-                    return f.read()
+                return f.read()
 
         return self._translate_errors(_invoke_api, operation="GET", path=path)
 
@@ -515,40 +541,24 @@ class PosixFileStorageProvider(BaseStorageProvider):
         return self._translate_errors(_invoke_api, operation="PUT", path=remote_path)
 
     def _download_file(self, remote_path: str, f: str | IO, metadata: ObjectMetadata | None = None) -> int:
-        filesize = metadata.content_length if metadata else os.path.getsize(remote_path)
-
-        if isinstance(f, str):
-
-            def _invoke_api() -> int:
-                if os.path.dirname(f):
-                    safe_makedirs(os.path.dirname(f))
-                atomic_write(source=remote_path, destination=f)
-
+        def _invoke_api() -> int:
+            text = isinstance(f, StringIO)
+            with self._open_file(remote_path, "r" if text else "rb", encoding="utf-8" if text else None) as src:
+                filesize = metadata.content_length if metadata else os.fstat(src.fileno()).st_size
+                if isinstance(f, str):
+                    if os.path.dirname(f):
+                        safe_makedirs(os.path.dirname(f))
+                    atomic_write(source=src, destination=f)
+                else:
+                    shutil.copyfileobj(src, f, READ_CHUNK_SIZE)
                 return filesize
 
-            return self._translate_errors(_invoke_api, operation="GET", path=remote_path)
-        elif isinstance(f, StringIO):
-
-            def _invoke_api() -> int:
-                with open(remote_path, "r", encoding="utf-8") as src:
-                    while chunk := src.read(READ_CHUNK_SIZE):
-                        f.write(chunk)
-
-                return filesize
-
-            return self._translate_errors(_invoke_api, operation="GET", path=remote_path)
-        else:
-
-            def _invoke_api() -> int:
-                with open(remote_path, "rb") as src:
-                    while chunk := src.read(READ_CHUNK_SIZE):
-                        f.write(chunk)
-
-                return filesize
-
-            return self._translate_errors(_invoke_api, operation="GET", path=remote_path)
+        return self._translate_errors(_invoke_api, operation="GET", path=remote_path)
 
     def glob(self, pattern: str, attribute_filter_expression: str | None = None) -> list[str]:
+        if self._restrict_to_base_path:
+            # Inventory traversal checks directory symlinks before descending into them.
+            return super().glob(pattern, attribute_filter_expression)
         pattern = self._prepend_base_path(pattern)
         keys = list(glob.glob(pattern, recursive=True))
         if attribute_filter_expression:

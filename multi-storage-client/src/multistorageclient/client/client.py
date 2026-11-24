@@ -62,6 +62,9 @@ class StorageClient(AbstractStorageClient):
             self._delegate = SingleStorageClient(config)
             logger.debug(f"StorageClient '{config.profile}' using SingleStorageClient")
 
+    def _ensure_current_process(self) -> None:
+        self._delegate._ensure_current_process()
+
     @property
     def delegate(self) -> SingleStorageClient | CompositeStorageClient:
         """
@@ -69,6 +72,7 @@ class StorageClient(AbstractStorageClient):
 
         :return: SingleStorageClient or CompositeStorageClient.
         """
+        self._ensure_current_process()
         return self._delegate
 
     @property
@@ -167,7 +171,9 @@ class StorageClient(AbstractStorageClient):
     @property
     def replicas(self) -> list[AbstractStorageClient]:
         """
-        :return: List of replica storage clients, sorted by read priority.
+        Resolver-backed clients read replicas through their logical inventory and keep the backend handles private.
+
+        :return: List of exposed replica storage clients, sorted by read priority.
         """
         return self._delegate.replicas
 
@@ -195,6 +201,7 @@ class StorageClient(AbstractStorageClient):
 
         :param path: The path to resolve (may be a symlink or virtual path).
         :return: Physical POSIX filesystem path if POSIX storage, None otherwise.
+        :raises PermissionError: If a read-only reference uses POSIX storage.
         """
         return self._delegate.get_posix_path(path)
 
