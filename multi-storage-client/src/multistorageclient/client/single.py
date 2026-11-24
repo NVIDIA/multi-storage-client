@@ -860,6 +860,7 @@ class SingleStorageClient(AbstractStorageClient):
                 path,
                 path,
                 delete_unmatched_files=True,
+                ignore_hidden=False,
                 num_worker_processes=1,
                 description="Deleting",
             )

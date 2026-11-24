@@ -437,7 +437,16 @@ def verify_shortcuts(profile: str, prefix: str):
     # save raw bytes (no .npy header) for memmap — np.memmap maps raw bytes from offset 0
     with msc.open(f"msc://{profile}/{prefix}/folder/arr-01.bin", "wb") as fp:
         fp.write(arr.tobytes())
+
+    hidden_file_urls = [
+        f"msc://{profile}/{prefix}/.metadata",
+        f"msc://{profile}/{prefix}/folder/.hidden/data.txt",
+    ]
+    for file_url in hidden_file_urls:
+        msc.write(file_url, b"hidden")
     msc.commit_metadata(f"msc://{profile}")
+    for file_url in hidden_file_urls:
+        assert msc.is_file(file_url)
 
     loaded = msc.numpy.load(f"msc://{profile}/{prefix}/folder/arr-01.npy")
     assert isinstance(loaded, np.ndarray)
@@ -462,7 +471,7 @@ def verify_shortcuts(profile: str, prefix: str):
 
     # delete files
     msc.delete(f"msc://{profile}/{prefix}", recursive=True)
-    for file_url in file_list:
+    for file_url in file_list + hidden_file_urls:
         assert not msc.is_file(file_url)
 
     # Ensure all directories gone too

@@ -203,6 +203,9 @@ is resolved as ``msc://profile/path/to/object.bin``.
 
 See :py:mod:`multistorageclient` for all shortcut methods.
 
+Recursive deletion with ``msc.delete(url, recursive=True)`` includes hidden files
+such as ``.metadata`` and files inside hidden directories.
+
 Google Cloud Storage uploads and downloads using ``io.StringIO`` encode and
 decode UTF-8, including multipart transfers, independently of the system locale.
 
