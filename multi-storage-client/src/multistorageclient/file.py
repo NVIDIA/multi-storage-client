@@ -18,6 +18,7 @@ from __future__ import annotations  # Enables forward references in type hints
 import io
 import json
 import logging
+import operator
 import os
 import shutil
 import tempfile
@@ -42,8 +43,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_REMOTE_READ_BUFFER_SIZE = 8 * 1024 * 1024
 
-class RemoteFileReader(IO[bytes]):
+
+class RemoteFileReader(IOBase, IO[bytes]):
     """
     A file-like object for reading large files from a remote storage provider using range requests.
 
@@ -63,82 +66,159 @@ class RemoteFileReader(IO[bytes]):
         self._pos = 0
         self._storage_client = storage_client
         self._check_source_version = check_source_version
+        self._buffer = b""
+        self._buffer_start = 0
+        self._buffer_size = 0
+        configured_size = os.environ.get("MSC_REMOTE_READ_BUFFER_SIZE", str(_DEFAULT_REMOTE_READ_BUFFER_SIZE))
+        if (
+            configured_size != "0"
+            and storage_client._cache_manager is None
+            and storage_client._replica_manager is None
+            and check_source_version != SourceVersionCheckMode.ENABLE
+        ):
+            if not configured_size.isdecimal():
+                raise ValueError("MSC_REMOTE_READ_BUFFER_SIZE must be a non-negative integer in bytes.")
+            self._buffer_size = int(configured_size)
 
     @property
     def name(self) -> str:
         return self._remote_path
 
-    @property
-    def closed(self) -> bool:
-        return False
+    def _check_open(self) -> None:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
 
     def readable(self) -> bool:
+        self._check_open()
         return True
 
     def writable(self) -> bool:
+        self._check_open()
         return False
 
     def seekable(self) -> bool:
+        self._check_open()
         return True
 
     def seek(self, position: int, whence: int = os.SEEK_SET) -> int:
+        self._check_open()
+        position = operator.index(position)
+        whence = operator.index(whence)
         if whence == os.SEEK_SET:
-            self._pos = position
+            if position < 0:
+                raise ValueError(f"negative seek value {position}")
         elif whence == os.SEEK_CUR:
-            self._pos += position
+            position = max(0, self._pos + position)
         elif whence == os.SEEK_END:
-            self._pos = self._file_size + position
+            position = max(0, self._file_size + position)
+        else:
+            raise ValueError(f"invalid whence ({whence}, should be 0, 1 or 2)")
+        self._pos = position
+        if not self._buffer_size:
+            self._buffer = b""
         return self._pos
 
     def tell(self) -> int:
+        self._check_open()
         return self._pos
 
-    def read(self, size: int = -1) -> bytes:
-        # Calculate the start position for the range read
-        offset = self._pos
-        if size == 0 or offset >= self._file_size:
-            return b""
-        elif size == -1:
-            # If size is -1, read to the end of the file
-            length = self._file_size - offset
-        else:
-            # Ensure we don't go past the file size
-            length = min(size, self._file_size - offset)
-
-        # Perform range read from storage provider
-        bytes_range = Range(offset=offset, size=length)
+    def _read_range(self, offset: int, size: int) -> bytes:
         data = self._storage_client.read(
-            self._remote_path, byte_range=bytes_range, check_source_version=self._check_source_version
+            self._remote_path,
+            byte_range=Range(offset=offset, size=size),
+            check_source_version=self._check_source_version,
         )
         # Convert bytes-like buffers to Python bytes to support operations like startswith().
-        data = _ensure_bytes(data)
-        # Update the position by the number of bytes read
-        bytes_read = len(data)
-        self._pos += bytes_read
+        return _ensure_bytes(data)
+
+    def _buffered_data(self, size: int) -> bytes:
+        start = self._pos - self._buffer_start
+        return self._buffer[start : start + size] if start >= 0 else b""
+
+    def _fill_buffer(self, offset: int, size: int) -> bytes:
+        data = self._read_range(offset, min(size, self._file_size - offset))
+        self._buffer = data
+        self._buffer_start = offset
+        return data
+
+    def read(self, size: int | None = -1) -> bytes:
+        """Read up to ``size`` bytes from the current position."""
+        self._check_open()
+        size = -1 if size is None else operator.index(size)
+        available = self._file_size - self._pos
+        if size == 0 or available <= 0:
+            return b""
+        length = available if size < 0 else min(size, available)
+        data = self._buffered_data(length)
+        remaining = length - len(data)
+        if remaining:
+            offset = self._pos + len(data)
+            if size >= 0 and length < self._buffer_size:
+                data += self._fill_buffer(offset, self._buffer_size)[:remaining]
+            else:
+                data += self._read_range(offset, remaining)
+        self._pos += len(data)
         return data
 
     def readinto(self, b: Any) -> int:
-        buffer_size = len(b)
-        data = self.read(buffer_size)
-        bytes_read = len(data)
-        mem_view = memoryview(b)
-        mem_view[:bytes_read] = data
-        return bytes_read
+        """Read bytes into a writable buffer and return the number of bytes read."""
+        with memoryview(b).cast("B") as buffer:
+            if buffer.readonly:
+                raise TypeError("readinto() requires a writable buffer")
+            data = self.read(len(buffer))
+            buffer[: len(data)] = data
+            return len(data)
 
-    def readline(self, size: int = -1) -> bytes:
-        raise io.UnsupportedOperation("readline operation is not supported on this file")
+    def readline(self, size: int | None = -1) -> bytes:
+        """Read one line, limited to ``size`` bytes when non-negative."""
+        self._check_open()
+        size = -1 if size is None else operator.index(size)
+        remaining = self._file_size - self._pos
+        if size >= 0:
+            remaining = min(remaining, size)
+        chunks = []
+        while remaining > 0:
+            start = 0
+            if self._check_source_version == SourceVersionCheckMode.ENABLE:
+                data = self._read_range(self._pos, min(remaining, io.DEFAULT_BUFFER_SIZE))
+            else:
+                data = self._buffer
+                start = self._pos - self._buffer_start
+                if not 0 <= start < len(data):
+                    data = self._fill_buffer(self._pos, self._buffer_size or io.DEFAULT_BUFFER_SIZE)
+                    start = 0
+            if not data:
+                break
+            end = min(start + remaining, len(data))
+            newline = data.find(b"\n", start, end)
+            if newline >= 0:
+                end = newline + 1
+            chunks.append(data[start:end])
+            count = end - start
+            self._pos += count
+            if newline >= 0:
+                break
+            remaining -= count
+        return b"".join(chunks)
 
-    def readlines(self, hint: int = -1) -> list[bytes]:
-        raise io.UnsupportedOperation("readlines operation is not supported on this file")
+    def peek(self, size: int = 0) -> bytes:
+        """Return read-ahead bytes without advancing the position."""
+        self._check_open()
+        available = self._file_size - self._pos
+        if available <= 0:
+            return b""
+        if self._check_source_version == SourceVersionCheckMode.ENABLE:
+            length = min(size, io.DEFAULT_BUFFER_SIZE) if size > 0 else io.DEFAULT_BUFFER_SIZE
+            return self._read_range(self._pos, min(available, length))
+        data = self._buffered_data(available)
+        return data or self._fill_buffer(self._pos, self._buffer_size or io.DEFAULT_BUFFER_SIZE)
 
     @property
     def mode(self) -> str:
         return "rb"
 
-    def isatty(self) -> bool:
-        return False
-
     def fileno(self) -> int:
+        self._check_open()
         # Remote file readers don't have real file descriptors, but some libraries (like energon)
         # expect fileno() to work for operations like os.posix_fadvise().
         # Return a temporary file descriptor to avoid UnsupportedOperation errors.
@@ -155,32 +235,14 @@ class RemoteFileReader(IO[bytes]):
     def truncate(self, size: int | None = None) -> int:
         raise io.UnsupportedOperation("truncate operation is not supported on this file")
 
-    def flush(self) -> None:
-        pass
-
     def close(self) -> None:
+        """Close the reader and release its temporary file descriptor."""
+        super().close()
+        self._buffer = b""
         # Clean up temporary file descriptor if it was created
         if hasattr(self, "_temp_fd_holder"):
             self._temp_fd_holder.close()
             delattr(self, "_temp_fd_holder")
-
-    def __enter__(self) -> RemoteFileReader:  # noqa: PYI034
-        return self
-
-    def __exit__(
-        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: types.TracebackType | None
-    ) -> None:
-        self.close()
-
-    def __iter__(self) -> Iterator[bytes]:
-        return self
-
-    def __next__(self) -> bytes:
-        # Read one byte at a time
-        byte = self.read(1)
-        if not byte:
-            raise StopIteration
-        return byte
 
 
 # pylint: disable=abstract-method
@@ -287,9 +349,9 @@ class ObjectFile(IOBase, IO):
     A file-like object that handles remote file access with asynchronous downloads.
 
     This class provides a non-blocking way to open a remote file via a specified `StorageProvider`, allowing
-    operations such as reading or writing to be performed as if the file was local. For files opened in read
-    mode ('rb'), the file is downloaded in the background. Operations that rely on the file (such as `read`,
-    `seek`, or `tell`) will block until the download is complete.
+    operations such as reading or writing to be performed as if the file was local. When a file is prefetched,
+    the download runs in the background, and operations such as `read`, `seek`, or `tell` wait for it to complete.
+    Binary files can also be read on demand through range requests.
 
     For files opened in write mode ('wb'), the class writes locally to a specified path and uploads the file
     to the remote storage when the file is closed. A 'wb' file opened with ``writer_options`` is forward-only
@@ -331,7 +393,8 @@ class ObjectFile(IOBase, IO):
         :param memory_load_limit: Size limit in bytes for loading files into memory. Defaults to 512MB. This parameter is only applicable when the mode is "r" or "rb".
         :param check_source_version: Whether to check the source version of cached objects.
         :param attributes: The attributes to add to the file if a new file is created.
-        :param prefetch_file: If True, downloads the entire file to cache in the background for faster subsequent reads. If False, uses RemoteFileReader for streaming reads without caching. If None, inherits from cache configuration.
+        :param prefetch_file: If False, binary reads fetch ranges on demand, including for uncached files within
+            ``memory_load_limit``. If None, inherits from the cache configuration or defaults to True without a cache.
         :param streaming_writer: A writer that publishes the object on close. Only valid with mode 'wb', which then
             streams the object instead of buffering it until close.
         """
@@ -415,13 +478,26 @@ class ObjectFile(IOBase, IO):
                 # Write or append
                 self._create_fileobj()
         else:
-            # Use BytesIO or StringIO as the fileobj
             if self._mode in ("r", "rb"):
-                # Read
                 self._object_metadata = self._storage_client.info(self._remote_path)
                 self._download_complete = threading.Event()
-                self._download_thread = threading.Thread(target=self._download_fileobj)
-                self._download_thread.start()
+                # Range reads can still use a configured cache when this open disables read caching.
+                if (
+                    self._mode == "rb"
+                    and not self._prefetch_file
+                    and storage_client._cache_manager is None
+                    and storage_client._replica_manager is None
+                    and self._object_metadata.type == "file"
+                    and self._object_metadata.symlink_target is None
+                ):
+                    if self._object_metadata.content_length:
+                        self._open_large_file()
+                    else:
+                        self._create_fileobj()
+                        self._download_complete.set()
+                else:
+                    self._download_thread = threading.Thread(target=self._download_fileobj)
+                    self._download_thread.start()
             else:
                 # Write or append
                 self._create_fileobj()
@@ -602,6 +678,7 @@ class ObjectFile(IOBase, IO):
             self._storage_client,
             check_source_version=self._check_source_version,
         )
+        self._open_files.append(self._file)
         self._download_complete.set()
 
     @property
@@ -620,11 +697,11 @@ class ObjectFile(IOBase, IO):
             self._download_complete.wait()
         return not hasattr(self, "_file") or self._file.closed
 
-    def read(self, size: int = -1) -> Any:
+    def read(self, size: int | None = -1) -> Any:
         """Read and return up to ``size`` bytes or characters."""
         if self.readable():
             self._wait_for_download()
-        return self._file.read(size)
+        return self._file.read(-1 if size is None else size)
 
     def readable(self) -> bool:
         return self._mode in ("r", "rb")

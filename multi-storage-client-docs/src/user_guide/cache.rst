@@ -134,7 +134,17 @@ When using ``SourceVersionCheckMode.INHERIT`` (the default), the cache configura
 
 **Prefetch File Control:**
 
-The ``prefetch_file`` parameter in ``client.open()`` controls whether the entire file is downloaded upfront or uses partial file caching. If omitted, ``client.open()`` inherits ``cache.prefetch_file`` from the configuration, which defaults to ``true``.
+With caching enabled, the ``prefetch_file`` parameter in ``client.open()`` controls whether to prefetch the entire file or use partial file caching for binary reads. If omitted, ``client.open()`` inherits ``cache.prefetch_file`` from the configuration, which defaults to ``true``.
+
+On a client without a cache or replicas, ``client.open(path, "rb", prefetch_file=False)`` looks up the file's metadata at open and requests byte ranges as you read, regardless of ``memory_load_limit``. In this mode, binary line reads and iteration use bounded read-ahead. By default, uncached binary reads still download files up to ``memory_load_limit`` into memory (512 MiB by default).
+
+Small binary range reads use an 8 MiB block by default. This size is intended for sequential workloads. Set the ``MSC_REMOTE_READ_BUFFER_SIZE`` environment variable in bytes before opening the file to tune the block size. A smaller block or ``0`` reduces excess transfer for sparse seeks. A small read that misses the buffer fetches one block starting at the requested offset. Nearby reads and seeks can reuse that block. Reads that request at least one block and reads through EOF fetch only the requested bytes.
+
+.. code-block:: bash
+
+   export MSC_REMOTE_READ_BUFFER_SIZE=65536
+
+Use buffering for objects that remain stable while open. Buffering reuses bytes already fetched for the current open. Clients with a configured range cache or replicas, and opens with ``check_source_version=SourceVersionCheckMode.ENABLE``, skip this optional buffer. With explicit source-version checking, line read-ahead is discarded after each request.
 
 .. code-block:: yaml
    :caption: Configuring open() to use partial file caching by default.
