@@ -494,17 +494,18 @@ class PosixToPosixHandler(BatchSyncHandler):
             staging = f".msc-{uuid4().hex}"
             fd = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory)
             with contextlib.ExitStack() as handles:
+                set_flags = getattr(os, "chflags", None)
                 flags_fd = None
                 try:
                     with os.fdopen(fd, "wb") as target:
                         shutil.copyfileobj(source, target)
                         target.flush()
                         # BSD chflags needs a path. /dev/fd addresses the open staging inode.
-                        metadata_target = f"/dev/fd/{fd}" if hasattr(os, "chflags") else fd
+                        metadata_target = f"/dev/fd/{fd}" if set_flags is not None else fd
                         shutil.copystat(source.fileno(), metadata_target)  # type: ignore[arg-type]
-                        if hasattr(os, "chflags") and (flags := os.fstat(fd).st_flags):
+                        if set_flags is not None and (flags := getattr(os.fstat(fd), "st_flags", 0)):
                             # Immutable and append-only files cannot be renamed with their flags set.
-                            os.chflags(f"/dev/fd/{fd}", 0)
+                            set_flags(f"/dev/fd/{fd}", 0)
                             flags_fd = os.dup(fd)
                             handles.callback(os.close, flags_fd)
                         if not self.target_client._metadata_provider:
@@ -514,8 +515,8 @@ class PosixToPosixHandler(BatchSyncHandler):
                     with contextlib.suppress(FileNotFoundError):
                         os.unlink(staging, dir_fd=directory)
                     raise
-                if flags_fd is not None:
-                    os.chflags(f"/dev/fd/{flags_fd}", flags)
+                if set_flags is not None and flags_fd is not None:
+                    set_flags(f"/dev/fd/{flags_fd}", flags)
 
     def _execute_batch_transfer(
         self,
