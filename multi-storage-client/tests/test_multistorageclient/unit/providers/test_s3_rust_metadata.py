@@ -41,9 +41,18 @@ class MetadataHandler(BaseHTTPRequestHandler):
         key = self.path.rsplit("/", 1)[-1]
         status = {"missing": 404, "denied": 403, "directory": 400}.get(key, 200)
         body = b"data" if key not in ("alias", "empty", "missing", "denied") else b""
+        content_range = None
+        if not head and status == 200 and (requested_range := self.headers.get("Range")):
+            start, end = map(int, requested_range.removeprefix("bytes=").split("-", 1))
+            end = min(end, len(body) - 1)
+            content_range = f"bytes {start}-{end}/{len(body)}"
+            body = body[start : end + 1]
+            status = 206
         self.send_response(status)
         self.send_header("Content-Length", str(len(body)))
-        if status == 200 and key != "minimal":
+        if content_range is not None:
+            self.send_header("Content-Range", content_range)
+        if status in (200, 206) and key != "minimal":
             self.send_header("Last-Modified", "Wed, 01 Jan 2025 00:00:00 GMT")
             self.send_header("ETag", '"test-etag"')
             self.send_header("Content-Type", "application/octet-stream")
