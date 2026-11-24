@@ -26,8 +26,7 @@ from multistorageclient.client.composite import CompositeStorageClient
 from multistorageclient.file import ObjectFile
 from multistorageclient.types import (
     ObjectMetadata,
-    ResolvedPath,
-    ResolvedPathState,
+    Range,
     StorageProvider,
 )
 from test_multistorageclient.unit.utils.catalog import (
@@ -235,10 +234,11 @@ def _spawn_worker(output, payload):
         output.close()
 
 
-def _read_cached_reference(url, scope):
+def _read_reference_in_worker(url, scope):
     os.environ["MSC_TEST_SCOPE"] = scope
     before = len(CatalogResolver.binds)
     client, key = resolve_storage_client(url)
+    assert resolve_storage_client(url)[0] is client
     with patch.object(client.delegate, "_storage_provider", spec=StorageProvider) as origin:
         origin.get_object.return_value = b"origin"
         value = client.read(key)
@@ -248,7 +248,7 @@ def _read_cached_reference(url, scope):
 @pytest.mark.parametrize(
     "method", [method for method in ("fork", "spawn") if method in multiprocessing.get_all_start_methods()]
 )
-def test_worker_authorizes_and_reads_parent_disk_cache(tmp_path, catalog_config, method):
+def test_worker_reuses_binding_and_reads_from_origin(tmp_path, catalog_config, method):
     profile = {
         "storage_provider": {"type": "file", "options": {"base_path": str(tmp_path)}},
         "metadata_provider": {"type": f"{Inventory.__module__}.Inventory"},
@@ -262,9 +262,9 @@ def test_worker_authorizes_and_reads_parent_disk_cache(tmp_path, catalog_config,
         origin.get_object.return_value = b"parent"
         assert client.read(key) == b"parent"
     with multiprocessing.get_context(method).Pool(1) as pool:
-        alice = pool.apply_async(_read_cached_reference, (client.url(key), "alice")).get(timeout=30)
-        bob = pool.apply_async(_read_cached_reference, (client.url(key), "bob")).get(timeout=30)
-    assert alice == (client.profile, b"parent", [(ROOT, "alice")])
+        alice = pool.apply_async(_read_reference_in_worker, (client.url(key), "alice")).get(timeout=30)
+        bob = pool.apply_async(_read_reference_in_worker, (client.url(key), "bob")).get(timeout=30)
+    assert alice == (client.profile, b"origin", [(ROOT, "alice")])
     assert bob[0] != client.profile
     assert bob[1:] == (b"origin", [(ROOT, "bob")])
 
@@ -320,54 +320,40 @@ def test_bound_posix_storage_stays_inside_configured_root(tmp_path):
         assert stream.resolve_filesystem_path() == str(directory / "item")
 
 
-def test_scoped_cache_separates_object_keys_and_authorizes_cached_opens(tmp_path):
-    from unittest.mock import Mock
-
-    from multistorageclient.types import Range
-
+def test_storage_only_reference_reads_honor_origin_revocation(tmp_path, catalog_config):
+    profile = {"storage_provider": {"type": "file", "options": {"base_path": str(tmp_path)}}, "caching_enabled": True}
     cache_root = tmp_path / "cache"
-    profile = {
-        "storage_provider": {"type": "file", "options": {"base_path": str(tmp_path)}},
-        "metadata_provider": {"type": f"{Inventory.__module__}.Inventory"},
-        "caching_enabled": True,
-    }
-    config = {"profiles": {"dataset": profile}, "cache": {"location": str(cache_root), "check_source_version": False}}
-    client = StorageClient(StorageClientConfig._from_bound_profile(config, "dataset", ROOT, "alice"))
-    physical = "../../secret"
-    data = b"bytes"
-    provider = Mock(spec=StorageProvider)
-    provider.get_object.side_effect = lambda key, byte_range=None: data
-    provider.get_object_metadata.return_value = ObjectMetadata(
-        key=physical, content_length=len(data), last_modified=datetime.now(UTC)
+    catalog_config(
+        options={"profile": profile},
+        profiles={"named": profile},
+        cache={"location": str(cache_root), "check_source_version": False},
     )
-    client._storage_provider = provider
-    metadata = client._metadata_provider
-    assert metadata is not None
-    lookup = Mock(return_value=ResolvedPath(physical, ResolvedPathState.EXISTS))
-    metadata.realpath = lookup
+    bound, key = resolve_storage_client(ROOT + "item")
+    with patch.object(bound.delegate, "_storage_provider", spec=StorageProvider) as origin:
+        origin.get_object.return_value = b"first"
+        assert bound.read(key) == b"first"
+        origin.get_object_metadata.return_value = ObjectMetadata(
+            key=key, content_length=5, last_modified=datetime.now(UTC)
+        )
+        origin.download_file.side_effect = lambda path, dest, metadata: dest.write(b"first")
+        with bound.open(key) as stream:
+            assert stream.read() == b"first"
+            with pytest.raises(PermissionError, match="download_file"):
+                stream.resolve_filesystem_path()
 
-    # Range misses must use the physical object key on the provider even though the disk filename is hashed.
-    assert client.read(LOGICAL, Range(1, 2)) == b"yt"
-    assert provider.get_object.call_args.args[0] == physical
-    cache = client._cache_manager
-    assert cache is not None
-    cache.set(physical, data)
-    cache.set("secret", b"different")
-    assert not (tmp_path / "secret").exists()
-    assert cache.read(physical) == data and cache.read("secret") == b"different"
-    provider.get_object.reset_mock()
-    assert client.read(LOGICAL) == data
-    with client.open(LOGICAL) as stream:
-        assert stream.read() == data
-        with pytest.raises(PermissionError, match="download_file"):
-            stream.resolve_filesystem_path()
-    assert cache.read(physical) == data
-    provider.get_object.assert_not_called()
-    provider.download_file.assert_not_called()
+        origin.get_object.side_effect = PermissionError("origin access revoked")
+        origin.get_object_metadata.side_effect = PermissionError("origin access revoked")
+        with pytest.raises(PermissionError, match="origin access revoked"):
+            bound.read(key)
+        with pytest.raises(PermissionError, match="origin access revoked"):
+            bound.read(key, Range(0, 1))
+        with pytest.raises(PermissionError, match="origin access revoked"), bound.open(key) as stream:
+            stream.read()
+    assert not cache_root.exists()
 
-    lookup.side_effect = PermissionError("revoked")
-    for access in (client.read, client.open):
-        with pytest.raises(PermissionError, match="revoked"):
-            access(LOGICAL)
-    provider.get_object.assert_not_called()
-    provider.download_file.assert_not_called()
+    named, key = resolve_storage_client("msc://named/item")
+    with patch.object(named.delegate, "_storage_provider", spec=StorageProvider) as origin:
+        origin.get_object.return_value = b"named"
+        assert named.read(key) == b"named"
+        assert named.read(key) == b"named"
+        origin.get_object.assert_called_once()

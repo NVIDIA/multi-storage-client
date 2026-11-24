@@ -1495,22 +1495,21 @@ Implement :py:class:`multistorageclient.references.URLResolver`:
   profile, the canonical root and a UTC reuse deadline. The profile can specify a
   ``provider_bundle`` for metadata and storage routing. Build it from trusted configuration.
   The integration verifies that the receiving connection addresses the expected catalog
-  namespace. The integration's providers must enforce access on subsequent reads,
-  including cached reads through a client the caller already holds. The deadline
-  governs reuse during URL resolution.
+  namespace. The integration's providers must enforce access when a caller reads
+  through a retained client. The deadline governs reuse during URL resolution.
 
 An eligible canonical root can reuse its read-only client across file keys within the
 same process, configuration and scope until the deadline. A mutable selector is bound
 each time it is resolved. A missing scope or reuse deadline disables client reuse.
 Use :py:meth:`multistorageclient.StorageClient.url` to generate a pinned URL to persist.
-Each worker reopens the revision with its own credentials.
+Each worker reopens the revision with its own credentials. If environment settings
+affect the catalog or caller identity, the integration must distinguish them in
+the canonical root or access scope.
 
-Workers that use the same disk cache can reuse cached content for the same
-canonical root and known scope. MSC identifies a configuration by the paths and
-filesystem metadata of the main file and its includes when loaded. Replacing a
-file or deploying a separate copy gives a fresh cache namespace. The integration
-must distinguish any environment-dependent catalog or access context through the
-canonical root and scope. An unknown scope disables shared content caching.
+Resolver-created profiles always bypass MSC's on-disk content cache, including
+when the resolver returns a profile with ``caching_enabled: true``. Each new
+object read or open goes through the configured providers. Named profiles
+continue to follow their configured content-cache settings.
 
 Inventory-based reads select any replica through the bound client. When syncing
 catalog files to a POSIX directory, keys must map inside the selected destination.

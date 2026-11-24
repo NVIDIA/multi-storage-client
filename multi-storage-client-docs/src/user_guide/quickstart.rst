@@ -160,10 +160,12 @@ file objects. This example reads a NumPy array.
    with client.open("arrays/input.npy", "rb") as stream:
        array = np.load(stream)
 
-For APIs that require a filesystem path, including NumPy memory mapping, use
-``client.download_file(key, local_path)`` to create a copy you control. MSC prevents
-catalog references from exposing a backing file or shared cache path through
-``get_posix_path()``, ``as_posix()``, or ``resolve_filesystem_path()``.
+Opening a remote catalog file again fetches it through the storage provider.
+For objects larger than ``memory_load_limit`` (512 MiB by default), use
+``"rb"`` for seekable range reads. To read a large text file line by line,
+work offline, or use NumPy memory mapping, download a copy with
+``client.download_file(key, local_path)``. Catalog references reject backing-path
+exports through ``get_posix_path()``, ``as_posix()``, and ``resolve_filesystem_path()``.
 
 When both the catalog source and the sync destination use POSIX storage, MSC
 replaces each destination file after the copy succeeds. A failed copy preserves

@@ -398,7 +398,6 @@ class ObjectFile(_ProcessLocalStream, IOBase, IO):
         self._mode = mode
         self._storage_client = storage_client
         self._remote_path = remote_path
-        self._cache_key = remote_path
         self._encoding = encoding
         self._cache_manager = storage_client._cache_manager
         self._memory_load_limit = memory_load_limit
@@ -429,18 +428,12 @@ class ObjectFile(_ProcessLocalStream, IOBase, IO):
                     and self._cache_manager.check_source_version()
                 )
 
-                if self._open_pid is not None and storage_client._metadata_provider is not None:
-                    resolved = storage_client._metadata_provider.realpath(self._remote_path)
-                    if not resolved.exists:
-                        raise FileNotFoundError(self._remote_path)
-                    self._cache_key = resolved.physical_path
-
                 if not need_version_check and self._cache_manager.contains(
-                    self._cache_key, check_source_version=SourceVersionCheckMode.DISABLE
+                    self._remote_path, check_source_version=SourceVersionCheckMode.DISABLE
                 ):
                     # Cache hit with no version check - open directly from cache
                     cached_file = self._cache_manager.open(
-                        self._cache_key,
+                        self._remote_path,
                         mode=self._mode,
                         check_source_version=SourceVersionCheckMode.DISABLE,
                         encoding=self._text_encoding(),
@@ -544,11 +537,11 @@ class ObjectFile(_ProcessLocalStream, IOBase, IO):
                 source_version = None
 
             if self._cache_manager.contains(
-                key=self._cache_key, check_source_version=self._check_source_version, source_version=source_version
+                key=self._remote_path, check_source_version=self._check_source_version, source_version=source_version
             ):
                 # Read from cache
                 file_object = self._cache_manager.open(
-                    self._cache_key,
+                    self._remote_path,
                     self._mode,
                     source_version,
                     self._check_source_version,
@@ -556,10 +549,10 @@ class ObjectFile(_ProcessLocalStream, IOBase, IO):
                 )
             else:
                 # Download file and put it into the cache
-                file_lock = self._cache_manager.acquire_lock(self._cache_key)
+                file_lock = self._cache_manager.acquire_lock(self._remote_path)
                 with file_lock:
                     if not self._cache_manager.contains(
-                        key=self._cache_key,
+                        key=self._remote_path,
                         check_source_version=self._check_source_version,
                         source_version=source_version,
                     ):
@@ -567,12 +560,12 @@ class ObjectFile(_ProcessLocalStream, IOBase, IO):
                         temp_file_path = self._generate_temp_file_path()
                         try:
                             self._storage_client.download_file(self._remote_path, temp_file_path, self._object_metadata)
-                            self._cache_manager.set(self._cache_key, temp_file_path, source_version)
+                            self._cache_manager.set(self._remote_path, temp_file_path, source_version)
                         finally:
                             self._cleanup_temp_file(temp_file_path)
 
                 file_object = self._cache_manager.open(
-                    self._cache_key,
+                    self._remote_path,
                     self._mode,
                     source_version,
                     self._check_source_version,

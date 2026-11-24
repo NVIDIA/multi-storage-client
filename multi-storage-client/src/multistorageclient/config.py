@@ -1423,12 +1423,14 @@ class StorageClientConfig:
         binding_profile: str | None = None,
         route: tuple[str, ...] = (),
     ) -> "StorageClientConfig":
-        autocommit = config_dict["profiles"][profile].get("autocommit", {})
+        profiles = config_dict["profiles"]
+        autocommit = profiles[profile].get("autocommit", {})
         if autocommit.get("at_exit") or autocommit.get("interval_minutes"):
             raise ValueError("Metadata autocommit is not supported for a read-only reference.")
-        # A deployment replica's ordinary cache namespace can span multiple bindings.
-        if access_scope is None or route:
-            config_dict = {k: v for k, v in config_dict.items() if k != "cache"}
+        # A persistent cache hit could bypass a bound provider's revocation check.
+        bound_profile = {**profiles[profile], "caching_enabled": False}
+        config_dict = {**config_dict, "profiles": {**profiles, profile: bound_profile}}
+        config_dict.pop("cache", None)
         config = StorageClientConfig.from_dict(
             config_dict, profile, skip_validation=True, telemetry_provider=telemetry_provider
         )
@@ -1442,8 +1444,6 @@ class StorageClientConfig:
         self.access_scope = scope
         self._reference_pid = os.getpid()
         self._reference_route = route
-        if self.cache_manager is not None:
-            self.cache_manager._opaque_keys = True
         self.replicas = [replace(replica, read_only=True) for replica in self.replicas]
         for name, child in (self.child_configs or {}).items():
             child._set_reference(identity, root, scope, (*route, name))
