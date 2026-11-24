@@ -49,17 +49,17 @@ struct Index {
 
 #[derive(Deserialize)]
 struct Part {
-    path: ObjectPath,
+    path: String,
 }
 
 #[derive(Deserialize)]
 struct Row {
-    key: ObjectPath,
+    key: String,
     size_bytes: u64,
     last_modified: DateTime<Utc>,
     #[serde(rename = "type", default)]
     kind: ObjectKind,
-    physical_path: Option<ObjectPath>,
+    physical_path: Option<String>,
     symlink_target: Option<String>,
     etag: Option<String>,
     content_type: Option<String>,
@@ -72,30 +72,41 @@ struct Record {
     physical_path: Option<ObjectPath>,
 }
 
-impl From<Row> for Record {
-    fn from(row: Row) -> Self {
-        let mut metadata = ObjectMetadata::file(row.key, row.size_bytes);
-        metadata.kind = if row.symlink_target.is_some() {
+impl Row {
+    fn into_record(self) -> Result<Record> {
+        let kind = if self.symlink_target.is_some() {
             ObjectKind::Symlink
         } else {
-            row.kind
+            self.kind
         };
-        metadata.last_modified = Some(row.last_modified);
-        metadata.symlink_target = row.symlink_target;
-        metadata.etag = row.etag;
-        metadata.attributes = row.metadata.unwrap_or_default();
+        let parse_key = |raw: &str| {
+            let raw = if kind == ObjectKind::Directory {
+                raw.strip_suffix('/').unwrap_or(raw)
+            } else {
+                raw
+            };
+            manifest_key(raw)
+        };
+        let key = parse_key(&self.key)?;
+        let physical_path = self.physical_path.as_deref().map(parse_key).transpose()?;
+        let mut metadata = ObjectMetadata::file(key, self.size_bytes);
+        metadata.kind = kind;
+        metadata.last_modified = Some(self.last_modified);
+        metadata.symlink_target = self.symlink_target;
+        metadata.etag = self.etag;
+        metadata.attributes = self.metadata.unwrap_or_default();
         for (name, value) in [
-            ("content_type", row.content_type),
-            ("storage_class", row.storage_class),
+            ("content_type", self.content_type),
+            ("storage_class", self.storage_class),
         ] {
             if let Some(value) = value {
                 metadata.provider_fields.insert(name.into(), value);
             }
         }
-        Self {
+        Ok(Record {
             metadata,
-            physical_path: row.physical_path,
-        }
+            physical_path,
+        })
     }
 }
 
@@ -112,6 +123,7 @@ impl ManifestMetadataProvider {
     /// Load a concrete JSON index, a directory containing the index, or the newest
     /// snapshot below the directory's `.msc_manifests` tree. An explicit index pins
     /// the snapshot. Part paths are relative to the index's parent directory.
+    /// Part paths and file keys must be canonical to preserve object identity.
     ///
     /// # Errors
     /// Returns provider errors, `ManifestNotFound` on empty discovery, `Unsupported`
@@ -130,17 +142,16 @@ impl ManifestMetadataProvider {
         }
         let mut records = BTreeMap::new();
         for part in schema.parts {
-            if part.path.is_root() {
-                return Err(invalid(&index, "empty manifest part path"));
-            }
-            if extension(&part.path)
+            let part_path = manifest_key(&part.path)
+                .map_err(|_| invalid(&index, "invalid or noncanonical manifest part path"))?;
+            if extension(&part_path)
                 .or(schema.format.as_deref())
                 .unwrap_or("jsonl")
                 != "jsonl"
             {
                 return Err(MscError::unsupported("manifest part format"));
             }
-            let path = index.resolve_link(part.path.as_str())?;
+            let path = index.resolve_link(part_path.as_str())?;
             load_part(storage, &path, &mut records).await?;
         }
         Ok(Self {
@@ -192,6 +203,17 @@ fn extension(path: &ObjectPath) -> Option<&str> {
     std::path::Path::new(path.as_str()).extension()?.to_str()
 }
 
+fn manifest_key(raw: &str) -> Result<ObjectPath> {
+    let key = ObjectPath::new(raw)?;
+    if key.is_root() || key.as_str() != raw {
+        return Err(MscError::new(
+            ErrorKind::InvalidPath,
+            "empty or noncanonical manifest key",
+        ));
+    }
+    Ok(key)
+}
+
 async fn load_part(
     storage: &BaseStorageProvider<dyn StorageBackend>,
     part: &ObjectPath,
@@ -202,7 +224,8 @@ async fn load_part(
     let lines = FramedRead::new(reader, LinesCodec::new_with_max_length(MAX_RECORD_BYTES));
     let mut lines = lines.enumerate();
     while let Some((number, line)) = lines.next().await {
-        let invalid_line = |message| invalid(part, &format!("{message} at line {}", number + 1));
+        let invalid_line =
+            |message: &str| invalid(part, &format!("{message} at line {}", number + 1));
         let line = line.map_err(|error| match error {
             LinesCodecError::Io(error) => match error.downcast::<MscError>() {
                 Ok(error) => error,
@@ -214,10 +237,13 @@ async fn load_part(
             continue;
         }
         let row: Row = serde_json::from_str(&line).map_err(|_| invalid_line("invalid record"))?;
-        if row.key.is_root() || row.physical_path.as_ref().is_some_and(ObjectPath::is_root) {
-            return Err(invalid_line("empty object key"));
-        }
-        if records.insert(row.key.clone(), row.into()).is_some() {
+        let record = row
+            .into_record()
+            .map_err(|error| invalid_line(&error.message))?;
+        if records
+            .insert(record.metadata.key.clone(), record)
+            .is_some()
+        {
             return Err(invalid_line("duplicate key"));
         }
     }
@@ -257,6 +283,23 @@ impl ManifestMetadataProvider {
         }
         directories
     }
+
+    fn directory_metadata(
+        &self,
+        key: ObjectPath,
+        modified: Option<chrono::DateTime<chrono::Utc>>,
+        filter: Option<&AttributeFilter>,
+    ) -> ObjectMetadata {
+        if let Some(record) = self.records.get(&key)
+            && record.metadata.kind == ObjectKind::Directory
+            && matches(&record.metadata, filter)
+        {
+            return record.metadata.clone();
+        }
+        let mut directory = ObjectMetadata::directory(key);
+        directory.last_modified = modified;
+        directory
+    }
 }
 
 fn matches(metadata: &ObjectMetadata, filter: Option<&AttributeFilter>) -> bool {
@@ -288,24 +331,12 @@ impl MetadataProvider for ManifestMetadataProvider {
             }
 
             let prefix = directory_prefix(&options.prefix);
-            if options.include_directories {
-                for (key, modified) in snapshot.directory_times(&prefix, &options, filter.as_ref()) {
-                    let key = ObjectPath::new(key)?;
-                    if !options.contains(&key) {
-                        continue;
-                    }
-                    if let Some(record) = snapshot.records.get(&key)
-                        && record.metadata.kind == ObjectKind::Directory
-                        && matches(&record.metadata, filter.as_ref())
-                    {
-                        yield record.metadata.clone();
-                    } else {
-                        let mut directory = ObjectMetadata::directory(key);
-                        directory.last_modified = modified;
-                        yield directory;
-                    }
-                }
-            }
+            let directories = if options.include_directories {
+                snapshot.directory_times(&prefix, &options, filter.as_ref())
+            } else {
+                BTreeMap::new()
+            };
+            let mut directories = directories.into_iter().peekable();
             let start = match options.start_after.as_ref() {
                 Some(start) if start.as_str() >= prefix.as_str() => Excluded(start.as_str()),
                 _ => Included(prefix.as_str()),
@@ -319,7 +350,21 @@ impl MetadataProvider for ManifestMetadataProvider {
                     && (options.recursive || !relative.contains('/'))
                     && matches(&record.metadata, filter.as_ref())
                 {
+                    while let Some((directory, modified)) =
+                        directories.next_if(|(directory, _)| *directory <= key.as_str())
+                    {
+                        let directory = ObjectPath::new(directory)?;
+                        if options.contains(&directory) {
+                            yield snapshot.directory_metadata(directory, modified, filter.as_ref());
+                        }
+                    }
                     yield record.metadata.clone();
+                }
+            }
+            for (directory, modified) in directories {
+                let directory = ObjectPath::new(directory)?;
+                if options.contains(&directory) {
+                    yield snapshot.directory_metadata(directory, modified, filter.as_ref());
                 }
             }
         }))
@@ -327,6 +372,9 @@ impl MetadataProvider for ManifestMetadataProvider {
 
     async fn get_object_metadata(&self, path: &str, _: bool) -> Result<ObjectMetadata> {
         let key = ObjectPath::new(if path == "/" { "" } else { path })?;
+        if key.is_root() {
+            return Ok(ObjectMetadata::directory(key));
+        }
         let record = self.records.get(&key);
         if let Some(record) = record
             && (!path.ends_with('/') || record.metadata.kind == ObjectKind::Directory)
@@ -375,7 +423,11 @@ impl MetadataProvider for ManifestMetadataProvider {
         let mut key = ObjectPath::new(logical_path)?;
         let mut visited = Vec::new();
         for hop in 0..=MAX_SYMLINK_HOPS {
-            let Some(record) = self.records.get(&key) else {
+            let Some(record) = self
+                .records
+                .get(&key)
+                .filter(|record| record.metadata.kind != ObjectKind::Directory)
+            else {
                 return Ok(ResolvedPath {
                     physical_path: key,
                     state: ResolvedPathState::Untracked,

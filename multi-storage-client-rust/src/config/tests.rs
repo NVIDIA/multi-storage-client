@@ -653,7 +653,6 @@ fn deferred_configuration_is_validated_only_when_profiles_are_selected() {
             .unwrap();
     }
     for field in [
-        "metadata_provider",
         "provider_bundle",
         "storage_provider_profiles",
         "replicas",
@@ -682,6 +681,30 @@ fn deferred_configuration_is_validated_only_when_profiles_are_selected() {
             .unwrap_err();
         assert_eq!(error.field_path, "/profiles/data/storage_provider/type");
     }
+}
+
+#[test]
+fn metadata_provider_shares_the_provider_configuration_shape() {
+    let mut document = json!({"profiles": {"data": profile("bucket")}});
+    for disabled in [Value::Null, Value::Bool(false)] {
+        document["profiles"]["data"]["metadata_provider"] = disabled;
+        let parsed = config(&document).unwrap();
+        assert!(parsed.profile("data").unwrap().metadata_provider.is_none());
+    }
+    document["profiles"]["data"]["metadata_provider"] = json!({"type": "report_catalog"});
+    let parsed = config(&document).unwrap();
+    let provider = parsed
+        .profile("data")
+        .unwrap()
+        .metadata_provider
+        .as_ref()
+        .unwrap();
+    assert_eq!(provider.provider_type, "report_catalog");
+    assert!(provider.options.is_empty());
+
+    document["profiles"]["data"]["metadata_provider"]["options"] = json!(["invalid"]);
+    let error = config(&document).err().unwrap();
+    assert_eq!(error.field_path, "/profiles/data/metadata_provider/options");
 }
 
 #[tokio::test]

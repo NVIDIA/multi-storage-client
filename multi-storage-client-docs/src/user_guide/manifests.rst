@@ -40,16 +40,8 @@ The parts manifests can be stored in either:
 .. code-block:: json
    :caption: Example Parts Manifest (JSONL)
 
-   {
-     "key": "train/cat-pic001.jpg",
-     "size_bytes": 1048576,
-     "last_modified": "2024-09-05T15:45:00Z"
-   }
-   {
-     "key": "train/cat-pic002.jpg",
-     "size_bytes": 2097152,
-     "last_modified": "2024-09-05T15:46:00Z"
-   }
+   {"key":"train/cat-pic001.jpg","size_bytes":1048576,"last_modified":"2024-09-05T15:45:00Z"}
+   {"key":"train/cat-pic002.jpg","size_bytes":2097152,"last_modified":"2024-09-05T15:46:00Z"}
 
 Manifest Storage Organization
 =============================
@@ -182,9 +174,16 @@ The index can use version ``"1"`` or ``"1.0"``. Parts use JSONL and resolve rela
 to the index. Each part is processed one record at a time, with a 1 MiB limit per
 record. The complete logical index stays in memory.
 
-Build a physical client for the manifest location and attach the loaded snapshot
-to the data client. The manifest profile can use S3 or POSIX, and it can differ
-from the data profile.
+Part paths, file keys, and physical file paths must be relative and canonical.
+The reader rejects repeated separators and trailing slashes on files because
+these can identify distinct S3 objects. Explicit directory records can end in a
+single slash and are available through metadata and listing operations.
+
+The earlier YAML examples use Python MSC's built-in ``type: manifest``. In Rust,
+YAML metadata types select application-registered factories. An instance supplied
+with ``with_metadata_provider`` takes precedence. This example loads the snapshot
+through the ``manifests`` profile, which uses S3 or POSIX with no
+``metadata_provider`` block, then attaches the snapshot to the ``data`` profile.
 
 .. code-block:: rust
 

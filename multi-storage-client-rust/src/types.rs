@@ -295,6 +295,12 @@ pub struct DeleteOptions {
     pub version: Option<SourceVersion>,
 }
 
+impl DeleteOptions {
+    pub(crate) fn is_unconditional(&self) -> bool {
+        self.if_match.is_none() && self.if_none_match.is_none() && self.version.is_none()
+    }
+}
+
 /// Source read conditions and destination write settings for a copy.
 #[derive(Clone, Debug, Default)]
 pub struct CopyOptions {

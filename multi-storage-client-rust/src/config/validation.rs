@@ -72,8 +72,15 @@ fn validate_profile_fields(document: &Value) -> Result<(), ConfigError> {
 }
 
 fn validate_provider_fields(profile: &Value, path: &str) -> Result<(), ConfigError> {
-    for kind in ["storage_provider", "credentials_provider"] {
+    for kind in [
+        "storage_provider",
+        "credentials_provider",
+        "metadata_provider",
+    ] {
         if let Some(provider) = profile.get(kind).filter(|provider| !provider.is_null()) {
+            if kind == "metadata_provider" && provider == &Value::Bool(false) {
+                continue;
+            }
             let path = format!("{path}/{kind}");
             reject_unknown(provider, &["type", "options"], &path)?;
             if provider

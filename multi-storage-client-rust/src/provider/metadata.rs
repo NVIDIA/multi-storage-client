@@ -68,7 +68,37 @@ pub trait MetadataProvider: Send + Sync {
     /// Resolve a logical key in committed metadata, following logical symlinks.
     async fn realpath(&self, logical_path: &str) -> Result<ResolvedPath>;
 
+    /// Resolve copy bytes and inherited attributes from one committed catalog view.
+    ///
+    /// Return metadata for the resolved file with the logical source entry's
+    /// attributes and the physical source version if the key can be overwritten.
+    /// Without a version the key must identify immutable bytes for the copy.
+    async fn resolve_copy_source(&self, _path: &str) -> Result<(ResolvedPath, ObjectMetadata)> {
+        Err(MscError::unsupported("atomic logical copy source lookup"))
+    }
+
+    /// Plan deletion from one committed catalog view. Return `None` to retain
+    /// physical bytes and remove only the logical entry.
+    ///
+    /// Return a physical target only for an exclusively owned regular file.
+    /// The provider must ensure the target cannot be reassigned, overwritten,
+    /// or shared while the delete and subsequent metadata staging are in flight.
+    async fn resolve_delete_target(&self, path: &str) -> Result<Option<ResolvedPath>> {
+        let entry = self.get_object_metadata(path, false).await?;
+        if entry.kind == ObjectKind::Directory {
+            return Err(MscError::unsupported("logical directory deletion"));
+        }
+        if self.should_use_soft_delete() || entry.kind == ObjectKind::Symlink {
+            return Ok(None);
+        }
+        Err(MscError::unsupported(
+            "hard delete without exclusive catalog ownership",
+        ))
+    }
+
     /// Allocate a physical key for a new object or overwrite.
+    /// Independently built clients sharing a catalog must coordinate writes
+    /// through the provider, including allocation and staging.
     async fn generate_physical_path(
         &self,
         _logical_path: &str,

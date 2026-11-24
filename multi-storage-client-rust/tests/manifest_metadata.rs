@@ -16,19 +16,19 @@
 //! Python manifest compatibility and logical client integration.
 #![cfg(unix)]
 
+#[path = "common/metadata_catalog.rs"]
+mod metadata_catalog;
+
 use futures::TryStreamExt;
+use metadata_catalog::WritableMetadata;
 use multi_storage_client::{
-    CopyOptions, DeleteOptions, ErrorKind, InfoOptions, ListOptions, ManifestMetadataProvider,
-    MetadataProvider, MetadataStream, MscError, ObjectKind, ObjectMetadata, ObjectPath,
-    ReadOptions, ResolvedPath, ResolvedPathState, Result, StorageClient, StorageClientBuilder,
-    WriteOptions,
+    ConfigLoader, CopyOptions, DeleteOptions, ErrorKind, InfoOptions, ListOptions,
+    ManifestMetadataProvider, MetadataProvider, MetadataProviderRegistry, MscError, ObjectKind,
+    ObjectMetadata, ObjectPath, ReadOptions, ResolvedConfig, ResolvedPathState, StorageClient,
+    StorageClientBuilder, WriteOptions,
     provider::posix::{PosixOptions, PosixProvider},
 };
-use std::{
-    collections::BTreeMap,
-    path::Path,
-    sync::{Arc, Mutex},
-};
+use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 const INDEX: &str = "msc_manifest_index.json";
 const PART: &str = "parts/files.jsonl";
@@ -74,6 +74,39 @@ async fn keys(provider: &dyn MetadataProvider, options: ListOptions) -> Vec<Obje
         .try_collect()
         .await
         .unwrap()
+}
+
+#[tokio::test]
+async fn empty_manifest_exposes_both_root_spellings() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join(INDEX), r#"{"version":"1","parts":[]}"#).unwrap();
+    let provider = Arc::new(
+        ManifestMetadataProvider::load(&client(root.path()).await, INDEX)
+            .await
+            .unwrap(),
+    );
+    let mapped = builder(root.path())
+        .with_metadata_provider(provider.clone())
+        .build()
+        .await
+        .unwrap();
+    for path in ["", "/"] {
+        for entry in [
+            provider.get_object_metadata(path, false).await.unwrap(),
+            mapped.info(path, InfoOptions::default()).await.unwrap(),
+        ] {
+            assert_eq!(entry.kind, ObjectKind::Directory);
+            assert!(entry.key.is_root());
+        }
+    }
+    assert_eq!(
+        provider
+            .get_object_metadata("absent", false)
+            .await
+            .unwrap_err()
+            .kind,
+        ErrorKind::NotFound
+    );
 }
 
 #[tokio::test]
@@ -169,6 +202,10 @@ async fn python_manifest_discovery_listing_glob_and_logical_storage_reads() {
         manifest.realpath("missing").await.unwrap().state,
         ResolvedPathState::Untracked
     );
+    assert_eq!(
+        manifest.realpath("docs/leaf/empty/").await.unwrap().state,
+        ResolvedPathState::Untracked
+    );
 
     let shallow = ListOptions {
         prefix: key("docs"),
@@ -179,6 +216,27 @@ async fn python_manifest_discovery_listing_glob_and_logical_storage_reads() {
     assert_eq!(
         keys(manifest.as_ref(), shallow.clone()).await,
         [key("docs/leaf"), key("docs/link"), key("docs/é.txt")]
+    );
+    assert_eq!(
+        keys(
+            manifest.as_ref(),
+            ListOptions {
+                include_directories: true,
+                ..Default::default()
+            }
+        )
+        .await,
+        [
+            "docs",
+            "docs-copy",
+            "docs-copy/other",
+            "docs/leaf",
+            "docs/leaf/a.txt",
+            "docs/leaf/empty",
+            "docs/link",
+            "docs/é.txt"
+        ]
+        .map(key)
     );
     assert_eq!(
         keys(
@@ -420,105 +478,48 @@ async fn manifest_rejects_invalid_snapshots_and_bounds_symlink_resolution() {
     );
 }
 
-#[derive(Default)]
-struct WritableMetadata {
-    state: Mutex<WritableState>,
-}
-
-#[derive(Default)]
-struct WritableState {
-    committed: BTreeMap<String, ObjectMetadata>,
-    pending: BTreeMap<String, Option<ObjectMetadata>>,
-}
-
-#[async_trait::async_trait]
-impl MetadataProvider for WritableMetadata {
-    async fn list_objects(&self, _: ListOptions) -> Result<MetadataStream> {
-        Ok(Box::pin(futures::stream::empty()))
-    }
-
-    async fn get_object_metadata(
-        &self,
-        path: &str,
-        include_pending: bool,
-    ) -> Result<ObjectMetadata> {
-        let state = self.state.lock().unwrap();
-        let entry = match state.pending.get(path).filter(|_| include_pending) {
-            Some(entry) => entry.as_ref(),
-            None => state.committed.get(path),
+#[tokio::test]
+async fn manifest_rejects_aliased_file_keys_physical_paths_and_part_paths() {
+    let directory = tempfile::tempdir().unwrap();
+    let storage = client(directory.path()).await;
+    for (name, logical, physical) in [
+        ("logical", "a//b.txt", None),
+        ("physical", "file.txt", Some("a//b.txt")),
+        ("trailing-slash", "a/", None),
+    ] {
+        let row = serde_json::json!({
+            "key": logical,
+            "physical_path": physical,
+            "size_bytes": 1,
+            "last_modified": "2026-10-01T00:00:00Z",
+        });
+        snapshot(
+            directory.path(),
+            name,
+            r#"{"version":"1","parts":[{"path":"parts/files.jsonl"}]}"#,
+            &row.to_string(),
+        );
+        let Err(error) = ManifestMetadataProvider::load(&storage, name).await else {
+            panic!("accepted aliased {name}");
         };
-        let mut entry = entry
-            .cloned()
-            .ok_or_else(|| MscError::new(ErrorKind::NotFound, "test key missing"))?;
-        entry.key = key(path);
-        Ok(entry)
+        assert_eq!(error.kind, ErrorKind::Integrity);
+        assert!(error.message.contains("noncanonical") && error.message.contains("line 1"));
     }
 
-    async fn glob(&self, _: &str, _: Option<&str>) -> Result<Vec<ObjectPath>> {
-        Ok(Vec::new())
-    }
-
-    async fn realpath(&self, path: &str) -> Result<ResolvedPath> {
-        let state = self.state.lock().unwrap();
-        let mut path = key(path);
-        if let Some(link) = state
-            .committed
-            .get(path.as_str())
-            .and_then(|entry| entry.symlink_target.as_deref())
-        {
-            path = path.resolve_link(link)?;
-        }
-        Ok(match state.committed.get(path.as_str()) {
-            Some(entry) => ResolvedPath {
-                physical_path: entry.key.clone(),
-                state: ResolvedPathState::Exists,
-                profile: None,
-            },
-            None => ResolvedPath {
-                physical_path: path,
-                state: ResolvedPathState::Untracked,
-                profile: None,
-            },
-        })
-    }
-
-    async fn generate_physical_path(&self, path: &str, _: bool) -> Result<ResolvedPath> {
-        Ok(ResolvedPath {
-            physical_path: key(&format!("physical/{path}")),
-            state: ResolvedPathState::Untracked,
-            profile: None,
-        })
-    }
-
-    async fn add_file(&self, path: &str, metadata: ObjectMetadata) -> Result<()> {
-        self.state
-            .lock()
-            .unwrap()
-            .pending
-            .insert(path.into(), Some(metadata));
-        Ok(())
-    }
-
-    async fn remove_file(&self, path: &str) -> Result<()> {
-        self.state.lock().unwrap().pending.insert(path.into(), None);
-        Ok(())
-    }
-
-    async fn commit_updates(&self) -> Result<()> {
-        let mut state = self.state.lock().unwrap();
-        for (path, entry) in std::mem::take(&mut state.pending) {
-            if let Some(entry) = entry {
-                state.committed.insert(path, entry);
-            } else {
-                state.committed.remove(&path);
-            }
-        }
-        Ok(())
-    }
-
-    fn is_writable(&self) -> bool {
-        true
-    }
+    snapshot(
+        directory.path(),
+        "aliased-part",
+        r#"{"version":"1","parts":[{"path":"parts//files.jsonl"}]}"#,
+        ROWS,
+    );
+    let Err(error) = ManifestMetadataProvider::load(&storage, "aliased-part").await else {
+        panic!("accepted an aliased part reference");
+    };
+    assert_eq!(error.kind, ErrorKind::Integrity);
+    assert_eq!(
+        error.key.as_deref(),
+        Some("aliased-part/msc_manifest_index.json")
+    );
 }
 
 #[tokio::test]
@@ -604,4 +605,424 @@ async fn custom_writable_metadata_stages_mutations_until_commit() {
     assert!(!root.path().join("physical/copied").exists());
     storage.commit_updates().await.unwrap();
     assert!(!storage.is_file("linked").await.unwrap());
+}
+
+#[tokio::test]
+async fn mapped_writes_protect_pending_objects_and_dangling_symlinks() {
+    let root = tempfile::tempdir().unwrap();
+    let mapped = builder(root.path())
+        .with_metadata_provider(Arc::new(WritableMetadata::default()))
+        .build()
+        .await
+        .unwrap();
+    let clone = mapped.clone();
+    let bytes = bytes::Bytes::from_static(b"first");
+    let (first, second) = tokio::join!(
+        mapped.write("new/key", bytes.clone(), WriteOptions::default()),
+        clone.write("new//key", bytes, WriteOptions::default()),
+    );
+    assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+    assert_eq!(
+        first.err().or_else(|| second.err()).unwrap().kind,
+        ErrorKind::AlreadyExists
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("physical/new/key")).unwrap(),
+        b"first"
+    );
+
+    mapped.make_symlink("dangling", "missing").await.unwrap();
+    mapped.commit_updates().await.unwrap();
+    assert!(!mapped.is_file("dangling").await.unwrap());
+    assert_eq!(
+        mapped
+            .write("dangling", bytes::Bytes::new(), WriteOptions::default())
+            .await
+            .unwrap_err()
+            .kind,
+        ErrorKind::AlreadyExists
+    );
+}
+
+#[tokio::test]
+async fn mapped_symlink_to_a_directory_is_not_a_file() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("physical-dir")).unwrap();
+    let catalog = WritableMetadata::with_entries(
+        [("dir", ObjectMetadata::directory(key("physical-dir")))],
+        None,
+    );
+    let mapped = builder(root.path())
+        .with_metadata_provider(Arc::new(catalog))
+        .build()
+        .await
+        .unwrap();
+    mapped.make_symlink("link", "dir").await.unwrap();
+    mapped.commit_updates().await.unwrap();
+    assert!(!mapped.is_file("link").await.unwrap());
+}
+
+#[tokio::test]
+async fn mapped_destinations_reject_conditions_before_publishing() {
+    let root = tempfile::tempdir().unwrap();
+    let mapped = builder(root.path())
+        .with_metadata_provider(Arc::new(WritableMetadata::default()))
+        .build()
+        .await
+        .unwrap();
+    let bytes = bytes::Bytes::from_static(b"data");
+    mapped
+        .write("source", bytes.clone(), WriteOptions::default())
+        .await
+        .unwrap();
+    mapped.commit_updates().await.unwrap();
+    let conditional = WriteOptions {
+        if_none_match: Some("*".into()),
+        ..WriteOptions::default()
+    };
+    let source = root.path().join("physical/source");
+    for error in [
+        mapped
+            .write("write", bytes, conditional.clone())
+            .await
+            .unwrap_err(),
+        mapped
+            .upload_file("upload", source, conditional.clone())
+            .await
+            .unwrap_err(),
+        mapped
+            .copy(
+                "source",
+                "copy",
+                CopyOptions {
+                    destination: conditional,
+                    ..CopyOptions::default()
+                },
+            )
+            .await
+            .unwrap_err(),
+    ] {
+        assert_eq!(error.kind, ErrorKind::Unsupported);
+        assert!(
+            error
+                .to_string()
+                .contains("conditional logical destination")
+        );
+    }
+    assert_eq!(
+        std::fs::read_dir(root.path().join("physical"))
+            .unwrap()
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn mapped_delete_retains_shared_bytes_and_preserves_missing_match_errors() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("shared"), b"data").unwrap();
+    let catalog = WritableMetadata::with_entries(
+        [
+            ("alias", ObjectMetadata::file(key("shared"), 4)),
+            ("other", ObjectMetadata::file(key("shared"), 4)),
+            ("missing", ObjectMetadata::file(key("absent"), 4)),
+        ],
+        None,
+    );
+    let mapped = builder(root.path())
+        .with_metadata_provider(Arc::new(catalog))
+        .build()
+        .await
+        .unwrap();
+    mapped
+        .delete("alias", false, DeleteOptions::default())
+        .await
+        .unwrap();
+    let conditional = DeleteOptions {
+        if_match: Some("*".into()),
+        ..DeleteOptions::default()
+    };
+    assert_eq!(
+        mapped
+            .delete("missing", false, conditional)
+            .await
+            .unwrap_err()
+            .kind,
+        ErrorKind::NotFound
+    );
+    mapped.commit_updates().await.unwrap();
+    assert_eq!(
+        mapped.read("other", ReadOptions::default()).await.unwrap(),
+        "data"
+    );
+    assert!(!mapped.is_file("alias").await.unwrap());
+    assert!(mapped.info("missing", InfoOptions::default()).await.is_ok());
+    mapped
+        .delete("missing", false, DeleteOptions::default())
+        .await
+        .unwrap();
+    mapped.commit_updates().await.unwrap();
+    assert!(!mapped.is_file("missing").await.unwrap());
+}
+
+#[tokio::test]
+async fn mapped_upload_and_copy_keep_user_attributes_in_logical_metadata() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    std::fs::write(&source, b"data").unwrap();
+    let physical = client(root.path()).await;
+    let mapped = builder(root.path())
+        .with_metadata_provider(Arc::new(WritableMetadata::default()))
+        .build()
+        .await
+        .unwrap();
+    let original = BTreeMap::from([("scores".into(), serde_json::json!([1, 2]))]);
+    mapped
+        .upload_file(
+            "uploaded",
+            &source,
+            WriteOptions {
+                attributes: original.clone(),
+                ..WriteOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    mapped.commit_updates().await.unwrap();
+
+    mapped
+        .copy("uploaded", "inherited", CopyOptions::default())
+        .await
+        .unwrap();
+    let replacement = BTreeMap::from([("reviewed".into(), serde_json::json!(true))]);
+    mapped
+        .copy(
+            "uploaded",
+            "replaced",
+            CopyOptions {
+                destination: WriteOptions {
+                    attributes: replacement.clone(),
+                    ..WriteOptions::default()
+                },
+                ..CopyOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    mapped.commit_updates().await.unwrap();
+
+    for (path, expected) in [
+        ("uploaded", &original),
+        ("inherited", &original),
+        ("replaced", &replacement),
+    ] {
+        let logical = mapped.info(path, InfoOptions::default()).await.unwrap();
+        assert_eq!(&logical.attributes, expected);
+        let stored = physical
+            .info(format!("physical/{path}"), InfoOptions::default())
+            .await
+            .unwrap();
+        assert!(stored.attributes.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn inherited_copy_rejects_changed_physical_generation() {
+    let root = tempfile::tempdir().unwrap();
+    let mapped = builder(root.path())
+        .with_metadata_provider(Arc::new(WritableMetadata::default()))
+        .build()
+        .await
+        .unwrap();
+    mapped
+        .write(
+            "source",
+            bytes::Bytes::from_static(b"old"),
+            WriteOptions::default(),
+        )
+        .await
+        .unwrap();
+    mapped.commit_updates().await.unwrap();
+    client(root.path())
+        .await
+        .write(
+            "physical/source",
+            bytes::Bytes::from_static(b"new bytes"),
+            WriteOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        mapped
+            .copy("source", "inherited", CopyOptions::default())
+            .await
+            .unwrap_err()
+            .kind,
+        ErrorKind::PreconditionFailed
+    );
+    assert!(!root.path().join("physical/inherited").exists());
+    mapped
+        .copy(
+            "source",
+            "explicit",
+            CopyOptions {
+                destination: WriteOptions {
+                    attributes: BTreeMap::from([("reviewed".into(), serde_json::json!(true))]),
+                    ..WriteOptions::default()
+                },
+                ..CopyOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(root.path().join("physical/explicit")).unwrap(),
+        b"new bytes"
+    );
+}
+
+fn catalog_config(root: &Path) -> ResolvedConfig {
+    let path = root.join("msc_config.yaml");
+    std::fs::write(
+        &path,
+        "\
+profiles:
+  reports:
+    storage_provider:
+      type: file
+      options:
+        base_path: ${STORAGE_ROOT}
+    metadata_provider:
+      type: report_catalog
+      options:
+        endpoint: https://catalog.example.com
+        routing:
+          prefix: physical
+          revisions: [1, 2]
+",
+    )
+    .unwrap();
+    ConfigLoader::new()
+        .with_explicit_paths([path])
+        .with_environment(BTreeMap::from([(
+            "STORAGE_ROOT".into(),
+            root.to_str().unwrap().into(),
+        )]))
+        .load()
+        .unwrap()
+}
+
+fn catalog_provider(physical_path: &str) -> Arc<dyn MetadataProvider> {
+    Arc::new(WritableMetadata::with_entries(
+        [("report.csv", ObjectMetadata::file(key(physical_path), 6))],
+        None,
+    ))
+}
+
+#[tokio::test]
+async fn yaml_metadata_factory_receives_options_and_maps_reads() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("physical")).unwrap();
+    std::fs::write(root.path().join("physical/report.csv"), "report").unwrap();
+    let mut registry = MetadataProviderRegistry::new();
+    registry
+        .register(
+            "report_catalog",
+            Arc::new(|options| {
+                Box::pin(async move {
+                    assert_eq!(options["endpoint"], "https://catalog.example.com");
+                    let routing = &options["routing"];
+                    assert_eq!(routing["revisions"], serde_json::json!([1, 2]));
+                    let prefix = routing["prefix"].as_str().unwrap();
+                    Ok(catalog_provider(&format!("{prefix}/report.csv")))
+                })
+            }),
+        )
+        .unwrap();
+    assert!(registry.contains("report_catalog"));
+    let duplicate = registry
+        .register("report_catalog", Arc::new(|_| panic!("replaced factory")))
+        .unwrap_err();
+    assert_eq!(duplicate.kind, ErrorKind::InvalidConfig);
+    assert!(
+        duplicate.message.contains("report_catalog")
+            && duplicate.message.contains("already registered")
+    );
+
+    let client = StorageClient::builder(catalog_config(root.path()), "reports")
+        .with_metadata_provider_registry(registry)
+        .build()
+        .await
+        .unwrap();
+    let report = client
+        .read("report.csv", ReadOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(report, "report");
+}
+
+#[tokio::test]
+async fn yaml_metadata_factory_reports_unregistered_tags_and_factory_errors() {
+    let root = tempfile::tempdir().unwrap();
+    let config = catalog_config(root.path());
+    let error = StorageClient::builder(config.clone(), "reports")
+        .build()
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.kind, ErrorKind::InvalidConfig);
+    assert!(
+        error.message.contains("unknown metadata_provider.type")
+            && error.message.contains("reports")
+    );
+
+    let mut registry = MetadataProviderRegistry::new();
+    registry
+        .register(
+            "report_catalog",
+            Arc::new(|_| {
+                Box::pin(async { Err(MscError::new(ErrorKind::Unavailable, "catalog is offline")) })
+            }),
+        )
+        .unwrap();
+    let error = StorageClient::builder(config, "reports")
+        .with_metadata_provider_registry(registry)
+        .build()
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.kind, ErrorKind::Unavailable);
+    assert!(error.retryable);
+    assert!(
+        error.message.contains("report_catalog") && error.message.contains("catalog is offline")
+    );
+}
+
+#[tokio::test]
+async fn explicit_metadata_provider_skips_factory_selection() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("injected.csv"), "report").unwrap();
+    let config = catalog_config(root.path());
+    let mut registered = MetadataProviderRegistry::new();
+    registered
+        .register(
+            "report_catalog",
+            Arc::new(|_| panic!("factory called despite override")),
+        )
+        .unwrap();
+    for registry in [MetadataProviderRegistry::new(), registered] {
+        let client = StorageClient::builder(config.clone(), "reports")
+            .with_metadata_provider(catalog_provider("injected.csv"))
+            .with_metadata_provider_registry(registry)
+            .build()
+            .await
+            .unwrap();
+        assert_eq!(
+            client
+                .read("report.csv", ReadOptions::default())
+                .await
+                .unwrap(),
+            "report"
+        );
+    }
 }

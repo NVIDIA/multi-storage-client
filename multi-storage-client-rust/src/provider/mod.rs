@@ -36,7 +36,9 @@ pub use base::BaseStorageProvider;
 pub(crate) use base::DEFAULT_MEMORY_LIMIT;
 #[cfg(feature = "s3")]
 pub(crate) use base::current_provider_retry_policy;
-pub use registry::{ProviderFactory, ProviderRegistry};
+pub use registry::{
+    MetadataProviderFactory, MetadataProviderRegistry, ProviderFactory, ProviderRegistry,
+};
 pub use traits::StorageProvider;
 
 pub(crate) use metadata::resolve_metadata;

@@ -347,3 +347,93 @@ directories, because older releases cannot read the new state format.
 
 Automatic sync excludes reserved staging paths; explicit ``source_files`` can
 select them for copying. See :doc:`/user_guide/cli` for the sync exclusion rules.
+
+********************************
+Native Rust metadata providers
+********************************
+
+Applications using the native ``multi-storage-client`` Rust crate can register
+async factories for their own ``MetadataProvider`` implementations. In
+``msc_config.yaml``, use the Python MSC ``metadata_provider`` shape with a
+``type`` and an optional ``options`` mapping.
+
+.. code-block:: yaml
+
+   profiles:
+     reports:
+       storage_provider:
+         type: file
+         options:
+           base_path: /data/reports
+       metadata_provider:
+         type: report_catalog
+         options:
+           endpoint: https://catalog.example.com
+
+In this example, the application provides ``ReportCatalog``, which implements
+``MetadataProvider`` and exposes an async ``connect(&str)`` constructor.
+Register its factory before building the client.
+
+.. code-block:: rust
+
+   use std::sync::Arc;
+
+   use multi_storage_client::{
+       ConfigLoader, ErrorKind, MetadataProvider, MetadataProviderRegistry,
+       MscError, ReadOptions, Result, StorageClient,
+   };
+
+   use crate::catalog::ReportCatalog;
+
+   async fn read_report() -> Result<()> {
+       let mut registry = MetadataProviderRegistry::new();
+       registry.register("report_catalog", Arc::new(|options| {
+           Box::pin(async move {
+               let endpoint = options.get("endpoint")
+                   .and_then(|value| value.as_str())
+                   .ok_or_else(|| {
+                       MscError::new(ErrorKind::InvalidConfig, "catalog endpoint must be a string")
+                   })?;
+               let catalog: Arc<dyn MetadataProvider> =
+                   Arc::new(ReportCatalog::connect(endpoint).await?);
+               Ok(catalog)
+           })
+       }))?;
+
+       let config = ConfigLoader::new()
+           .with_explicit_paths(["msc_config.yaml"])
+           .load()?;
+       let client = StorageClient::builder(config, "reports")
+           .with_metadata_provider_registry(registry)
+           .build()
+           .await?;
+       let report = client.read("report.csv", ReadOptions::default()).await;
+       client.shutdown().await?;
+       println!("Read {} bytes", report?.len());
+       Ok(())
+   }
+
+The builder passes the configured options to the factory as a
+``BTreeMap<String, serde_json::Value>``. Omit ``options`` to pass an empty map.
+If you supply an instance with ``with_metadata_provider(...)``, it takes
+precedence over the YAML selection and the builder skips the factory lookup.
+For the built-in manifest provider, see :doc:`/user_guide/manifests`.
+
+In a logical namespace, ``is_empty`` looks for an exact key or entries below the
+named directory. For example, ``is_empty("train/cat")`` returns true when the
+only key is ``train/cat.jpg``.
+
+With a writable metadata provider, ``write`` and ``upload_file`` stage user
+attributes in the logical catalog. A ``copy`` with no destination attributes
+requires the provider's ``resolve_copy_source`` method to retrieve the source
+mapping and inherited attributes in one catalog read. Supply a source version
+when the physical bytes can change. Explicit destination attributes bypass
+inheritance. Destination conditions on logical ``write``, ``upload_file``, and
+``copy`` return ``Unsupported``.
+
+Physical deletion requires the provider's ``resolve_delete_target`` method to
+confirm exclusive ownership of a stable backing key. The method can request
+logical-only removal for a shared backing object. The default handles symlinks
+and soft deletes as logical-only removals. ``delete_many`` batches physical
+deletes and reports storage and metadata staging errors at their original
+logical input indices. Call ``commit_updates`` to publish staged changes.

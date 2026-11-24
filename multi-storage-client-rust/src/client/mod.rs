@@ -18,14 +18,21 @@ mod api;
 mod builder;
 mod metadata;
 
-use crate::{BaseStorageProvider, MetadataProvider, ProviderRegistry, RetryPolicy, StorageBackend};
+use crate::{
+    BaseStorageProvider, MetadataProvider, MetadataProviderRegistry, ProviderRegistry, RetryPolicy,
+    StorageBackend,
+};
 use std::sync::Arc;
+use tokio::sync::Mutex;
+
+const METADATA_LOCK_COUNT: usize = 64;
 
 /// A cheap-to-clone client for a storage namespace with optional logical metadata.
 #[derive(Clone)]
 pub struct StorageClient {
     pub(crate) provider: BaseStorageProvider<dyn StorageBackend>,
     metadata_provider: Option<Arc<dyn MetadataProvider>>,
+    metadata_locks: Option<Arc<[Mutex<()>; METADATA_LOCK_COUNT]>>,
     profile: Option<String>,
 }
 
@@ -33,6 +40,7 @@ pub struct StorageClient {
 pub struct StorageClientBuilder {
     source: builder::ClientSource,
     registry: ProviderRegistry,
+    metadata_provider_registry: MetadataProviderRegistry,
     metadata_provider: Option<Arc<dyn MetadataProvider>>,
     retry: Option<RetryPolicy>,
     max_in_memory_bytes: u64,

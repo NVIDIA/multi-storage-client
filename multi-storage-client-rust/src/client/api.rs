@@ -16,9 +16,9 @@
 //! Public client operations over private policy and transfer implementations.
 use super::{StorageClient, StorageClientBuilder};
 use crate::{
-    BatchFailure, BatchResult, CopyOptions, DeleteOptions, ErrorKind, InfoOptions, ListOptions,
-    MetadataStream, MscError, ObjectKind, ObjectMetadata, ObjectPath, ReadOptions,
-    ResolvedPathState, Result, StorageProvider, WriteOptions, config::ResolvedConfig,
+    BatchResult, CopyOptions, DeleteOptions, ErrorKind, InfoOptions, ListOptions, MetadataStream,
+    MscError, ObjectKind, ObjectMetadata, ObjectPath, ReadOptions, Result, StorageProvider,
+    WriteOptions, config::ResolvedConfig,
 };
 use bytes::Bytes;
 use futures::StreamExt;
@@ -42,7 +42,7 @@ impl StorageClient {
         options: InfoOptions,
     ) -> Result<ObjectMetadata> {
         if let Some(metadata) = &self.metadata_provider {
-            if path.as_ref().is_empty() {
+            if matches!(path.as_ref(), "" | "/") {
                 return Ok(ObjectMetadata::directory(ObjectPath::default()));
             }
             return metadata
@@ -57,11 +57,14 @@ impl StorageClient {
     /// # Errors
     /// Returns path, symlink-resolution, or provider errors other than missing objects.
     pub async fn is_file(&self, path: impl AsRef<str>) -> Result<bool> {
-        if let Some(metadata) = &self.metadata_provider {
-            return match self.info(path, InfoOptions::default()).await {
+        if self.metadata_provider.is_some() {
+            return match self.info(path.as_ref(), InfoOptions::default()).await {
                 Ok(entry) if entry.kind == ObjectKind::Symlink => {
-                    Ok(metadata.realpath(entry.key.as_str()).await?.state
-                        == ResolvedPathState::Exists)
+                    match self.read_path(entry.key.as_str()).await {
+                        Ok(physical) => self.provider.is_file(&physical).await,
+                        Err(error) if error.kind == ErrorKind::NotFound => Ok(false),
+                        Err(error) => Err(error),
+                    }
                 }
                 Ok(entry) => Ok(entry.kind == ObjectKind::File),
                 Err(error) if error.kind == ErrorKind::NotFound => Ok(false),
@@ -72,6 +75,8 @@ impl StorageClient {
     }
 
     /// Test whether the backend or logical namespace lists any keys for the given prefix.
+    /// With a metadata provider, the prefix selects an exact logical key or a
+    /// directory and its descendants.
     ///
     /// # Errors
     /// Returns invalid paths or listing errors.
@@ -114,6 +119,7 @@ impl StorageClient {
     }
 
     /// Publish bytes with the profile retry budget and validate publication.
+    /// With a metadata provider, user attributes are staged in logical metadata.
     ///
     /// # Errors
     /// Returns invalid paths, failed conditions, upload, or post-upload metadata errors.
@@ -121,23 +127,33 @@ impl StorageClient {
         &self,
         path: impl AsRef<str>,
         bytes: Bytes,
-        options: WriteOptions,
+        mut options: WriteOptions,
     ) -> Result<()> {
-        let logical = path.as_ref();
-        let physical = self.write_path(logical).await?;
-        let attributes = self
-            .metadata_provider
-            .as_ref()
-            .map(|_| options.attributes.clone());
-        self.provider.put_object(&physical, bytes, options).await?;
-        self.register_write(logical, &physical, attributes.into_iter().flatten())
-            .await
+        let Some(metadata) = self.writable_metadata()? else {
+            return self
+                .provider
+                .put_object(path.as_ref(), bytes, options)
+                .await;
+        };
+        let logical = ObjectPath::new(path)?;
+        let _guard = self.lock_metadata(&logical).await;
+        let physical = self
+            .write_path(metadata, logical.as_str(), &options)
+            .await?;
+        let attributes = std::mem::take(&mut options.attributes);
+        let mut entry = self
+            .provider
+            .write_impl(&physical, bytes, options, true)
+            .await?;
+        entry.attributes.extend(attributes);
+        Self::register_write(metadata, logical.as_str(), entry).await
     }
 
     /// Upload a regular local file to `remote` from its anchored, replayable file handle.
     ///
     /// Memory stays bounded; no whole-file temporary copy is created.
     /// The final source component is opened without following symlinks.
+    /// With a metadata provider, user attributes are staged in logical metadata.
     ///
     /// # Errors
     /// Returns path, local-file, unsupported-symlink, upload, or metadata errors.
@@ -145,24 +161,33 @@ impl StorageClient {
         &self,
         remote: impl AsRef<str>,
         local: impl AsRef<Path>,
-        options: WriteOptions,
+        mut options: WriteOptions,
     ) -> Result<()> {
-        let logical = remote.as_ref();
-        let physical = self.write_path(logical).await?;
-        let attributes = self
-            .metadata_provider
-            .as_ref()
-            .map(|_| options.attributes.clone());
-        self.provider
-            .upload_file(&physical, local.as_ref(), options)
+        let Some(metadata) = self.writable_metadata()? else {
+            return self
+                .provider
+                .upload_file(remote.as_ref(), local.as_ref(), options)
+                .await;
+        };
+        let logical = ObjectPath::new(remote)?;
+        let _guard = self.lock_metadata(&logical).await;
+        let physical = self
+            .write_path(metadata, logical.as_str(), &options)
             .await?;
-        self.register_write(logical, &physical, attributes.into_iter().flatten())
-            .await
+        let attributes = std::mem::take(&mut options.attributes);
+        let mut entry = self
+            .provider
+            .upload_file_impl(&physical, local.as_ref(), options, true)
+            .await?;
+        entry.attributes.extend(attributes);
+        Self::register_write(metadata, logical.as_str(), entry).await
     }
 
     /// Copy an object using the provider or a bounded streaming fallback.
     /// Empty destination attributes inherit the source attributes; nonempty
     /// attributes replace them. An omitted content type inherits the source type.
+    /// With a metadata provider, attribute inheritance and replacement apply to
+    /// the logical entries. The physical copy retains the source storage attributes.
     ///
     /// # Errors
     /// Returns path, unsupported-operation, condition, copy, or metadata errors.
@@ -170,20 +195,29 @@ impl StorageClient {
         &self,
         source: impl AsRef<str>,
         destination: impl AsRef<str>,
-        options: CopyOptions,
+        mut options: CopyOptions,
     ) -> Result<()> {
-        let logical = destination.as_ref();
-        let physical = self.write_path(logical).await?;
-        let source = self.read_path(source.as_ref()).await?;
-        let attributes = self
-            .metadata_provider
-            .as_ref()
-            .map(|_| options.destination.attributes.clone());
-        self.provider
-            .copy_object(&source, &physical, options)
+        let Some(metadata) = self.writable_metadata()? else {
+            return self
+                .provider
+                .copy_object(source.as_ref(), destination.as_ref(), options)
+                .await;
+        };
+        let logical = ObjectPath::new(destination)?;
+        let _guard = self.lock_metadata(&logical).await;
+        let mut attributes = std::mem::take(&mut options.destination.attributes);
+        let source = self
+            .mapped_copy_source(metadata, source.as_ref(), &mut options, &mut attributes)
             .await?;
-        self.register_write(logical, &physical, attributes.into_iter().flatten())
-            .await
+        let physical = self
+            .write_path(metadata, logical.as_str(), &options.destination)
+            .await?;
+        let mut entry = self
+            .provider
+            .copy_impl(&source, &physical, options, true)
+            .await?;
+        entry.attributes = attributes;
+        Self::register_write(metadata, logical.as_str(), entry).await
     }
 
     /// Create a link to a target key relative to the profile root.
@@ -201,23 +235,20 @@ impl StorageClient {
                     "symlink requires nonempty keys",
                 ));
             }
-            if !metadata.allow_overwrites() {
-                match metadata.get_object_metadata(path, true).await {
-                    Ok(_) => {
-                        return Err(MscError::new(
-                            ErrorKind::AlreadyExists,
-                            "logical object already exists",
-                        ));
-                    }
-                    Err(error) if error.kind == ErrorKind::NotFound => (),
-                    Err(error) => return Err(error),
-                }
+            let _guard = self.lock_metadata(&key).await;
+            if !metadata.allow_overwrites()
+                && self.logical_entry_exists(metadata, key.as_str()).await?
+            {
+                return Err(MscError::new(
+                    ErrorKind::AlreadyExists,
+                    "logical object already exists",
+                ));
             }
             let mut entry = ObjectMetadata::file(key.clone(), 0);
             entry.kind = ObjectKind::Symlink;
             entry.symlink_target = Some(crate::path::relative_link_target(&key, &target));
             entry.last_modified = Some(chrono::Utc::now());
-            return metadata.add_file(path, entry).await;
+            return metadata.add_file(key.as_str(), entry).await;
         }
         self.provider.make_symlink(path, target).await
     }
@@ -239,7 +270,9 @@ impl StorageClient {
             ));
         }
         if let Some(metadata) = self.writable_metadata()? {
-            return self.delete_mapped(metadata, path.as_ref(), options).await;
+            let key = ObjectPath::new(path)?;
+            let _guard = self.lock_metadata(&key).await;
+            return self.delete_mapped(metadata, key.as_str(), options).await;
         }
         self.provider.delete_object(path.as_ref(), options).await
     }
@@ -247,30 +280,15 @@ impl StorageClient {
     /// Delete in bounded batches while preserving original input indices.
     ///
     /// # Errors
-    /// Returns invalid provider batch responses. Item errors appear in the batch result.
+    /// Item errors and invalid provider outcomes appear in the batch result.
     pub async fn delete_many(
         &self,
         paths: &[ObjectPath],
         options: DeleteOptions,
     ) -> Result<BatchResult> {
         if let Some(metadata) = self.writable_metadata()? {
-            let mut result = BatchResult::default();
-            for (index, path) in paths.iter().enumerate() {
-                match self
-                    .delete_mapped(metadata, path.as_str(), options.clone())
-                    .await
-                {
-                    Ok(()) => result.succeeded.push(index),
-                    Err(error) if error.kind == ErrorKind::NotFound => result.succeeded.push(index),
-                    Err(error) => result.failed.push(BatchFailure {
-                        index,
-                        source: path.clone(),
-                        destination: None,
-                        error,
-                    }),
-                }
-            }
-            return Ok(result);
+            let _guards = self.lock_all_metadata().await;
+            return self.delete_many_mapped(metadata, paths, options).await;
         }
         self.provider.delete_objects(paths, options).await
     }
@@ -301,6 +319,7 @@ impl StorageClient {
     /// Returns unsupported for read-only metadata and commit errors from writable providers.
     pub async fn commit_updates(&self) -> Result<()> {
         if let Some(metadata) = self.writable_metadata()? {
+            let _guards = self.lock_all_metadata().await;
             metadata.commit_updates().await?;
         }
         Ok(())

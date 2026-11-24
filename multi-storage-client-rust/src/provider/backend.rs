@@ -162,8 +162,8 @@ pub trait StorageBackend: Send + Sync {
         .await
     }
 
-    /// Delete a key with backend-enforced conditions. An absent key may return
-    /// success or `NotFound`; the shared provider checks single-key existence first.
+    /// Delete a key with backend-enforced conditions. An unconditional delete
+    /// of an absent key may return success or `NotFound`.
     async fn delete_object(&self, key: &ObjectPath, conditions: &DeleteOptions) -> Result<()>;
 
     /// Bounded fallback retaining the original index of every item.
@@ -177,7 +177,9 @@ pub trait StorageBackend: Send + Sync {
         while let Some((index, source, outcome)) = outcomes.next().await {
             match outcome {
                 Ok(()) => result.succeeded.push(index),
-                Err(error) if error.kind == ErrorKind::NotFound => result.succeeded.push(index),
+                Err(error) if options.is_unconditional() && error.kind == ErrorKind::NotFound => {
+                    result.succeeded.push(index);
+                }
                 Err(error) => result.failed.push(BatchFailure {
                     index,
                     source,

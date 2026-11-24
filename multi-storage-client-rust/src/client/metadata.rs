@@ -15,31 +15,61 @@
 
 use super::StorageClient;
 use crate::{
-    DeleteOptions, ErrorKind, InfoOptions, MetadataProvider, MscError, ObjectKind, ObjectPath,
-    ResolvedPath, ResolvedPathState, Result, StorageProvider,
+    BatchFailure, BatchResult, CopyOptions, DeleteOptions, ErrorKind, MetadataProvider, MscError,
+    ObjectKind, ObjectMetadata, ObjectPath, ResolvedPath, ResolvedPathState, Result,
+    StorageProvider, WriteOptions,
 };
-use std::borrow::Cow;
+use futures::{StreamExt, stream};
+use serde_json::Value;
+use std::{
+    borrow::Cow,
+    collections::BTreeMap,
+    hash::{BuildHasher, BuildHasherDefault, DefaultHasher},
+};
+use tokio::sync::MutexGuard;
+
+const METADATA_DELETE_CONCURRENCY: usize = 32;
 
 impl StorageClient {
     pub(super) async fn read_path<'a>(&self, path: &'a str) -> Result<Cow<'a, str>> {
-        let Some(metadata) = &self.metadata_provider else {
+        let Some(metadata) = self.metadata_provider.as_deref() else {
             return Ok(Cow::Borrowed(path));
         };
-        let resolved = metadata.realpath(path).await?;
+        Ok(Cow::Owned(
+            self.existing_physical_path(metadata.realpath(path).await?)?
+                .into_string(),
+        ))
+    }
+
+    fn existing_physical_path(&self, resolved: ResolvedPath) -> Result<ObjectPath> {
         if resolved.state != ResolvedPathState::Exists {
             return Err(MscError::new(
                 ErrorKind::NotFound,
                 "logical object does not exist",
             ));
         }
-        Ok(Cow::Owned(self.physical_path(resolved)?.into_string()))
+        self.physical_path(resolved)
     }
 
-    pub(super) async fn write_path<'a>(&self, path: &'a str) -> Result<Cow<'a, str>> {
-        let Some(metadata) = self.writable_metadata()? else {
-            return Ok(Cow::Borrowed(path));
-        };
-        let overwrite = metadata.realpath(path).await?.state != ResolvedPathState::Untracked;
+    pub(super) async fn write_path(
+        &self,
+        metadata: &dyn MetadataProvider,
+        path: &str,
+        options: &WriteOptions,
+    ) -> Result<ObjectPath> {
+        if path.is_empty() {
+            return Err(MscError::new(
+                ErrorKind::InvalidPath,
+                "logical destination must be a nonempty key",
+            ));
+        }
+        if options.if_match.is_some()
+            || options.if_none_match.is_some()
+            || options.version.is_some()
+        {
+            return Err(MscError::unsupported("conditional logical destination"));
+        }
+        let overwrite = self.logical_entry_exists(metadata, path).await?;
         if overwrite && !metadata.allow_overwrites() {
             return Err(MscError::new(
                 ErrorKind::AlreadyExists,
@@ -47,7 +77,39 @@ impl StorageClient {
             ));
         }
         let resolved = metadata.generate_physical_path(path, overwrite).await?;
-        Ok(Cow::Owned(self.physical_path(resolved)?.into_string()))
+        self.physical_path(resolved)
+    }
+
+    pub(super) async fn logical_entry_exists(
+        &self,
+        metadata: &dyn MetadataProvider,
+        path: &str,
+    ) -> Result<bool> {
+        for include_pending in [true, false] {
+            match metadata.get_object_metadata(path, include_pending).await {
+                Ok(_) => return Ok(true),
+                Err(error) if error.kind == ErrorKind::NotFound => (),
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(metadata.realpath(path).await?.state == ResolvedPathState::Deleted)
+    }
+
+    pub(super) async fn lock_metadata(&self, path: &ObjectPath) -> Option<MutexGuard<'_, ()>> {
+        let locks = self.metadata_locks.as_deref()?;
+        let hash = BuildHasherDefault::<DefaultHasher>::default().hash_one(path);
+        let index = usize::try_from(hash % locks.len() as u64).expect("lock index fits in usize");
+        Some(locks[index].lock().await)
+    }
+
+    pub(super) async fn lock_all_metadata(&self) -> Vec<MutexGuard<'_, ()>> {
+        let mut guards = Vec::new();
+        if let Some(locks) = &self.metadata_locks {
+            for lock in locks.iter() {
+                guards.push(lock.lock().await);
+            }
+        }
+        guards
     }
 
     fn physical_path(&self, resolved: ResolvedPath) -> Result<ObjectPath> {
@@ -68,24 +130,53 @@ impl StorageClient {
     }
 
     pub(super) async fn register_write(
-        &self,
+        metadata: &dyn MetadataProvider,
         logical: &str,
-        physical: &str,
-        attributes: impl IntoIterator<Item = (String, serde_json::Value)>,
+        entry: ObjectMetadata,
     ) -> Result<()> {
-        if let Some(metadata) = &self.metadata_provider {
-            let mut entry = self
-                .provider
-                .get_object_metadata(physical, InfoOptions { strict: false })
-                .await
-                .map_err(|_| registration_failed("object metadata lookup", physical))?;
-            entry.attributes.extend(attributes);
-            metadata
-                .add_file(logical, entry)
-                .await
-                .map_err(|_| registration_failed("logical metadata staging", physical))?;
+        let physical = entry.key.clone();
+        metadata.add_file(logical, entry).await.map_err(|_| {
+            MscError::new(
+                ErrorKind::AmbiguousOutcome,
+                "physical object was written before logical metadata staging failed",
+            )
+            .context("register_write", "metadata", physical.as_str())
+        })
+    }
+
+    pub(super) async fn mapped_copy_source(
+        &self,
+        metadata: &dyn MetadataProvider,
+        path: &str,
+        options: &mut CopyOptions,
+        attributes: &mut BTreeMap<String, Value>,
+    ) -> Result<ObjectPath> {
+        if !attributes.is_empty() {
+            return self.existing_physical_path(metadata.realpath(path).await?);
         }
-        Ok(())
+        let (resolved, entry) = metadata.resolve_copy_source(path).await?;
+        let physical = self.existing_physical_path(resolved)?;
+        if entry.kind != ObjectKind::File {
+            return Err(MscError::unsupported(
+                "logical copy source must be a regular file",
+            ));
+        }
+        if let Some(version) = entry.source_version {
+            if options
+                .source_conditions
+                .version
+                .as_ref()
+                .is_some_and(|value| *value != version)
+            {
+                return Err(MscError::new(
+                    ErrorKind::PreconditionFailed,
+                    "copy source version differs from the logical snapshot",
+                ));
+            }
+            options.source_conditions.version = Some(version);
+        }
+        *attributes = entry.attributes;
+        Ok(physical)
     }
 
     pub(super) async fn delete_mapped(
@@ -94,33 +185,111 @@ impl StorageClient {
         path: &str,
         options: DeleteOptions,
     ) -> Result<()> {
-        let entry = metadata.get_object_metadata(path, false).await?;
-        if entry.kind == ObjectKind::Directory {
-            return Err(MscError::unsupported("logical directory deletion"));
-        }
-        if metadata.should_use_soft_delete() || entry.kind == ObjectKind::Symlink {
-            if options.if_match.is_some()
-                || options.if_none_match.is_some()
-                || options.version.is_some()
+        if let Some(physical) = self.mapped_delete_path(metadata, path, &options).await? {
+            let missing_ok = options.is_unconditional();
+            match self
+                .provider
+                .delete_object(physical.as_str(), options)
+                .await
             {
-                return Err(MscError::unsupported("conditional metadata-only deletion"));
-            }
-        } else {
-            let physical = self.read_path(path).await?;
-            match self.provider.delete_object(&physical, options).await {
                 Ok(()) => (),
-                Err(error) if error.kind == ErrorKind::NotFound => (),
+                Err(error) if missing_ok && error.kind == ErrorKind::NotFound => (),
                 Err(error) => return Err(error),
             }
         }
         metadata.remove_file(path).await
     }
+
+    async fn mapped_delete_path(
+        &self,
+        metadata: &dyn MetadataProvider,
+        path: &str,
+        options: &DeleteOptions,
+    ) -> Result<Option<ObjectPath>> {
+        let target = metadata.resolve_delete_target(path).await?;
+        if target.is_none() && !options.is_unconditional() {
+            return Err(MscError::unsupported("conditional metadata-only deletion"));
+        }
+        target
+            .map(|target| self.existing_physical_path(target))
+            .transpose()
+    }
+
+    pub(super) async fn delete_many_mapped(
+        &self,
+        metadata: &dyn MetadataProvider,
+        paths: &[ObjectPath],
+        options: DeleteOptions,
+    ) -> Result<BatchResult> {
+        let mut result = BatchResult::default();
+        let mut physical = BTreeMap::<ObjectPath, Vec<usize>>::new();
+        let mut stage = Vec::new();
+        {
+            let mut plans = stream::iter(paths.iter().enumerate())
+                .map(|(index, path)| {
+                    let options = &options;
+                    async move {
+                        (
+                            index,
+                            self.mapped_delete_path(metadata, path.as_str(), options)
+                                .await,
+                        )
+                    }
+                })
+                .buffer_unordered(METADATA_DELETE_CONCURRENCY);
+            while let Some((index, plan)) = plans.next().await {
+                match plan {
+                    Ok(Some(key)) => physical.entry(key).or_default().push(index),
+                    Ok(None) => stage.push(index),
+                    Err(error)
+                        if options.is_unconditional() && error.kind == ErrorKind::NotFound =>
+                    {
+                        result.succeeded.push(index);
+                    }
+                    Err(error) => result
+                        .failed
+                        .push(mapped_delete_failure(paths, index, error)),
+                }
+            }
+        }
+
+        if !physical.is_empty() {
+            let (keys, logical_indices): (Vec<_>, Vec<_>) = physical.into_iter().unzip();
+            let deleted = self.provider.delete_objects(&keys, options).await?;
+            for index in deleted.succeeded {
+                stage.extend_from_slice(&logical_indices[index]);
+            }
+            for failure in deleted.failed {
+                for &index in &logical_indices[failure.index] {
+                    result
+                        .failed
+                        .push(mapped_delete_failure(paths, index, failure.error.clone()));
+                }
+            }
+        }
+
+        let mut staging = stream::iter(stage)
+            .map(|index| async move { (index, metadata.remove_file(paths[index].as_str()).await) })
+            .buffer_unordered(METADATA_DELETE_CONCURRENCY);
+        while let Some((index, outcome)) = staging.next().await {
+            match outcome {
+                Ok(()) => result.succeeded.push(index),
+                Err(error) => result
+                    .failed
+                    .push(mapped_delete_failure(paths, index, error)),
+            }
+        }
+        result.succeeded.sort_unstable();
+        result.failed.sort_by_key(|failure| failure.index);
+        Ok(result)
+    }
 }
 
-fn registration_failed(stage: &str, physical: &str) -> MscError {
-    MscError::new(
-        ErrorKind::AmbiguousOutcome,
-        format!("physical object was written before {stage} failed"),
-    )
-    .context("register_write", "metadata", physical)
+fn mapped_delete_failure(paths: &[ObjectPath], index: usize, error: MscError) -> BatchFailure {
+    BatchFailure {
+        index,
+        source: paths[index].clone(),
+        destination: None,
+        error,
+    }
 }

@@ -231,10 +231,15 @@ async fn manifest_discovers_latest_complete_snapshot_from_s3() {
     let latest = format!("{root}/2026-10-02T00:00:00Z/msc_manifest_index.json");
     let incomplete = format!("{root}/2026-10-03T00:00:00Z/parts/files.jsonl");
     let contents = [old, latest.clone(), incomplete].map(|key| object(&format!("base/{key}")));
+    let first_page = page(&format!(
+        "<IsTruncated>true</IsTruncated><NextContinuationToken>next-page</NextContinuationToken>{}",
+        contents[0]
+    ));
     let server = Server::start_responses(vec![
         Reply::bytes(404, b"", None),
         Reply::bytes(404, b"", None),
-        Reply::bytes(200, page(&contents.concat()).as_bytes(), None),
+        Reply::bytes(200, first_page.as_bytes(), None),
+        Reply::bytes(200, page(&contents[1..].concat()).as_bytes(), None),
         Reply::bytes(200, br#"{"version":"1","parts":[]}"#, None),
     ])
     .await;
@@ -244,12 +249,17 @@ async fn manifest_discovers_latest_complete_snapshot_from_s3() {
         .unwrap();
 
     let requests = server.requests.lock().unwrap();
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 5);
     let listing = url::Url::parse(&format!("{}{}", server.endpoint, requests[2].target)).unwrap();
     let query: BTreeMap<_, _> = listing.query_pairs().collect();
     assert_eq!(query["prefix"], "base/project/.msc_manifests");
+    let next = url::Url::parse(&format!("{}{}", server.endpoint, requests[3].target)).unwrap();
+    assert!(
+        next.query_pairs()
+            .any(|(key, value)| { key == "continuation-token" && value == "next-page" })
+    );
     assert_eq!(
-        requests[3].target,
+        requests[4].target,
         format!("/bucket/base/{}", latest.replace(':', "%3A"))
     );
 }

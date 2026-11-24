@@ -27,11 +27,12 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 const UPLOAD_BUFFER_SIZE: usize = 1024 * 1024;
 
 impl<B: crate::StorageBackend + ?Sized + 'static> BaseStorageProvider<B> {
-    pub(super) async fn write_impl(
+    pub(crate) async fn write_impl(
         &self,
         path: impl AsRef<str>,
         bytes: Bytes,
         options: WriteOptions,
+        require_identity: bool,
     ) -> Result<ObjectMetadata> {
         if !self.state.provider.capabilities().streaming_writes {
             return Err(MscError::unsupported("read-only client write"));
@@ -43,14 +44,16 @@ impl<B: crate::StorageBackend + ?Sized + 'static> BaseStorageProvider<B> {
                 self.state.provider.put_object_bytes(&path, bytes, &options)
             })
             .await?;
-        self.metadata_after_put(&path, result).await
+        self.metadata_after_put(&path, result, require_identity)
+            .await
     }
 
-    pub(super) async fn upload_file_impl(
+    pub(crate) async fn upload_file_impl(
         &self,
         remote: impl AsRef<str>,
         local: impl AsRef<Path>,
         options: WriteOptions,
+        require_identity: bool,
     ) -> Result<ObjectMetadata> {
         if !self.state.provider.capabilities().streaming_writes {
             return Err(MscError::unsupported("read-only client upload"));
@@ -76,7 +79,10 @@ impl<B: crate::StorageBackend + ?Sized + 'static> BaseStorageProvider<B> {
                 "upload source must be a regular file",
             ));
         }
-        self.upload_open_file(&path, &source, metadata.len(), &options)
+        let result = self
+            .upload_open_file(&path, &source, metadata.len(), &options)
+            .await?;
+        self.metadata_after_put(&path, result, require_identity)
             .await
     }
 
@@ -86,56 +92,53 @@ impl<B: crate::StorageBackend + ?Sized + 'static> BaseStorageProvider<B> {
         local: &tokio::fs::File,
         length: u64,
         options: &WriteOptions,
-    ) -> Result<ObjectMetadata> {
+    ) -> Result<PutResult> {
         let file = std::sync::Arc::new(tokio::sync::Mutex::new(local.try_clone().await?));
         let expected = std::sync::Arc::new(file.lock().await.metadata().await?);
-        let result = self
-            .retry_mutation(|| async {
-                let file = file.clone();
+        self.retry_mutation(|| async {
+            let file = file.clone();
+            let expected = expected.clone();
+            let body = stream::try_unfold((file, 0_u64), move |(file, offset)| {
                 let expected = expected.clone();
-                let body = stream::try_unfold((file, 0_u64), move |(file, offset)| {
-                    let expected = expected.clone();
-                    async move {
-                        let mut handle = file.lock().await;
-                        if offset == 0 && !same_source(&handle.metadata().await?, &expected) {
-                            return Err(changed_source());
-                        }
-                        if offset == 0 {
-                            handle.seek(std::io::SeekFrom::Start(0)).await?;
-                        }
-                        let mut bytes = vec![0; UPLOAD_BUFFER_SIZE];
-                        let read = handle.read(&mut bytes).await?;
-                        if read == 0 {
-                            if offset != length
-                                || !same_source(&handle.metadata().await?, &expected)
-                            {
-                                return Err(changed_source());
-                            }
-                            return Ok::<_, MscError>(None);
-                        }
-                        if offset.saturating_add(read as u64) > length {
-                            return Err(changed_source());
-                        }
-                        drop(handle);
-                        bytes.truncate(read);
-                        let offset = offset + read as u64;
-                        Ok(Some((Bytes::from(bytes), (file, offset))))
+                async move {
+                    let mut handle = file.lock().await;
+                    if offset == 0 && !same_source(&handle.metadata().await?, &expected) {
+                        return Err(changed_source());
                     }
-                });
-                self.state
-                    .provider
-                    .put_object(remote, Box::pin(body), Some(length), options)
-                    .await
-            })
-            .await?;
-        self.metadata_after_put(remote, result).await
+                    if offset == 0 {
+                        handle.seek(std::io::SeekFrom::Start(0)).await?;
+                    }
+                    let mut bytes = vec![0; UPLOAD_BUFFER_SIZE];
+                    let read = handle.read(&mut bytes).await?;
+                    if read == 0 {
+                        if offset != length || !same_source(&handle.metadata().await?, &expected) {
+                            return Err(changed_source());
+                        }
+                        return Ok::<_, MscError>(None);
+                    }
+                    if offset.saturating_add(read as u64) > length {
+                        return Err(changed_source());
+                    }
+                    drop(handle);
+                    bytes.truncate(read);
+                    let offset = offset + read as u64;
+                    Ok(Some((Bytes::from(bytes), (file, offset))))
+                }
+            });
+            self.state
+                .provider
+                .put_object(remote, Box::pin(body), Some(length), options)
+                .await
+        })
+        .await
     }
 
-    pub(super) async fn copy_impl(
+    pub(crate) async fn copy_impl(
         &self,
         source: impl AsRef<str>,
         destination: impl AsRef<str>,
         options: CopyOptions,
+        require_identity: bool,
     ) -> Result<ObjectMetadata> {
         if !self.state.provider.capabilities().streaming_writes {
             return Err(MscError::unsupported("read-only client copy"));
@@ -167,7 +170,8 @@ impl<B: crate::StorageBackend + ?Sized + 'static> BaseStorageProvider<B> {
                     result => result?,
                 }
             };
-        self.metadata_after_put(&destination, result).await
+        self.metadata_after_put(&destination, result, require_identity)
+            .await
     }
 
     async fn streaming_copy(
@@ -182,7 +186,7 @@ impl<B: crate::StorageBackend + ?Sized + 'static> BaseStorageProvider<B> {
             return Err(MscError::unsupported("copy"));
         }
         let metadata = self
-            .info_impl(source, InfoOptions { strict: false })
+            .read_metadata(source, &options.source_conditions)
             .await?;
         require_file(&metadata)?;
         let conditions = stable_conditions(&metadata, &options.source_conditions);
@@ -215,18 +219,47 @@ impl<B: crate::StorageBackend + ?Sized + 'static> BaseStorageProvider<B> {
         .await
     }
 
-    pub(super) async fn metadata_after_put(
+    async fn metadata_after_put(
         &self,
         path: &ObjectPath,
         result: PutResult,
+        require_identity: bool,
     ) -> Result<ObjectMetadata> {
         if let Some(metadata) = result.metadata {
             return Ok(metadata);
         }
+        if require_identity && result.source_version.is_none() {
+            return Err(MscError::new(
+                ErrorKind::AmbiguousOutcome,
+                "storage write returned no metadata or publication identity",
+            )
+            .context(
+                "info_after_write",
+                self.state.provider.name(),
+                path.as_str(),
+            ));
+        }
         let metadata = self
-            .retry(true, || self.state.provider.get_object_metadata(path))
+            .retry(true, || async {
+                if require_identity && let Some(version) = &result.source_version {
+                    self.state
+                        .provider
+                        .get_object_metadata_version(path, version)
+                        .await
+                } else {
+                    self.state.provider.get_object_metadata(path).await
+                }
+            })
             .await
             .map_err(|error| {
+                let error = if require_identity {
+                    MscError::new(
+                        ErrorKind::AmbiguousOutcome,
+                        "physical object was written before published metadata could be verified",
+                    )
+                } else {
+                    error
+                };
                 error.context(
                     "info_after_write",
                     self.state.provider.name(),

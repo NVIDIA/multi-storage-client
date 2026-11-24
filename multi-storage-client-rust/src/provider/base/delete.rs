@@ -42,10 +42,22 @@ impl<B: crate::StorageBackend + ?Sized + 'static> BaseStorageProvider<B> {
     }
 
     async fn delete_exact(&self, path: &ObjectPath, options: &DeleteOptions) -> Result<()> {
-        self.retry_mutation(|| async {
-            match self.state.provider.delete_object(path, options).await {
-                Err(error) if error.kind == ErrorKind::NotFound => Ok(()),
-                result => result,
+        let mut attempted = false;
+        self.retry_mutation(|| {
+            let retried = std::mem::replace(&mut attempted, true);
+            async move {
+                match self.state.provider.delete_object(path, options).await {
+                    Err(error) if error.kind == ErrorKind::NotFound => {
+                        if options.is_unconditional() {
+                            Ok(())
+                        } else if retried {
+                            Err(error.ambiguous_outcome())
+                        } else {
+                            Err(error)
+                        }
+                    }
+                    result => result,
+                }
             }
         })
         .await
@@ -95,7 +107,17 @@ impl<B: crate::StorageBackend + ?Sized + 'static> BaseStorageProvider<B> {
                 attempts += 1;
                 let keys: Vec<_> = pending.iter().map(|(_, path)| path.clone()).collect();
                 let batch = self.state.provider.delete_objects(&keys, &options).await;
-                validate_batch(&batch, pending.len())?;
+                if let Err(error) = validate_batch(&batch, pending.len()) {
+                    output
+                        .failed
+                        .extend(pending.into_iter().map(|(index, source)| BatchFailure {
+                            index,
+                            source,
+                            destination: None,
+                            error: error.clone(),
+                        }));
+                    break;
+                }
                 for index in batch.succeeded {
                     output.succeeded.push(pending[index].0);
                 }
@@ -103,15 +125,17 @@ impl<B: crate::StorageBackend + ?Sized + 'static> BaseStorageProvider<B> {
                 let mut retry_error = None;
                 for failure in batch.failed {
                     let (index, source) = pending[failure.index].clone();
-                    if failure.error.kind == ErrorKind::NotFound {
+                    if options.is_unconditional() && failure.error.kind == ErrorKind::NotFound {
                         output.succeeded.push(index);
                     } else if self.can_retry(&failure.error, true, attempts) {
                         retry_error = Some(failure.error);
                         retry.push((index, source));
                     } else {
                         let error = if attempts > 1
-                            && failure.error.kind == ErrorKind::PreconditionFailed
-                        {
+                            && matches!(
+                                failure.error.kind,
+                                ErrorKind::PreconditionFailed | ErrorKind::NotFound
+                            ) {
                             failure.error.ambiguous_outcome()
                         } else {
                             failure.error

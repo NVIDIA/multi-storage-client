@@ -41,11 +41,11 @@ impl<B: StorageBackend + ?Sized + 'static> StorageProvider for BaseStorageProvid
     }
 
     async fn put_object(&self, path: &str, body: Bytes, options: WriteOptions) -> Result<()> {
-        self.write_impl(path, body, options).await.map(drop)
+        self.write_impl(path, body, options, false).await.map(drop)
     }
 
     async fn upload_file(&self, remote: &str, local: &Path, options: WriteOptions) -> Result<()> {
-        self.upload_file_impl(remote, local, options)
+        self.upload_file_impl(remote, local, options, false)
             .await
             .map(drop)
     }
@@ -60,7 +60,9 @@ impl<B: StorageBackend + ?Sized + 'static> StorageProvider for BaseStorageProvid
         destination: &str,
         options: CopyOptions,
     ) -> Result<()> {
-        self.copy_impl(source, destination, options).await.map(drop)
+        self.copy_impl(source, destination, options, false)
+            .await
+            .map(drop)
     }
 
     async fn make_symlink(&self, path: &str, target: &str) -> Result<()> {

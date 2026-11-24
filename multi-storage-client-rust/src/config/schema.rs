@@ -64,6 +64,9 @@ pub struct ProfileConfig {
     /// Explicit credentials; omission enables backend discovery.
     #[serde(default)]
     pub credentials_provider: Option<ProviderConfig>,
+    /// Logical metadata configuration selected by the client builder.
+    #[serde(default, deserialize_with = "deserialize_metadata_provider")]
+    pub metadata_provider: Option<ProviderConfig>,
     /// Shared operation retry budget.
     #[serde(default)]
     pub retry: crate::RetryPolicy,
@@ -79,6 +82,7 @@ impl std::fmt::Debug for ProfileConfig {
         f.debug_struct("ProfileConfig")
             .field("storage_provider", &self.storage_provider)
             .field("credentials_provider", &self.credentials_provider)
+            .field("metadata_provider", &self.metadata_provider)
             .field("retry", &self.retry)
             .finish_non_exhaustive()
     }
@@ -88,6 +92,7 @@ impl ProfileConfig {
         let mut document = serde_json::json!({
             "storage_provider": self.storage_provider.as_ref().map(ProviderConfig::document),
             "credentials_provider": self.credentials_provider.as_ref().map(ProviderConfig::document),
+            "metadata_provider": self.metadata_provider.as_ref().map(ProviderConfig::document),
             "retry": self.retry,
             "comment": self.comment,
         });
@@ -107,6 +112,7 @@ impl ProfileConfig {
                 options: BTreeMap::from([("base_path".into(), Value::String(base_path.into()))]),
             }),
             credentials_provider: None,
+            metadata_provider: None,
             retry: crate::RetryPolicy::default(),
             comment: None,
             deferred: BTreeMap::new(),
@@ -138,5 +144,16 @@ impl ProfileConfig {
             ));
         }
         Ok(())
+    }
+}
+
+fn deserialize_metadata_provider<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<ProviderConfig>, D::Error> {
+    match Value::deserialize(deserializer)? {
+        Value::Null | Value::Bool(false) => Ok(None),
+        value => serde_json::from_value(value)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
     }
 }
