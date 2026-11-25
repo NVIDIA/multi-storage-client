@@ -20,16 +20,22 @@ import shutil
 import tempfile
 import urllib.request
 import uuid
+from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+from aistore.sdk.obj.object_reader import ObjectReader
+from requests.exceptions import ChunkedEncodingError
 
 from multistorageclient import StorageClient, StorageClientConfig, telemetry
+from multistorageclient.cache import CacheManager
+from multistorageclient.caching.cache_config import CacheConfig
 from multistorageclient.client.single import SingleStorageClient
 from multistorageclient.constants import MEMORY_LOAD_LIMIT
-from multistorageclient.providers.ais import AIStoreStorageProvider
+from multistorageclient.providers.ais import DOWNLOAD_ATTEMPTS, DOWNLOAD_CHUNK_SIZE, AIStoreStorageProvider
 from multistorageclient.providers.ais_s3 import AIStoreS3StorageProvider
 from multistorageclient.providers.azure import AzureBlobStorageProvider
 from multistorageclient.providers.base import BaseStorageProvider
@@ -37,7 +43,7 @@ from multistorageclient.providers.gcs import GoogleStorageProvider
 from multistorageclient.providers.posix_file import PosixFileStorageProvider
 from multistorageclient.providers.s3 import S3StorageProvider
 from multistorageclient.providers.s8k import S8KStorageProvider
-from multistorageclient.types import PreconditionFailedError, Range, SuffixRange
+from multistorageclient.types import ObjectMetadata, PreconditionFailedError, Range, SuffixRange
 from test_multistorageclient.unit.utils import tempdatastore
 from test_multistorageclient.unit.utils.telemetry.metrics.export import InMemoryMetricExporter
 from test_multistorageclient.utils.wait import wait_for_is_file
@@ -55,6 +61,123 @@ DELETE_MANY_IDEMPOTENCY_DATA_STORES = [
 ]
 
 
+def _aistore_download_provider() -> tuple[AIStoreStorageProvider, MagicMock]:
+    provider = AIStoreStorageProvider(endpoint="http://localhost:51080", base_path="bucket")
+    provider.client = MagicMock()
+    obj = provider.client.bucket.return_value.object.return_value
+    object_client = MagicMock()
+    obj.get_reader.return_value = ObjectReader(object_client)
+    return provider, object_client
+
+
+def _aistore_stream_response(chunks: Iterable[bytes], version: str = "") -> MagicMock:
+    response = MagicMock(headers={"ais-version": version} if version else {})
+    response.__enter__.return_value = response
+    response.iter_content.return_value = iter(chunks)
+    return response
+
+
+@pytest.mark.parametrize(
+    ("first_version", "next_version", "error"),
+    [
+        pytest.param("1", "1", None, id="restart"),
+        pytest.param("", "", None, id="restart-without-version"),
+        pytest.param("1", "2", "object changed", id="version-changed"),
+        pytest.param("1", None, "interrupted", id="retries-exhausted"),
+    ],
+)
+def test_aistore_download_retry(tmp_path: Path, first_version: str, next_version: str | None, error: str | None):
+    provider, object_client = _aistore_download_provider()
+    destination = tmp_path / "object.bin"
+    destination.write_bytes(b"original")
+    metadata = ObjectMetadata(key="object.bin", content_length=7, last_modified=datetime.now(UTC))
+
+    def interrupted() -> Iterator[bytes]:
+        yield b"partial"
+        raise ChunkedEncodingError("interrupted")
+
+    attempts = [_aistore_stream_response(interrupted(), first_version)]
+    if next_version is None:
+        attempts.extend(_aistore_stream_response(interrupted(), first_version) for _ in range(DOWNLOAD_ATTEMPTS - 1))
+    else:
+        attempts.append(_aistore_stream_response([b"new", b"data"], next_version))
+    object_client.get.side_effect = attempts
+
+    if error:
+        with pytest.raises(RuntimeError, match=error):
+            provider.download_file("object.bin", str(destination), metadata)
+        assert destination.read_bytes() == b"original"
+    else:
+        provider.download_file("object.bin", str(destination), metadata)
+        assert destination.read_bytes() == b"newdata"
+    assert list(tmp_path.iterdir()) == [destination]
+
+
+@pytest.mark.parametrize(
+    ("original", "payload"),
+    [
+        pytest.param(b"original", b"new data", id="existing-target"),
+        pytest.param(None, b"", id="missing-target-empty-download"),
+    ],
+)
+def test_aistore_download_follows_symlink(tmp_path: Path, original: bytes | None, payload: bytes):
+    provider, object_client = _aistore_download_provider()
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    target = target_dir / "object.bin"
+    destination = tmp_path / "link"
+    destination.symlink_to(target.relative_to(tmp_path))
+    if original is not None:
+        target.write_bytes(original)
+    object_client.get.return_value = _aistore_stream_response([payload] if payload else [])
+    metadata = ObjectMetadata(key="object.bin", content_length=len(payload), last_modified=datetime.now(UTC))
+
+    provider.download_file("object.bin", str(destination), metadata)
+
+    assert destination.is_symlink()
+    assert target.read_bytes() == payload
+
+
+def test_aistore_failed_rename_cleans_up_staging_file(tmp_path: Path):
+    provider, object_client = _aistore_download_provider()
+    destination = tmp_path / "existing-directory"
+    destination.mkdir()
+    object_client.get.return_value = _aistore_stream_response([b"data"])
+    metadata = ObjectMetadata(key="object.bin", content_length=4, last_modified=datetime.now(UTC))
+
+    with pytest.raises(OSError):
+        provider.download_file("object.bin", str(destination), metadata)
+
+    assert destination.is_dir()
+    assert list(tmp_path.iterdir()) == [destination]
+
+
+def test_aistore_streams_to_disk_during_cache_eviction(tmp_path: Path):
+    cache = CacheManager(
+        profile="data", cache_config=CacheConfig(location=str(tmp_path), size="0.5M", cache_line_size="0.25M")
+    )
+    destination = Path(cache.generate_temp_file_path())
+    provider, object_client = _aistore_download_provider()
+    first_chunk = b"x" * DOWNLOAD_CHUNK_SIZE
+    tail = b"tail"
+    size = len(first_chunk) + len(tail)
+    metadata = ObjectMetadata(key="object.bin", content_length=size, last_modified=datetime.now(UTC))
+
+    def chunks() -> Iterator[bytes]:
+        yield first_chunk
+        assert not destination.exists()
+        (staging_file,) = destination.parent.iterdir()
+        assert staging_file.stat().st_size == len(first_chunk)
+        cache.evict_files()
+        yield tail
+
+    object_client.get.return_value = _aistore_stream_response(chunks())
+    provider.download_file("object.bin", str(destination), metadata)
+
+    assert destination.read_bytes() == first_chunk + tail
+    assert list(destination.parent.iterdir()) == [destination]
+
+
 @pytest.mark.parametrize(
     argnames=["temp_data_store_type", "with_cache"],
     argvalues=[
@@ -67,8 +190,8 @@ DELETE_MANY_IDEMPOTENCY_DATA_STORES = [
         [tempdatastore.TemporarySwiftStackBucket, False],
         [tempdatastore.TemporaryAIStoreBucket, False],
         [tempdatastore.TemporaryAIStoreS3Bucket, False],
-        # Test only one store type with cache enabled
         [tempdatastore.TemporaryAWSS3Bucket, True],
+        [tempdatastore.TemporaryAIStoreBucket, True],
     ],
 )
 def test_storage_providers(temp_data_store_type: type[tempdatastore.TemporaryDataStore], with_cache: bool):
