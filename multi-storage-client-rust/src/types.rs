@@ -295,6 +295,12 @@ pub struct DeleteOptions {
     pub version: Option<SourceVersion>,
 }
 
+impl DeleteOptions {
+    pub(crate) fn is_unconditional(&self) -> bool {
+        self.if_match.is_none() && self.if_none_match.is_none() && self.version.is_none()
+    }
+}
+
 /// Source read conditions and destination write settings for a copy.
 #[derive(Clone, Debug, Default)]
 pub struct CopyOptions {
@@ -321,7 +327,7 @@ pub struct ReadOptions {
 pub struct InfoOptions {
     /// Probe virtual S3 directories when an exact object is missing. Defaults to true.
     /// Explicit remote paths ending in `/` query directories for either value.
-    /// Both values query physical metadata until metadata providers support pending updates.
+    /// With a logical metadata provider, use false to include staged updates.
     pub strict: bool,
 }
 

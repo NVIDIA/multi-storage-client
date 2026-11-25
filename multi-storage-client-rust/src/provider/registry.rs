@@ -14,18 +14,87 @@
 // limitations under the License.
 
 //! Built-in provider construction and application-owned factories.
-use super::StorageBackend;
+use super::{MetadataProvider, StorageBackend};
 use crate::{
     ErrorKind, MscError, Result,
     config::{ProfileConfig, ProviderConfig},
 };
 use futures::future::BoxFuture;
+use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 
 /// Factory for a Rust-registered SDK backend. The client builder adds shared
 /// provider behavior; factories must not wrap or retry complete MSC operations.
 pub type ProviderFactory =
     Arc<dyn Fn(ProfileConfig) -> BoxFuture<'static, Result<Arc<dyn StorageBackend>>> + Send + Sync>;
+
+/// An async factory that receives the profile's `metadata_provider.options` mapping.
+/// Error messages supplied by the factory must omit secrets and raw option values.
+pub type MetadataProviderFactory = Arc<
+    dyn Fn(BTreeMap<String, Value>) -> BoxFuture<'static, Result<Arc<dyn MetadataProvider>>>
+        + Send
+        + Sync,
+>;
+
+/// Application-owned factories for logical metadata providers.
+#[derive(Clone, Default)]
+pub struct MetadataProviderRegistry {
+    factories: BTreeMap<String, MetadataProviderFactory>,
+}
+
+impl MetadataProviderRegistry {
+    /// Create an empty registry.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a factory for a `metadata_provider.type` tag.
+    ///
+    /// # Errors
+    /// Returns `InvalidConfig` if the tag is already registered.
+    pub fn register(
+        &mut self,
+        tag: impl Into<String>,
+        factory: MetadataProviderFactory,
+    ) -> Result<()> {
+        let tag = tag.into();
+        if self.contains(&tag) {
+            return Err(MscError::new(
+                ErrorKind::InvalidConfig,
+                format!("metadata provider tag {tag:?} is already registered"),
+            ));
+        }
+        self.factories.insert(tag, factory);
+        Ok(())
+    }
+
+    /// Check whether the application has registered a tag.
+    #[must_use]
+    pub fn contains(&self, tag: &str) -> bool {
+        self.factories.contains_key(tag)
+    }
+
+    pub(crate) async fn build(
+        &self,
+        profile: &str,
+        config: &ProviderConfig,
+    ) -> Result<Arc<dyn MetadataProvider>> {
+        let factory = self.factories.get(&config.provider_type).ok_or_else(|| {
+            MscError::new(
+                ErrorKind::InvalidConfig,
+                format!("unknown metadata_provider.type in profile {profile:?}. Register the tag through MetadataProviderRegistry"),
+            )
+        })?;
+        factory(config.options.clone()).await.map_err(|mut error| {
+            error.message = format!(
+                "metadata provider factory {:?} failed for profile {profile:?}: {}",
+                config.provider_type, error.message
+            );
+            error
+        })
+    }
+}
 
 /// Built-in storage tags plus application-owned factories. `s8k` uses the S3
 /// adapter and the same `s3` Cargo feature. Registration is process-local;

@@ -25,7 +25,7 @@ The parts manifests can be stored in either:
    :caption: Example Main Manifest (JSON)
 
    {
-     "version": "1.0",
+     "version": "1",
      "format": "jsonl",
      "parts": [
        {
@@ -40,16 +40,8 @@ The parts manifests can be stored in either:
 .. code-block:: json
    :caption: Example Parts Manifest (JSONL)
 
-   {
-     "key": "train/cat-pic001.jpg",
-     "size_bytes": 1048576,
-     "last_modified": "2024-09-05T15:45:00Z"
-   }
-   {
-     "key": "train/cat-pic002.jpg",
-     "size_bytes": 2097152,
-     "last_modified": "2024-09-05T15:46:00Z"
-   }
+   {"key":"train/cat-pic001.jpg","size_bytes":1048576,"last_modified":"2024-09-05T15:45:00Z"}
+   {"key":"train/cat-pic002.jpg","size_bytes":2097152,"last_modified":"2024-09-05T15:46:00Z"}
 
 Manifest Storage Organization
 =============================
@@ -169,3 +161,45 @@ You can also store manifests in a **different** profile than your data. In that 
            manifest_path: .msc_manifests
 
 Once configured, MSC automatically uses the manifests to speed up listing or retrieving metadata for objects whenever you perform MSC operations on that profile.
+
+********************
+Native Rust snapshot
+********************
+
+The native Rust client can use a read-only snapshot written by Python MSC.
+``ManifestMetadataProvider::load`` accepts the key of a JSON index, a directory
+containing ``msc_manifest_index.json``, or a base directory containing timestamped
+snapshots under ``.msc_manifests``. A concrete index path selects a fixed version.
+The index can use version ``"1"`` or ``"1.0"``. Parts use JSONL and resolve relative
+to the index. Each part is processed one record at a time, with a 1 MiB limit per
+record. The complete logical index stays in memory.
+
+Part paths, file keys, and physical file paths must be relative and canonical.
+The reader rejects repeated separators and trailing slashes on files because
+these can identify distinct S3 objects. Explicit directory records can end in a
+single slash and are available through metadata and listing operations.
+
+The earlier YAML examples use Python MSC's built-in ``type: manifest``. In Rust,
+YAML metadata types select application-registered factories. An instance supplied
+with ``with_metadata_provider`` takes precedence. This example loads the snapshot
+through the ``manifests`` profile, which uses S3 or POSIX with no
+``metadata_provider`` block, then attaches the snapshot to the ``data`` profile.
+
+.. code-block:: rust
+
+   use std::sync::Arc;
+   use multi_storage_client::{ManifestMetadataProvider, ReadOptions, StorageClient};
+
+   let manifest_store = StorageClient::builder(config.clone(), "manifests").build().await?;
+   let manifest = ManifestMetadataProvider::load(&manifest_store, "project").await?;
+   let data = StorageClient::builder(config, "data")
+       .with_metadata_provider(Arc::new(manifest))
+       .build()
+       .await?;
+   let bytes = data.read("train/cat-pic001.jpg", ReadOptions::default()).await?;
+
+The data client lists logical keys and uses each record's ``physical_path`` to
+read bytes from its storage profile. When a record omits ``physical_path``, the
+logical key is also the physical key. Load and attach a new snapshot to refresh
+the view. Snapshot creation and updates continue to use the Python manifest
+provider. The native Rust snapshot reader accepts JSONL parts.

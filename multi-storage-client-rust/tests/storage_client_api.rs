@@ -17,16 +17,18 @@
 #![cfg(unix)]
 #![allow(clippy::too_many_lines)] // Keep each public API contract scenario together.
 
+#[path = "common/metadata_catalog.rs"]
+mod metadata_catalog;
 #[path = "common/provider_contract.rs"]
 mod provider_contract;
 
 use bytes::Bytes;
 use futures::TryStreamExt;
 use multi_storage_client::{
-    ByteRange, ByteStream, ConfigLoader, DeleteOptions, ErrorKind, GetConditions, InfoOptions,
-    ListOptions, MetadataStream, ObjectKind, ObjectMetadata, ObjectPath, ProviderCapabilities,
-    PutResult, ReadOptions, Result, StorageBackend, StorageClient, StorageClientBuilder,
-    WriteOptions,
+    BatchResult, ByteRange, ByteStream, ConfigLoader, DeleteOptions, ErrorKind, GetConditions,
+    InfoOptions, ListOptions, MetadataStream, ObjectKind, ObjectMetadata, ObjectPath,
+    ProviderCapabilities, PutResult, ReadOptions, Result, StorageBackend, StorageClient,
+    StorageClientBuilder, WriteOptions,
 };
 use serde_json::json;
 use std::{collections::BTreeMap, path::Path};
@@ -1171,6 +1173,7 @@ async fn direct_file_upload_retains_its_open_source_and_rejects_in_place_changes
 struct ExternalBackend {
     inner: multi_storage_client::provider::posix::PosixProvider,
     get_attempts: std::sync::atomic::AtomicUsize,
+    malformed_delete_batch: bool,
 }
 
 #[async_trait::async_trait]
@@ -1182,6 +1185,7 @@ impl StorageBackend for ExternalBackend {
         ProviderCapabilities {
             server_side_copy: multi_storage_client::CopyScope::None,
             symlinks: false,
+            batch_delete: self.malformed_delete_batch,
             ..self.inner.capabilities()
         }
     }
@@ -1221,6 +1225,19 @@ impl StorageBackend for ExternalBackend {
     async fn delete_object(&self, key: &ObjectPath, options: &DeleteOptions) -> Result<()> {
         self.inner.delete_object(key, options).await
     }
+    async fn delete_objects(&self, keys: &[ObjectPath], options: &DeleteOptions) -> BatchResult {
+        if self.malformed_delete_batch {
+            return BatchResult {
+                succeeded: if keys.len() == 1000 {
+                    (0..keys.len()).collect()
+                } else {
+                    vec![keys.len()]
+                },
+                ..BatchResult::default()
+            };
+        }
+        self.inner.delete_objects(keys, options).await
+    }
     async fn list_objects(&self, options: &ListOptions) -> Result<MetadataStream> {
         self.inner.list_objects(options).await
     }
@@ -1234,6 +1251,47 @@ fn provider_retry(attempts: u32) -> multi_storage_client::RetryPolicy {
         jitter: false,
         ..multi_storage_client::RetryPolicy::default()
     }
+}
+
+#[tokio::test]
+async fn mapped_batch_delete_stages_completed_chunks_before_malformed_results() {
+    use multi_storage_client::provider::posix::{PosixOptions, PosixProvider};
+    use std::sync::Arc;
+
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Arc::new(ExternalBackend {
+        inner: PosixProvider::new(PosixOptions::new(directory.path())).unwrap(),
+        get_attempts: 0.into(),
+        malformed_delete_batch: true,
+    });
+    let paths: Vec<_> = (0..1001)
+        .map(|index| key(&format!("object-{index:04}")))
+        .collect();
+    let catalog = metadata_catalog::WritableMetadata::with_entries(
+        paths
+            .iter()
+            .map(|path| (path.as_str(), ObjectMetadata::file(path.clone(), 0))),
+        None,
+    );
+    let mapped = StorageClientBuilder::from_provider(backend)
+        .with_metadata_provider(Arc::new(catalog))
+        .build()
+        .await
+        .unwrap();
+
+    let result = mapped
+        .delete_many(&paths, DeleteOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(result.succeeded, (0..1000).collect::<Vec<_>>());
+    assert_eq!(result.failed.len(), 1);
+    assert_eq!(result.failed[0].index, 1000);
+    assert_eq!(result.failed[0].error.kind, ErrorKind::Integrity);
+    mapped.commit_updates().await.unwrap();
+    for path in &paths[..1000] {
+        assert!(!mapped.is_file(path).await.unwrap());
+    }
+    assert!(mapped.is_file(&paths[1000]).await.unwrap());
 }
 
 #[tokio::test]
@@ -1251,6 +1309,7 @@ async fn public_provider_contract_is_shared_by_posix_and_external_backends() {
                 BaseStorageProvider::new(std::sync::Arc::new(ExternalBackend {
                     inner: backend,
                     get_attempts: 0.into(),
+                    malformed_delete_batch: false,
                 }))
                 .with_max_in_memory_bytes(16)
                 .with_retry_policy(provider_retry(3))
@@ -1283,6 +1342,7 @@ async fn external_factory_receives_shared_policy_without_nested_retries() {
     let backend = Arc::new(ExternalBackend {
         inner: PosixProvider::new(PosixOptions::new(directory.path())).unwrap(),
         get_attempts: 0.into(),
+        malformed_delete_batch: false,
     });
     let factory_backend = backend.clone();
     let factory: ProviderFactory = Arc::new(move |_| {

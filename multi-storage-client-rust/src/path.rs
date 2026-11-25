@@ -16,7 +16,7 @@
 //! Validated provider-relative object paths.
 use crate::error::{ErrorKind, MscError, Result};
 use serde::{Deserialize, Deserializer, Serialize};
-use std::fmt;
+use std::{borrow::Borrow, fmt};
 
 /// A normalized UTF-8 key relative to a profile's configured base path.
 /// The empty key denotes the profile root; leading slashes and dot segments
@@ -69,6 +69,10 @@ impl ObjectPath {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    pub(crate) fn into_string(self) -> String {
+        self.0
+    }
     /// Whether this key denotes the configured profile root.
     #[must_use]
     pub fn is_root(&self) -> bool {
@@ -120,6 +124,12 @@ impl ObjectPath {
 impl fmt::Display for ObjectPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
+    }
+}
+
+impl Borrow<str> for ObjectPath {
+    fn borrow(&self) -> &str {
+        self.as_str()
     }
 }
 

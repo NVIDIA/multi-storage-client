@@ -132,14 +132,10 @@ impl S3Provider {
         let mut result = crate::BatchResult::default();
         // Conditional deletes require individual requests: DeleteObjects has no
         // per-object ETag condition on general-purpose buckets.
-        if options.version.is_some()
-            || options.if_match.is_some()
-            || options.if_none_match.is_some()
-        {
+        if !options.is_unconditional() {
             for (index, key) in keys.iter().enumerate() {
                 match self.native_delete(key, options).await {
                     Ok(()) => result.succeeded.push(index),
-                    Err(error) if error.kind == ErrorKind::NotFound => result.succeeded.push(index),
                     Err(error) => result.failed.push(crate::BatchFailure {
                         index,
                         source: key.clone(),

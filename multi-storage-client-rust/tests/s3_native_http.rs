@@ -15,9 +15,14 @@
 
 //! Native S3 copy/delete publication evidence exercised over the actual HTTP adapter.
 #![cfg(feature = "s3")]
+
+#[path = "common/metadata_catalog.rs"]
+mod metadata_catalog;
+
+use metadata_catalog::WritableMetadata;
 use multi_storage_client::{
-    CopyOptions, DeleteOptions, ErrorKind, GetConditions, ObjectPath, ReadOptions, StorageBackend,
-    StorageClientBuilder, WriteOptions,
+    CopyOptions, DeleteOptions, ErrorKind, GetConditions, InfoOptions, ObjectKind, ObjectMetadata,
+    ObjectPath, ReadOptions, StorageBackend, StorageClientBuilder, WriteOptions,
     credentials::{AwsCredentials, SecretString},
     provider::s3::{S3Options, S3Provider},
 };
@@ -319,6 +324,58 @@ async fn native_copy_pins_historical_source_and_returns_response_generation() {
 }
 
 #[tokio::test]
+async fn streaming_copy_uses_historical_source_length_and_attributes() {
+    let mut source = Response::head("\"old\"", "v1", "old-tag");
+    source.body = "old!".into();
+    let server = Server::new(vec![
+        Response::head("\"old\"", "v1", "old-tag"),
+        source,
+        Response::head("\"published\"", "dest-v1", "old-tag"),
+    ])
+    .await;
+    let provider = server.provider();
+    let version = multi_storage_client::SourceVersion {
+        scope: provider.backend_fingerprint(),
+        value: "version:v1".into(),
+    };
+    let client = StorageClientBuilder::from_provider(Arc::new(provider))
+        .build()
+        .await
+        .unwrap();
+    client
+        .copy(
+            "source",
+            "destination",
+            CopyOptions {
+                source_conditions: GetConditions {
+                    version: Some(version),
+                    ..Default::default()
+                },
+                destination: WriteOptions {
+                    if_none_match: Some("*".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .unwrap();
+    server.done().await;
+    let requests = server.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0].method, "HEAD");
+    assert_eq!(requests[1].method, "GET");
+    assert!(
+        requests[..2]
+            .iter()
+            .all(|request| request.target == "/bucket/base/source?versionId=v1")
+    );
+    assert_eq!(requests[1].headers["if-match"], "\"old\"");
+    assert_eq!(requests[2].method, "PUT");
+    assert_eq!(requests[2].headers["x-amz-meta-tag"], "old-tag");
+    assert_eq!(requests[2].body, "old!");
+}
+
+#[tokio::test]
 async fn copy_http_success_requires_completed_xml_publication() {
     for body in [
         "<CopyObjectResult/>",
@@ -559,6 +616,179 @@ async fn batch_deletion_preserves_input_indices_and_partial_failure_details() {
     assert!(requests[0].target.contains("delete="));
     assert!(requests[0].body.contains("first&amp;☃"));
     assert!(requests[0].headers.contains_key("content-md5"));
+}
+
+#[tokio::test]
+async fn mapped_batch_delete_batches_physical_keys_and_reports_staging_failures() {
+    let server = Server::new(vec![Response::xml(concat!(
+        "<DeleteResult>",
+        "<Error><Key>base/physical/denied</Key><Code>AccessDenied</Code></Error>",
+        "<Deleted><Key>base/physical/staging</Key></Deleted>",
+        "</DeleteResult>",
+    ))])
+    .await;
+    let mut link = ObjectMetadata::file(key("link"), 0);
+    link.kind = ObjectKind::Symlink;
+    link.symlink_target = Some("good".into());
+    let catalog = WritableMetadata::with_entries(
+        [
+            ("deny", ObjectMetadata::file(key("physical/denied"), 4)),
+            ("alias", ObjectMetadata::file(key("physical/shared"), 4)),
+            ("good", ObjectMetadata::file(key("physical/shared"), 4)),
+            (
+                "bad_stage",
+                ObjectMetadata::file(key("physical/staging"), 4),
+            ),
+            ("link", link),
+        ],
+        Some("bad_stage"),
+    );
+    let client = StorageClientBuilder::from_provider(Arc::new(server.provider()))
+        .with_metadata_provider(Arc::new(catalog))
+        .build()
+        .await
+        .unwrap();
+    let paths = ["missing", "deny", "bad_stage", "link", "alias", "good"].map(key);
+    let result = client
+        .delete_many(&paths, DeleteOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(result.succeeded, [0, 3, 4, 5]);
+    let failures: Vec<_> = result
+        .failed
+        .iter()
+        .map(|failure| (failure.index, failure.source.as_str(), failure.error.kind))
+        .collect();
+    assert_eq!(
+        failures,
+        [
+            (1, "deny", ErrorKind::PermissionDenied),
+            (2, "bad_stage", ErrorKind::NotFound)
+        ]
+    );
+
+    client.commit_updates().await.unwrap();
+    for path in ["alias", "good", "link"] {
+        assert_eq!(
+            client
+                .info(path, InfoOptions::default())
+                .await
+                .unwrap_err()
+                .kind,
+            ErrorKind::NotFound
+        );
+    }
+    for path in ["deny", "bad_stage"] {
+        assert!(client.info(path, InfoOptions::default()).await.is_ok());
+    }
+
+    server.done().await;
+    let requests = server.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "POST");
+    assert!(requests[0].target.contains("delete="));
+    assert_eq!(requests[0].body.matches("<Key>").count(), 2);
+    assert!(!requests[0].body.contains("base/physical/shared"));
+}
+
+#[tokio::test]
+async fn mapped_conditional_delete_preserves_s3_missing_failures() {
+    for (retry, expected) in [
+        (false, ErrorKind::NotFound),
+        (true, ErrorKind::AmbiguousOutcome),
+    ] {
+        let mut responses = vec![Response::head("\"etag\"", "v1", "backend")];
+        for _ in 0..2 {
+            if retry {
+                responses.push(Response {
+                    status: 503,
+                    headers: String::new(),
+                    body: "<Error><Code>SlowDown</Code></Error>".into(),
+                });
+            }
+            responses.push(Response {
+                status: 404,
+                headers: String::new(),
+                body: String::new(),
+            });
+        }
+        let server = Server::new(responses).await;
+        let catalog = WritableMetadata::with_entries(
+            [("report", ObjectMetadata::file(key("physical/report"), 4))],
+            None,
+        );
+        let client = StorageClientBuilder::from_provider(Arc::new(server.provider()))
+            .with_metadata_provider(Arc::new(catalog))
+            .with_retry_policy(multi_storage_client::RetryPolicy {
+                max_attempts: 2,
+                initial_delay_ms: 1,
+                max_delay_ms: 1,
+                jitter: false,
+                ..Default::default()
+            })
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let options = DeleteOptions {
+            if_match: Some("*".into()),
+            ..DeleteOptions::default()
+        };
+        assert_eq!(
+            client
+                .delete("report", false, options.clone())
+                .await
+                .unwrap_err()
+                .kind,
+            expected
+        );
+        let batch = client.delete_many(&[key("report")], options).await.unwrap();
+        assert!(batch.succeeded.is_empty());
+        assert_eq!(batch.failed[0].error.kind, expected);
+        client.commit_updates().await.unwrap();
+        assert!(client.is_file("report").await.unwrap());
+        server.done().await;
+    }
+}
+
+#[tokio::test]
+async fn mapped_s3_write_stages_non_string_attributes_without_sending_them() {
+    let server = Server::new(vec![Response::head("\"etag\"", "v1", "backend")]).await;
+    let client = StorageClientBuilder::from_provider(Arc::new(server.provider()))
+        .with_metadata_provider(Arc::new(WritableMetadata::default()))
+        .build()
+        .await
+        .unwrap();
+    let scores = serde_json::json!([1, 2]);
+    client
+        .write(
+            "report",
+            bytes::Bytes::from_static(b"data"),
+            WriteOptions {
+                attributes: BTreeMap::from([("scores".into(), scores.clone())]),
+                content_type: Some("text/plain".into()),
+                ..WriteOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    let entry = client
+        .info("report", InfoOptions { strict: false })
+        .await
+        .unwrap();
+    assert_eq!(entry.attributes["scores"], scores);
+    assert_eq!(entry.attributes.len(), 1);
+    assert_eq!(entry.etag.as_deref(), Some("\"etag\""));
+    assert_eq!(entry.content_length, 4);
+    assert!(entry.source_version.is_some());
+
+    server.done().await;
+    let requests = server.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "PUT");
+    assert_eq!(requests[0].target, "/bucket/base/physical/report");
+    assert_eq!(requests[0].headers["content-type"], "text/plain");
+    assert!(!requests[0].headers.contains_key("x-amz-meta-scores"));
 }
 
 #[tokio::test]

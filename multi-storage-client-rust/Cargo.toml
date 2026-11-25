@@ -16,6 +16,7 @@ name = "msc-benchmark"
 path = "src/bin/msc-benchmark/main.rs"
 
 [dependencies]
+async-stream = "0.3"
 async-trait = "0.1"
 aws-config = { version = "=1.8.18", optional = true }
 aws-credential-types = { version = "=1.2.14", optional = true }
@@ -29,6 +30,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
 futures = "0.3"
 getrandom = "0.4"
+globset = "0.4"
 http = { version = "1", optional = true }
 http-body-util = { version = "0.1", optional = true }
 jmespath = { version = "0.5", features = ["sync"] }
@@ -45,7 +47,7 @@ mime_guess = { version = "2", optional = true }
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1.47", features = ["fs", "io-std", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
-tokio-util = { version = "0.7", features = ["io", "rt"] }
+tokio-util = { version = "0.7", features = ["codec", "io", "rt"] }
 url = "2"
 
 [target.'cfg(unix)'.dependencies]

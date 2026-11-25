@@ -16,8 +16,8 @@
 use super::{StorageClient, StorageClientBuilder};
 use crate::provider::DEFAULT_MEMORY_LIMIT;
 use crate::{
-    BaseStorageProvider, ProviderRegistry, Result, RetryPolicy, StorageBackend,
-    config::ResolvedConfig,
+    BaseStorageProvider, MetadataProvider, MetadataProviderRegistry, ProviderRegistry, Result,
+    RetryPolicy, StorageBackend, config::ResolvedConfig,
 };
 use std::sync::Arc;
 
@@ -45,6 +45,8 @@ impl StorageClientBuilder {
         Self {
             source,
             registry: ProviderRegistry::default(),
+            metadata_provider_registry: MetadataProviderRegistry::default(),
+            metadata_provider: None,
             retry: None,
             max_in_memory_bytes: DEFAULT_MEMORY_LIMIT,
         }
@@ -55,6 +57,22 @@ impl StorageClientBuilder {
     #[must_use]
     pub fn with_provider_registry(mut self, registry: ProviderRegistry) -> Self {
         self.registry = registry;
+        self
+    }
+
+    /// Supply factories for `metadata_provider.type` in a configured profile.
+    /// Lookup and initialization take place during [`Self::build`].
+    #[must_use]
+    pub fn with_metadata_provider_registry(mut self, registry: MetadataProviderRegistry) -> Self {
+        self.metadata_provider_registry = registry;
+        self
+    }
+
+    /// Use application-supplied logical metadata and path resolution.
+    /// This instance takes precedence over the profile's configured metadata provider.
+    #[must_use]
+    pub fn with_metadata_provider(mut self, provider: Arc<dyn MetadataProvider>) -> Self {
+        self.metadata_provider = Some(provider);
         self
     }
 
@@ -75,25 +93,42 @@ impl StorageClientBuilder {
         self
     }
 
-    /// Construct the selected physical provider and shared policy.
+    /// Construct the physical provider, shared policy, and any configured metadata provider.
     ///
     /// # Errors
     /// Returns configuration, credential or provider construction errors.
     pub async fn build(self) -> Result<StorageClient> {
-        let (provider, default_retry) = match self.source {
+        let mut metadata_provider = self.metadata_provider;
+        let (provider, default_retry, profile) = match self.source {
             ClientSource::Profile { config, profile } => {
-                let profile = config.profile(&profile)?;
-                (self.registry.build(profile).await?, profile.retry.clone())
+                let config = config.profile(&profile)?;
+                let provider = self.registry.build(config).await?;
+                if metadata_provider.is_none()
+                    && let Some(metadata) = &config.metadata_provider
+                {
+                    metadata_provider = Some(
+                        self.metadata_provider_registry
+                            .build(&profile, metadata)
+                            .await?,
+                    );
+                }
+                (provider, config.retry.clone(), Some(profile))
             }
-            ClientSource::Provider(provider) => (provider, RetryPolicy::default()),
+            ClientSource::Provider(provider) => (provider, RetryPolicy::default(), None),
         };
         let provider = BaseStorageProvider::configured(
             provider,
             self.retry.unwrap_or(default_retry),
             self.max_in_memory_bytes,
         );
+        let metadata_locks = metadata_provider
+            .as_ref()
+            .map(|_| Arc::new(std::array::from_fn(|_| tokio::sync::Mutex::new(()))));
         Ok(StorageClient {
-            provider: Arc::new(provider),
+            provider,
+            metadata_provider,
+            metadata_locks,
+            profile,
         })
     }
 }

@@ -26,6 +26,7 @@ mod ranges;
 mod registry;
 mod traits;
 
+pub mod manifest;
 pub mod posix;
 #[cfg(feature = "s3")]
 pub mod s3;
@@ -35,10 +36,13 @@ pub use base::BaseStorageProvider;
 pub(crate) use base::DEFAULT_MEMORY_LIMIT;
 #[cfg(feature = "s3")]
 pub(crate) use base::current_provider_retry_policy;
-pub use registry::{ProviderFactory, ProviderRegistry};
+pub use registry::{
+    MetadataProviderFactory, MetadataProviderRegistry, ProviderFactory, ProviderRegistry,
+};
 pub use traits::StorageProvider;
 
 pub(crate) use metadata::resolve_metadata;
+pub use metadata::{MetadataProvider, ResolvedPath, ResolvedPathState};
 pub(crate) use ranges::suffix_fallback;
 #[cfg(feature = "s3")]
 pub(crate) use ranges::{range_bytes, requested_bounds};

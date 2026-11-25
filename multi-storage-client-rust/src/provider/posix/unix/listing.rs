@@ -70,10 +70,20 @@ impl Listing {
         while let Some(item) = self.pending.pop_front() {
             match item {
                 Pending::Expand(key) => {
-                    if self.options.end_at.as_ref().is_some_and(|end| {
-                        !key.is_root() && format!("{key}/").as_str() > end.as_str()
-                    }) {
-                        continue;
+                    if !key.is_root() {
+                        let prefix = format!("{key}/");
+                        if self
+                            .options
+                            .end_at
+                            .as_ref()
+                            .is_some_and(|end| prefix.as_str() > end.as_str())
+                            || self.options.start_after.as_ref().is_some_and(|start| {
+                                prefix.as_str() < start.as_str()
+                                    && !start.as_str().starts_with(&prefix)
+                            })
+                        {
+                            continue;
+                        }
                     }
                     let children = read_directory(&self.provider, key).await?;
                     for child in children.into_iter().rev() {

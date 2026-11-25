@@ -16,13 +16,23 @@
 //! Metadata, byte reads, and conditional ranges.
 use super::{BaseStorageProvider, require_file, stable_conditions};
 use crate::{
-    ByteRange, ErrorKind, GetConditions, InfoOptions, MscError, ObjectMetadata, ObjectPath,
-    ReadOptions, Result,
+    ByteRange, ByteStream, ErrorKind, GetConditions, InfoOptions, MscError, ObjectMetadata,
+    ObjectPath, ReadOptions, Result,
 };
 use bytes::{Bytes, BytesMut};
 use futures::StreamExt;
 
 impl<B: crate::StorageBackend + ?Sized + 'static> BaseStorageProvider<B> {
+    pub(crate) async fn open_manifest_part(&self, path: &ObjectPath) -> Result<ByteStream> {
+        self.retry(true, || async {
+            self.state
+                .provider
+                .get_object(path, &GetConditions::default())
+                .await
+        })
+        .await
+    }
+
     pub(super) async fn read_metadata(
         &self,
         path: &ObjectPath,

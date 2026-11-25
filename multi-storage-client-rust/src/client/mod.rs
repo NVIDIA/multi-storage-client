@@ -16,21 +16,32 @@
 //! Application-facing client and construction over a shared storage provider.
 mod api;
 mod builder;
+mod metadata;
 
-use crate::{ProviderRegistry, RetryPolicy, StorageProvider};
+use crate::{
+    BaseStorageProvider, MetadataProvider, MetadataProviderRegistry, ProviderRegistry, RetryPolicy,
+    StorageBackend,
+};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
-/// A cheap-to-clone client for a physical storage namespace.
-/// All operations take keys relative to the selected profile root.
+const METADATA_LOCK_COUNT: usize = 64;
+
+/// A cheap-to-clone client for a storage namespace with optional logical metadata.
 #[derive(Clone)]
 pub struct StorageClient {
-    provider: Arc<dyn StorageProvider>,
+    pub(crate) provider: BaseStorageProvider<dyn StorageBackend>,
+    metadata_provider: Option<Arc<dyn MetadataProvider>>,
+    metadata_locks: Option<Arc<[Mutex<()>; METADATA_LOCK_COUNT]>>,
+    profile: Option<String>,
 }
 
 /// Select a profile, backend registry, retry policy and bounded read settings.
 pub struct StorageClientBuilder {
     source: builder::ClientSource,
     registry: ProviderRegistry,
+    metadata_provider_registry: MetadataProviderRegistry,
+    metadata_provider: Option<Arc<dyn MetadataProvider>>,
     retry: Option<RetryPolicy>,
     max_in_memory_bytes: u64,
 }
