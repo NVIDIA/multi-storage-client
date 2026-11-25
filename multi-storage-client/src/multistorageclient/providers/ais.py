@@ -14,7 +14,9 @@
 # limitations under the License.
 
 import io
+import logging
 import os
+import tempfile
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from typing import IO, Any, TypeVar
@@ -24,7 +26,7 @@ from aistore.sdk.authn import AuthNClient
 from aistore.sdk.errors import AISError
 from aistore.sdk.obj.content_iterator import ParallelBuffer
 from dateutil.parser import parse as dateutil_parser
-from requests.exceptions import HTTPError
+from requests.exceptions import ChunkedEncodingError, ConnectionError, HTTPError, ReadTimeout
 from urllib3.util import Retry
 
 from ..constants import DEFAULT_READ_TIMEOUT
@@ -45,6 +47,10 @@ _T = TypeVar("_T")
 
 PROVIDER = "ais"
 DEFAULT_PAGE_SIZE = 1000
+DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+DOWNLOAD_ATTEMPTS = 6
+
+logger = logging.getLogger(__name__)
 
 
 class StaticAISCredentialProvider(CredentialsProvider):
@@ -465,15 +471,67 @@ class AIStoreStorageProvider(BaseStorageProvider):
 
         return file_size
 
+    def _download_to_staging_file(self, remote_path: str, staged: IO[bytes]) -> None:
+        """Stream an object to a seekable staging file, restarting interrupted transfers."""
+        bucket, key = split_path(remote_path)
+
+        def _invoke_api() -> None:
+            obj = self.client.bucket(bucket, self.provider).object(obj_name=key)
+            reader = obj.get_reader()
+            original_version: tuple[str, str, str] | None = None
+            for attempt in range(DOWNLOAD_ATTEMPTS):
+                with reader.stream() as response:
+                    attributes = reader.attributes
+                    version = (attributes.obj_version, attributes.checksum_value, attributes.etag)
+                    if original_version is None:
+                        original_version = version
+                    elif any(before and before != after for before, after in zip(original_version, version)):
+                        raise ValueError("AIStore object changed during download")
+
+                    try:
+                        for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
+                            staged.write(chunk)
+                    except (ChunkedEncodingError, ConnectionError, ReadTimeout):
+                        if attempt == DOWNLOAD_ATTEMPTS - 1:
+                            raise
+                    else:
+                        return
+
+                # A new GET starts at byte zero and cannot append another object's bytes.
+                staged.seek(0)
+                staged.truncate()
+
+        self._translate_errors(_invoke_api, operation="GET", bucket=bucket, key=key)
+
     def _download_file(self, remote_path: str, f: str | IO, metadata: ObjectMetadata | None = None) -> int:
         if metadata is None:
             metadata = self._get_object_metadata(remote_path)
 
         if isinstance(f, str):
-            if os.path.dirname(f):
-                safe_makedirs(os.path.dirname(f))
-            with open(f, "wb") as fp:
-                fp.write(self._get_object(remote_path))
+            directory = os.path.dirname(f) or "."
+            safe_makedirs(directory)
+            if os.path.islink(f):
+                try:
+                    f = os.path.realpath(f, strict=True)
+                except FileNotFoundError:
+                    f = os.path.realpath(f)
+                directory = os.path.dirname(f)
+
+            temp_file_path: str | None = None
+            try:
+                with tempfile.NamedTemporaryFile(mode="wb", delete=False, dir=directory, prefix=".") as staged:
+                    temp_file_path = staged.name
+                    self._download_to_staging_file(remote_path, staged)
+                os.rename(src=temp_file_path, dst=f)
+                temp_file_path = None
+            finally:
+                if temp_file_path is not None:
+                    try:
+                        os.unlink(temp_file_path)
+                    except FileNotFoundError:
+                        pass
+                    except OSError as error:
+                        logger.warning("Could not remove temporary file %s: %s", temp_file_path, error)
         else:
             if isinstance(f, io.StringIO):
                 f.write(self._get_object(remote_path).decode("utf-8"))
